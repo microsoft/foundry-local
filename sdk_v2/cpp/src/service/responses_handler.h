@@ -22,6 +22,7 @@ struct Request;
 class ChatSession;
 class Model;
 class GenAIModelInstance;
+class ActionTracker;
 
 namespace responses {
 struct ResponseCreateParams;
@@ -89,7 +90,8 @@ class ResponsesHandler : public HttpRequestHandler {
   std::shared_ptr<OutgoingResponse> HandleStreaming(std::unique_ptr<ChatSession> session, Request session_request,
                                                     const ResponseTurn& turn, ResponseLease lease,
                                                     const responses::ResponseCreateParams& params,
-                                                    const nlohmann::json& req_json);
+                                                    const nlohmann::json& req_json,
+                                                    std::unique_ptr<ActionTracker> route_tracker);
 
   ServiceContext& ctx_;
 };

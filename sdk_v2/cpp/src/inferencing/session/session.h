@@ -6,7 +6,9 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -17,6 +19,8 @@
 #include "inferencing/session/response.h"
 #include "inferencing/session/tool_registry.h"
 #include "inferencing/session/types.h"
+#include "inferencing/generative/chat/search_options.h"
+#include "telemetry/invocation_context.h"
 #include "util/key_value_pairs.h"
 
 namespace fl {
@@ -24,6 +28,7 @@ namespace fl {
 class ILogger;     // forward declaration
 class ITelemetry;  // forward declaration
 class Model;       // forward declaration
+struct ModelUsageInfo;
 
 /// Base class for model inference sessions.
 /// Manages lifecycle, request dispatch, streaming callbacks, and tool definitions.
@@ -34,6 +39,21 @@ class Model;       // forward declaration
 ///   - Future: predictive inference, realtime audio, multi-modal
 class Session {
  public:
+  class RequestPreflightOperation {
+   public:
+    virtual ~RequestPreflightOperation() = default;
+
+    RequestPreflightOperation(const RequestPreflightOperation&) = delete;
+    RequestPreflightOperation& operator=(const RequestPreflightOperation&) = delete;
+    RequestPreflightOperation(RequestPreflightOperation&&) = delete;
+    RequestPreflightOperation& operator=(RequestPreflightOperation&&) = delete;
+
+    virtual RequestBudget Execute() = 0;
+
+   protected:
+    RequestPreflightOperation() = default;
+  };
+
   virtual ~Session();
 
   Session(Session&&) = default;
@@ -53,6 +73,9 @@ class Session {
   /// Waiting here keeps the Request reference valid for the lifetime of any
   /// in-flight callbacks and ensures the Response is fully populated on return.
   void ProcessRequest(const Request& request, Response& response);
+
+  /// Capture a chat request and session state under the same serialization boundary as generation and undo.
+  std::unique_ptr<RequestPreflightOperation> CreateRequestPreflight(const Request& request) const;
 
   /// Signal every in-flight request on this session to cancel. Only updates each request's atomic
   /// lifecycle — never blocks and never joins — so it is safe to call from a shutdown path while
@@ -96,6 +119,7 @@ class Session {
 
   /// Session-level parameters overlaid onto each request.
   void SetSessionOptions(const KeyValuePairs& options) {
+    auto lock = TryLockRequestMutex();
     session_options_ = options;
     SetSessionOptionsImpl(session_options_);
   }
@@ -104,6 +128,14 @@ class Session {
   void SetStreamingCallback(StreamingCallbackFn callback, void* user_data = nullptr) {
     callback_fn_ = std::move(callback);
     callback_user_data_ = user_data;
+  }
+
+  /// Stage telemetry context for the next operation (including a cached session's next turn).
+  /// HTTP callers exclusively own the session while staging an indirect child of the route context.
+  /// Without a staged context, each ProcessRequest creates an independent direct context.
+  void SetInvocationContext(InvocationContext context) {
+    std::lock_guard<std::mutex> lock(*invocation_context_mutex_);
+    invocation_context_ = std::move(context);
   }
 
  protected:
@@ -120,22 +152,23 @@ class Session {
   /// Returns a copy of session options with request options overlaid (request wins on conflict).
   /// Derived classes call this when they want a single resolved option set.
   KeyValuePairs MergedOptions(const KeyValuePairs& request_options) const {
-    if (request_options.empty()) {
-      return session_options_;
-    }
-
-    KeyValuePairs merged = session_options_;
-    for (const auto& [key, value] : request_options) {
-      merged.Add(key, value);
-    }
-
-    return merged;
+    return MergeKeyValuePairs(session_options_, request_options);
   }
 
   /// Derived classes implement the actual generation logic.
   /// `on_token` is the resolved streaming callback (may be empty).
   /// Requests are serialized if the derived class does not opt into concurrency via allow_concurrent_requests_.
   virtual void ProcessRequestImpl(const Request& request, Response& response) = 0;
+
+  virtual std::string ExecutionProvider() const { return {}; }
+
+  /// Called inside the telemetry-only failure boundary after inference has populated the response.
+  virtual void RecordAdditionalModelUsage(const Response& /*response*/, const ModelUsageInfo& /*usage*/) {}
+
+  ITelemetry& Telemetry() { return telemetry_; }
+  static int32_t TelemetryTokenCount(int64_t count);
+
+  virtual std::unique_ptr<RequestPreflightOperation> CreateRequestPreflightImpl(Request request) const;
 
   /// Create a per-request callback handler. Returns nullptr if no callback is set.
   /// The handler is owned by the caller (unique_ptr) and drains+joins on destruction.
@@ -152,10 +185,15 @@ class Session {
   /// Serialize a state mutation with ProcessRequest for session types that maintain mutable turn state.
   std::unique_lock<std::mutex> LockRequestMutex() const { return std::unique_lock<std::mutex>(*request_mutex_); }
 
+  std::unique_lock<std::mutex> TryLockRequestMutex() const;
+
  private:
   /// Reject items (and message content parts) whose type the model's task does not advertise as an
   /// input. Currently applies to chat tasks only.
   void ValidateRequestItems(const Request& request) const;
+  InvocationContext TakeInvocationContext();
+  void RecordUsage(const Request& request, const Response& response,
+                   const InvocationContext& context, int64_t total_time_ms);
 
   const fl::Model& catalog_model_;
   ILogger& logger_;
@@ -164,6 +202,8 @@ class Session {
   KeyValuePairs session_options_;
   StreamingCallbackFn callback_fn_;
   void* callback_user_data_ = nullptr;
+  std::optional<InvocationContext> invocation_context_;
+  std::unique_ptr<std::mutex> invocation_context_mutex_ = std::make_unique<std::mutex>();
   const bool allow_concurrent_requests_;
   mutable std::unique_ptr<std::mutex> request_mutex_ = std::make_unique<std::mutex>();
 
@@ -173,6 +213,7 @@ class Session {
   // unique_ptr<mutex> keeps Session movable (std::mutex is not movable), matching request_mutex_.
   std::unordered_set<const Request*> active_requests_;
   mutable std::unique_ptr<std::mutex> active_requests_mutex_ = std::make_unique<std::mutex>();
+  std::thread::id processing_thread_;
 
   // Latched by Cancel() under active_requests_mutex_. A request admitted after Cancel() ran (its streaming
   // thread hadn't reached ProcessRequest when the shutdown sweep happened) is stamped canceled on insert,

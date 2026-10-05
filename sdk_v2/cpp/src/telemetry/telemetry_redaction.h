@@ -9,73 +9,63 @@
 
 namespace fl {
 
+// Keep this implementation aligned with ONNX Runtime's core/platform/telemetry_redaction.h.
 inline constexpr size_t kMaxTelemetryStringLength = 40'960;
 
 namespace telemetry_detail {
 
-inline size_t FindPathAnchor(std::string_view s) {
-  for (size_t i = 0; i < s.size(); ++i) {
-    const char c = s[i];
-    if (c == '\\' && i + 1 < s.size() && s[i + 1] == '\\') {
+// Returns the first filesystem-path anchor. Redaction runs from that anchor to the end because paths may contain
+// spaces, including user names.
+inline size_t FindPathAnchor(std::string_view value) {
+  for (size_t i = 0; i < value.size(); ++i) {
+    const char c = value[i];
+    if (c == '\\' && i + 1 < value.size() && value[i + 1] == '\\') {
       return i;
     }
-    if (c == '~' && i + 1 < s.size() && (s[i + 1] == '/' || s[i + 1] == '\\')) {
+    if (c == '~' && i + 1 < value.size() && (value[i + 1] == '/' || value[i + 1] == '\\')) {
       return i;
     }
-    if (std::isalpha(static_cast<unsigned char>(c)) && i + 2 < s.size() && s[i + 1] == ':' &&
-        (s[i + 2] == '\\' || s[i + 2] == '/')) {
+    if (std::isalpha(static_cast<unsigned char>(c)) && i + 2 < value.size() && value[i + 1] == ':' &&
+        (value[i + 2] == '\\' || value[i + 2] == '/')) {
       return i;
     }
     if (c == '\\') {
       size_t start = i;
       while (start > 0) {
-        const unsigned char prev = static_cast<unsigned char>(s[start - 1]);
-        if (std::isspace(prev) || s[start - 1] == '"' || s[start - 1] == '\'') {
+        const unsigned char previous = static_cast<unsigned char>(value[start - 1]);
+        if (std::isspace(previous) || value[start - 1] == '"' || value[start - 1] == '\'') {
           break;
         }
         --start;
       }
 
       size_t separators = 0;
-      for (size_t j = i; j < s.size() && s[j] != '\r' && s[j] != '\n'; ++j) {
-        if (s[j] == '\\' && ++separators >= 2) {
+      for (size_t j = i; j < value.size() && value[j] != '\r' && value[j] != '\n'; ++j) {
+        if (value[j] == '\\' && ++separators >= 2) {
           return start;
         }
       }
     }
     if (c == '/') {
-      if (i == 0) {
-        return i;
-      }
-
-      const unsigned char prev_anchor = static_cast<unsigned char>(s[i - 1]);
-      if ((std::isspace(prev_anchor) || s[i - 1] == '"' || s[i - 1] == '\'') && i + 1 < s.size() &&
-          !std::isspace(static_cast<unsigned char>(s[i + 1]))) {
-        return i;
-      }
-
       size_t segments = 0;
-      bool segment_has_dot = false;
       size_t j = i;
-      while (j < s.size() && s[j] == '/') {
-        const size_t seg_start = ++j;
-        while (j < s.size() && s[j] != '/' && s[j] != '\r' && s[j] != '\n' && s[j] != ' ' &&
-               s[j] != '\t') {
-          segment_has_dot = segment_has_dot || s[j] == '.';
+      while (j < value.size() && value[j] == '/') {
+        const size_t segment_start = ++j;
+        while (j < value.size() && value[j] != '/' && value[j] != '\r' && value[j] != '\n' &&
+               value[j] != ' ' && value[j] != '\t') {
           ++j;
         }
-        if (j > seg_start) {
+        if (j > segment_start) {
           ++segments;
         } else {
           break;
         }
       }
-
-      if (segments >= 2 || (segments == 1 && segment_has_dot)) {
+      if (segments >= 2) {
         size_t start = i;
         while (start > 0) {
-          const unsigned char prev = static_cast<unsigned char>(s[start - 1]);
-          if (std::isspace(prev) || s[start - 1] == '"' || s[start - 1] == '\'') {
+          const unsigned char previous = static_cast<unsigned char>(value[start - 1]);
+          if (std::isspace(previous) || value[start - 1] == '"' || value[start - 1] == '\'') {
             break;
           }
           --start;
@@ -87,33 +77,33 @@ inline size_t FindPathAnchor(std::string_view s) {
   return std::string_view::npos;
 }
 
-inline void TruncateUtf8AtBoundary(std::string& s, size_t max_length) {
-  if (s.size() <= max_length) {
+inline void TruncateUtf8AtBoundary(std::string& value, size_t max_length) {
+  if (value.size() <= max_length) {
     return;
   }
 
   size_t end = max_length;
-  while (end > 0 && (static_cast<unsigned char>(s[end]) & 0xC0) == 0x80) {
+  while (end > 0 && (static_cast<unsigned char>(value[end]) & 0xC0) == 0x80) {
     --end;
   }
-  s.resize(end);
+  value.resize(end);
 }
 
 }  // namespace telemetry_detail
 
-inline std::string ScrubStringForTelemetry(std::string_view msg) {
-  const size_t anchor = telemetry_detail::FindPathAnchor(msg);
-  std::string out;
+inline std::string ScrubStringForTelemetry(std::string_view message) {
+  const size_t anchor = telemetry_detail::FindPathAnchor(message);
+  std::string result;
   if (anchor == std::string_view::npos) {
-    out.assign(msg);
+    result.assign(message);
   } else {
-    out.assign(msg.substr(0, anchor));
-    out += "[path]";
+    result.assign(message.substr(0, anchor));
+    result += "[path]";
   }
-  if (out.size() > kMaxTelemetryStringLength) {
-    telemetry_detail::TruncateUtf8AtBoundary(out, kMaxTelemetryStringLength);
+  if (result.size() > kMaxTelemetryStringLength) {
+    telemetry_detail::TruncateUtf8AtBoundary(result, kMaxTelemetryStringLength);
   }
-  return out;
+  return result;
 }
 
 }  // namespace fl

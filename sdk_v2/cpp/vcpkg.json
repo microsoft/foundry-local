@@ -23,6 +23,7 @@
     },
     "zlib",
     "nlohmann-json",
+    "z4kn4fein-semver",
     "spdlog"
   ],
   "overrides": [

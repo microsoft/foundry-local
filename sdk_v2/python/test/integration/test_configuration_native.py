@@ -61,8 +61,8 @@ class TestBuildNative:
         c = Configuration(
             app_name="BuildNativeTest",
             catalog_urls=[
-                ("https://example.invalid/catalog.json", None),
-                ("https://example.invalid/other.json", "filter=cpu"),
+                ("https://example.invalid/asset-gallery/v1.0/models", None),
+                ("https://other.invalid/asset-gallery/v1.0/models", "filter=cpu"),
             ],
         )
         with _native_config(c) as ptr:
@@ -72,6 +72,14 @@ class TestBuildNative:
         c = Configuration(
             app_name="BuildNativeTest",
             additional_settings={"K1": "v1", "K2": "v2"},
+        )
+        with _native_config(c) as ptr:
+            assert ptr is not None
+
+    def test_disable_nonessential_telemetry_accepted(self):
+        c = Configuration(
+            app_name="BuildNativeTest",
+            disable_nonessential_telemetry=True,
         )
         with _native_config(c) as ptr:
             assert ptr is not None

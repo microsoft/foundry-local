@@ -73,6 +73,11 @@ bool ContainsInOrder(std::string_view text, std::initializer_list<std::string_vi
 ModelCapabilities ResolveModelCapabilities(std::string_view model_type, Preprocessor& preprocessor,
                                            std::string_view reasoning_start,
                                            std::string_view reasoning_end) noexcept {
+#if !FOUNDRY_LOCAL_OGA_HAS_CHAT_TEMPLATE_KWARGS
+  (void)reasoning_start;
+  (void)reasoning_end;
+#endif
+
   ModelCapabilities capabilities;
   if (model_type == kQwen35TextModelType) {
     try {
@@ -87,7 +92,6 @@ ModelCapabilities ResolveModelCapabilities(std::string_view model_type, Preproce
     }
   }
 
-#if FOUNDRY_LOCAL_OGA_HAS_CHAT_TEMPLATE_KWARGS
   try {
     const auto reasoning_projection = preprocessor.ApplyChatTemplateWithOptions(
       kReasoningProbeMessages, /*tools_json=*/nullptr, /*template_kwargs_json=*/nullptr,
@@ -106,7 +110,6 @@ ModelCapabilities ResolveModelCapabilities(std::string_view model_type, Preproce
     capabilities.supports_preserve_thinking = false;
     capabilities.supports_reasoning_controls = false;
   }
-#endif
 
   return capabilities;
 }

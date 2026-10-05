@@ -17,7 +17,9 @@
 #include "logger.h"
 #include "model.h"
 #include "model_info.h"
+#include "service/handler_utils.h"
 #include "service/web_service.h"
+#include "utils/temp_path.h"
 
 #include <foundry_local/foundry_local_c.h>
 
@@ -26,8 +28,12 @@
 
 #include <chrono>
 #include <filesystem>
+#include <mutex>
 #include <optional>
+#include <sstream>
 #include <string>
+#include <thread>
+#include <tuple>
 #include <vector>
 
 #include <httplib.h>
@@ -38,6 +44,62 @@ using json = nlohmann::json;
 namespace {
 
 constexpr const char* kResponseStoreTestModelAlias = "response-store-test-model";
+
+TEST(HttpUserAgentTest, KeepsOnlyKnownProductAndNumericReleaseVersion) {
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/1.2.3"), "foundry-local-cpp/1.2.3");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-python/0.6"), "foundry-local-python/0.6");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-core/1"), "foundry-local-core/1");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-csharp/1.2"), "foundry-local-csharp/1.2");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-js/1.2"), "foundry-local-js/1.2");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-rust/1.2"), "foundry-local-rust/1.2");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-js/2.0.0-dev.0"), "foundry-local-js/2.0.0");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-python/2.0.0.dev0"), "foundry-local-python/2.0.0");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-csharp/2.0.0-rc1"), "foundry-local-csharp/2.0.0");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/0.5.0-dev.local.20260924"), "foundry-local-cpp/0.5.0");
+  EXPECT_EQ(SafeHttpUserAgent(""), "unknown-http-client");
+  EXPECT_EQ(SafeHttpUserAgent("telemetry-test-client"), "unknown-http-client");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/1.0 customer@example.com"), "unknown-http-client");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/1.0/secret"), "unknown-http-client");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/1.0-secret"), "unknown-http-client");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/1.0-dev.1234private"), "unknown-http-client");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/1..2"), "unknown-http-client");
+}
+
+class WebUsageTelemetry : public TelemetryLogger {
+ public:
+  WebUsageTelemetry() : TelemetryLogger("test", fl::test::NullLog()) {}
+
+  struct ActionCall {
+    Action action;
+    ActionStatus status;
+    InvocationContext context;
+    std::string model_id;
+  };
+  struct Snapshot {
+    std::vector<ActionCall> actions;
+    std::vector<ModelUsageInfo> models;
+  };
+
+  void RecordAction(Action action, ActionStatus status, const InvocationContext& context,
+                    int64_t /*duration_ms*/, const std::string& model_id) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    events_.actions.push_back({action, status, context, model_id});
+  }
+
+  void RecordModelUsage(const ModelUsageInfo& usage) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    events_.models.push_back(usage);
+  }
+
+  Snapshot Events() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return events_;
+  }
+
+ private:
+  mutable std::mutex mutex_;
+  Snapshot events_;
+};
 
 std::string TestHttpGet(const std::string& url, const std::string& user_agent = "") {
   http::HttpRequestOptions options;
@@ -987,6 +1049,154 @@ TEST_F(WebServiceTest, LocalStoredResponsesRemainIsolatedFromPublicRoutes) {
   EXPECT_EQ(unload_result["status"], "unloaded") << unload_result.dump(2);
 }
 
+TEST_F(WebServiceTest, ClosingResponsesStreamCancelsInferenceAndPreservesConversation) {
+  const auto load_result = Get(std::string("/models/load/") + kResponseStoreTestModelAlias);
+  ASSERT_EQ(load_result["status"], "loaded") << load_result.dump(2);
+
+  const auto root = PostJson(base_url_ + "/v1/responses",
+                             {{"model", std::string(kResponseStoreTestModelAlias) + ":1"},
+                              {"input", "Start a conversation"},
+                              {"store", true},
+                              {"max_output_tokens", 4}});
+  ASSERT_EQ(root.status, 200) << root.body.dump(2);
+  const auto root_id = root.body.at("id").get<std::string>();
+
+  httplib::Client client(base_url_);
+  client.set_read_timeout(10, 0);
+  bool received_delta = false;
+  const json streaming_request = {
+      {"model", std::string(kResponseStoreTestModelAlias) + ":1"},
+      {"previous_response_id", root_id},
+      {"input", "Continue the conversation"},
+      {"store", true},
+      {"max_output_tokens", 512},
+      {"stream", true},
+  };
+
+  std::string created_response_id;
+  std::string events;
+  const auto result = client.Post(
+      "/v1/responses", httplib::Headers{}, streaming_request.dump(), "application/json",
+      [&](const char* data, size_t length) {
+        events.append(data, length);
+        const auto event_pos = events.find("event: response.created\ndata: ");
+        if (event_pos == std::string::npos) {
+          return true;
+        }
+
+        const auto json_start = event_pos + std::string("event: response.created\ndata: ").size();
+        const auto json_end = events.find('\n', json_start);
+        if (json_end == std::string::npos) {
+          return true;
+        }
+
+        created_response_id = json::parse(events.substr(json_start, json_end - json_start)).at("response").at("id");
+        if (events.find("event: response.output_text.delta\ndata: ") == std::string::npos) {
+          return true;
+        }
+
+        received_delta = true;
+        return false;  // close the socket before the generation completes
+      });
+
+  EXPECT_FALSE(result);
+  ASSERT_TRUE(received_delta) << "The SSE connection closed before a generated event";
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (session_manager_->ActiveCount() > 0 && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+
+  EXPECT_EQ(session_manager_->ActiveCount(), 0u) << "Disconnected inference did not stop";
+  ASSERT_FALSE(created_response_id.empty());
+  EXPECT_EQ(GetJson(base_url_ + "/v1/responses/" + created_response_id).status, 404)
+      << "Canceled inference must not publish a completed response";
+
+  const auto recovered = PostJson(base_url_ + "/v1/responses",
+                                  {{"model", std::string(kResponseStoreTestModelAlias) + ":1"},
+                                   {"previous_response_id", root_id},
+                                   {"input", "A fresh continuation"},
+                                   {"max_output_tokens", 4}});
+  EXPECT_EQ(recovered.status, 200) << recovered.body.dump(2);
+  EXPECT_EQ(recovered.body.value("status", ""), "incomplete");
+  EXPECT_EQ(recovered.body["incomplete_details"]["reason"], "max_output_tokens");
+
+  const json followup_stream = {
+      {"model", std::string(kResponseStoreTestModelAlias) + ":1"},
+      {"input", "Another conversation"},
+      {"max_output_tokens", 4},
+      {"stream", true},
+  };
+  const auto followup = client.Post("/v1/responses", followup_stream.dump(), "application/json");
+  ASSERT_TRUE(followup) << httplib::to_string(followup.error());
+  EXPECT_EQ(followup->status, 200);
+  EXPECT_NE(followup->body.find("event: response.incomplete"), std::string::npos);
+  EXPECT_NE(followup->body.find("data: [DONE]"), std::string::npos);
+
+  const auto deleted = json::parse(TestHttpDelete(base_url_ + "/v1/responses/" + root_id));
+  EXPECT_TRUE(deleted["deleted"].get<bool>()) << deleted.dump(2);
+
+  const auto unload_result = Get(std::string("/models/unload/") + kResponseStoreTestModelAlias);
+  EXPECT_EQ(unload_result["status"], "unloaded") << unload_result.dump(2);
+}
+
+TEST_F(WebServiceTest, ResponsesLengthFinishIsIncompleteForStreamingAndNonStreaming) {
+  const auto load_result = Get(std::string("/catalogs/local/models/load/") + kResponseStoreTestModelAlias);
+  ASSERT_EQ(load_result["status"], "loaded") << load_result.dump(2);
+
+  const json request = {
+      {"model", std::string(kResponseStoreTestModelAlias) + ":1"},
+      {"input", "Write a long answer."},
+      {"max_output_tokens", 1},
+  };
+
+  const auto non_streaming = PostJson(base_url_ + "/catalogs/local/v1/responses", request);
+  ASSERT_EQ(non_streaming.status, 200) << non_streaming.body.dump(2);
+  EXPECT_EQ(non_streaming.body["status"], "incomplete");
+  EXPECT_TRUE(non_streaming.body["completed_at"].is_null());
+  EXPECT_EQ(non_streaming.body["incomplete_details"]["reason"], "max_output_tokens");
+  ASSERT_FALSE(non_streaming.body["output"].empty());
+  EXPECT_EQ(non_streaming.body["output"].back()["status"], "incomplete");
+
+  auto streaming_request = request;
+  streaming_request["stream"] = true;
+  httplib::Client client(base_url_);
+  const auto streaming =
+      client.Post("/catalogs/local/v1/responses", streaming_request.dump(), "application/json");
+  ASSERT_TRUE(streaming) << httplib::to_string(streaming.error());
+  ASSERT_EQ(streaming->status, 200) << streaming->body;
+  EXPECT_NE(streaming->body.find("event: response.incomplete"), std::string::npos);
+  EXPECT_EQ(streaming->body.find("event: response.completed"), std::string::npos);
+
+  json terminal_response;
+  json final_output_item;
+  std::istringstream events(streaming->body);
+  for (std::string line; std::getline(events, line);) {
+    if (!line.starts_with("data: ") || line == "data: [DONE]") {
+      continue;
+    }
+
+    const auto event = json::parse(line.substr(6));
+    if (event["type"] == "response.output_item.done") {
+      final_output_item = event["item"];
+    } else if (event["type"] == "response.incomplete") {
+      terminal_response = event["response"];
+    }
+  }
+
+  ASSERT_FALSE(final_output_item.is_null());
+  EXPECT_EQ(final_output_item["status"], "incomplete");
+  ASSERT_FALSE(terminal_response.is_null());
+  EXPECT_EQ(terminal_response["status"], "incomplete");
+  EXPECT_TRUE(terminal_response["completed_at"].is_null());
+  EXPECT_EQ(terminal_response["incomplete_details"]["reason"], "max_output_tokens");
+  ASSERT_FALSE(terminal_response["output"].empty());
+  EXPECT_EQ(terminal_response["output"].back()["status"], "incomplete");
+
+  const auto unload_result = Get(std::string("/catalogs/local/models/unload/") + kResponseStoreTestModelAlias);
+  EXPECT_EQ(unload_result["status"], "unloaded") << unload_result.dump(2);
+}
+
 TEST_F(WebServiceTest, StreamingChatCompletionsRejectsModifiedStockLarkGrammarBeforeModelResolution) {
   json body = {
       {"model", "alpha-model"},  // in the catalog, never loadable in this fixture
@@ -1520,5 +1730,189 @@ TEST(WebServiceShutdownTest, StopReturnsQuicklyWithKeepAliveClient) {
       << "WebService::Stop() took " << stop_seconds
       << "s with a keep-alive client connected. Expected <30s; pre-fix this was ~120s on Windows.";
 }
+
+namespace {
+
+struct RouteTelemetryCase {
+  const char* method;
+  const char* path;
+  const char* body;
+  Action action;
+  int status;
+};
+
+class WebServiceTelemetryTest : public ::testing::TestWithParam<RouteTelemetryCase> {};
+
+}  // namespace
+
+TEST_P(WebServiceTelemetryTest, ClientErrorRetainsHttpResponseAndRecordsDirectAttribution) {
+  test::MockCatalog catalog;
+  test::CpuOnlyEpDetector ep_detector;
+  ModelLoadManager load_manager(ep_detector, fl::test::NullLog());
+  SessionManager sessions(fl::test::NullLog());
+  WebUsageTelemetry telemetry;
+  auto cache = test::TempPath::CreateTempDir("fl_route_telemetry_");
+  WebService service(catalog, catalog, fl::test::NullLog(), cache.string(), load_manager, sessions, telemetry,
+                     []() {});
+  const auto urls = service.Start({"http://127.0.0.1:0"});
+  ASSERT_EQ(urls.size(), 1u);
+  httplib::Client client(urls[0]);
+  client.set_read_timeout(10, 0);
+  const auto& scenario = GetParam();
+  const httplib::Headers headers{{"User-Agent", "telemetry-test-client"}};
+  const auto response = std::string(scenario.method) == "POST"
+                            ? client.Post(scenario.path, headers, scenario.body, "application/json")
+                        : std::string(scenario.method) == "DELETE" ? client.Delete(scenario.path, headers)
+                                                                   : client.Get(scenario.path, headers);
+  ASSERT_TRUE(response) << httplib::to_string(response.error());
+  EXPECT_EQ(response->status, scenario.status);
+  const auto body = json::parse(response->body);
+  EXPECT_EQ(body.at("error").at("type"), "invalid_request_error");
+  service.Stop();
+
+  const auto events = telemetry.Events();
+  ASSERT_EQ(events.actions.size(), 1u);
+  const auto& action = events.actions[0];
+  EXPECT_EQ(action.action, scenario.action);
+  EXPECT_EQ(action.status, ActionStatus::kClientError);
+  EXPECT_EQ(action.context.user_agent, "unknown-http-client");
+  EXPECT_EQ(action.context.correlation_id.size(), 36u);
+  EXPECT_FALSE(action.context.indirect);
+  EXPECT_TRUE(events.models.empty());
+}
+
+TEST(WebServiceTelemetryTest, KnownModelManagementOutcomesRecordResolvedModelId) {
+  test::FakeServiceBindings bindings;
+  test::MockCatalog catalog;
+  catalog.AddModel(Model::FromModelInfo(test::MakeTestModelInfo("alpha-model"), "", bindings.download_manager,
+                                        bindings.model_load_manager));
+  SessionManager sessions(bindings.logger);
+  WebUsageTelemetry telemetry;
+  auto cache = test::TempPath::CreateTempDir("fl_model_telemetry_");
+  WebService service(catalog, catalog, fl::test::NullLog(), cache.string(), bindings.model_load_manager, sessions,
+                     telemetry, []() {});
+  const auto urls = service.Start({"http://127.0.0.1:0"});
+  ASSERT_EQ(urls.size(), 1u);
+  httplib::Client client(urls[0]);
+  client.set_read_timeout(10, 0);
+
+  const auto load_response = client.Get("/models/load/alpha-model");
+  ASSERT_TRUE(load_response);
+  EXPECT_EQ(load_response->status, 400);
+  const auto unload_response = client.Get("/models/unload/alpha-model");
+  ASSERT_TRUE(unload_response);
+  EXPECT_EQ(unload_response->status, 200);
+  service.Stop();
+
+  const auto events = telemetry.Events();
+  ASSERT_EQ(events.actions.size(), 2u);
+  EXPECT_EQ(events.actions[0].action, Action::kModelLoad);
+  EXPECT_EQ(events.actions[0].status, ActionStatus::kClientError);
+  EXPECT_EQ(events.actions[0].model_id, "alpha-model:1");
+  EXPECT_EQ(events.actions[1].action, Action::kModelUnload);
+  EXPECT_EQ(events.actions[1].status, ActionStatus::kSkipped);
+  EXPECT_EQ(events.actions[1].model_id, "alpha-model:1");
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    RejectedRequests, WebServiceTelemetryTest,
+    ::testing::Values(
+        RouteTelemetryCase{"POST", "/v1/chat/completions", "", Action::kOpenAIChatCompletions, 400},
+        RouteTelemetryCase{"POST", "/v1/chat/completions", "{", Action::kOpenAIChatCompletions, 400},
+        RouteTelemetryCase{"POST", "/v1/audio/transcriptions", "", Action::kOpenAIAudioTranscribe, 400},
+        RouteTelemetryCase{"POST", "/v1/embeddings", "", Action::kOpenAIEmbeddings, 400},
+        RouteTelemetryCase{"POST", "/v1/responses", "", Action::kOpenAIResponsesCreate, 400},
+        RouteTelemetryCase{"GET", "/v1/responses/missing", "", Action::kOpenAIResponsesGet, 404},
+        RouteTelemetryCase{"GET", "/v1/responses/missing/input_items", "", Action::kOpenAIResponsesGetInputItems, 404},
+        RouteTelemetryCase{"DELETE", "/v1/responses/missing", "", Action::kOpenAIResponsesDelete, 404},
+        RouteTelemetryCase{"GET", "/v1/models/missing", "", Action::kOpenAIModelRetrieve, 404}));
+
+TEST(WebServiceTelemetryStatusTest, HttpStatusMapsWithoutMaskingFailures) {
+  EXPECT_EQ(ResponseToActionStatus(nullptr), ActionStatus::kFailure);
+  EXPECT_EQ(ResponseToActionStatus(JsonResponse(Status::CODE_200, json::object())), ActionStatus::kSuccess);
+  EXPECT_EQ(ResponseToActionStatus(JsonResponse(Status::CODE_400, json::object())), ActionStatus::kClientError);
+  EXPECT_EQ(ResponseToActionStatus(JsonResponse(Status::CODE_404, json::object())), ActionStatus::kClientError);
+  EXPECT_EQ(ResponseToActionStatus(JsonResponse(Status::CODE_408, json::object())), ActionStatus::kTimeout);
+  EXPECT_EQ(ResponseToActionStatus(JsonResponse(Status::CODE_504, json::object())), ActionStatus::kTimeout);
+  EXPECT_EQ(ResponseToActionStatus(JsonResponse(Status::CODE_500, json::object())), ActionStatus::kFailure);
+}
+
+class WebServiceTelemetryInferenceTest : public ::testing::TestWithParam<std::tuple<bool, bool>> {};
+
+TEST_P(WebServiceTelemetryInferenceTest, RouteAndNestedInferenceShareOneOperationContext) {
+  test::CpuOnlyEpDetector ep_detector;
+  ModelLoadManager load_manager(ep_detector, fl::test::NullLog());
+  SessionManager sessions(fl::test::NullLog());
+  WebUsageTelemetry telemetry;
+  test::FakeServiceBindings bindings;
+  test::MockCatalog catalog;
+  const auto model_path = test::GetTestModelPath(test::kTestChatModelAlias);
+  auto loaded = load_manager.LoadModel(model_path.string(), "telemetry-chat");
+  ASSERT_EQ(loaded.status, ModelLoadManager::LoadStatus::kSuccess);
+
+  ModelInfo model_info;
+  model_info.model_id = "telemetry-chat";
+  model_info.name = "telemetry-chat";
+  model_info.task = "chat-completion";
+  catalog.AddModel(Model::FromModelInfo(std::move(model_info), model_path.string(),
+                                        bindings.download_manager, load_manager));
+  auto cache = test::TempPath::CreateTempDir("fl_inference_telemetry_");
+  WebService service(catalog, catalog, fl::test::NullLog(), cache.string(), load_manager, sessions, telemetry,
+                     []() {});
+  const auto urls = service.Start({"http://127.0.0.1:0"});
+  ASSERT_EQ(urls.size(), 1u);
+  httplib::Client client(urls[0]);
+  client.set_read_timeout(60, 0);
+  const auto [streaming, responses] = GetParam();
+  const auto route_action = responses ? Action::kOpenAIResponsesCreate : Action::kOpenAIChatCompletions;
+  json request = {
+      {"model", "telemetry-chat"},
+      {"stream", streaming},
+  };
+  if (responses) {
+    request["input"] = "Say hello.";
+    request["max_output_tokens"] = 2;
+  } else {
+    request["messages"] = {{{"role", "user"}, {"content", "Say hello."}}};
+    request["max_tokens"] = 2;
+  }
+
+  const auto response = client.Post(responses ? "/v1/responses" : "/v1/chat/completions",
+                                    {{"User-Agent", "telemetry-test-client"}},
+                                    request.dump(), "application/json");
+  ASSERT_TRUE(response) << httplib::to_string(response.error());
+  EXPECT_EQ(response->status, 200) << response->body;
+  if (streaming) {
+    EXPECT_NE(response->body.find("data: [DONE]"), std::string::npos);
+  }
+
+  service.Stop();  // Joins the stream before inspecting its terminal route action.
+  const auto events = telemetry.Events();
+  ASSERT_EQ(events.actions.size(), 3u);
+  ASSERT_EQ(events.models.size(), 1u);
+  const auto& usage = events.models[0];
+  EXPECT_EQ(usage.model_id, "telemetry-chat");
+  EXPECT_EQ(usage.execution_provider, "CPUExecutionProvider");
+  EXPECT_EQ(usage.user_agent, "unknown-http-client");
+  EXPECT_EQ(usage.num_messages, 1u);
+  EXPECT_EQ(usage.stream, streaming);
+  EXPECT_TRUE(usage.indirect);
+  EXPECT_EQ(usage.correlation_id.size(), 36u);
+  std::vector<Action> action_ids;
+  for (const auto& action : events.actions) {
+    action_ids.push_back(action.action);
+    EXPECT_EQ(action.status, ActionStatus::kSuccess);
+    EXPECT_EQ(action.model_id, "telemetry-chat");
+    EXPECT_EQ(action.context.correlation_id, usage.correlation_id);
+    EXPECT_EQ(action.context.user_agent, "unknown-http-client");
+    EXPECT_EQ(action.context.indirect, action.action != route_action);
+  }
+
+  EXPECT_EQ(action_ids, (std::vector<Action>{Action::kSessionCreate, Action::kSessionProcessRequest,
+                                             route_action}));
+}
+
+INSTANTIATE_TEST_SUITE_P(StreamingAndNonStreaming, WebServiceTelemetryInferenceTest,
+                         ::testing::Combine(::testing::Bool(), ::testing::Bool()));
 
 #endif  // FOUNDRY_LOCAL_HAS_WEB_SERVICE

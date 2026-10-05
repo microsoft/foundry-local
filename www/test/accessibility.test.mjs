@@ -82,6 +82,106 @@ test('model task and capability filters have associated labels', () => {
 	assert.match(modelFilters, /<Button\b[^>]*\bid="capability"[^>]*>/);
 });
 
+test('home feature cards are keyboard-focusable named groups', () => {
+	const features = readSource('../src/lib/components/home/features.svelte');
+
+	const featureIds = [
+		'sdk-lifecycle',
+		'hardware',
+		'offline-runtime',
+		'native-sdks',
+		'native-rest',
+		'data-privacy'
+	];
+
+	for (const featureId of featureIds) {
+		assert.match(
+			features,
+			new RegExp(
+				`<div\\s+tabindex="0"\\s+role="group"\\s+aria-labelledby="${featureId}-title"\\s+aria-describedby="${featureId}-description"`
+			)
+		);
+	}
+	assert.match(features, /focus-visible:ring-2/);
+});
+
+test('model dropdown triggers are labelled by their visible labels and values', () => {
+	const modelFilters = readSource('../src/routes/models/components/ModelFilters.svelte');
+
+	assert.match(modelFilters, /<Label id="sort-by">Sort By<\/Label>/);
+	assert.match(modelFilters, /<Button\b[^>]*aria-labelledby="sort-by sort-by-value"[^>]*>/);
+	assert.match(modelFilters, /<span id="sort-by-value">/);
+	assert.match(modelFilters, /<Label id="model-family">Model Family<\/Label>/);
+	assert.match(modelFilters, /<Button\b[^>]*aria-labelledby="model-family model-family-value"[^>]*>/);
+	assert.match(modelFilters, /<span id="model-family-value">/);
+	assert.match(modelFilters, /<Label id="acceleration">Acceleration<\/Label>/);
+	assert.match(modelFilters, /<Button\b[^>]*aria-labelledby="acceleration acceleration-value"[^>]*>/);
+	assert.match(modelFilters, /<span id="acceleration-value">/);
+});
+
+test('download menu copy actions participate in keyboard menu navigation', () => {
+	const downloadDropdown = readSource('../src/lib/components/download-dropdown.svelte');
+
+	const copyItem = getOpeningTag(downloadDropdown, 'DropdownMenu.Item');
+	assert.ok(
+		copyItem.source.includes(
+			'onclick={() => copyToClipboard(item.crossPlatformCommand, item.crossPlatformId)}'
+		)
+	);
+	assert.ok(
+		copyItem.source.includes('aria-label={`Copy ${item.label} installation command`}')
+	);
+	assert.doesNotMatch(
+		downloadDropdown,
+		/<button[\s\S]*?onclick=\{\(\) => copyToClipboard\(item\.crossPlatformCommand, item\.crossPlatformId\)\}/
+	);
+});
+
+test('model filter results are announced through a live status region', () => {
+	const modelFilters = readSource('../src/routes/models/components/ModelFilters.svelte');
+
+	assert.match(
+		modelFilters,
+		/<div role="status"[^>]*>[\s\S]*?\{#if isFiltering\}[\s\S]*?\{filteredCount\} model/
+	);
+});
+
+test('sort-order control has a purpose-based accessible name', () => {
+	const modelFilters = readSource('../src/routes/models/components/ModelFilters.svelte');
+
+	assert.match(
+		modelFilters,
+		/aria-label=\{`Sort order: \$\{sortOrder === 'asc' \? 'ascending' : 'descending'\}`\}/
+	);
+});
+
+test('execution device filters have a shared native group label', () => {
+	const modelFilters = readSource('../src/routes/models/components/ModelFilters.svelte');
+
+	assert.match(
+		modelFilters,
+		/<fieldset>\s*<legend[^>]*>Execution Device<\/legend>[\s\S]*?\{#each availableDevices as device\}/
+	);
+});
+
+test('device and SDK selectors expose their pressed state', () => {
+	const modelFilters = readSource('../src/routes/models/components/ModelFilters.svelte');
+	const installCommand = readSource('../src/lib/components/install-command.svelte');
+
+	assert.match(modelFilters, /aria-pressed=\{selectedDevices\.includes\(device\)\}/);
+	assert.match(installCommand, /aria-pressed=\{activeTab === tab\.key\}/);
+});
+
+test('ModelDetailsModal describes Copy ID buttons with visible model IDs', () => {
+	const modelDetailsModal = readSource('../src/routes/models/components/ModelDetailsModal.svelte');
+
+	assert.match(modelDetailsModal, /id=\{`model-id-\$\{genericModelName\}`\}/);
+	assert.match(modelDetailsModal, /id=\{`model-id-\$\{variant\.name\}`\}/);
+	assert.match(modelDetailsModal, /aria-describedby=\{`model-id-\$\{genericModelName\}`\}/);
+	assert.match(modelDetailsModal, /aria-describedby=\{`model-id-\$\{variant\.name\}`\}/);
+	assert.doesNotMatch(modelDetailsModal, /aria-labelledby=\{`model-id-/);
+});
+
 test('model-card copy buttons describe their Foundry run commands', () => {
 	const modelCard = readSource('../src/routes/models/components/ModelCard.svelte');
 

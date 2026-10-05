@@ -148,8 +148,7 @@
 					</div>
 
 					<div class="pl-6">
-						<button
-							type="button"
+						<DropdownMenu.Item
 							class="hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left transition-colors outline-none"
 							onclick={() => copyToClipboard(item.crossPlatformCommand, item.crossPlatformId)}
 							aria-label={`Copy ${item.label} installation command`}
@@ -163,7 +162,7 @@
 							{:else}
 								<Copy class="size-4 shrink-0 opacity-50" aria-hidden="true" />
 							{/if}
-						</button>
+						</DropdownMenu.Item>
 					</div>
 				</div>
 			{/each}

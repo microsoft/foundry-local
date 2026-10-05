@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 from foundry_local_sdk.exception import FoundryLocalException
 from foundry_local_sdk.logging_helper import LogLevel
+from foundry_local_sdk.version import __version__
 
 # Maps Python LogLevel → native flLogLevel integer values (from foundry_local_c.h)
 _LOG_LEVEL_MAP: dict[LogLevel, int] = {
@@ -45,6 +46,11 @@ class Configuration:
         additional_settings: Additional settings that Foundry Local Core can consume.
         catalog_urls: Catalog URLs with optional per-catalog filter overrides.
             Each entry is a ``(url, filter)`` tuple where filter may be ``None``.
+            Prefix catalog-v2 deployment-option values with
+            ``deploymentOptions=``. Unqualified values retain the legacy
+            ``foundryLocal`` tag semantics.
+            URL paths must end in ``/asset-gallery/v1.0/models``; legacy
+            ``/ux/v1.0`` endpoints are unsupported.
             Defaults to the Azure Foundry Local Catalog when empty or ``None``.
         catalog_region: Region hint forwarded to the catalog service
         disable_nonessential_telemetry: When True, disable non-essential telemetry. Foundry
@@ -144,6 +150,7 @@ class Configuration:
         config_values: dict[str, str] = {
             "AppName": self.app_name,
             "LogLevel": str(self.log_level),
+            "UserAgent": f"foundry-local-python/{__version__}",
         }
 
         if self.app_data_dir:
@@ -242,7 +249,7 @@ class Configuration:
                 )
 
         # Additional key/value settings
-        additional_settings: dict[str, str] = {}
+        additional_settings: dict[str, str] = {"UserAgent": f"foundry-local-python/{__version__}"}
         if self.additional_settings:
             additional_settings.update(self.additional_settings)
         if self.disable_nonessential_telemetry:

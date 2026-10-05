@@ -49,11 +49,18 @@ void SetDefaultUserAgent(std::string user_agent) {
 }
 
 std::string GenerateGuidV4() {
-  // This is a correlation / session id, not a cryptographic identifier; use
-  // random_device when available and a process-local fallback when it is not.
-  std::mt19937_64 gen{MakeNonThrowingSeed()};
-  uint64_t hi = gen();
-  uint64_t lo = gen();
+  uint64_t hi;
+  uint64_t lo;
+  try {
+    std::random_device rd;
+    hi = (static_cast<uint64_t>(rd()) << 32) | rd();
+    lo = (static_cast<uint64_t>(rd()) << 32) | rd();
+  } catch (...) {
+    // Telemetry identifiers must not make SDK initialization fail on platforms without random_device.
+    std::mt19937_64 fallback{MakeNonThrowingSeed()};
+    hi = fallback();
+    lo = fallback();
+  }
 
   // Set version (4) and variant (10xx) bits.
   hi = (hi & 0xFFFFFFFFFFFF0FFFULL) | 0x0000000000004000ULL;

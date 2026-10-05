@@ -27,6 +27,7 @@ namespace fl {
 
 class GenAIModelInstance;
 class ChatGenerator;
+struct PreparedChatRequest;
 enum class BackendTerminationCause;
 
 using TextChatGeneratorFactory =
@@ -202,14 +203,7 @@ class ChatSession : public Session {
   /// Process a request: extracts items and parameters from the generic request, generates a response, and on
   /// success commits the turn to the transcript.
   void ProcessRequestImpl(const Request& request, Response& response) override;
-
-  /// Build tool calling context from merged session/request options and a snapshot of the session's tool definitions.
-  ///
-  /// The snapshot is supplied by the caller rather than read here so that one turn resolves its replayed calls, its
-  /// prompt, and its produced calls against the same tool set.
-  ToolCallContext BuildToolCallContext(const Request& request,
-                                       const KeyValuePairs& options,
-                                       const std::vector<ToolDefinition>& definitions) const;
+  std::unique_ptr<RequestPreflightOperation> CreateRequestPreflightImpl(Request request) const override;
 
   /// Build final response items from the typed segments and tool calls produced during generation.
   void ProcessGeneratedOutput(std::vector<GeneratedOutputEvent> events,
@@ -222,14 +216,16 @@ class ChatSession : public Session {
                               int total_tokens,
                               int reasoning_tokens,
                               int cached_prompt_tokens,
-                              std::optional<flFinishReason> backend_finish_reason);
+                              std::optional<flFinishReason> backend_finish_reason,
+                              std::optional<BackendTerminationCause> backend_termination);
 
   /// Process a request whose first item is a TextItem tagged OPENAI_JSON containing an OpenAI chat completions
   /// request. Parses the JSON, converts to internal items, runs generation, and produces an OPENAI_JSON-tagged
   /// TextItem response with the OpenAI ChatCompletionResponse.
   /// Does not use or update the transcript or the cached generator.
-  void ProcessChatCompletionsJson(const std::string& request_json, const Request& original_request,
-                                  Response& response);
+  void ProcessChatCompletionsJson(PreparedChatRequest& prepared, const Request& original_request, Response& response);
+
+  std::string ExecutionProvider() const override;
 
   /// Drop the cached generator and its tool context. Called whenever the generator's KV cache can no longer be
   /// trusted to match the committed transcript — the next turn then rebuilds from full committed history.

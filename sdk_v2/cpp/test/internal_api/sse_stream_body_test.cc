@@ -1,16 +1,21 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 //
-// Tests for SseStreamBody in handler_utils.h — Push, Finish, read, declareHeaders.
+// Tests for SSE stream bodies and worker lifetime.
 //
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
 
 #include "service/handler_utils.h"
+#include "service/web_service.h"
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstring>
+#include <future>
+#include <memory>
 #include <string>
 #include <thread>
 #include <unordered_set>
@@ -140,6 +145,146 @@ TEST(SseStreamBodyTest, GetKnownData_ReturnsNullptr) {
   EXPECT_EQ(body.getKnownData(), nullptr);
 }
 
+TEST(SseStreamBodyTest, ClosingBeforeEofCancelsRunningRequest) {
+  auto request = std::make_shared<Request>();
+  ASSERT_TRUE(request->TryBegin());
+  auto body = std::make_unique<SseStreamBody>();
+  auto stream = body->Stream();
+  stream->BindRequest(request);
+
+  body.reset();
+
+  EXPECT_TRUE(stream->IsDisconnected());
+  EXPECT_TRUE(request->IsCancellationRequested());
+  stream->Push("data: discarded\n\n");
+  stream->Finish();
+}
+
+TEST(SseStreamBodyTest, ClosingBeforeRequestStartsPreventsProducerFromStarting) {
+  auto request = std::make_shared<Request>();
+  auto body = std::make_unique<SseStreamBody>();
+  auto stream = body->Stream();
+  stream->BindRequest(request);
+
+  body.reset();
+
+  EXPECT_TRUE(stream->IsDisconnected());
+  ASSERT_TRUE(request->TryBegin());
+  EXPECT_TRUE(request->IsCancellationRequested());
+}
+
+TEST(SseStreamBodyTest, NormalEofDoesNotCancelRunningRequest) {
+  auto request = std::make_shared<Request>();
+  ASSERT_TRUE(request->TryBegin());
+  auto body = std::make_unique<SseStreamBody>();
+  body->Stream()->BindRequest(request);
+  body->Push("data: [DONE]\n\n");
+  body->Finish();
+
+  char buffer[64];
+  oatpp::async::Action action;
+  EXPECT_GT(body->read(buffer, sizeof(buffer), action), 0);
+  EXPECT_EQ(body->read(buffer, sizeof(buffer), action), 0);
+  body.reset();
+
+  EXPECT_FALSE(request->IsCancellationRequested());
+  EXPECT_TRUE(request->TryComplete());
+  request->PublishCompletion();
+  EXPECT_TRUE(request->IsCompleted());
+}
+
+TEST(SseStreamBodyTest, ClosingAfterInferenceCompletedLeavesRequestReusable) {
+  auto request = std::make_shared<Request>();
+  ASSERT_TRUE(request->TryBegin());
+  ASSERT_TRUE(request->TryComplete());
+  request->PublishCompletion();
+  auto body = std::make_unique<SseStreamBody>();
+  body->Stream()->BindRequest(request);
+
+  body.reset();
+
+  EXPECT_FALSE(request->IsCancellationRequested());
+  ASSERT_TRUE(request->TryBegin());
+  EXPECT_FALSE(request->IsCancellationRequested());
+}
+
+TEST(SseStreamBodyTest, IdleReadSendsKeepAliveBeforeInferenceProducesData) {
+  SseStreamBody body;
+  char buffer[64];
+  oatpp::async::Action action;
+  auto start = std::chrono::steady_clock::now();
+
+  const auto bytes = body.read(buffer, sizeof(buffer), action);
+
+  EXPECT_EQ(std::string(buffer, bytes), ": keep-alive\n\n");
+  EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(2));
+  body.Finish();
+}
+
+TEST(SseStreamBodyTest, UndrainedQueueCancelsRequestAndEmitsOneError) {
+  auto request = std::make_shared<Request>();
+  ASSERT_TRUE(request->TryBegin());
+  SseStreamBody body;
+  body.Stream()->BindRequest(request);
+
+  const std::string chunk(4096, 'x');
+  for (size_t i = 0; i <= SseStreamState::kMaxBufferedBytes / chunk.size(); ++i) {
+    body.Push(chunk);
+  }
+
+  EXPECT_TRUE(body.Stream()->IsDisconnected());
+  EXPECT_TRUE(request->IsCancellationRequested());
+  body.Push("data: should not appear\n\n");
+  body.Finish();
+
+  char buffer[256] = {};
+  oatpp::async::Action action;
+  const auto bytes = body.read(buffer, sizeof(buffer), action);
+  ASSERT_GT(bytes, 0);
+  const std::string terminal(buffer, bytes);
+  EXPECT_NE(terminal.find("event: error"), std::string::npos);
+  EXPECT_NE(terminal.find("SSE stream buffer limit exceeded"), std::string::npos);
+  EXPECT_EQ(body.read(buffer, sizeof(buffer), action), 0);
+}
+
+TEST(SseStreamBodyTest, PartialReadsFreeQueueCapacity) {
+  SseStreamBody body;
+  body.Push(std::string(SseStreamState::kMaxBufferedBytes, 'x'));
+  EXPECT_FALSE(body.Stream()->IsDisconnected());
+
+  char buffer[64];
+  oatpp::async::Action action;
+  EXPECT_EQ(body.read(buffer, sizeof(buffer), action), sizeof(buffer));
+  body.Push(std::string(sizeof(buffer), 'y'));
+  EXPECT_FALSE(body.Stream()->IsDisconnected());
+  body.Finish();
+}
+
+TEST(SseStreamBodyTest, PublicationDecisionIsAtomicWithDisconnect) {
+  SseStreamBody body;
+  auto stream = body.Stream();
+  std::promise<void> publishing;
+  std::promise<void> release;
+  auto released = release.get_future().share();
+  auto decision = std::async(std::launch::async, [&] {
+    return stream->RunIfConnected([&] {
+      publishing.set_value();
+      released.wait();
+    });
+  });
+  EXPECT_EQ(publishing.get_future().wait_for(std::chrono::seconds(5)), std::future_status::ready);
+
+  auto closing = std::async(std::launch::async, [&] { stream->BodyClosed(); });
+  EXPECT_EQ(closing.wait_for(std::chrono::milliseconds(50)), std::future_status::timeout);
+  release.set_value();
+  EXPECT_TRUE(decision.get());
+  closing.get();
+
+  bool published = false;
+  EXPECT_FALSE(stream->RunIfConnected([&] { published = true; }));
+  EXPECT_FALSE(published);
+}
+
 // ========================================================================
 // SseStreamBody — threaded Push + read
 // ========================================================================
@@ -178,6 +323,58 @@ TEST(SseStreamBodyTest, ConcurrentPushAndRead) {
     EXPECT_NE(total_read.find(expected), std::string::npos)
         << "Missing chunk " << i;
   }
+}
+
+TEST(StreamingThreadTrackerTest, QuickWorkersDoNotAccumulate) {
+  StreamingThreadTracker tracker;
+  std::atomic<int> completed{0};
+  constexpr int kWorkerCount = 100;
+  for (int i = 0; i < kWorkerCount; ++i) {
+    tracker.Start([&completed] { completed.fetch_add(1, std::memory_order_release); });
+  }
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while ((completed.load(std::memory_order_acquire) != kWorkerCount || tracker.TrackedCount() != 0) &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+
+  EXPECT_EQ(completed.load(std::memory_order_acquire), kWorkerCount);
+  EXPECT_EQ(tracker.TrackedCount(), 0u);
+  tracker.JoinAll();
+}
+
+TEST(StreamingThreadTrackerTest, ShutdownWaitsForWorkerCaptureCleanup) {
+  struct BlockingCleanup {
+    std::promise<void>& entered;
+    std::shared_future<void> release;
+
+    ~BlockingCleanup() {
+      entered.set_value();
+      release.wait();
+    }
+  };
+
+  StreamingThreadTracker tracker;
+  std::promise<void> cleanup_entered;
+  std::promise<void> allow_cleanup;
+  auto cleanup_future = cleanup_entered.get_future();
+  auto release = allow_cleanup.get_future().share();
+  tracker.Start([cleanup = std::make_unique<BlockingCleanup>(cleanup_entered, release)] {});
+
+  const auto cleanup_started = cleanup_future.wait_for(std::chrono::seconds(5));
+  std::promise<void> shutdown_finished;
+  auto shutdown_future = shutdown_finished.get_future();
+  std::thread shutdown([&] {
+    tracker.JoinAll();
+    shutdown_finished.set_value();
+  });
+
+  EXPECT_EQ(cleanup_started, std::future_status::ready);
+  EXPECT_EQ(shutdown_future.wait_for(std::chrono::milliseconds(50)), std::future_status::timeout);
+  allow_cleanup.set_value();
+  EXPECT_EQ(shutdown_future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+  shutdown.join();
 }
 
 // ========================================================================

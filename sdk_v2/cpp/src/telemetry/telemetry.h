@@ -46,24 +46,24 @@ enum class Action {
   kOpenAIResponsesGetInputItems = 304,
 
   // EP catalog operations
-  kEpDownloadAttempt = 500,         // Wraps the entire DownloadAndRegisterEps call
-  kEpDownloadAndRegister = 501,     // One per-provider attempt within DownloadAndRegisterEps
+  kEpDownloadAttempt = 500,      // Wraps the entire DownloadAndRegisterEps call
+  kEpDownloadAndRegister = 501,  // One per-provider attempt within DownloadAndRegisterEps
 
   // Model file download
-  kModelFileDownload = 600,         // Wraps the per-model DownloadManager flow
+  kModelFileDownload = 600,  // Wraps the per-model DownloadManager flow
 
   // EP runtime usage (TimeToFirstToken / total tokens / memory)
-  kModelInference = 700,            // The "Model" event in the C# implementation
+  kModelInference = 700,  // The "Model" event in the C# implementation
 
 };
 
 /// Status of a tracked telemetry action.
 enum class ActionStatus {
-  kFailure = 0,    // Internal failure while executing valid work
+  kFailure = 0,  // Internal failure while executing valid work
   kSuccess,
   kInvalid,
   kSkipped,
-  kClientError,    // Rejected due to invalid client input (maps to HTTP 4xx) — not a service fault
+  kClientError,  // Rejected due to invalid client input (maps to HTTP 4xx) — not a service fault
   kCanceled,
   kDependencyFailure,
   kTimeout,
@@ -82,11 +82,11 @@ ActionStatus ActionStatusFromException(const std::exception& exception);
 struct EpDownloadAttemptInfo {
   std::string user_agent;
   std::string correlation_id;
-  int attempts = 0;            // Total per-provider attempts made
-  int num_providers = 0;       // Number of providers requested
-  int succeeded = 0;           // Number of providers that registered successfully
-  int failed = 0;              // Number of providers that failed
-  bool resolved = false;       // True if at least one provider became Registered
+  int attempts = 0;       // Total per-provider attempts made
+  int num_providers = 0;  // Number of providers requested
+  int succeeded = 0;      // Number of providers that registered successfully
+  int failed = 0;         // Number of providers that failed
+  bool resolved = false;  // True if at least one provider became Registered
   ActionStatus status = ActionStatus::kInvalid;
   int64_t duration_ms = 0;
 };
@@ -96,11 +96,11 @@ struct EpDownloadAndRegisterInfo {
   std::string user_agent;
   std::string correlation_id;
   std::string provider_name;
-  std::string init_ready_state;        // EP state before this call (e.g. "NotPresent")
-  std::string download_ready_state;    // EP state after the download phase (e.g. "Installed")
+  std::string init_ready_state;      // EP state before this call (e.g. "NotPresent")
+  std::string download_ready_state;  // EP state after the download phase (e.g. "Installed")
   ActionStatus download_status = ActionStatus::kInvalid;
   int64_t download_duration_ms = 0;
-  std::string register_ready_state;    // EP state after the register phase (e.g. "Registered")
+  std::string register_ready_state;  // EP state after the register phase (e.g. "Registered")
   ActionStatus register_status = ActionStatus::kInvalid;
   int64_t register_duration_ms = 0;
 };
@@ -113,14 +113,14 @@ struct ModelUsageInfo {
   std::string correlation_id;
   bool stream = false;                  // True if the inference was streamed (SSE) vs a single response
   bool indirect = false;                // True if the inference was driven by another action (e.g. an HTTP route)
-  int64_t time_to_first_token_ms = -1;   // -1 if not measured
+  int64_t time_to_first_token_ms = -1;  // -1 if not measured
   int64_t total_time_ms = 0;
   int32_t total_tokens = 0;
   int32_t input_token_count = 0;
   uint64_t num_messages = 0;
-  int64_t memory_used_mb = -1;          // -1 if not measured
-  int64_t cpu_time_ms = -1;             // -1 if not measured
-  int64_t gpu_memory_used_mb = -1;      // -1 if not measured
+  int64_t memory_used_mb = -1;      // -1 if not measured
+  int64_t cpu_time_ms = -1;         // -1 if not measured
+  int64_t gpu_memory_used_mb = -1;  // -1 if not measured
 };
 
 /// Payload for the AudioModel event — emitted once per successful audio inference with audio-specific metrics.
@@ -129,17 +129,17 @@ struct AudioUsageInfo {
   std::string execution_provider;
   std::string user_agent;
   std::string correlation_id;
-  std::string audio_source;              // "file", "openai_json_file", or "streaming_pcm"; never a path/name
-  std::string language;                  // Request/session language hint when provided; empty if unset
+  std::string audio_source;  // "file", "openai_json_file", or "streaming_pcm"; never a path/name
+  std::string language;      // Request/session language hint when provided; empty if unset
   bool stream = false;
   bool indirect = false;
   int64_t total_time_ms = 0;
   int32_t total_tokens = 0;
   int32_t input_token_count = 0;
   int32_t completion_token_count = 0;
-  int64_t audio_duration_ms = -1;        // -1 if not measured
-  int32_t sample_rate = 0;               // 0 if not known
-  int32_t channels = 0;                  // 0 if not known
+  int64_t audio_duration_ms = -1;  // -1 if not measured
+  int32_t sample_rate = 0;         // 0 if not known
+  int32_t channels = 0;            // 0 if not known
 };
 
 /// Payload for the Download event — emitted once per DownloadManager::DownloadModel call.
@@ -155,21 +155,21 @@ struct DownloadInfo {
   int64_t already_cached_bytes = 0;
   int32_t file_count = 0;
   int32_t skipped_file_count = 0;
-  std::string download_wait_result;    // e.g. "Completed", "TimedOut", "AlreadyHeld"
+  std::string download_wait_result;  // e.g. "Completed", "TimedOut", "AlreadyHeld"
   int32_t max_concurrency = 0;
 };
 
 /// Payload for the CatalogFetch event — emitted for primary catalog refreshes
 /// and cache-miss/cached-id lookups against a model catalog source.
 struct CatalogFetchInfo {
-  std::string operation;       // "FetchAll" (full catalog) or "FetchByIds" (cached-id lookup)
-  std::string endpoint;        // catalog host (e.g. "ai.azure.com"), or "static" for the embedded snapshot
-  std::string region;          // region parsed from the catalog URL (e.g. "eastus"); empty if not present
-  std::string format;          // catalog API path/version after the region (e.g. "ux/v1.0")
+  std::string operation;  // "FetchAll" (full catalog) or "FetchByIds" (cached-id lookup)
+  std::string endpoint;   // catalog host (e.g. "ai.azure.com"), or "static" for the embedded snapshot
+  std::string region;     // region parsed from the catalog URL (e.g. "eastus"); empty if not present
+  std::string format;     // catalog API path/version after the region (e.g. "ux/v1.0")
   ActionStatus status = ActionStatus::kInvalid;
   int64_t duration_ms = 0;
-  int32_t model_count = 0;     // models returned by this access
-  std::string error_message;   // populated on failure
+  int32_t model_count = 0;    // models returned by this access
+  std::string error_message;  // populated on failure
   std::string user_agent;
   std::string correlation_id;  // shared across the accesses of one catalog refresh
 };
@@ -194,6 +194,14 @@ struct ProcessInfo {
   std::string cpu_arch;
   std::string process_name;
   std::string device_id_status;
+  bool is_container = false;
+  bool is_virtual_machine = false;
+  bool is_emulator = false;
+  std::string container_type = "none";
+  std::string virtualization_type = "none";
+  std::string host_environment = "undetected";
+  std::string environment_detection_confidence = "none";
+  std::string device_id_scope = "installation";
   int32_t cpu_count = 0;
   int64_t total_memory_mb = -1;
 };

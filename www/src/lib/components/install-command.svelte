@@ -218,6 +218,7 @@ let response = client.complete_chat(&messages, None).await?;`,
 		{#each tabs as tab}
 			<button
 				type="button"
+				aria-pressed={activeTab === tab.key}
 				class="min-h-9 rounded-md px-3 py-1.5 text-xs font-medium transition-all duration-200 {activeTab ===
 				tab.key
 					? 'bg-primary text-primary-foreground shadow-sm'

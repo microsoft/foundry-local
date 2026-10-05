@@ -2,9 +2,6 @@
 
 find_package(httplib CONFIG REQUIRED)
 
-add_test(NAME ChatTemplateKwargsConfiguration
-    COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/chat-template-kwargs-test.cmake)
-
 # cpp-httplib's non-blocking resolver uses getaddrinfo_a, which lives in libanl on glibc < 2.34.
 set(FOUNDRY_LOCAL_HTTPLIB_LIBS httplib::httplib)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -108,11 +105,6 @@ target_sources(foundry_local_tests PRIVATE
 )
 
 target_compile_options(foundry_local_tests PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
-target_compile_definitions(
-    foundry_local_tests
-    PRIVATE
-        FOUNDRY_LOCAL_OGA_HAS_CHAT_TEMPLATE_KWARGS=$<BOOL:${FOUNDRY_LOCAL_OGA_HAS_CHAT_TEMPLATE_KWARGS}>
-)
 
 target_link_libraries(foundry_local_tests
     PRIVATE
@@ -169,6 +161,14 @@ gtest_discover_tests(foundry_local_tests
     WORKING_DIRECTORY $<TARGET_FILE_DIR:foundry_local_tests>
     DISCOVERY_MODE PRE_TEST
     DISCOVERY_TIMEOUT 60
+)
+
+add_test(
+    NAME FoundryLocalVersionConfigureTwice
+    COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/cmake/version_configure_twice
+        -DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/version_configure_twice
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/version_configure_twice.cmake
 )
 
 # ==========================================================================
