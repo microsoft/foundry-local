@@ -352,7 +352,8 @@ void Session::RecordUsage(const Request& request, const Response& response,
     usage.model_id = TelemetryInternal::SanitizeTelemetryIdentifier(CatalogModel().Id());
     usage.execution_provider = TelemetryInternal::SanitizeTelemetryIdentifier(ExecutionProvider());
     if (usage.execution_provider.empty()) {
-      usage.execution_provider = TelemetryInternal::SanitizeTelemetryIdentifier(CatalogModel().Info().execution_provider);
+      usage.execution_provider =
+          TelemetryInternal::SanitizeTelemetryIdentifier(CatalogModel().Info().execution_provider);
     }
 
     usage.user_agent = TelemetryInternal::SanitizeTelemetryValue(context.user_agent);
