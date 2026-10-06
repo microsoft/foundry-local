@@ -156,6 +156,26 @@ steps:
         Write-Host "  staged onnxruntime_providers_shared.dll"
       }
 
+- task: SFP.build-tasks.custom-build-task-1.EsrpCodeSigning@5
+  displayName: 'Sign staged foundry_local.dll'
+  condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+  inputs:
+    ConnectedServiceName: 'OnnxrunTimeCodeSign_20240611'
+    UseMSIAuthentication: true
+    AppRegistrationClientId: '$(esrpClientId)'
+    AppRegistrationTenantId: '$(esrpTenantId)'
+    EsrpClientId: '$(esrpClientId)'
+    AuthAKVName: '$(esrpAkvName)'
+    AuthSignCertName: '$(esrpSignCertName)'
+    FolderPath: '$(Build.ArtifactStagingDirectory)/native'
+    Pattern: 'foundry_local.dll'
+    SessionTimeout: 90
+    ServiceEndpointUrl: 'https://api.esrp.microsoft.com/api/v2'
+    MaxConcurrency: 25
+    signConfigType: inlineSignParams
+    inlineOperation: |
+      [{"keyCode":"CP-230012","operationSetCode":"SigntoolSign","parameters":[{"parameterName":"OpusName","parameterValue":"Microsoft"},{"parameterName":"OpusInfo","parameterValue":"http://www.microsoft.com"},{"parameterName":"PageHash","parameterValue":"/NPH"},{"parameterName":"FileDigest","parameterValue":"/fd sha256"},{"parameterName":"TimeStamp","parameterValue":"/tr \"http://rfc3161.gtm.corp.microsoft.com/TSS/HttpTspServer\" /td sha256"}],"toolName":"signtool.exe","toolVersion":"6.2.9304.0"}]
+
 - ${{ if eq(parameters.stageHeaders, true) }}:
   - task: CopyFiles@2
     displayName: 'Stage public headers'

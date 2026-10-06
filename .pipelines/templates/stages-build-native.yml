@@ -212,6 +212,9 @@ stages:
       templateContext:
         inputs:
         - input: pipelineArtifact
+          artifactName: 'version-info'
+          targetPath: '$(Pipeline.Workspace)/version-info'
+        - input: pipelineArtifact
           artifactName: 'cpp-native-include'
           targetPath: '$(Pipeline.Workspace)/cpp-native-include'
         - input: pipelineArtifact
@@ -322,7 +325,7 @@ stages:
           script: |
             $ErrorActionPreference = 'Stop'
 
-            $archive = Get-ChildItem '$(Pipeline.Workspace)/cpp-sdk-v2' -Recurse -Filter 'foundry-local-win-x64.zip' |
+            $archive = Get-ChildItem '$(Pipeline.Workspace)/cpp-sdk-v2' -Recurse -Filter 'foundry-local-*-win-x64.zip' |
               Select-Object -First 1
             if (-not $archive) { throw 'Windows x64 C++ SDK archive not found' }
 
