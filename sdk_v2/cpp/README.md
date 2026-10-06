@@ -78,11 +78,14 @@ The shared library exports only `FoundryLocalGetApi` and `FoundryLocalGetVersion
 ELF builds use a version script and `--exclude-libs,ALL` to keep bundled dependencies
 and compiler compatibility archives private. macOS/iOS use an exported-symbols
 allowlist; Windows retains its explicit `.def` exports. Static and OBJECT libraries
-remain available to white-box tests. These restrictions apply to `foundry_local`,
-not separately shipped shared dependencies.
+remain available to white-box tests. Linux's statically linked internal test executable
+also localizes archive-owned symbols so telemetry-thread vtables cannot interpose
+with GenAI. The public export allowlist applies to `foundry_local`, not separately
+shipped shared dependencies.
 
 Model-free exact-export checks run in Linux and macOS builds; Linux also checks
-strong/weak archive isolation and runtime calls through the public fixture API.
+strong/weak archive isolation, private transport symbols in internal tests, and runtime
+calls through the public fixture API.
 
 ## Build From Source
 

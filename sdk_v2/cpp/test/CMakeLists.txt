@@ -166,7 +166,13 @@ target_link_libraries(foundry_local_tests
 # RUNPATH by default, which doesn't propagate to transitive dlopen calls.
 # --disable-new-dtags forces the older RPATH tag, which does propagate.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    target_link_options(foundry_local_tests PRIVATE -Wl,--disable-new-dtags)
+    # Archive-owned weak telemetry thread vtables must not interpose with GenAI's private curl implementation.
+    target_link_options(foundry_local_tests PRIVATE
+        "LINKER:--disable-new-dtags"
+        "LINKER:--exclude-libs,ALL")
+    add_test(NAME elf-test-private-transports
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/native-library-test.py
+            private-transports $<TARGET_FILE:foundry_local_tests> ${CMAKE_NM})
 endif()
 
 # Ensure ORT/GenAI DLLs are copied to the bin directory before test discovery.

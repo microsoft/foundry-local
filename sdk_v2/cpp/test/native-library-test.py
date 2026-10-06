@@ -14,7 +14,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 
-def check_exports(library, nm, apple=False):
+def defined_exports(library, nm, apple=False):
     args = ["-g", "-U", "-j"] if apple else [
         "--dynamic", "--defined-only", "--format=posix"
     ]
@@ -24,11 +24,25 @@ def check_exports(library, nm, apple=False):
     exported = {line.split()[0] for line in symbols.splitlines() if line.strip()}
     if apple:
         exported = {symbol.removeprefix("_") for symbol in exported}
+    return exported
+
+
+def check_exports(library, nm, apple=False):
+    exported = defined_exports(library, nm, apple)
     expected = {"FoundryLocalGetApi", "FoundryLocalGetVersionString"}
     if exported != expected:
         raise AssertionError(
             f"Unexpected defined exports: {exported}; expected {expected}"
         )
+
+
+def check_private_transports(binary, nm):
+    leaked = {
+        symbol for symbol in defined_exports(binary, nm)
+        if symbol.startswith(("curl_", "Curl_")) or "CurlHttpOperation" in symbol
+    }
+    if leaked:
+        raise AssertionError(f"Unexpected private transport exports: {leaked}")
 
 
 def check_artifact(library, nm, readelf):
@@ -103,8 +117,21 @@ class NativeExportTest(unittest.TestCase):
     @patch("subprocess.check_output")
     def test_inspection_failure_is_not_success(self, inspect):
         inspect.side_effect = subprocess.CalledProcessError(1, "nm")
-        with self.assertRaises(subprocess.CalledProcessError):
-            check_exports("library", "nm")
+        for check in [check_exports, check_private_transports]:
+            with self.assertRaises(subprocess.CalledProcessError):
+                check("library", "nm")
+
+    @patch("subprocess.check_output")
+    def test_private_transports_allow_unrelated_symbols(self, inspect):
+        inspect.return_value = "main T 1 1\n_ZTVTestClass V 2 1\n"
+        check_private_transports("binary", "nm")
+
+    @patch("subprocess.check_output")
+    def test_private_transports_reject_strong_and_weak_exports(self, inspect):
+        for symbol in ["curl_easy_init T", "Curl_open T", "_ZTVCurlHttpOperation V"]:
+            inspect.return_value = f"{symbol} 1 1\n"
+            with self.assertRaises(AssertionError):
+                check_private_transports("binary", "nm")
 
 
 def check_runtime(library, probe, output_dir, order):
@@ -152,6 +179,8 @@ def check_runtime(library, probe, output_dir, order):
 if __name__ == "__main__":
     if sys.argv[1] == "exports":
         check_exports(sys.argv[2], sys.argv[3], len(sys.argv) > 4 and sys.argv[4] == "apple")
+    elif sys.argv[1] == "private-transports":
+        check_private_transports(*sys.argv[2:])
     elif sys.argv[1] == "artifact":
         check_artifact(*sys.argv[2:])
     elif sys.argv[1] == "runtime":
