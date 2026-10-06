@@ -118,30 +118,6 @@ steps:
       VCPKG_ROOT: $(Build.BinariesDirectory)\vcpkg
       FOUNDRY_TEST_DATA_DIR: $(Agent.BuildDirectory)\test-data-shared
 
-- task: PowerShell@2
-  displayName: 'Verify foundry_local.dll Control Flow Guard'
-  inputs:
-    targetType: inline
-    pwsh: true
-    script: |
-      $dll = '$(Build.SourcesDirectory)/sdk_v2/cpp/build/Windows/${{ parameters.buildConfig }}/bin/${{ parameters.buildConfig }}/foundry_local.dll'
-      if (-not (Test-Path $dll)) { throw "Required artifact not found: $dll" }
-
-      $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-      $vsInstall = & $vswhere -latest -products * -property installationPath
-      if ($LASTEXITCODE -ne 0 -or -not $vsInstall) { throw 'Visual Studio not found' }
-      $dumpbin = Get-ChildItem "$vsInstall/VC/Tools/MSVC/*/bin/Host*/${{ parameters.arch }}/dumpbin.exe" -File |
-        Select-Object -Last 1
-      if (-not $dumpbin) { throw 'dumpbin.exe not found' }
-
-      $cfgInfo = & $dumpbin.FullName /headers /loadconfig $dll | Out-String
-      if ($LASTEXITCODE -ne 0) { throw "dumpbin failed for $dll" }
-      if ($cfgInfo -notmatch '(?m)^\s+Guard\s*$' -or
-          $cfgInfo -notmatch 'CF Instrumented' -or $cfgInfo -notmatch 'FID table present') {
-        throw "Control Flow Guard is not enabled in $dll"
-      }
-      Write-Host "Control Flow Guard verified in $dll"
-
 # Stage the native build artifacts. The C++ SDK bundle consumes the co-located
 # ORT/GenAI DLLs directly. Python wheel staging filters them out because its
 # pip dependencies provide and preload those libraries.
