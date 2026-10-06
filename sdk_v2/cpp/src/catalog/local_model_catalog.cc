@@ -302,6 +302,9 @@ nlohmann::json RegistrationToJson(const LocalModelCatalog::Registration& registr
   if (registration.info.execution_provider_override) {
     json["execution_provider_override"] = true;
   }
+  if (!registration.metadata_prepared) {
+    json["metadata_prepared"] = false;
+  }
   return json;
 }
 
@@ -573,6 +576,7 @@ std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistration
 
       ModelInfo info;
       std::string model_id;
+      bool metadata_prepared = schema_version == 3;
       if (schema_version >= 2) {
         if (!item.contains("model_info") || !item["model_info"].is_object()) {
           FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_info must be an object");
@@ -587,6 +591,12 @@ std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistration
             FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "execution_provider_override must be a boolean");
           }
           info.execution_provider_override = item["execution_provider_override"].get<bool>();
+        }
+        if (schema_version == 3 && item.contains("metadata_prepared")) {
+          if (!item["metadata_prepared"].is_boolean()) {
+            FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "metadata_prepared must be a boolean");
+          }
+          metadata_prepared = item["metadata_prepared"].get<bool>();
         }
         model_id = info.model_id;
       } else {
@@ -605,15 +615,23 @@ std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistration
       }
       model_path = std::filesystem::absolute(model_path).lexically_normal();
 
-      if (schema_version < 3) {
-        const auto config_path = model_path / "genai_config.json";
-        const auto genai_config = GenAIConfig::LoadFromFile(config_path.string());
+      if (!metadata_prepared) {
         const auto persisted_provider = info.execution_provider;
-        info = ResolveMetadata(info, model_id, parsed_id.name, parsed_id.version, genai_config);
-        // Schema v2 did not persist provider provenance. Preserve its load behavior: every persisted provider was
-        // treated as an explicit override, while an empty provider deferred to the artifact configuration.
-        info.execution_provider_override = !persisted_provider.empty();
-      } else {
+        const bool persisted_provider_override =
+            schema_version < 3 ? !persisted_provider.empty() : info.execution_provider_override;
+        try {
+          const auto config_path = model_path / "genai_config.json";
+          const auto genai_config = GenAIConfig::LoadFromFile(config_path.string());
+          info = ResolveMetadata(info, model_id, parsed_id.name, parsed_id.version, genai_config);
+          info.execution_provider_override = persisted_provider_override;
+          metadata_prepared = true;
+        } catch (const std::exception&) {
+          // Artifact metadata is best effort during migration; the persisted entry remains the recovery handle.
+          info.execution_provider_override = persisted_provider_override;
+        }
+      }
+
+      if (!metadata_prepared || schema_version == 3) {
         RemoveLegacyRegistrationProperties(info);
         info.alias = DeriveAlias(parsed_id.name);
         info.name = parsed_id.name;
@@ -630,17 +648,13 @@ std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistration
         FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "duplicate model_id: " + info.model_id);
       }
 
-      registrations.push_back({std::move(info), model_path.string()});
+      registrations.push_back({std::move(info), model_path.string(), metadata_prepared});
     } catch (const std::exception& ex) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
                "invalid local model registration at index " + std::to_string(item_index) + ": " + ex.what());
     }
 
     ++item_index;
-  }
-
-  if (schema_version < 3) {
-    SaveRegistrations(registrations);
   }
 
   return registrations;

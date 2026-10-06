@@ -26,6 +26,7 @@ class LocalModelCatalog final : public BaseModelCatalog {
   struct Registration {
     ModelInfo info;
     std::string model_path;
+    bool metadata_prepared{true};
   };
 
  protected:

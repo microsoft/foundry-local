@@ -680,13 +680,11 @@ TEST_F(LocalModelCatalogTest, LoadsLegacyRegistrationPropertiesUsingPersistedMod
 
   nlohmann::json migrated_index;
   std::ifstream(cache_dir / "foundry.local.modelinfo.json") >> migrated_index;
-  EXPECT_EQ(migrated_index["version"], 3);
-  ASSERT_EQ(migrated_index["models"].size(), 1u);
-  EXPECT_TRUE(migrated_index["models"][0].contains("model_info"));
-  EXPECT_FALSE(migrated_index["models"][0].contains("properties"));
+  EXPECT_EQ(migrated_index["version"], 1);
 
   ASSERT_NE(restored.RegisterModel(model_dir_.string(), "new-model:1", MakeMetadata()), nullptr);
   std::ifstream(cache_dir / "foundry.local.modelinfo.json") >> migrated_index;
+  EXPECT_EQ(migrated_index["version"], 3);
   ASSERT_EQ(migrated_index["models"].size(), 2u);
   EXPECT_TRUE(migrated_index["models"][0].contains("model_info"));
   EXPECT_FALSE(migrated_index["models"][0].contains("properties"));
@@ -696,8 +694,8 @@ TEST_F(LocalModelCatalogTest, LoadsLegacyRegistrationPropertiesUsingPersistedMod
 TEST_F(LocalModelCatalogTest, MigratesSchemaV2MetadataUsingAuthoritativeSources) {
   std::ofstream(model_dir_ / "genai_config.json")
       << R"({"model":{"type":"phi3","context_length":8192,)"
-       R"("prompt_templates":{"user":"artifact-template"},)"
-       R"("decoder":{"session_options":{"provider_options":[{"cuda":{"device_id":"1"}}]}}}})";
+         R"("prompt_templates":{"user":"artifact-template"},)"
+         R"("decoder":{"session_options":{"provider_options":[{"cuda":{"device_id":"1"}}]}}}})";
 
   auto legacy_info = MakeMetadata();
   legacy_info.model_id = "migration-model:2";
@@ -753,6 +751,10 @@ TEST_F(LocalModelCatalogTest, MigratesSchemaV2MetadataUsingAuthoritativeSources)
 
   nlohmann::json migrated_index;
   std::ifstream(index_path) >> migrated_index;
+  EXPECT_EQ(migrated_index["version"], 2);
+
+  ASSERT_NE(restored.RegisterModel(model_dir_.string(), "migration-trigger:1", MakeMetadata()), nullptr);
+  std::ifstream(index_path) >> migrated_index;
   EXPECT_EQ(migrated_index["version"], 3);
   EXPECT_EQ(migrated_index["models"][0]["model_info"]["intProperties"]
                           [FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT],
@@ -787,6 +789,10 @@ TEST_F(LocalModelCatalogTest, MigratesSchemaV2WithoutProviderToArtifactDefault) 
 
   nlohmann::json migrated_index;
   std::ifstream(index_path) >> migrated_index;
+  EXPECT_EQ(migrated_index["version"], 2);
+
+  ASSERT_NE(restored.RegisterModel(model_dir_.string(), "migration-trigger:1", MakeMetadata()), nullptr);
+  std::ifstream(index_path) >> migrated_index;
   EXPECT_EQ(migrated_index["version"], 3);
   EXPECT_FALSE(migrated_index["models"][0].contains("execution_provider_override"));
 }
@@ -818,6 +824,10 @@ TEST_F(LocalModelCatalogTest, MigratesSchemaV2CallerProviderOverrideAndPersistsP
 
   nlohmann::json migrated_index;
   std::ifstream(index_path) >> migrated_index;
+  EXPECT_EQ(migrated_index["version"], 2);
+
+  ASSERT_NE(restored.RegisterModel(model_dir_.string(), "migration-trigger:1", MakeMetadata()), nullptr);
+  std::ifstream(index_path) >> migrated_index;
   EXPECT_EQ(migrated_index["version"], 3);
   EXPECT_EQ(migrated_index["models"][0]["execution_provider_override"], true);
 
@@ -827,7 +837,7 @@ TEST_F(LocalModelCatalogTest, MigratesSchemaV2CallerProviderOverrideAndPersistsP
   EXPECT_TRUE(model_again->Info().execution_provider_override);
 }
 
-TEST_F(LocalModelCatalogTest, SchemaV2MigrationFailurePreservesOriginalIndex) {
+TEST_F(LocalModelCatalogTest, MissingSchemaV2ArtifactRemainsUncachedAndCanBeUnregistered) {
   auto legacy_info = MakeMetadata();
   legacy_info.model_id = "missing-artifact:1";
   const auto missing_model_path = root_.path() / "missing-model";
@@ -844,14 +854,56 @@ TEST_F(LocalModelCatalogTest, SchemaV2MigrationFailurePreservesOriginalIndex) {
   std::ifstream original_stream(index_path, std::ios::binary);
   const std::string original_index{std::istreambuf_iterator<char>(original_stream),
                                    std::istreambuf_iterator<char>()};
+  original_stream.close();
 
   auto restored = MakeCatalog();
-  EXPECT_THROW(restored.ListModels(), Exception);
+  const auto models = restored.ListModels();
+  ASSERT_EQ(models.size(), 1u);
+  EXPECT_EQ(models[0]->Id(), "missing-artifact:1");
+  EXPECT_FALSE(models[0]->IsCached());
 
   std::ifstream stream(index_path, std::ios::binary);
   const std::string preserved_index{std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+  stream.close();
   EXPECT_EQ(preserved_index, original_index);
   EXPECT_FALSE(std::filesystem::exists(index_path.string() + ".tmp"));
+
+  ASSERT_NE(restored.RegisterModel(model_dir_.string(), "available-model:1", MakeMetadata()), nullptr);
+  nlohmann::json migrated_index;
+  std::ifstream(index_path) >> migrated_index;
+  EXPECT_EQ(migrated_index["version"], 3);
+  ASSERT_EQ(migrated_index["models"].size(), 2u);
+  EXPECT_EQ(migrated_index["models"][0]["model_info"]["id"], "missing-artifact:1");
+  EXPECT_EQ(migrated_index["models"][0]["metadata_prepared"], false);
+
+  EXPECT_NO_THROW(restored.UnregisterModel("missing-artifact"));
+  EXPECT_EQ(restored.GetModelVariant("missing-artifact:1"), nullptr);
+  ASSERT_EQ(restored.ListModels().size(), 1u);
+}
+
+TEST_F(LocalModelCatalogTest, ListingSchemaV2RegistrationDoesNotWriteIndex) {
+  auto legacy_info = MakeMetadata();
+  legacy_info.model_id = "read-only-index:1";
+
+  const auto cache_dir = root_.path() / "cache" / "models";
+  std::filesystem::create_directories(cache_dir);
+  const nlohmann::json legacy_index = {
+      {"version", 2},
+      {"catalog_name", "local"},
+      {"models", {{{"model_info", ModelInfoToJson(legacy_info)}, {"model_path", model_dir_.string()}}}},
+  };
+  const auto index_path = cache_dir / "foundry.local.modelinfo.json";
+  std::ofstream(index_path) << legacy_index.dump(2);
+  std::filesystem::create_directory(index_path.string() + ".tmp");
+
+  auto restored = MakeCatalog();
+  const auto models = restored.ListModels();
+  ASSERT_EQ(models.size(), 1u);
+  EXPECT_EQ(models[0]->Id(), "read-only-index:1");
+
+  nlohmann::json preserved_index;
+  std::ifstream(index_path) >> preserved_index;
+  EXPECT_EQ(preserved_index, legacy_index);
 }
 
 TEST_F(LocalModelCatalogTest, RegistrationDoesNotOverwriteUnreadableOrUnsupportedIndex) {
