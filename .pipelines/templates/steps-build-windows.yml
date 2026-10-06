@@ -134,9 +134,10 @@ steps:
         Select-Object -Last 1
       if (-not $dumpbin) { throw 'dumpbin.exe not found' }
 
-      $loadConfig = & $dumpbin.FullName /loadconfig $dll | Out-String
+      $cfgInfo = & $dumpbin.FullName /headers /loadconfig $dll | Out-String
       if ($LASTEXITCODE -ne 0) { throw "dumpbin failed for $dll" }
-      if ($loadConfig -notmatch 'CF Instrumented' -or $loadConfig -notmatch 'FID table present') {
+      if ($cfgInfo -notmatch '(?m)^\s+Guard\s*$' -or
+          $cfgInfo -notmatch 'CF Instrumented' -or $cfgInfo -notmatch 'FID table present') {
         throw "Control Flow Guard is not enabled in $dll"
       }
       Write-Host "Control Flow Guard verified in $dll"
