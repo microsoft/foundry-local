@@ -67,6 +67,8 @@ at 16 KiB per source; Windows version resources are capped at 1 MiB. Stored devi
 retain the tighter 256-byte read limit and 36-byte GUID validation, and tenant tokens
 are validated at build time rather than truncated. Existing allowlists for HTTP
 user agents and audio language codes remain in effect.
+Catalog dimensions preserve only the known public host and exact
+`asset-gallery/v1.0/models` route; custom endpoints are bucketed as `custom`.
 Message counts reuse the existing inference JSON parser's numeric result rather than
 reparsing request bodies for telemetry; large prompts remain unchanged and counted.
 

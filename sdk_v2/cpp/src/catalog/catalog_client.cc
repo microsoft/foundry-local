@@ -33,7 +33,7 @@ std::vector<ModelInfo> FetchAllModelInfosWithCachedModels(
     CatalogFetchInfo info;
     info.endpoint = TelemetryInternal::SanitizeTelemetryValue(base_info.endpoint);
     info.region = TelemetryInternal::SanitizeTelemetryValue(base_info.region);
-    info.format = TelemetryInternal::SanitizeTelemetryValue(base_info.format);
+    info.format = TelemetryInternal::SanitizeTelemetryCatalogFormat(base_info.format);
     info.user_agent = TelemetryInternal::SanitizeTelemetryValue(base_info.user_agent);
     info.correlation_id = TelemetryInternal::SanitizeTelemetryIdentifier(base_info.correlation_id);
     info.operation = TelemetryInternal::SanitizeTelemetryValue(operation);

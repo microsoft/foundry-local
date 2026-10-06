@@ -313,6 +313,10 @@ inline std::string SanitizeTelemetryValue(std::string_view value) {
   return detail::SanitizeMetadataValue(value);
 }
 
+inline std::string SanitizeTelemetryCatalogFormat(std::string_view value) {
+  return value == "asset-gallery/v1.0/models" ? std::string(value) : SanitizeTelemetryValue(value);
+}
+
 inline std::string SanitizeTelemetryIdentifier(std::string_view value) {
   return SanitizeTelemetryValue(TelemetryIdentifierView(value));
 }

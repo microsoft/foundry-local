@@ -980,6 +980,24 @@ TEST(OneDsTelemetryTest, EventPropertiesSanitizerCapsEveryStringValue) {
   EXPECT_EQ(std::string_view(properties.at("Utf8").as_string).size(), kMaxTelemetryStringLength - 1);
 }
 
+TEST(OneDsTelemetryTest, CatalogFormatPreservesOnlyTheExactPublicRoute) {
+  using namespace ::Microsoft::Applications::Events;
+
+  const std::vector<std::pair<std::string, std::string>> cases{
+      {"asset-gallery/v1.0/models", "asset-gallery/v1.0/models"},
+      {"asset-gallery/v1.0/models/private", "[path]"},
+      {std::string(1024 * 1024, 'x'), "[oversized]"},
+  };
+  for (const auto& [input, expected] : cases) {
+    TelemetryInternal::BoundedEventProperties event("CatalogFetch");
+    event.SetProperty("Format", input);
+    EXPECT_EQ(event.GetProperties(DataCategory_PartC).at("Format").as_string, expected);
+
+    TelemetryInternal::SanitizeEventProperties(event);
+    EXPECT_EQ(event.GetProperties(DataCategory_PartC).at("Format").as_string, expected);
+  }
+}
+
 TEST(OneDsTelemetryTest, EventPropertiesSanitizerRecursesIntoStringArraysInOrder) {
   using namespace ::Microsoft::Applications::Events;
 
@@ -1257,7 +1275,7 @@ TEST(TelemetryEnvironmentTest, WindowsReadRetriesBoundedGrowthAndAcceptsShrinkag
 TEST(TelemetryEnvironmentTest, WindowsReadRejectsUnstableAndFailedReads) {
   const std::vector<std::vector<std::optional<uint32_t>>> scenarios{
       {std::nullopt},
-      {std::numeric_limits<uint32_t>::max()},
+      {(std::numeric_limits<uint32_t>::max)()},
       {static_cast<uint32_t>(kMaxTelemetryEnvironmentLength + 2)},
       {2, 0},
       {2, std::nullopt},
@@ -1384,6 +1402,23 @@ TEST(TelemetryLoggerTest, BoundsEveryEventStringBeforeFormatting) {
   }
   EXPECT_EQ(model.model_id, input);
   EXPECT_EQ(context.correlation_id, input);
+}
+
+TEST(TelemetryLoggerTest, CatalogFormatPreservesOnlyTheExactPublicRoute) {
+  RecordingLogger logger;
+  TelemetryLogger telemetry("catalog-test", logger);
+  CatalogFetchInfo catalog;
+  catalog.format = "asset-gallery/v1.0/models";
+  telemetry.RecordCatalogFetch(catalog);
+  catalog.format += "/private";
+  telemetry.RecordCatalogFetch(catalog);
+  catalog.format = std::string(1024 * 1024, 'x');
+  telemetry.RecordCatalogFetch(catalog);
+
+  ASSERT_EQ(logger.entries.size(), 3u);
+  EXPECT_NE(logger.entries[0].message.find("Format=asset-gallery/v1.0/models "), std::string::npos);
+  EXPECT_NE(logger.entries[1].message.find("Format=[path] "), std::string::npos);
+  EXPECT_NE(logger.entries[2].message.find("Format=[oversized] "), std::string::npos);
 }
 
 TEST(TelemetryRequestMetricsTest, ReadsOnlyCountsFromAlreadyParsedLargeInputs) {

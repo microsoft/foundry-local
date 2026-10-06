@@ -104,7 +104,8 @@ void TelemetryLogger::RecordCatalogFetch(const CatalogFetchInfo& info) {
   logger_.Log(LogLevel::Debug,
               fmt::format("[Telemetry] CatalogFetch AppName={} Operation={} Endpoint={} Region={} Format={} "
                           "Status={} TimeMs={} ModelCount={} Error={} UserAgent={} CorrelationId={}",
-                          app_name_, Text(info.operation), Text(info.endpoint), Text(info.region), Text(info.format),
+                          app_name_, Text(info.operation), Text(info.endpoint), Text(info.region),
+                          TelemetryInternal::SanitizeTelemetryCatalogFormat(info.format),
                           ActionStatusToString(info.status), info.duration_ms, info.model_count,
                           Text(info.error_message), Text(info.user_agent), Id(info.correlation_id)));
 }

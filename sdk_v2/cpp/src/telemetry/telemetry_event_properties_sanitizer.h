@@ -31,6 +31,10 @@ inline std::string SanitizePropertyValue(std::string_view name, std::string_view
   if (IsSecretProperty(name)) {
     return "[secret]";
   }
+  if (name == "Format") {
+    return SanitizeTelemetryCatalogFormat(value);
+  }
+
   return IsIdentifierProperty(name) ? SanitizeTelemetryIdentifier(value) : SanitizeTelemetryValue(value);
 }
 

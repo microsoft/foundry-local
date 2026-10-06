@@ -59,7 +59,7 @@ CatalogFetchInfo BuildCatalogFetchInfo(const std::string& url, const std::string
   }
 
   // Only the public Azure catalog contributes endpoint dimensions; custom hosts and paths stay private.
-  info.format = TelemetryInternal::SanitizeTelemetryValue(path);
+  info.format = TelemetryInternal::SanitizeTelemetryCatalogFormat(path);
   return info;
 }
 
