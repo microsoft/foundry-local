@@ -489,6 +489,9 @@ endif()
 
 if(WIN32)
     target_sources(foundry_local PRIVATE src/exports.def)
+    if(MSVC)
+        target_link_options(foundry_local PRIVATE /guard:cf /DYNAMICBASE)
+    endif()
 
     # Delay-load the WinML EP Catalog DLL — it may not be present on older Windows.
     # The bootstrapper handles the delay-load failure gracefully at runtime.
