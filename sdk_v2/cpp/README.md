@@ -41,6 +41,47 @@ clears an inherited default for that request.
 For OpenAI JSON requests, the payload takes precedence over request options, followed
 by session defaults. Omitting kwargs inherits the session default, if any.
 
+## Telemetry String Limits
+
+Free-form telemetry values are limited to **1 KiB of UTF-8 bytes**, without splitting
+code points; malformed UTF-8 bytes are replaced with `?`. The limit applies before
+strings are retained in telemetry state,
+formatted into local logs, or copied into 1DS properties and common context.
+Path, URL, and credential redaction runs before truncation.
+
+Privacy inspection uses at most 2 KiB of input. Larger diagnostic values are replaced
+with `[oversized]` rather than exposing a prefix whose private suffix could not be
+inspected. Oversized model/provider/correlation identifiers are also represented as
+`[oversized]` in telemetry, never truncated into a different identifier; functional
+model IDs, inference options, and HTTP headers are unchanged. String arrays retain at
+most 64 elements and mark omitted entries with `[oversized array]`.
+
+Telemetry environment values and functional cache/CA paths have a separate 32 KiB
+limit: oversized values are rejected with a warning, not truncated. Oversized CI or
+opt-out flags fail closed on oversized, unreadable, or inconsistent reads. Invalid
+cache-base overrides do not fall back to a different directory. Hardware inventories
+inspect at most 64 device entries and 64 provider entries; omitted inventories use
+`[oversized inventory]`, with `-1` for counts that cannot be determined exactly.
+Platform evidence probes remain bounded
+at 16 KiB per source; Windows version resources are capped at 1 MiB. Stored device IDs
+retain the tighter 256-byte read limit and 36-byte GUID validation, and tenant tokens
+are validated at build time rather than truncated. Existing allowlists for HTTP
+user agents and audio language codes remain in effect.
+Message counts reuse the existing inference JSON parser's numeric result rather than
+reparsing request bodies for telemetry; large prompts remain unchanged and counted.
+
+## Native Export Isolation
+
+The shared library exports only `FoundryLocalGetApi` and `FoundryLocalGetVersionString`.
+ELF builds use a version script and `--exclude-libs,ALL` to keep bundled dependencies
+and compiler compatibility archives private. macOS/iOS use an exported-symbols
+allowlist; Windows retains its explicit `.def` exports. Static and OBJECT libraries
+remain available to white-box tests. These restrictions apply to `foundry_local`,
+not separately shipped shared dependencies.
+
+Model-free exact-export checks run in Linux and macOS builds; Linux also checks
+strong/weak archive isolation and runtime calls through the public fixture API.
+
 ## Build From Source
 
 From this directory:

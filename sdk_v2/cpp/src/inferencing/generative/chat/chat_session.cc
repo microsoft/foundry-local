@@ -25,6 +25,7 @@
 #include "items/text_item.h"
 #include "items/tool_call_item.h"
 #include "model.h"
+#include "telemetry/telemetry_request_metrics.h"
 #include "util/scope_guard.h"
 #include "utils.h"
 
@@ -906,7 +907,7 @@ SessionType ChatSession::Type() const {
 }
 
 std::string ChatSession::ExecutionProvider() const {
-  return std::string(EPUtils::EPtoTelemetryName(model_.EP(), model_.GetGenAIConfig().DefaultProvider()));
+  return std::string(EPUtils::EPtoTelemetryName(model_.EP(), model_.GetGenAIConfig().DefaultProviderView()));
 }
 
 void ChatSession::SetSessionOptionsImpl(const KeyValuePairs& options) {
@@ -1083,6 +1084,7 @@ struct PreparedChatRequest {
   PreparedChatPrompt prompt;
   std::optional<int> host_max_output_tokens;
   std::string json_model_name;
+  std::optional<uint64_t> json_message_count{0};
   bool json_passthrough = false;
 };
 
@@ -1118,6 +1120,7 @@ std::unique_ptr<PreparedChatRequest> PrepareChatRequest(
 
     auto request_json = nlohmann::json::parse(text_item.text);
     auto chat_request = request_json.get<ChatCompletionRequest>();
+    prepared->json_message_count = TelemetryInternal::CountParsedJsonMessages(request_json);
     chat_completions::ApplyCatalogDefaults(chat_request, model_info.model_settings);
     prepared->json_model_name = chat_request.model;
 
@@ -1831,6 +1834,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, const Request& original_request,
                                              Response& response) {
   const auto& model_name = prepared.json_model_name;
+  response.openai_json_message_count = prepared.json_message_count;
   std::string completion_id = chat_completions::GenerateCompletionId();
   auto now = std::chrono::system_clock::now();
   int64_t created = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();

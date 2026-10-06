@@ -6,10 +6,10 @@
 
 namespace fl {
 
-ActionTracker::ActionTracker(Action action, ITelemetry& telemetry, InvocationContext context)
+ActionTracker::ActionTracker(Action action, ITelemetry& telemetry, const InvocationContext& context)
     : action_(action),
       telemetry_(telemetry),
-      context_(std::move(context)),
+      context_(context.BoundedCopy()),
       start_(std::chrono::steady_clock::now()) {
   // Guarantee a correlation id so this action and anything it triggers can be
   // grouped, even when the caller passed a default-constructed context.
@@ -44,7 +44,7 @@ void ActionTracker::RecordException(const std::exception& exception) {
 }
 
 void ActionTracker::SetModelId(const std::string& model_id) {
-  model_id_ = model_id;
+  model_id_ = TelemetryInternal::SanitizeTelemetryIdentifier(model_id);
 }
 
 }  // namespace fl

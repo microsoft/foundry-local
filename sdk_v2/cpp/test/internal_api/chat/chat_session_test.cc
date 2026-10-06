@@ -2550,7 +2550,8 @@ TEST_F(QwenNativeProductionIntegrationTest, EngineSemanticPrefixBeforeSchemaViol
   };
   const std::vector<Case> cases = {
       {"safe prefix<tool_call>\n<function=lookup>\n<parameter=path>\nsrc\n</parameter>\n"
-       "</function>\n</tool_call> tail", "safe prefix", 0},
+       "</function>\n</tool_call> tail",
+       "safe prefix", 0},
   };
 
   for (const auto& test_case : cases) {
@@ -2626,7 +2627,8 @@ TEST_F(QwenNativeProductionIntegrationTest, EarlierCallEndsTurnBeforeIndependent
       SCOPED_TRACE(split);
       const bool byte_chunks = split == generated.size() + 1;
       const auto chunk_size = byte_chunks ? 1u : std::string::npos;
-      const auto first_chunk_size = byte_chunks ? 1u : split == 0 ? std::string::npos : split;
+      const auto first_chunk_size = byte_chunks ? 1u : split == 0 ? std::string::npos
+                                                                  : split;
 
       for (const bool json_request : {false, true}) {
         SCOPED_TRACE(json_request ? "chat completions" : "typed");
@@ -4246,6 +4248,42 @@ TEST_F(ChatSessionTest, ForcedBuiltInRawCallRemainsVisibleWhenPromptOpensReasoni
   const auto& transcript_call = *session.Transcript().Messages().back().ToolCalls().front();
   EXPECT_EQ(transcript_call.call_id, call.call_id);
   EXPECT_EQ(transcript_call.arguments, envelope);
+}
+
+TEST_F(ChatSessionTest, LargeJsonTelemetryReusesParsedCountWithoutChangingInputOrWireResponse) {
+  class MessageCountTelemetry : public TelemetryLogger {
+   public:
+    MessageCountTelemetry() : TelemetryLogger("count-test", test::NullLog()) {}
+    void RecordModelUsage(const ModelUsageInfo& info) override { counts.push_back(info.num_messages); }
+    std::vector<uint64_t> counts;
+  } telemetry;
+
+  TextChatGeneratorFactory factory = [](const auto&, const auto&, auto&, const auto&, bool) {
+    return std::make_unique<FixedOutputGenerator>("ok", BackendTerminationCause::kNaturalEnd);
+  };
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, telemetry, {}, std::move(factory));
+  const auto payload = nlohmann::json{
+      {"model", GetModel().ModelId()},
+      {"messages", nlohmann::json::array({
+                       {{"role", "system"}, {"content", "Reply briefly."}},
+                       {{"role", "user"}, {"content", std::string(1024 * 1024, 'x')}},
+                   })}}.dump();
+  Request request;
+  auto input = std::make_unique<TextItem>(payload, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON);
+  const auto* input_view = input.get();
+  request.AddOwnedItem(std::move(input));
+  Response response;
+  session.ProcessRequest(request, response);
+
+  EXPECT_EQ(input_view->text, payload);
+  EXPECT_EQ(response.openai_json_message_count, 2u);
+  ASSERT_EQ(telemetry.counts.size(), 1u);
+  EXPECT_EQ(telemetry.counts[0], 2u);
+  ASSERT_EQ(response.items.size(), 1u);
+  const auto& result = static_cast<const TextItem&>(*response.items.front());
+  const auto wire_response = nlohmann::json::parse(result.text);
+  EXPECT_EQ(wire_response.at("choices").at(0).at("message").at("content"), "ok");
+  EXPECT_FALSE(wire_response.contains("openai_json_message_count"));
 }
 
 TEST_F(ChatSessionTest, ChatCompletionsForcedRawCallPreservesJsonShapedPayloadAndPromptOpenedReasoning) {

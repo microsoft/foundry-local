@@ -288,6 +288,22 @@ TEST_F(AzureModelCatalogTest, LiveFetchRecordsDimensionsForDefaultCatalogOnly) {
   EXPECT_EQ(telemetry_.calls[0].format, "asset-gallery/v1.0/models");
 }
 
+TEST_F(AzureModelCatalogTest, TelemetryRejectsOversizedUrlsAndPrivatePathsOnThePublicHost) {
+  const std::string oversized_url = "https://private.example/" + std::string(1024 * 1024, 'x');
+  const std::string private_url = "https://api.catalog.azureml.ms/tenant/private-models";
+  AddBehavior(oversized_url);
+  AddBehavior(private_url);
+  auto catalog = CreateCatalog({{oversized_url, std::nullopt}, {private_url, std::nullopt}});
+  catalog->ListModels();
+
+  ASSERT_EQ(telemetry_.calls.size(), 2u);
+  for (const auto& info : telemetry_.calls) {
+    EXPECT_EQ(info.endpoint, "custom");
+    EXPECT_TRUE(info.format.empty());
+    EXPECT_TRUE(info.region.empty());
+  }
+}
+
 TEST_F(AzureModelCatalogTest, FailedLiveFetchRecordsFailureBeforeSnapshotFallback) {
   const std::string url = "https://private.example/models";
   AddBehavior(url, true);
@@ -494,7 +510,8 @@ TEST_F(AzureModelCatalogTest, VersionHistoryDeduplicatesBeforeApplyingLimit) {
   ASSERT_NE(FindVariant(versions, "shared:3"), nullptr);
   EXPECT_NE(FindVariant(versions, "older:2"), nullptr);
   const auto* provider = FindVariant(versions, "shared:3")
-                             ->Info().GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR);
+                             ->Info()
+                             .GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR);
   ASSERT_NE(provider, nullptr);
   EXPECT_EQ(*provider, "FirstProvider");
   EXPECT_EQ(first_behavior->fetch_all_versions_calls, 1);

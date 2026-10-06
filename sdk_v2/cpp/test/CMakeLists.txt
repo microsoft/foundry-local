@@ -1,7 +1,16 @@
 # Copyright (c) Microsoft. All rights reserved.
 
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+endif()
+
+if(APPLE)
+    add_test(NAME native-exports
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/native-library-test.py
+            exports $<TARGET_FILE:foundry_local> ${CMAKE_NM} apple)
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(CURL REQUIRED)
     find_package(Threads REQUIRED)
     add_executable(elf-loader-probe elf-loader-probe.cc)
@@ -12,17 +21,31 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_dependencies(elf-loader-probe foundry_local)
 
     add_test(NAME elf-artifact-contract
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/elf-library-test.py
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/native-library-test.py
             artifact $<TARGET_FILE:foundry_local> ${CMAKE_NM} ${CMAKE_READELF})
     add_test(NAME elf-tls-probe-contract
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/elf-library-test.py probe)
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/native-library-test.py probe)
     foreach(order IN ITEMS curl-first foundry-first)
         add_test(NAME elf-loader-${order}
-            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/elf-library-test.py
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/native-library-test.py
                 runtime $<TARGET_FILE:foundry_local> $<TARGET_FILE:elf-loader-probe>
                 ${CMAKE_CURRENT_BINARY_DIR}/elf-loader-${order} ${order})
         set_tests_properties(elf-loader-${order} PROPERTIES TIMEOUT 120)
     endforeach()
+
+    add_library(export-isolation-dependency STATIC export-isolation/dependency.cc)
+    set_target_properties(export-isolation-dependency PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    add_library(export-isolation-fixture SHARED export-isolation/fixture.cc)
+    target_include_directories(export-isolation-fixture PRIVATE ../include)
+    target_link_libraries(export-isolation-fixture PRIVATE export-isolation-dependency)
+    foundry_local_configure_shared_library_exports(export-isolation-fixture)
+    add_test(NAME elf-archive-exports
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/native-library-test.py
+            exports $<TARGET_FILE:export-isolation-fixture> ${CMAKE_NM})
+    add_executable(export-isolation-runtime export-isolation/runtime.cc)
+    target_include_directories(export-isolation-runtime PRIVATE ../include)
+    target_link_libraries(export-isolation-runtime PRIVATE export-isolation-fixture)
+    add_test(NAME elf-archive-runtime COMMAND export-isolation-runtime)
 endif()
 
 find_package(httplib CONFIG REQUIRED)

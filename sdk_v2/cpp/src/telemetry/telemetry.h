@@ -179,10 +179,10 @@ struct HardwareInfo {
   bool has_cpu = false;
   bool has_gpu = false;
   bool has_npu = false;
-  int32_t device_type_count = 0;
-  int32_t execution_provider_count = 0;
-  std::string device_types;         // comma-separated coarse device classes, e.g. "CPU,GPU"
-  std::string execution_providers;  // comma-separated provider names, e.g. "CPUExecutionProvider,CUDAExecutionProvider"
+  int32_t device_type_count = 0;         // -1 when the diagnostic inventory is incomplete.
+  int32_t execution_provider_count = 0;  // -1 when the diagnostic inventory is incomplete.
+  std::string device_types;              // comma-separated coarse device classes, e.g. "CPU,GPU"
+  std::string execution_providers;       // comma-separated provider names, e.g. "CPUExecutionProvider,CUDAExecutionProvider"
 };
 
 /// Payload for the ProcessInfo event — emitted once during process startup when telemetry is not CI-suppressed.

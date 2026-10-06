@@ -52,10 +52,25 @@ first. Steps 2–3 are best-effort: if the files aren't present (e.g., a strippe
 deployment that ships ORT via a separate package), the binding logs and
 continues; step 4 will then surface a clearer load error.
 
+### Native Symbol Isolation
+
+The shared library exports only `FoundryLocalGetApi` and `FoundryLocalGetVersionString`.
+Linux/Android use an ELF version script and `--exclude-libs,ALL`; the latter also
+localizes compiler compatibility archives such as manylinux's
+`libstdc++_nonshared.a`. Public definitions come from OBJECT sources, so archive
+localization does not remove the API. macOS/iOS use a Mach-O exported-symbols
+allowlist, and Windows uses its explicit `.def` exports. This policy does not
+hide exports in separately shipped shared dependencies.
+
+Linux and macOS builds check the exact defined export set. Linux also exercises
+strong/weak archive isolation and calls through a public fixture API. White-box
+tests link the static/OBJECT implementation instead of requiring private shared
+library exports.
+
 ### Linux and Android Library Lifetime
 
 `libfoundry_local.so` exports only the two public entry points through an ELF
-version script, keeping bundled static dependencies private. It is also linked
+version script and archive localization, keeping bundled static dependencies private. It is also linked
 with `-z nodelete` so `dlclose` cannot unmap it before process exit. Bundled
 OpenSSL registers pthread-local cleanup callbacks on caller-owned threads
 (including Rust's Tokio blocking workers); those callbacks can run after the

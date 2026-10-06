@@ -872,6 +872,7 @@ TEST(AudioTelemetryTest, LanguageIncludesOnlySupportedCodes) {
   EXPECT_EQ(AudioInternal::SanitizeLanguageForTelemetry("fr-ca"), "fr-ca");
   EXPECT_TRUE(AudioInternal::SanitizeLanguageForTelemetry("transcribe my private meeting").empty());
   EXPECT_TRUE(AudioInternal::SanitizeLanguageForTelemetry("en?customer=private").empty());
+  EXPECT_TRUE(AudioInternal::SanitizeLanguageForTelemetry(std::string(1024 * 1024, 'x')).empty());
 }
 
 TEST_F(AudioSessionInferenceTest, TranscribeFromFilePath) {

@@ -7,135 +7,44 @@
 #include <EventProperties.hpp>
 #include <EventProperty.hpp>
 
-#include <algorithm>
-#include <cctype>
 #include <map>
-#include <string>
-#include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace fl::TelemetryInternal {
 
+using ::Microsoft::Applications::Events::DataCategory;
+using ::Microsoft::Applications::Events::DataCategory_PartC;
+using ::Microsoft::Applications::Events::PiiKind;
+using ::Microsoft::Applications::Events::PiiKind_None;
+
+inline constexpr size_t kMaxTelemetryStringArrayElements = 64;
+
 namespace detail {
 
-inline bool IsSecretProperty(std::string_view name) {
-  std::string normalized(name);
-  std::transform(normalized.begin(), normalized.end(), normalized.begin(),
-                 [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
-
-  constexpr std::string_view secret_names[] = {
-      "access-key",
-      "access_key",
-      "accesskey",
-      "access-token",
-      "access_token",
-      "account-key",
-      "account_key",
-      "accountkey",
-      "api-key",
-      "api_key",
-      "apikey",
-      "auth",
-      "authorization",
-      "client-secret",
-      "client_secret",
-      "connection-string",
-      "connection_string",
-      "connectionstring",
-      "credential",
-      "credentials",
-      "password",
-      "passwd",
-      "private-key",
-      "private_key",
-      "privatekey",
-      "pwd",
-      "secret",
-      "sig",
-      "signature",
-      "token",
-  };
-  for (const auto secret_name : secret_names) {
-    if (normalized == secret_name ||
-        (normalized.size() > secret_name.size() && normalized.ends_with(secret_name))) {
-      return true;
-    }
-  }
-  return false;
+inline bool IsIdentifierProperty(std::string_view name) {
+  return name == "ModelId" || name == "CorrelationId" || name == "ExecutionProvider" ||
+         name == "ProviderName" || name == "AppSessionGuid";
 }
 
-inline size_t FindUrlAnchor(std::string_view value) {
-  size_t separator = value.find("://");
-  while (separator != std::string_view::npos) {
-    size_t start = separator;
-    while (start > 0) {
-      const unsigned char character = static_cast<unsigned char>(value[start - 1]);
-      if (!std::isalnum(character) && value[start - 1] != '+' && value[start - 1] != '-' &&
-          value[start - 1] != '.') {
-        break;
-      }
-      --start;
-    }
-    if (start < separator && std::isalpha(static_cast<unsigned char>(value[start]))) {
-      return start;
-    }
-    separator = value.find("://", separator + 3);
+inline std::string SanitizePropertyValue(std::string_view name, std::string_view value) {
+  if (IsSecretProperty(name)) {
+    return "[secret]";
   }
-  return std::string_view::npos;
+  return IsIdentifierProperty(name) ? SanitizeTelemetryIdentifier(value) : SanitizeTelemetryValue(value);
 }
 
-inline size_t FindAbsolutePathAnchor(std::string_view value) {
-  for (size_t i = 0; i + 1 < value.size(); ++i) {
-    if (value[i] != '/' || value[i + 1] == '/' ||
-        std::isspace(static_cast<unsigned char>(value[i + 1]))) {
-      continue;
-    }
-
-    if (i == 0 || std::isspace(static_cast<unsigned char>(value[i - 1])) ||
-        value[i - 1] == ':' || value[i - 1] == '=' || value[i - 1] == '"' ||
-        value[i - 1] == '\'' || value[i - 1] == '(') {
-      return i;
-    }
+inline std::vector<std::string> SanitizeStringArray(std::string_view name, const std::vector<std::string>& values) {
+  const auto count = (std::min)(values.size(), kMaxTelemetryStringArrayElements);
+  std::vector<std::string> sanitized_values;
+  sanitized_values.reserve(count);
+  for (size_t i = 0; i < count; ++i) {
+    sanitized_values.push_back(SanitizePropertyValue(name, values[i]));
   }
-  return std::string_view::npos;
-}
-
-inline std::string SanitizeString(std::string_view value) {
-  const size_t url_anchor = FindUrlAnchor(value);
-  std::string without_url(value.substr(0, url_anchor));
-  if (url_anchor != std::string_view::npos) {
-    without_url += "[url]";
+  if (values.size() > count) {
+    sanitized_values.back() = "[oversized array]";
   }
-
-  const size_t path_anchor = FindAbsolutePathAnchor(without_url);
-  if (path_anchor != std::string_view::npos) {
-    without_url.replace(path_anchor, std::string::npos, "[path]");
-  }
-  return ScrubStringForTelemetry(without_url);
-}
-
-inline std::string SanitizeMetadataValue(std::string_view value) {
-  for (size_t separator = value.find_first_of(":="); separator != std::string_view::npos;
-       separator = value.find_first_of(":=", separator + 1)) {
-    size_t end = separator;
-    while (end > 0 && std::isspace(static_cast<unsigned char>(value[end - 1]))) {
-      --end;
-    }
-    size_t start = end;
-    while (start > 0) {
-      const unsigned char character = static_cast<unsigned char>(value[start - 1]);
-      if (!std::isalnum(character) && character != '_' && character != '-' && character != '.') {
-        break;
-      }
-      --start;
-    }
-
-    if (start < end && IsSecretProperty(value.substr(start, end - start))) {
-      return SanitizeString(std::string(value.substr(0, separator + 1)) + "[secret]");
-    }
-  }
-
-  return SanitizeString(value);
+  return sanitized_values;
 }
 
 inline void SanitizeProperties(::Microsoft::Applications::Events::EventProperties& event_properties,
@@ -147,18 +56,13 @@ inline void SanitizeProperties(::Microsoft::Applications::Events::EventPropertie
   auto& properties =
       const_cast<std::map<std::string, EventProperty>&>(event_properties.GetProperties(category));
   for (auto& [name, property] : properties) {
-    const bool secret_property = IsSecretProperty(name);
     if (property.type == EventProperty::TYPE_STRING) {
-      const auto value = property.as_string == nullptr ? std::string_view{} : std::string_view(property.as_string);
-      const auto sanitized_value = secret_property ? std::string{"[secret]"} : SanitizeMetadataValue(value);
+      const auto sanitized_value = SanitizePropertyValue(name, BoundedTelemetryCString(property.as_string));
       property = EventProperty(sanitized_value, property.piiKind, property.dataCategory);
     } else if (property.type == EventProperty::TYPE_STRING_ARRAY) {
       std::vector<std::string> sanitized_values;
       if (property.as_stringArray != nullptr) {
-        sanitized_values.reserve(property.as_stringArray->size());
-        for (const auto& value : *property.as_stringArray) {
-          sanitized_values.push_back(secret_property ? std::string{"[secret]"} : SanitizeMetadataValue(value));
-        }
+        sanitized_values = SanitizeStringArray(name, *property.as_stringArray);
       }
 
       property = EventProperty(sanitized_values, property.piiKind, property.dataCategory);
@@ -168,11 +72,39 @@ inline void SanitizeProperties(::Microsoft::Applications::Events::EventPropertie
 
 }  // namespace detail
 
+// Bound strings before 1DS takes an owning copy, not only when the event is ready to upload.
+class BoundedEventProperties : public ::Microsoft::Applications::Events::EventProperties {
+ public:
+  using EventProperties::EventProperties;
+
+  void SetProperty(const char* name, std::string_view value, PiiKind pii_kind = PiiKind_None,
+                   DataCategory category = DataCategory_PartC) {
+    EventProperties::SetProperty(name, detail::SanitizePropertyValue(name, value), pii_kind, category);
+  }
+
+  void SetProperty(const char* name, const char* value, PiiKind pii_kind = PiiKind_None,
+                   DataCategory category = DataCategory_PartC) {
+    SetProperty(name, BoundedTelemetryCString(value), pii_kind, category);
+  }
+
+  void SetProperty(const char* name, const std::vector<std::string>& values, PiiKind pii_kind = PiiKind_None,
+                   DataCategory category = DataCategory_PartC) {
+    auto sanitized_values = detail::SanitizeStringArray(name, values);
+    EventProperties::SetProperty(name, sanitized_values, pii_kind, category);
+  }
+
+  template <typename Value>
+    requires std::is_arithmetic_v<Value>
+  void SetProperty(const char* name, Value value, PiiKind pii_kind = PiiKind_None,
+                   DataCategory category = DataCategory_PartC) {
+    EventProperties::SetProperty(name, value, pii_kind, category);
+  }
+};
+
 inline std::string SanitizeCommonContextValue(std::string_view value) {
-  return detail::SanitizeMetadataValue(value);
+  return SanitizeTelemetryValue(value);
 }
 
-// Enforces telemetry string privacy and size limits at the final EventProperties emission boundary.
 inline void SanitizeEventProperties(::Microsoft::Applications::Events::EventProperties& event_properties) {
   detail::SanitizeProperties(event_properties, ::Microsoft::Applications::Events::DataCategory_PartC);
   detail::SanitizeProperties(event_properties, ::Microsoft::Applications::Events::DataCategory_PartB);

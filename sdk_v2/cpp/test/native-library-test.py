@@ -1,6 +1,6 @@
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License.
-"""Model-free ELF artifact and dynamic-loader regression tests."""
+"""Model-free native export and ELF dynamic-loader regression tests."""
 
 import ctypes.util
 import os
@@ -11,19 +11,28 @@ import sys
 import threading
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 
-def check_artifact(library, nm, readelf):
+def check_exports(library, nm, apple=False):
+    args = ["-g", "-U", "-j"] if apple else [
+        "--dynamic", "--defined-only", "--format=posix"
+    ]
     symbols = subprocess.check_output(
-        [nm, "--dynamic", "--defined-only", "--format=posix", library], text=True
+        [nm, *args, library], text=True
     )
     exported = {line.split()[0] for line in symbols.splitlines() if line.strip()}
+    if apple:
+        exported = {symbol.removeprefix("_") for symbol in exported}
     expected = {"FoundryLocalGetApi", "FoundryLocalGetVersionString"}
     if exported != expected:
         raise AssertionError(
-            f"Unexpected dynamic exports: {exported}; expected {expected}"
+            f"Unexpected defined exports: {exported}; expected {expected}"
         )
+
+
+def check_artifact(library, nm, readelf):
+    check_exports(library, nm)
     dynamic = subprocess.check_output([readelf, "--dynamic", library], text=True)
     if not any(
         "(FLAGS_1)" in line and "NODELETE" in line for line in dynamic.splitlines()
@@ -66,6 +75,36 @@ class TlsProbeTest(unittest.TestCase):
 
     def test_non_tls_header(self):
         self.check_prefix([b"HT"], False)
+
+
+class NativeExportTest(unittest.TestCase):
+    @patch("subprocess.check_output")
+    def test_exact_elf_exports(self, inspect):
+        inspect.return_value = "FoundryLocalGetApi T 1 1\nFoundryLocalGetVersionString T 2 1\n"
+        check_exports("library", "nm")
+
+    @patch("subprocess.check_output")
+    def test_exact_apple_exports(self, inspect):
+        inspect.return_value = "_FoundryLocalGetApi\n_FoundryLocalGetVersionString\n"
+        check_exports("library", "nm", apple=True)
+        self.assertEqual(inspect.call_args.args[0], ["nm", "-g", "-U", "-j", "library"])
+
+    @patch("subprocess.check_output")
+    def test_missing_or_leaked_exports_fail(self, inspect):
+        for symbols in [
+            "",
+            "FoundryLocalGetApi T 1 1\n",
+            "FoundryLocalGetApi T 1 1\nFoundryLocalGetVersionString T 2 1\ncurl_easy_init T 3 1\n",
+        ]:
+            inspect.return_value = symbols
+            with self.assertRaises(AssertionError):
+                check_exports("library", "nm")
+
+    @patch("subprocess.check_output")
+    def test_inspection_failure_is_not_success(self, inspect):
+        inspect.side_effect = subprocess.CalledProcessError(1, "nm")
+        with self.assertRaises(subprocess.CalledProcessError):
+            check_exports("library", "nm")
 
 
 def check_runtime(library, probe, output_dir, order):
@@ -111,7 +150,9 @@ def check_runtime(library, probe, output_dir, order):
 
 
 if __name__ == "__main__":
-    if sys.argv[1] == "artifact":
+    if sys.argv[1] == "exports":
+        check_exports(sys.argv[2], sys.argv[3], len(sys.argv) > 4 and sys.argv[4] == "apple")
+    elif sys.argv[1] == "artifact":
         check_artifact(*sys.argv[2:])
     elif sys.argv[1] == "runtime":
         check_runtime(*sys.argv[2:])
