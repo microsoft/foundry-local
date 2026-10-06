@@ -2,6 +2,9 @@
 
 The Foundry Local Rust SDK provides an async Rust interface for running AI models locally on your machine. Discover, download, load, and run inference — all without cloud dependencies.
 
+For the v2 typed inference API, session state, and streaming examples across languages,
+see [Inference with the Foundry Local SDK](../INFERENCING.md).
+
 > **v2 — built on the Foundry Local C++ engine.** This is the v2 binding, layered on the
 > `foundry_local` C ABI (the same native engine used by the v2 Python and C# SDKs). Its public
 > API is **fully backwards-compatible** with the v1 Rust SDK (`sdk/rust`) — existing code

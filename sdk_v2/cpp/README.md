@@ -9,6 +9,9 @@ service.
 The SDK implementation builds as C++20, while applications that consume the public
 wrapper need only C++17 or newer.
 
+For an inference-focused introduction to models, sessions, requests, responses, items,
+and streaming across languages, see [Inference with the Foundry Local SDK](../INFERENCING.md).
+
 ## Features
 
 - **Model catalog** -- discover model aliases, variants, cached models, and loaded models

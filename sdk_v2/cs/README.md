@@ -2,6 +2,9 @@
 
 The Foundry Local C# SDK provides a .NET interface for running AI models locally via the Foundry Local Core. Discover, download, load, and run inference entirely on your own machine — no cloud required.
 
+For the v2 inference concepts and typed, stateful session examples, see
+[Inference with the Foundry Local SDK](../INFERENCING.md).
+
 ## Features
 
 - **Model catalog** — browse and search all available models; filter by cached or loaded state
