@@ -15,8 +15,9 @@ from unittest.mock import Mock, patch
 
 
 def defined_exports(library, nm, apple=False):
+    # GCC compatibility objects can leave local definitions in .dynsym.
     args = ["-g", "-U", "-j"] if apple else [
-        "--dynamic", "--defined-only", "--format=posix"
+        "--dynamic", "--defined-only", "--extern-only", "--format=posix"
     ]
     symbols = subprocess.check_output(
         [nm, *args, library], text=True
@@ -96,6 +97,10 @@ class NativeExportTest(unittest.TestCase):
     def test_exact_elf_exports(self, inspect):
         inspect.return_value = "FoundryLocalGetApi T 1 1\nFoundryLocalGetVersionString T 2 1\n"
         check_exports("library", "nm")
+        self.assertEqual(
+            inspect.call_args.args[0],
+            ["nm", "--dynamic", "--defined-only", "--extern-only", "--format=posix", "library"],
+        )
 
     @patch("subprocess.check_output")
     def test_exact_apple_exports(self, inspect):
@@ -109,6 +114,7 @@ class NativeExportTest(unittest.TestCase):
             "",
             "FoundryLocalGetApi T 1 1\n",
             "FoundryLocalGetApi T 1 1\nFoundryLocalGetVersionString T 2 1\ncurl_easy_init T 3 1\n",
+            "FoundryLocalGetApi T 1 1\nFoundryLocalGetVersionString T 2 1\nunexpected_weak_symbol W 3 1\n",
         ]:
             inspect.return_value = symbols
             with self.assertRaises(AssertionError):
@@ -125,6 +131,7 @@ class NativeExportTest(unittest.TestCase):
     def test_private_transports_allow_unrelated_symbols(self, inspect):
         inspect.return_value = "main T 1 1\n_ZTVTestClass V 2 1\n"
         check_private_transports("binary", "nm")
+        self.assertIn("--extern-only", inspect.call_args.args[0])
 
     @patch("subprocess.check_output")
     def test_private_transports_reject_strong_and_weak_exports(self, inspect):

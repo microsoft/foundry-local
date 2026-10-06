@@ -86,6 +86,8 @@ shipped shared dependencies.
 Model-free exact-export checks run in Linux and macOS builds; Linux also checks
 strong/weak archive isolation, private transport symbols in internal tests, and runtime
 calls through the public fixture API.
+ELF checks inspect external definitions only: local symbols retained in `.dynsym`
+by GCC compatibility objects are not public exports.
 
 ## Build From Source
 
