@@ -509,9 +509,19 @@ TEST(AssistantTurnGuardTest, AnEmptyTextEventNeverEndsTheTurn) {
 TEST(AssistantTurnGuardTest, ParallelCallsWithNoTextAreUnaffected) {
   AssistantTurnGuard guard;
 
-  guard.RecordToolCall();
-  guard.RecordToolCall();
+  EXPECT_TRUE(guard.RecordToolCall());
+  EXPECT_TRUE(guard.RecordToolCall());
   EXPECT_FALSE(guard.TurnEnded());
+}
+
+TEST(AssistantTurnGuardTest, SerialTurnEndsOnFirstCallEvenInOneFragment) {
+  AssistantTurnGuard guard(/*parallel_tool_calls=*/false);
+
+  EXPECT_EQ(guard.OfferVisibleText("Let me check."), TextDisposition::kEmit);
+  EXPECT_TRUE(guard.RecordToolCall());
+  EXPECT_TRUE(guard.TurnEnded());
+  EXPECT_FALSE(guard.RecordToolCall());
+  EXPECT_EQ(guard.OfferVisibleText(" further text"), TextDisposition::kDropped);
 }
 
 TEST(AssistantTurnGuardTest, WhatTheGuardAllowsIsExactlyWhatTheTranscriptAccepts) {

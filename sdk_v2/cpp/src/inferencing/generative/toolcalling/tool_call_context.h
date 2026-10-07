@@ -31,6 +31,8 @@ struct ToolCallContext {
   /// Whether the model may produce tool call output (controlled by tool_choice + tools presence).
   bool tool_output = false;
 
+  bool parallel_tool_calls = true;
+
   /// Whether the model supports chain-of-thought reasoning (e.g., DeepSeek R1 Distilled).
   /// When true, grammar guidance is applied for text-only output to produce correct <think> tags.
   bool supports_reasoning = false;
