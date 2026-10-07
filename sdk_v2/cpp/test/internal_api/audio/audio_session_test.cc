@@ -8,6 +8,7 @@
 
 #include "ep_detection/ep_detector.h"
 #include "exception.h"
+#include "inferencing/generative/audio/onnx_audio_generator.h"
 #include "inferencing/generative/audio/pcm_utils.h"
 #include "inferencing/model_load_manager.h"
 #include "items/audio_item.h"
@@ -24,10 +25,12 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <memory>
 #include <limits>
 #include <optional>
@@ -856,6 +859,94 @@ TEST_F(AudioSessionTest, NemotronOpenAIJsonRejectsOversizedWavDataChunkBeforeAll
 // These run AudioSession::ProcessRequest directly (no web service).
 // ===========================================================================
 
+TEST_F(AudioSessionInferenceTest, TranscribeFromFilePathPopulatesSegmentTimestamps) {
+  if (!model_) {
+    GTEST_SKIP() << "Audio model not loaded";
+  }
+
+  auto audio_path = fl::test::GetTestDataPath("Recording.mp3");
+  ASSERT_TRUE(fs::exists(audio_path)) << "Test audio file not found: " << audio_path;
+
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+
+  Request request;
+  auto audio_item = std::make_unique<AudioItem>(audio_path.string());
+  request.AddOwnedItem(std::move(audio_item));
+  request.options["language"] = "en";
+
+  Response response;
+  ASSERT_NO_THROW(session.ProcessRequest(request, response));
+  ASSERT_FALSE(response.items.empty()) << "No items in response";
+
+  const SpeechResultItem* result = nullptr;
+  for (const auto& item : response.items) {
+    if (item->type == FOUNDRY_LOCAL_ITEM_SPEECH_RESULT) {
+      result = static_cast<SpeechResultItem*>(item.get());
+      break;
+    }
+  }
+  ASSERT_NE(result, nullptr) << "No SpeechResultItem in response";
+
+  // The final joined text must never leak Whisper's literal "<|X.XX|>" timestamp
+  // marker tokens — this is the regression this test guards against.
+  EXPECT_EQ(result->text.find("<|"), std::string::npos)
+      << "Transcription text leaked a timestamp marker: " << result->text;
+
+  ASSERT_FALSE(result->segments.empty()) << "Expected at least one speech segment";
+
+  std::int64_t previous_end_ms = -1;
+  int timed_segments = 0;
+  for (const auto& segment : result->segments) {
+    ASSERT_NE(segment, nullptr);
+    EXPECT_EQ(segment->kind, FOUNDRY_LOCAL_SPEECH_SEGMENT_FINAL)
+        << "Completed Whisper transcription should not contain an untimed trailing segment";
+    EXPECT_EQ(segment->text.find("<|"), std::string::npos)
+        << "Segment text leaked a timestamp marker: " << segment->text;
+    EXPECT_TRUE(std::any_of(segment->text.begin(), segment->text.end(),
+                            [](unsigned char c) { return !std::isspace(c); }))
+        << "Whitespace-only segment should not be emitted";
+
+    if (segment->kind == FOUNDRY_LOCAL_SPEECH_SEGMENT_FINAL) {
+      ASSERT_TRUE(segment->start_time_ms.has_value()) << "FINAL segment missing start_time_ms";
+      ASSERT_TRUE(segment->end_time_ms.has_value()) << "FINAL segment missing end_time_ms";
+      std::cout << "[segment] " << *segment->start_time_ms << "-" << *segment->end_time_ms << " ms: "
+                << segment->text << "\n";
+      EXPECT_GT(*segment->end_time_ms, *segment->start_time_ms);
+      EXPECT_GE(*segment->start_time_ms, previous_end_ms)
+          << "Segment timestamps should be monotonically non-decreasing";
+      previous_end_ms = *segment->end_time_ms;
+      ++timed_segments;
+    }
+  }
+
+  // Recording.mp3 is ~15.5 s of speech across three sentences; Whisper splits it into multiple timed segments.
+  EXPECT_GE(timed_segments, 2) << "Expected multiple FINAL segments with real timestamps";
+  EXPECT_GT(previous_end_ms, 10000) << "Last segment should end near the end of the ~15.5 s recording";
+  EXPECT_LE(previous_end_ms, 16500) << "Last segment should not end past the ~15.5 s recording";
+  EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
+}
+
+// GenerateAll() is inherited from AudioGenerator and concatenates raw Decode() results without consulting
+// LastTimestampMilliseconds(), so timestamp suppression has to live in Decode() itself to satisfy its documented
+// contract. The session loops filter boundaries separately and would hide a regression here.
+TEST_F(AudioSessionInferenceTest, GenerateAllDoesNotLeakTimestampMarkers) {
+  if (!model_) {
+    GTEST_SKIP() << "Audio model not loaded";
+  }
+
+  auto audio_path = fl::test::GetTestDataPath("Recording.mp3");
+  ASSERT_TRUE(fs::exists(audio_path)) << "Test audio file not found: " << audio_path;
+
+  auto generator = OnnxAudioGenerator::Create(audio_path.string(), std::nullopt, GetModel(), "en");
+  ASSERT_NE(generator, nullptr);
+
+  const std::string text = generator->GenerateAll();
+
+  EXPECT_EQ(text.find("<|"), std::string::npos) << "GenerateAll leaked a control token: " << text;
+  EXPECT_TRUE(std::any_of(text.begin(), text.end(), [](unsigned char c) { return !std::isspace(c); }))
+      << "GenerateAll should still return transcribed text once timestamps are suppressed";
+}
+
 TEST(AudioTelemetryTest, PcmDurationCountsSamplesIncludingEmptyAndSubMillisecondInput) {
   EXPECT_EQ(AudioInternal::AudioDurationMsFromSamples(0), 0);
   EXPECT_EQ(AudioInternal::AudioDurationMsFromSamples(15), 0);
@@ -958,6 +1049,12 @@ TEST_F(AudioSessionInferenceTest, TranscribeViaOpenAIJson) {
   std::string text = resp_json["text"].get<std::string>();
   EXPECT_FALSE(text.empty()) << "Transcription text should not be empty";
   ExpectTranscriptionContent(text);
+
+  // This response contract carries no segments field, so Whisper's timestamp tokens
+  // (now emitted since BuildWhisperPrompt no longer sets <|notimestamps|>) must be
+  // filtered out rather than leaking into the plain transcription text.
+  EXPECT_EQ(text.find("<|"), std::string::npos)
+      << "Transcription text leaked a timestamp marker: " << text;
 
   EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
   EXPECT_GT(response.usage.total_tokens, 0) << "Expected non-zero total_tokens";
