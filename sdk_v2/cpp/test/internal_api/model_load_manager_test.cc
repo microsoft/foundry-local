@@ -257,6 +257,46 @@ TEST(ModelLoadManagerTest, LoadRejectsEveryDmlSpellingBeforeProviderPreparation)
   }
 }
 
+TEST(ModelLoadManagerTest, LoadWithCpuOverrideIgnoresDmlArtifactProvider) {
+  CpuOnlyDetector ep;
+  fl::StderrLogger logger;
+  TempModelDir dir("dml-artifact-cpu-override", "dml");
+  bool observed = false;
+  fl::ModelLoadManager mgr(ep, logger, [&](const fl::GenAIConfig&, fl::ExecutionProvider resolved_ep) {
+    observed = true;
+    EXPECT_EQ(resolved_ep, fl::ExecutionProvider::kCPU);
+  });
+
+  try {
+    mgr.LoadModel(dir.path(), "local/dml-artifact:1", fl::ExecutionProvider::kCPU);
+  } catch (const fl::Exception& ex) {
+    EXPECT_NE(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE) << ex.what();
+  }
+
+  EXPECT_TRUE(observed);
+  EXPECT_TRUE(ep.prepared_ep.empty());
+}
+
+TEST(ModelLoadManagerTest, LoadGenericGpuDmlArtifactAutoSelectsCuda) {
+  GpuEpDetector ep;
+  fl::StderrLogger logger;
+  TempModelDir dir("generic-gpu-dml-artifact", "dml");
+  bool observed = false;
+  fl::ModelLoadManager mgr(ep, logger, [&](const fl::GenAIConfig&, fl::ExecutionProvider resolved_ep) {
+    observed = true;
+    EXPECT_EQ(resolved_ep, fl::ExecutionProvider::kCUDA);
+  });
+
+  try {
+    mgr.LoadModel(dir.path(), "local/model-generic-gpu:1");
+  } catch (const fl::Exception& ex) {
+    EXPECT_NE(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE) << ex.what();
+  }
+
+  EXPECT_TRUE(observed);
+  EXPECT_EQ(ep.prepared_ep, "CUDAExecutionProvider");
+}
+
 TEST(ModelLoadManagerTest, LoadWithUnknownOverride_ThrowsInvalidArgument) {
   CpuOnlyDetector ep;
   fl::StderrLogger logger;

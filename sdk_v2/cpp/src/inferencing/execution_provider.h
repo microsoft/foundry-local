@@ -45,6 +45,7 @@ struct EPUtils {
       return ExecutionProvider::kOpenVINO;
     } else if (ep == "nvtensorrtrtx" ||
                ep == "NvTensorRtRtx" ||
+               ep == "NvTensorRtRtxExecutionProvider" ||
                ep == "NvTensorRTRTXExecutionProvider") {
       return ExecutionProvider::kTensorRT_RTX;
     } else if (ep == "vitisai" ||

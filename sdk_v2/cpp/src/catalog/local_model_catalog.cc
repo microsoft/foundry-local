@@ -56,9 +56,13 @@ bool IsDmlProvider(std::string_view provider) {
          provider == "DMLExecutionProvider";
 }
 
+bool HasDmlProvider(const GenAIConfig& config) {
+  return config.HasProvider("dml") || config.HasProvider("DML") || config.HasProvider("DmlExecutionProvider") ||
+         config.HasProvider("DMLExecutionProvider");
+}
+
 std::optional<std::string> ConfigExecutionProvider(const GenAIConfig& config) {
-  if (config.HasProvider("dml") || config.HasProvider("DML") || config.HasProvider("DmlExecutionProvider") ||
-      config.HasProvider("DMLExecutionProvider")) {
+  if (HasDmlProvider(config)) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "DirectML execution provider is not supported");
   }
 
@@ -110,13 +114,19 @@ std::string CanonicalizeExecutionProvider(std::string_view provider_name) {
   return std::string(EPUtils::EPtoRegistrationName(provider));
 }
 
-void NormalizeRuntimeMetadata(ModelInfo& info) {
+void NormalizeRuntimeMetadata(ModelInfo& info, bool preserve_unsupported_provider = false) {
   if (const auto* device_type = info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_DEVICE_TYPE_STR);
       device_type && info.device_type == DeviceType::kNotSet) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "device_type must be CPU, GPU, or NPU");
   }
 
   if (info.execution_provider.empty()) {
+    return;
+  }
+
+  if (preserve_unsupported_provider &&
+      (IsDmlProvider(info.execution_provider) ||
+       EPUtils::StringtoEP(info.execution_provider) == ExecutionProvider::kUnknown)) {
     return;
   }
 
@@ -508,10 +518,13 @@ ModelInfo LocalModelCatalog::ResolveMetadata(const ModelInfo& metadata, const st
   if (!resolved.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR)) {
     resolved.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR, "local");
   }
-  const auto config_provider = ConfigExecutionProvider(genai_config);
   if (resolved.execution_provider.empty()) {
-    if (config_provider) {
-      resolved.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR, *config_provider);
+    const bool defer_dml_to_generic_gpu_fallback = name.ends_with("-generic-gpu") && HasDmlProvider(genai_config);
+    if (!defer_dml_to_generic_gpu_fallback) {
+      const auto config_provider = ConfigExecutionProvider(genai_config);
+      if (config_provider) {
+        resolved.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR, *config_provider);
+      }
     }
   }
   NormalizeRuntimeMetadata(resolved);
@@ -638,8 +651,8 @@ std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistration
         info.version = parsed_id.version;
         info.model_id = model_id;
         info.uri.clear();
-        NormalizeRuntimeMetadata(info);
       }
+      NormalizeRuntimeMetadata(info, !metadata_prepared);
 
       const auto duplicate = std::find_if(registrations.begin(), registrations.end(), [&](const auto& existing) {
         return existing.info.model_id == info.model_id;

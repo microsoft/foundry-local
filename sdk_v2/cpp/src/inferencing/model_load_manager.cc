@@ -181,10 +181,6 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
   }
 
   auto genai_config = GenAIConfig::LoadFromFile(config_path);
-  if (genai_config.HasProvider("dml") || genai_config.HasProvider("DML") ||
-      genai_config.HasProvider("DmlExecutionProvider") || genai_config.HasProvider("DMLExecutionProvider")) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "DirectML execution provider is not supported");
-  }
 
   // Determine execution provider
   auto resolved_ep = ep_override;
@@ -213,6 +209,12 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
         logger_.Log(LogLevel::Information, fmt::format("using WebGPU EP for model: {}", id_str));
       }
     }
+  }
+
+  if (resolved_ep == ExecutionProvider::kDefault &&
+      (genai_config.HasProvider("dml") || genai_config.HasProvider("DML") ||
+       genai_config.HasProvider("DmlExecutionProvider") || genai_config.HasProvider("DMLExecutionProvider"))) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "DirectML execution provider is not supported");
   }
 
   std::string required_ep;

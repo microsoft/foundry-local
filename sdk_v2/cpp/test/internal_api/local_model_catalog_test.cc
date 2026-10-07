@@ -255,6 +255,32 @@ TEST_F(LocalModelCatalogTest, RegistrationRejectsEveryDmlArtifactProviderSpellin
   }
 }
 
+TEST_F(LocalModelCatalogTest, RegistrationProviderOverrideIgnoresDmlArtifactProvider) {
+  std::ofstream(model_dir_ / "genai_config.json")
+      << R"({"model":{"decoder":{"session_options":{"provider_options":[{"dml":{}}]}}}})";
+  auto metadata = MakeMetadata();
+  metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR, "cpu");
+
+  auto* model = catalog_.RegisterModel(model_dir_.string(), "dml-artifact-override:1", metadata);
+
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->Info().execution_provider, "CPUExecutionProvider");
+  EXPECT_EQ(model->Info().device_type, DeviceType::kCPU);
+  EXPECT_TRUE(model->Info().execution_provider_override);
+}
+
+TEST_F(LocalModelCatalogTest, RegistrationDefersGenericGpuDmlArtifactToLoadFallback) {
+  std::ofstream(model_dir_ / "genai_config.json")
+      << R"({"model":{"decoder":{"session_options":{"provider_options":[{"dml":{}}]}}}})";
+
+  auto* model = catalog_.RegisterModel(model_dir_.string(), "dml-artifact-generic-gpu:1", MakeMetadata());
+
+  ASSERT_NE(model, nullptr);
+  EXPECT_TRUE(model->Info().execution_provider.empty());
+  EXPECT_EQ(model->Info().device_type, DeviceType::kNotSet);
+  EXPECT_FALSE(model->Info().execution_provider_override);
+}
+
 TEST_F(LocalModelCatalogTest, ArtifactRuntimeMetadataDoesNotOverrideArtifactProviderOptionsOnLoad) {
   std::ofstream(model_dir_ / "genai_config.json")
       << R"({"model":{"decoder":{"session_options":{"provider_options":[{"cuda":{"device_id":"1"}}]}}}})";
@@ -881,6 +907,39 @@ TEST_F(LocalModelCatalogTest, MissingSchemaV2ArtifactRemainsUncachedAndCanBeUnre
   ASSERT_EQ(restored.ListModels().size(), 1u);
 }
 
+TEST_F(LocalModelCatalogTest, UnsupportedSchemaV2ProviderRemainsRecoverableAcrossMigration) {
+  auto legacy_info = MakeMetadata();
+  legacy_info.model_id = "unsupported-provider:1";
+  legacy_info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR, "UnknownExecutionProvider");
+
+  const auto cache_dir = root_.path() / "cache" / "models";
+  std::filesystem::create_directories(cache_dir);
+  const nlohmann::json legacy_index = {
+      {"version", 2},
+      {"catalog_name", "local"},
+      {"models", {{{"model_info", ModelInfoToJson(legacy_info)}, {"model_path", model_dir_.string()}}}},
+  };
+  const auto index_path = cache_dir / "foundry.local.modelinfo.json";
+  std::ofstream(index_path) << legacy_index.dump(2);
+
+  auto restored = MakeCatalog();
+  auto* recovery_model = restored.GetModelVariant("unsupported-provider:1");
+  ASSERT_NE(recovery_model, nullptr);
+  EXPECT_EQ(recovery_model->Info().execution_provider, "UnknownExecutionProvider");
+
+  ASSERT_NE(restored.RegisterModel(model_dir_.string(), "migration-trigger:1", MakeMetadata()), nullptr);
+  nlohmann::json migrated_index;
+  std::ifstream(index_path) >> migrated_index;
+  EXPECT_EQ(migrated_index["version"], 3);
+  EXPECT_EQ(migrated_index["models"][0]["metadata_prepared"], false);
+
+  auto restored_again = MakeCatalog();
+  ASSERT_NE(restored_again.GetModelVariant("unsupported-provider:1"), nullptr);
+  EXPECT_NO_THROW(restored_again.UnregisterModel("unsupported-provider:1"));
+  EXPECT_EQ(restored_again.GetModelVariant("unsupported-provider:1"), nullptr);
+  ASSERT_EQ(restored_again.ListModels().size(), 1u);
+}
+
 TEST_F(LocalModelCatalogTest, ListingSchemaV2RegistrationDoesNotWriteIndex) {
   auto legacy_info = MakeMetadata();
   legacy_info.model_id = "read-only-index:1";
@@ -976,6 +1035,11 @@ TEST_F(LocalModelCatalogTest, RestoredSchemaV3RegistrationValidatesRuntimeMetada
     index["models"][0].erase("execution_provider_override");
     expect_preserved_failure(index);
   }
+
+  index["models"][0]["model_info"]["runtime"] = {
+      {"deviceType", "NPU"}, {"executionProvider", "CPUExecutionProvider"}};
+  index["models"][0]["metadata_prepared"] = false;
+  expect_preserved_failure(index);
 
   index["models"][0]["model_info"].erase("runtime");
   index["models"][0]["execution_provider_override"] = "true";

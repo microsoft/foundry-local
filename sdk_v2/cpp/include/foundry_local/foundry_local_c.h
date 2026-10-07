@@ -1077,8 +1077,7 @@ struct flCatalogApi {
   /// modalities, and arbitrary string or integer properties, are preserved; missing values receive authoritative
   /// defaults when available. Runtime provider names are validated and canonicalized, and known provider/device
   /// mismatches are rejected. A caller-supplied provider becomes the default Load override; an SDK-derived artifact
-  /// provider is descriptive and leaves genai_config.json provider options intact. An explicit Load provider overrides
-  /// either value.
+  /// provider is descriptive and leaves genai_config.json provider options intact.
   /// Identity, alias, type, timestamps, context length, and prompt templates are derived by the SDK from the
   /// arguments, registration time, and genai_config.json. Caller-supplied location and internal catalog metadata are
   /// ignored.
