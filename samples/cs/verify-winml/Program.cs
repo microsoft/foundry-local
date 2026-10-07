@@ -241,7 +241,7 @@ try
 {
     var chatClient = await chosen.GetChatClientAsync();
     chatClient.Settings.Temperature = 0;
-    chatClient.Settings.MaxTokens = 16;
+    chatClient.Settings.MaxTokens = 500;
     var messages = new List<ChatMessage>
     {
         new() { Role = "system", Content = "You are a helpful assistant." },
