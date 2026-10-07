@@ -5,6 +5,7 @@
 #include "telemetry/device_id.h"
 #include "telemetry/invocation_context.h"
 #include "telemetry/telemetry_environment.h"
+#include "logger.h"
 #include "version.h"
 
 #include <array>
@@ -15,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <thread>
+#include <set>
 #include <vector>
 
 #if defined(FOUNDRY_LOCAL_DESKTOP_WINDOWS)
@@ -35,6 +37,21 @@
 namespace fl {
 
 namespace {
+
+std::string JoinTelemetryValues(const std::set<std::string_view>& values) {
+  std::string joined;
+  for (const auto& value : values) {
+    const auto sanitized = TelemetryInternal::SanitizeTelemetryIdentifier(value);
+    if (joined.size() + sanitized.size() + (joined.empty() ? 0 : 1) > kMaxTelemetryStringLength) {
+      return "[oversized inventory]";
+    }
+    if (!joined.empty()) {
+      joined += ",";
+    }
+    joined += sanitized;
+  }
+  return joined;
+}
 
 #if defined(FOUNDRY_LOCAL_DESKTOP_WINDOWS)
 std::string GetProcessPath() {
@@ -92,16 +109,30 @@ std::string QueryVersionString(const std::vector<unsigned char>& data, uint16_t 
   if (!::VerQueryValueW(data.data(), sub_block, &value, &value_len) || value == nullptr || value_len == 0) {
     return {};
   }
+  if (value_len > kMaxTelemetryInspectionLength + 1) {
+    return "[oversized]";
+  }
 
   auto* wide_value = static_cast<const wchar_t*>(value);
-  const int needed = ::WideCharToMultiByte(CP_UTF8, 0, wide_value, -1, nullptr, 0, nullptr, nullptr);
-  if (needed <= 1) {
+  size_t length = 0;
+  const size_t limit = value_len;
+  while (length < limit && wide_value[length] != L'\0') {
+    ++length;
+  }
+  if (length > 0 && wide_value[length - 1] >= 0xD800 && wide_value[length - 1] <= 0xDBFF) {
+    --length;
+  }
+
+  const int needed = ::WideCharToMultiByte(CP_UTF8, 0, wide_value, static_cast<int>(length),
+                                           nullptr, 0, nullptr, nullptr);
+  if (needed <= 0) {
     return {};
   }
 
   std::string out(static_cast<size_t>(needed), '\0');
-  const int written = ::WideCharToMultiByte(CP_UTF8, 0, wide_value, -1, out.data(), needed, nullptr, nullptr);
-  return written > 0 ? TrimVersionString(std::move(out)) : std::string{};
+  const int written = ::WideCharToMultiByte(CP_UTF8, 0, wide_value, static_cast<int>(length),
+                                            out.data(), needed, nullptr, nullptr);
+  return written > 0 ? TelemetryInternal::SanitizeTelemetryValue(TrimVersionString(std::move(out))) : std::string{};
 }
 
 std::string FormatFixedFileVersion(const VS_FIXEDFILEINFO& info) {
@@ -125,6 +156,10 @@ std::string GetHostAppVersion() {
   DWORD handle = 0;
   const DWORD size = ::GetFileVersionInfoSizeA(path.c_str(), &handle);
   if (size == 0) {
+    return {};
+  }
+  if (size > 1024 * 1024) {
+    StderrLogger{}.Log(LogLevel::Warning, "[Telemetry] Version resource rejected (1 MiB limit)");
     return {};
   }
 
@@ -272,7 +307,9 @@ std::string GetProcessName() {
   return std::filesystem::path(std::string(path.data(), static_cast<size_t>(length))).filename().string();
 #elif defined(__APPLE__)
   const char* name = ::getprogname();
-  return (name != nullptr && name[0] != '\0') ? std::string(name) : std::string{"unknown"};
+  return (name != nullptr && name[0] != '\0')
+             ? TelemetryInternal::SanitizeTelemetryValue(BoundedTelemetryCString(name))
+             : std::string{"unknown"};
 #else
   return "unknown";
 #endif
@@ -306,13 +343,12 @@ PosixOsInfo GetPosixOsInfo() {
 
 #if defined(__linux__) || defined(__ANDROID__)
 std::string ReadBoundedFile(const char* path) {
-  constexpr size_t kMaxProbeBytes = 16 * 1024;
   std::ifstream input(path, std::ios::binary);
   if (!input) {
     return {};
   }
 
-  std::array<char, kMaxProbeBytes> buffer{};
+  std::array<char, kMaxTelemetryProbeLength> buffer{};
   input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
   return std::string(buffer.data(), static_cast<size_t>(input.gcount()));
 }
@@ -364,22 +400,16 @@ std::string CfStringToUtf8(CFStringRef value) {
     return {};
   }
 
-  if (const char* c_str = CFStringGetCStringPtr(value, kCFStringEncodingUTF8); c_str != nullptr) {
-    return std::string(c_str);
+  std::array<UInt8, kMaxTelemetryInspectionLength + 1> buffer{};
+  CFIndex written = 0;
+  const auto length = std::min(CFStringGetLength(value), static_cast<CFIndex>(buffer.size()));
+  const auto converted = CFStringGetBytes(value, CFRangeMake(0, length), kCFStringEncodingUTF8, 0, false,
+                                          buffer.data(), static_cast<CFIndex>(buffer.size()), &written);
+  if (converted < CFStringGetLength(value)) {
+    return "[oversized]";
   }
-
-  const CFIndex length = CFStringGetLength(value);
-  const CFIndex max_size = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8) + 1;
-  if (max_size <= 1) {
-    return {};
-  }
-
-  std::string out(static_cast<size_t>(max_size), '\0');
-  if (!CFStringGetCString(value, out.data(), max_size, kCFStringEncodingUTF8)) {
-    return {};
-  }
-  out.resize(std::strlen(out.c_str()));
-  return out;
+  return TelemetryInternal::SanitizeTelemetryValue(
+      {reinterpret_cast<const char*>(buffer.data()), static_cast<size_t>(written)});
 }
 
 std::string GetBundleString(CFStringRef key) {
@@ -412,15 +442,56 @@ std::string GetHostAppVersion() {
 
 }  // namespace
 
-TelemetryMetadata BuildTelemetryMetadata(std::string app_name) {
+HardwareInfo BuildHardwareInfo(const std::map<std::string, std::vector<std::string>>& devices_to_eps) {
+  HardwareInfo info;
+  info.has_cpu = devices_to_eps.contains("CPU");
+  info.has_gpu = devices_to_eps.contains("GPU");
+  info.has_npu = devices_to_eps.contains("NPU");
+
+  std::set<std::string_view> device_types;
+  std::set<std::string_view> execution_providers;
+  bool complete_devices = devices_to_eps.size() <= kMaxTelemetryInventoryEntries;
+  bool complete_providers = complete_devices;
+  size_t device_entries = 0;
+  size_t provider_entries = 0;
+  for (const auto& [device_type, providers] : devices_to_eps) {
+    if (++device_entries > kMaxTelemetryInventoryEntries) {
+      break;
+    }
+    if (device_type.size() > kMaxTelemetryStringLength) {
+      complete_devices = false;
+    } else {
+      device_types.insert(device_type);
+    }
+
+    const auto count = (std::min)(providers.size(), kMaxTelemetryInventoryEntries - provider_entries);
+    complete_providers &= count == providers.size();
+    for (size_t i = 0; i < count; ++i) {
+      if (providers[i].size() > kMaxTelemetryStringLength) {
+        complete_providers = false;
+      } else {
+        execution_providers.insert(providers[i]);
+      }
+    }
+    provider_entries += count;
+  }
+
+  info.device_type_count = complete_devices ? static_cast<int32_t>(device_types.size()) : -1;
+  info.execution_provider_count = complete_providers ? static_cast<int32_t>(execution_providers.size()) : -1;
+  info.device_types = complete_devices ? JoinTelemetryValues(device_types) : "[oversized inventory]";
+  info.execution_providers = complete_providers ? JoinTelemetryValues(execution_providers) : "[oversized inventory]";
+  return info;
+}
+
+TelemetryMetadata BuildTelemetryMetadata(std::string_view app_name) {
   TelemetryMetadata m;
   m.app_session_guid = GenerateGuidV4();
-  m.version = FOUNDRY_LOCAL_VERSION;
+  m.version = TelemetryInternal::SanitizeTelemetryValue(FOUNDRY_LOCAL_VERSION);
   m.app_version = GetHostAppVersion();
   if (m.app_version.empty()) {
     m.app_version = m.version;
   }
-  m.app_name = std::move(app_name);
+  m.app_name = TelemetryInternal::SanitizeTelemetryValue(app_name);
 
 #ifdef _WIN32
   m.os_name = "Windows";
@@ -438,12 +509,12 @@ TelemetryMetadata BuildTelemetryMetadata(std::string app_name) {
 
 ProcessInfo BuildProcessInfo(const TelemetryMetadata& metadata, bool include_device_id_status) {
   ProcessInfo info;
-  info.app_name = metadata.app_name;
-  info.app_version = metadata.app_version;
-  info.os_name = metadata.os_name;
-  info.os_version = metadata.os_version;
-  info.cpu_arch = metadata.cpu_arch;
-  info.process_name = GetProcessName();
+  info.app_name = TelemetryInternal::SanitizeTelemetryValue(metadata.app_name);
+  info.app_version = TelemetryInternal::SanitizeTelemetryValue(metadata.app_version);
+  info.os_name = TelemetryInternal::SanitizeTelemetryValue(metadata.os_name);
+  info.os_version = TelemetryInternal::SanitizeTelemetryValue(metadata.os_version);
+  info.cpu_arch = TelemetryInternal::SanitizeTelemetryValue(metadata.cpu_arch);
+  info.process_name = TelemetryInternal::SanitizeTelemetryValue(GetProcessName());
   info.device_id_status = include_device_id_status ? TelemetryDeviceId::Instance().GetStatusString() : "Disabled";
   const auto host_environment = GetHostEnvironmentInfo();
   info.is_container = host_environment.is_container;

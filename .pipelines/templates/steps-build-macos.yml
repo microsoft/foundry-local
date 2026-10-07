@@ -64,6 +64,14 @@ steps:
   env:
     VCPKG_ROOT: $(Build.BinariesDirectory)/vcpkg
 
+- bash: |
+    set -euo pipefail
+    ctest --test-dir "build/macOS/${{ parameters.buildConfig }}" \
+      --build-config ${{ parameters.buildConfig }} \
+      --tests-regex "^native-exports$" --no-tests=error --output-on-failure
+  displayName: 'Verify native export isolation'
+  workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
+
 - ${{ if eq(parameters.runTests, true) }}:
   - bash: |
       set -euo pipefail
@@ -162,6 +170,13 @@ steps:
     grep -q '^Timestamp=' <<<"$signature"
   displayName: 'Verify libfoundry_local.dylib signature'
   condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+
+- bash: |
+    set -euo pipefail
+    python3 "$(Build.SourcesDirectory)/sdk_v2/cpp/test/native-library-test.py" \
+      exports "$(Build.ArtifactStagingDirectory)/native/libfoundry_local.dylib" \
+      "$(command -v nm)" apple
+  displayName: 'Verify staged native exports'
 
 # Stage debug symbols into a separate artifact so they can be published
 # independently without being bundled into the Python wheel (which consumes

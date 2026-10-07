@@ -30,16 +30,23 @@ std::vector<ModelInfo> FetchAllModelInfosWithCachedModels(
   };
   auto emit = [&](const std::string& operation, ActionStatus status, int64_t duration_ms,
                   int32_t model_count, const std::string& error) {
-    CatalogFetchInfo info = base_info;
-    info.operation = operation;
+    CatalogFetchInfo info;
+    info.endpoint = TelemetryInternal::SanitizeTelemetryValue(base_info.endpoint);
+    info.region = TelemetryInternal::SanitizeTelemetryValue(base_info.region);
+    info.format = TelemetryInternal::SanitizeTelemetryCatalogFormat(base_info.format);
+    info.user_agent = TelemetryInternal::SanitizeTelemetryValue(base_info.user_agent);
+    info.correlation_id = TelemetryInternal::SanitizeTelemetryIdentifier(base_info.correlation_id);
+    info.operation = TelemetryInternal::SanitizeTelemetryValue(operation);
     info.status = status;
     info.duration_ms = duration_ms;
     info.model_count = model_count;
-    info.error_message = error;
+    info.error_message = TelemetryInternal::SanitizeTelemetryValue(error);
     try {
       telemetry.RecordCatalogFetch(info);
     } catch (const std::exception& ex) {
-      logger.Log(LogLevel::Warning, fmt::format("telemetry CatalogFetch failed: {}", ex.what()));
+      logger.Log(LogLevel::Warning, fmt::format("telemetry CatalogFetch failed: {}",
+                                                TelemetryInternal::SanitizeTelemetryValue(
+                                                    BoundedTelemetryCString(ex.what()))));
     } catch (...) {
       logger.Log(LogLevel::Warning, "telemetry CatalogFetch failed.");
     }

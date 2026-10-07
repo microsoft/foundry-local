@@ -87,6 +87,10 @@ inline ActionStatus ResponseToActionStatus(const std::shared_ptr<HttpRequestHand
 }
 
 inline std::string SafeHttpUserAgent(std::string_view value) {
+  if (value.size() > 128) {
+    return "unknown-http-client";
+  }
+
   constexpr std::string_view products[] = {
       "foundry-local-core/", "foundry-local-cpp/", "foundry-local-csharp/",
       "foundry-local-python/", "foundry-local-js/", "foundry-local-rust/"};

@@ -7,8 +7,6 @@
 #include <ort_genai_c.h>
 
 #include <atomic>
-#include <set>
-#include <sstream>
 #include <string_view>
 
 #include "catalog.h"
@@ -71,38 +69,6 @@ bool IsGenAIVerboseLoggingEnabled() {
 bool IsAdditionalOptionEnabled(const Configuration& config, const std::string& option_name) {
   const auto it = config.additional_options.find(option_name);
   return it != config.additional_options.cend() && IsTruthyConfigValue(it->second);
-}
-
-std::string JoinTelemetryValues(const std::set<std::string>& values) {
-  std::ostringstream joined;
-  bool first = true;
-  for (const auto& value : values) {
-    if (!first) {
-      joined << ",";
-    }
-    first = false;
-    joined << value;
-  }
-  return joined.str();
-}
-
-HardwareInfo BuildHardwareInfo(const std::map<std::string, std::vector<std::string>>& devices_to_eps) {
-  HardwareInfo info;
-  std::set<std::string> device_types;
-  std::set<std::string> execution_providers;
-  for (const auto& [device_type, providers] : devices_to_eps) {
-    device_types.insert(device_type);
-    info.has_cpu |= device_type == "CPU";
-    info.has_gpu |= device_type == "GPU";
-    info.has_npu |= device_type == "NPU";
-    execution_providers.insert(providers.begin(), providers.end());
-  }
-
-  info.device_type_count = static_cast<int32_t>(device_types.size());
-  info.execution_provider_count = static_cast<int32_t>(execution_providers.size());
-  info.device_types = JoinTelemetryValues(device_types);
-  info.execution_providers = JoinTelemetryValues(execution_providers);
-  return info;
 }
 
 OrtLoggingLevel GetDefaultOrtLoggingLevel(bool genai_verbose_logging_enabled) {
@@ -219,7 +185,8 @@ std::unique_ptr<Manager> Manager::s_instance_;
 Manager::Manager(const Configuration& config) : config_(config) {
   config_.Validate();
   const auto user_agent = config_.additional_options.find("UserAgent");
-  SetDefaultUserAgent(user_agent == config_.additional_options.end() ? std::string{} : user_agent->second);
+  SetDefaultUserAgent(user_agent == config_.additional_options.end() ? std::string_view{}
+                                                                     : std::string_view(user_agent->second));
 
   const bool genai_verbose_logging = IsGenAIVerboseLoggingEnabled();
   const auto logger_level = genai_verbose_logging ? LogLevel::Verbose : config_.log_level;
@@ -327,7 +294,8 @@ Manager::Manager(const Configuration& config) : config_(config) {
                                                    !disable_nonessential_telemetry && !telemetry_hard_disabled));
   } catch (const std::exception& ex) {
     logger_->Log(LogLevel::Warning,
-                 fmt::format("telemetry ProcessInfo failed during Manager initialization: {}", ex.what()));
+                 fmt::format("telemetry ProcessInfo failed during Manager initialization: {}",
+                             TelemetryInternal::SanitizeTelemetryValue(BoundedTelemetryCString(ex.what()))));
   } catch (...) {
     logger_->Log(LogLevel::Warning, "telemetry ProcessInfo failed during Manager initialization.");
   }
@@ -339,7 +307,8 @@ Manager::Manager(const Configuration& config) : config_(config) {
       telemetry_->RecordHardwareInfo(BuildHardwareInfo(ep_detector_->GetAvailableDevicesToEPs()));
     } catch (const std::exception& ex) {
       logger_->Log(LogLevel::Warning,
-                   fmt::format("telemetry HardwareInfo failed during initialization: {}", ex.what()));
+                   fmt::format("telemetry HardwareInfo failed during initialization: {}",
+                               TelemetryInternal::SanitizeTelemetryValue(BoundedTelemetryCString(ex.what()))));
     } catch (...) {
       logger_->Log(LogLevel::Warning, "telemetry HardwareInfo failed during initialization.");
     }
@@ -463,7 +432,9 @@ Manager& Manager::Create(const Configuration& config) {
     created->telemetry_->RecordAction(Action::kCoreInitialize, ActionStatus::kSuccess, "", false, 0);
   } catch (const std::exception& ex) {
     created->GetLogger().Log(LogLevel::Error,
-                             fmt::format("telemetry RecordAction failed during Create: {}", ex.what()));
+                             fmt::format("telemetry RecordAction failed during Create: {}",
+                                         TelemetryInternal::SanitizeTelemetryValue(
+                                             BoundedTelemetryCString(ex.what()))));
   }
 
   created->GetLogger().Log(LogLevel::Information, "Manager initialized successfully.");
@@ -531,7 +502,8 @@ void Manager::StartWebService() {
   try {
     telemetry_->StartSession();
   } catch (const std::exception& ex) {
-    logger_->Log(LogLevel::Warning, std::string("telemetry StartSession failed: ") + ex.what());
+    logger_->Log(LogLevel::Warning, "telemetry StartSession failed: " +
+                                        TelemetryInternal::SanitizeTelemetryValue(BoundedTelemetryCString(ex.what())));
   } catch (...) {
     logger_->Log(LogLevel::Warning, "telemetry StartSession failed with unknown error");
   }
@@ -564,7 +536,8 @@ void Manager::StopWebService() {
   try {
     telemetry_->EndSession();
   } catch (const std::exception& ex) {
-    logger_->Log(LogLevel::Warning, std::string("telemetry EndSession failed: ") + ex.what());
+    logger_->Log(LogLevel::Warning, "telemetry EndSession failed: " +
+                                        TelemetryInternal::SanitizeTelemetryValue(BoundedTelemetryCString(ex.what())));
   } catch (...) {
     logger_->Log(LogLevel::Warning, "telemetry EndSession failed with unknown error");
   }

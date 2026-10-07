@@ -5,7 +5,7 @@
 #   lib/      -> platform native binaries
 #
 # Output:
-#   $(Build.ArtifactStagingDirectory)/cpp-sdk-v2/foundry-local-*.{zip,tgz}
+#   $(Build.ArtifactStagingDirectory)/cpp-sdk-v2/foundry-local-<version>-<rid>.{zip,tgz}
 
 parameters:
 - name: outputDir
@@ -24,6 +24,8 @@ steps:
       $ErrorActionPreference = 'Stop'
 
       $workspace = "$(Pipeline.Workspace)"
+      $version = (Get-Content (Join-Path $workspace 'version-info/sdkVersion.txt') -Raw).Trim()
+      if (-not $version) { throw 'C++ SDK package version is empty' }
       $outDir = "${{ parameters.outputDir }}"
       $workRoot = Join-Path "$(Build.BinariesDirectory)" "cpp-sdk-v2-staging"
 
@@ -105,7 +107,7 @@ steps:
         }
 
         $archiveExtension = if ($Rid -like 'win-*') { 'zip' } else { 'tgz' }
-        $archive = Join-Path $outDir ("foundry-local-{0}.{1}" -f $Rid, $archiveExtension)
+        $archive = Join-Path $outDir ("foundry-local-{0}-{1}.{2}" -f $version, $Rid, $archiveExtension)
         if (Test-Path $archive) { Remove-Item -Force $archive }
 
         Push-Location $root

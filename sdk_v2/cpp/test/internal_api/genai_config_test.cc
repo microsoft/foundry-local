@@ -3,6 +3,7 @@
 #include "inferencing/generative/genai_config.h"
 
 #include "exception.h"
+#include "inferencing/execution_provider.h"
 
 #include <gtest/gtest.h>
 
@@ -122,6 +123,23 @@ TEST(GenAIConfigDefaultProviderTest, ReturnsFirstProviderKey) {
 TEST(GenAIConfigDefaultProviderTest, EmptyWhenNoModel) {
   GenAIConfig config;
   EXPECT_EQ(config.DefaultProvider(), "");
+  EXPECT_TRUE(config.DefaultProviderView().empty());
+}
+
+TEST(GenAIConfigDefaultProviderTest, BorrowsUnmodifiedProviderForTelemetryMapping) {
+  GenAIConfig config;
+  config.model.emplace();
+  config.model->decoder.emplace();
+  config.model->decoder->session_options.emplace();
+  const std::string provider(1024 * 1024, 'x');
+  config.model->decoder->session_options->provider_options.push_back({{provider, "{}"}});
+
+  const auto& stored = config.model->decoder->session_options->provider_options.front().begin()->first;
+  const auto view = config.DefaultProviderView();
+  EXPECT_EQ(view.data(), stored.data());
+  EXPECT_EQ(view.size(), stored.size());
+  EXPECT_EQ(config.DefaultProvider(), provider);
+  EXPECT_TRUE(EPUtils::EPtoTelemetryName(ExecutionProvider::kDefault, view).empty());
 }
 
 TEST(GenAIConfigDefaultProviderTest, EmptyWhenNoDecoder) {

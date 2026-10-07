@@ -5,6 +5,9 @@
 #include "telemetry/telemetry.h"
 
 #include <string>
+#include <string_view>
+#include <map>
+#include <vector>
 
 namespace fl {
 
@@ -28,16 +31,21 @@ struct TelemetryMetadata {
   std::string app_name;
 
   /// Free-form "Windows 11 10.0.26100 amd64" / "Linux 6.5.0 x86_64" / "macOS 14.4 arm64".
-  std::string os_name;       // "Windows" / "Linux" / "Darwin"
-  std::string os_version;    // "10.0.26100" / "6.5.0-azure" / "14.4"
-  std::string cpu_arch;      // "amd64" / "arm64" / "x86" / ...
+  std::string os_name;     // "Windows" / "Linux" / "Darwin"
+  std::string os_version;  // "10.0.26100" / "6.5.0-azure" / "14.4"
+  std::string cpu_arch;    // "amd64" / "arm64" / "x86" / ...
 };
 
 /// Build the metadata for this process. Reads env vars and OS APIs once.
 /// app_name comes from Configuration.
-TelemetryMetadata BuildTelemetryMetadata(std::string app_name);
+TelemetryMetadata BuildTelemetryMetadata(std::string_view app_name);
 
 /// Build the one-shot ProcessInfo event payload from metadata and system APIs.
 ProcessInfo BuildProcessInfo(const TelemetryMetadata& metadata, bool include_device_id_status = true);
+
+inline constexpr size_t kMaxTelemetryInventoryEntries = 64;
+
+/// Bounds inventory iteration and storage; incomplete counts are -1 rather than misleading partial totals.
+HardwareInfo BuildHardwareInfo(const std::map<std::string, std::vector<std::string>>& devices_to_eps);
 
 }  // namespace fl

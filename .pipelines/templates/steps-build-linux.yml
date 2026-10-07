@@ -101,6 +101,12 @@ steps:
             "ORT_GENAI_VERSION=${{ parameters.genaiVersion }}" \
             "ORT_FETCH_URL=$NUGET_CACHE/ort.zip" \
             "FOUNDRY_LOCAL_PACKAGE_VERSION=$SDK_VERSION"
+        # Model-free loader checks run on every Linux build, even when the
+        # model-dependent suite is disabled for this lane.
+        TF_BUILD=true "$HOME/venv/bin/ctest" \
+          --test-dir "build/Linux/${{ parameters.buildConfig }}" \
+          --build-config "${{ parameters.buildConfig }}" \
+          --tests-regex "^elf-" --no-tests=error --output-on-failure
       '
   displayName: 'Configure and build in manylinux 2.28'
 

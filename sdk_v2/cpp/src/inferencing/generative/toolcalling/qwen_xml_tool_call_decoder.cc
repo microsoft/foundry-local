@@ -21,8 +21,10 @@ namespace {
 
 using Json = nlohmann::json;
 
+constexpr std::string_view kCallStart = "<tool_call>\n";
 constexpr std::string_view kFunctionPrefix = "<function=";
 constexpr std::string_view kParameterPrefix = "<parameter=";
+constexpr std::string_view kFunctionClose = "</function>\n";
 constexpr std::string_view kFunctionEnd = "</function>\n</tool_call>";
 constexpr std::string_view kParameterEnd = "\n</parameter>\n";
 constexpr size_t kMaxSchemaNesting = 16;
@@ -33,12 +35,14 @@ enum class ParseState {
   kQualifiedIncomplete,
   kStructuralFailure,
   kInvalid,
+  kSchemaViolation,
 };
 
 struct FunctionSchema {
   Json properties = Json::object();
   std::unordered_set<std::string> required;
   bool has_parameters = false;
+  bool recognizable = false;
   bool valid = false;
 };
 
@@ -110,6 +114,7 @@ bool IsSupportedAnnotation(std::string_view keyword) {
       "readOnly",
       "title",
       "writeOnly",
+      "x-mcp-header",
   };
   return kSupportedAnnotations.contains(keyword);
 }
@@ -239,7 +244,8 @@ bool IsSupportedParametersObject(const Json& schema) {
     if (item.key() == "type" || item.key() == "properties" || item.key() == "required") {
       return true;
     }
-    return item.key() == "additionalProperties" && item.value().is_boolean();
+    return item.key() == "additionalProperties" && item.value().is_boolean() &&
+           !item.value().template get<bool>();
   });
 }
 
@@ -260,6 +266,7 @@ FunctionSchemas ParseFunctionSchemas(
     const auto [existing, inserted] = schemas.emplace(name, std::move(schema));
     if (!inserted) {
       existing->second.valid = false;
+      existing->second.recognizable = false;
     }
   };
 
@@ -299,6 +306,7 @@ FunctionSchemas ParseFunctionSchemas(
     }
 
     if (!function->contains("parameters") || (*function)["parameters"].is_null()) {
+      schema.recognizable = true;
       schema.valid = true;
       insert_schema(name, std::move(schema));
       continue;
@@ -310,6 +318,14 @@ FunctionSchemas ParseFunctionSchemas(
       continue;
     }
 
+    schema.recognizable =
+        parameters.is_boolean() ||
+        (parameters.is_object() &&
+         (!parameters.contains("type") || parameters["type"].is_string() ||
+          (parameters["type"].is_array() && !parameters["type"].empty() &&
+           std::ranges::all_of(parameters["type"], [](const auto& type) { return type.is_string(); }))) &&
+         (!parameters.contains("properties") || parameters["properties"].is_object()) &&
+         (!parameters.contains("required") || parameters["required"].is_array()));
     schema.has_parameters = !parameters.empty();
     if (!IsSupportedParametersObject(parameters)) {
       insert_schema(name, std::move(schema));
@@ -451,6 +467,11 @@ std::optional<Json> DecodeSimpleParameterValue(std::string_view body, const Json
     return IsCompatibleJsonValue(value, schema) ? std::optional<Json>(std::move(value)) : std::nullopt;
   }
 
+  if (*type == "boolean" && (body == "True" || body == "False")) {
+    Json value = body == "True";
+    return IsCompatibleJsonValue(value, schema) ? std::optional<Json>(std::move(value)) : std::nullopt;
+  }
+
   const auto value = Json::parse(body, nullptr, false);
   if (value.is_discarded() || !IsCompatibleJsonValue(value, schema)) {
     return std::nullopt;
@@ -545,7 +566,7 @@ std::optional<std::string_view> ReadTagName(std::string_view source, size_t& pos
 
 BlockParseResult ParseBlock(std::string_view source, size_t start, const FunctionSchemas& schemas) {
   size_t position = start;
-  auto state = ConsumeLiteral(source, position, "<tool_call>\n");
+  auto state = ConsumeLiteral(source, position, kCallStart);
   if (state != ParseState::kComplete) {
     return BlockResult(state);
   }
@@ -558,8 +579,11 @@ BlockParseResult ParseBlock(std::string_view source, size_t start, const Functio
   }
 
   const auto schema_it = schemas.find(std::string(*function_name));
-  if (schema_it == schemas.end() || !schema_it->second.valid) {
+  if (schema_it == schemas.end()) {
     return BlockResult(ParseState::kInvalid);
+  }
+  if (!schema_it->second.valid) {
+    return BlockResult(ParseState::kSchemaViolation);
   }
 
   Json arguments = Json::object();
@@ -583,24 +607,24 @@ BlockParseResult ParseBlock(std::string_view source, size_t start, const Functio
 
     const auto parameter = std::string(*parameter_name);
     if (!seen_parameters.insert(parameter).second || !schema_it->second.properties.contains(parameter)) {
-      return BlockResult(ParseState::kInvalid);
+      return BlockResult(ParseState::kSchemaViolation);
     }
 
     const auto body_end = source.find(kParameterEnd, position);
     if (body_end == std::string_view::npos) {
       return BlockResult(source.find(kQwenXmlToolCallEndMarker, position) == std::string_view::npos
                              ? ParseState::kQualifiedIncomplete
-                             : ParseState::kStructuralFailure);
+                             : ParseState::kSchemaViolation);
     }
 
     const auto body = source.substr(position, body_end - position);
     if (ContainsReservedFramingMarkup(body)) {
-      return BlockResult(ParseState::kInvalid);
+      return BlockResult(ParseState::kSchemaViolation);
     }
 
     auto value = DecodeParameterValue(body, schema_it->second.properties[parameter]);
     if (!value.has_value()) {
-      return BlockResult(ParseState::kInvalid);
+      return BlockResult(ParseState::kSchemaViolation);
     }
 
     arguments[parameter] = std::move(*value);
@@ -610,7 +634,7 @@ BlockParseResult ParseBlock(std::string_view source, size_t start, const Functio
   if (!std::ranges::all_of(schema_it->second.required, [&](const auto& required) {
         return seen_parameters.contains(required);
       })) {
-    return BlockResult(ParseState::kInvalid);
+    return BlockResult(ParseState::kSchemaViolation);
   }
 
   const auto arguments_json = arguments.dump();
@@ -621,30 +645,134 @@ BlockParseResult ParseBlock(std::string_view source, size_t start, const Functio
   };
 }
 
-size_t RejectedBatchEnd(std::string_view source, size_t invalid_position, bool end_of_stream) {
+struct RejectedBatch {
+  size_t end = 0;
+  bool schema_violation = false;
+};
+
+bool HasSiblingFramingBefore(std::string_view source, size_t sibling, size_t body_end) {
+  size_t name_position = sibling + kCallStart.size();
+  if (!ReadTagName(source, name_position, kFunctionPrefix)) {
+    return false;
+  }
+
+  // A bare header can be literal body text; a parameter or function close before the body's close is ambiguous.
+  const auto parameter = source.find(kParameterPrefix, name_position);
+  const auto function_end = source.find(kFunctionClose, name_position);
+  return (parameter != std::string_view::npos &&
+          (body_end == std::string_view::npos || parameter < body_end)) ||
+         (function_end != std::string_view::npos &&
+          (body_end == std::string_view::npos || function_end < body_end));
+}
+
+RejectedBatch RejectedBlockEnd(std::string_view source, size_t start, bool end_of_stream) {
+  size_t position = start + kCallStart.size();
+  if (auto function_name = ReadTagName(source, position, kFunctionPrefix)) {
+    while (position < source.size()) {
+      if (source.substr(position).starts_with(kFunctionEnd)) {
+        return {position + kFunctionEnd.size(), false};
+      }
+
+      if (kFunctionEnd.starts_with(source.substr(position)) && !end_of_stream) {
+        return {};
+      }
+
+      if (!ReadTagName(source, position, kParameterPrefix)) {
+        break;
+      }
+
+      const auto body_end = source.find(kParameterEnd, position);
+      const auto outer_end = source.find(kFunctionClose, position);
+      for (auto call_end = source.find(kQwenXmlToolCallEndMarker, position);
+           call_end != std::string_view::npos &&
+           (body_end == std::string_view::npos || call_end < body_end);
+           call_end = source.find(kQwenXmlToolCallEndMarker,
+                                  call_end + kQwenXmlToolCallEndMarker.size())) {
+        const auto next = source.find_first_not_of(" \t\r\n", call_end + kQwenXmlToolCallEndMarker.size());
+        if (next != std::string_view::npos && source.substr(next).starts_with(kCallStart)) {
+          if (HasSiblingFramingBefore(source, next, body_end)) {
+            return {source.size(), true};
+          }
+        }
+      }
+      if (outer_end != std::string_view::npos &&
+          (body_end == std::string_view::npos || outer_end < body_end)) {
+        for (auto sibling = source.find(kCallStart, outer_end + kFunctionClose.size());
+             sibling != std::string_view::npos &&
+             (body_end == std::string_view::npos || sibling < body_end);
+             sibling = source.find(kCallStart, sibling + kCallStart.size())) {
+          if (HasSiblingFramingBefore(source, sibling, body_end)) {
+            return {source.size(), true};
+          }
+        }
+      }
+      if (body_end == std::string_view::npos) {
+        return {end_of_stream ? source.size() : 0, false};
+      }
+
+      position = body_end + kParameterEnd.size();
+    }
+  }
+
+  const auto function_end = source.find(kFunctionEnd, position);
+  const auto end = source.find(kQwenXmlToolCallEndMarker, position);
+  const auto boundary = function_end != std::string_view::npos &&
+                                (end == std::string_view::npos || function_end < end)
+                            ? function_end + kFunctionEnd.size()
+                            : end == std::string_view::npos ? source.size() : end;
+  for (auto sibling = source.find(kCallStart, position);
+       sibling != std::string_view::npos && sibling < boundary;
+       sibling = source.find(kCallStart, sibling + kCallStart.size())) {
+    if (HasSiblingFramingBefore(source, sibling, boundary)) {
+      return {source.size(), true};
+    }
+  }
+
+  if (function_end != std::string_view::npos &&
+      (end == std::string_view::npos || function_end < end)) {
+    return {function_end + kFunctionEnd.size(), false};
+  }
+
+  return {end == std::string_view::npos ? (end_of_stream ? source.size() : 0)
+                                       : end + kQwenXmlToolCallEndMarker.size(), false};
+}
+
+RejectedBatch RejectedBatchEnd(std::string_view source, size_t invalid_position, bool end_of_stream,
+                              const FunctionSchemas& schemas) {
   size_t position = invalid_position;
   while (true) {
-    const auto end = source.find(kQwenXmlToolCallEndMarker, position);
-    if (end == std::string_view::npos) {
-      return end_of_stream ? source.size() : 0;
+    const auto block = ParseBlock(source, position, schemas);
+    if (block.state == ParseState::kSchemaViolation) {
+      return {source.size(), true};
+    }
+    if (block.state == ParseState::kIncomplete || block.state == ParseState::kQualifiedIncomplete) {
+      return {end_of_stream ? source.size() : 0, false};
     }
 
-    const auto block_end = end + kQwenXmlToolCallEndMarker.size();
-    position = source.find_first_not_of(" \t\r\n", block_end);
+    const auto rejected_block = block.state == ParseState::kComplete
+                                    ? RejectedBatch{block.end, false}
+                                    : RejectedBlockEnd(source, position, end_of_stream);
+    if (rejected_block.schema_violation) {
+      return rejected_block;
+    }
+    if (rejected_block.end == 0) {
+      return {};
+    }
+
+    position = source.find_first_not_of(" \t\r\n", rejected_block.end);
     if (position == std::string_view::npos) {
-      return end_of_stream ? block_end : 0;
+      return {end_of_stream ? rejected_block.end : 0, false};
     }
 
     const auto remaining = source.substr(position);
     if (remaining.starts_with(kQwenXmlToolCallStartMarker)) {
-      position += kQwenXmlToolCallStartMarker.size();
       continue;
     }
     if (kQwenXmlToolCallStartMarker.starts_with(remaining) && !end_of_stream) {
-      return 0;
+      return {};
     }
 
-    return block_end;
+    return rejected_block;
   }
 }
 
@@ -670,18 +798,20 @@ ToolCallPayloadParseResult ParseBatch(std::string_view source, bool end_of_strea
           .calls = {},
       };
     }
-    if (block.state == ParseState::kInvalid || block.state == ParseState::kStructuralFailure) {
-      const auto rejected_end = RejectedBatchEnd(source, position, end_of_stream);
-      if (rejected_end == 0) {
+    if (block.state == ParseState::kInvalid || block.state == ParseState::kStructuralFailure ||
+        block.state == ParseState::kSchemaViolation) {
+      const auto rejected = RejectedBatchEnd(source, position, end_of_stream, schemas);
+      if (rejected.end == 0) {
         return {};
       }
 
       return {
-          .disposition = recovery_aware && calls.empty() &&
-                                 block.state == ParseState::kStructuralFailure
+          .disposition = rejected.schema_violation ||
+                                 (recovery_aware && calls.empty() &&
+                                  block.state == ParseState::kStructuralFailure)
                              ? ToolCallPayloadDisposition::kMalformed
                              : ToolCallPayloadDisposition::kRejected,
-          .consumed_size = rejected_end,
+          .consumed_size = rejected.end,
           .calls = {},
       };
     }
@@ -729,8 +859,8 @@ ToolCallPayloadParser CreateQwenXmlToolCallPayloadParser(
   auto schemas = ParseFunctionSchemas(tools_json, tool_kinds, declaration_count, recovery_aware);
   if (declaration_count == 0 || schemas.size() != declaration_count ||
       schemas.size() != tool_kinds.size() ||
-      std::ranges::any_of(schemas, [](const auto& schema) {
-        return !schema.second.valid;
+      std::ranges::none_of(schemas, [](const auto& schema) {
+        return schema.second.recognizable;
       })) {
     return {};
   }
@@ -754,8 +884,8 @@ std::vector<ParsedToolCall> ParseQwenGuidedToolCalls(
       tools_json, tool_kinds, declaration_count, /*recovery_aware=*/true);
   if (declaration_count == 0 || schemas.size() != declaration_count ||
       schemas.size() != tool_kinds.size() ||
-      std::ranges::any_of(schemas, [](const auto& schema) {
-        return !schema.second.valid;
+      std::ranges::none_of(schemas, [](const auto& schema) {
+        return schema.second.valid;
       })) {
     return {};
   }

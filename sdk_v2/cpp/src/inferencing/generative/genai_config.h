@@ -61,6 +61,9 @@ struct GenAIConfig {
   /// or empty string if not found.
   std::string DefaultProvider() const;
 
+  /// Borrowed until the config is modified or destroyed; avoids owning copies during telemetry name mapping.
+  std::string_view DefaultProviderView() const;
+
   /// Returns whether any decoder provider-options entry contains the exact provider name.
   bool HasProvider(std::string_view provider) const;
 

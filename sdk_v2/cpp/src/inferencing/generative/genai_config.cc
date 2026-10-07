@@ -92,6 +92,10 @@ bool GenAIConfig::OnnxModel::IsMultiModal() const {
 }
 
 std::string GenAIConfig::DefaultProvider() const {
+  return std::string(DefaultProviderView());
+}
+
+std::string_view GenAIConfig::DefaultProviderView() const {
   if (!model || !model->decoder || !model->decoder->session_options) {
     return "";
   }

@@ -14,7 +14,7 @@ namespace fl {
 /// Matches the C# ActionTracker (IDisposable) pattern.
 class ActionTracker {
  public:
-  ActionTracker(Action action, ITelemetry& telemetry, InvocationContext context = {});
+  ActionTracker(Action action, ITelemetry& telemetry, const InvocationContext& context = {});
   ~ActionTracker();
 
   // Non-copyable, non-movable

@@ -442,6 +442,17 @@ target_compile_definitions(foundry_local_objects PRIVATE FL_STATIC_LIBRARY=1)
 add_library(foundry_local SHARED)
 target_link_libraries(foundry_local PRIVATE foundry_local_objects)
 
+# Keep bundled libcurl (used by 1DS and Azure) and other static dependencies out of
+# the process-wide symbol namespace. Otherwise a host's libcurl can interpose
+# our curl_easy_init/curl_easy_perform calls with an incompatible CURL handle layout.
+include(cmake/shared-library-exports.cmake)
+foundry_local_configure_shared_library_exports(foundry_local)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
+    # Bundled OpenSSL registers pthread-local destructors on caller-owned threads.
+    # Keep their code mapped after dlclose until those threads have exited.
+    target_link_options(foundry_local PRIVATE "LINKER:-z,nodelete")
+endif()
+
 # --------------------------------------------------------------------------
 # RPATH — bake "look beside me" into the shared library so it works in every
 # deployment shape without per-consumer patching.
@@ -478,6 +489,9 @@ endif()
 
 if(WIN32)
     target_sources(foundry_local PRIVATE src/exports.def)
+    if(MSVC)
+        target_link_options(foundry_local PRIVATE /guard:cf /DYNAMICBASE)
+    endif()
 
     # Delay-load the WinML EP Catalog DLL — it may not be present on older Windows.
     # The bootstrapper handles the delay-load failure gracefully at runtime.

@@ -16,7 +16,10 @@ inline constexpr std::string_view kQwenXmlToolCallStartMarker = "<tool_call>";
 inline constexpr std::string_view kQwenXmlToolCallEndMarker = "</tool_call>";
 
 /// Creates the exact Qwen native XML decoder for one request's declared OpenAI-format tools.
-/// Returns an empty parser when any declaration is outside the decoder's supported schema subset.
+/// Returns an empty parser for malformed declarations or when no declaration has a recognizable schema.
+/// Unsupported but recognizable schemas remain ineligible for admission, while attempted calls cannot become text.
+/// Calls that violate a declared schema are withheld from visible text and signal recovery or an error.
+/// recovery_aware additionally allows structural failures to trigger guided recovery.
 ToolCallPayloadParser CreateQwenXmlToolCallPayloadParser(
     std::string tools_json, std::unordered_map<std::string, ToolKind> tool_kinds,
     bool recovery_aware = false);

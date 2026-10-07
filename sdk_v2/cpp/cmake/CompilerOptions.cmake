@@ -7,7 +7,7 @@ if(MSVC)
     # /Zc:__cplusplus makes MSVC report the actual C++ standard version in __cplusplus
     # (without it, __cplusplus is always 199711L). Required so that ort_genai.h enables
     # its C++20 std::span-based APIs (guarded by __cplusplus >= 202002L).
-    set(FOUNDRY_LOCAL_COMPILE_OPTIONS /W4 /WX /utf-8 /Zc:__cplusplus)
+    set(FOUNDRY_LOCAL_COMPILE_OPTIONS /W4 /WX /utf-8 /Zc:__cplusplus /guard:cf)
 else()
     set(FOUNDRY_LOCAL_COMPILE_OPTIONS -Wall -Wextra -Wpedantic -Werror)
 endif()

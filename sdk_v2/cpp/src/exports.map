@@ -1,0 +1,7 @@
+{
+    global:
+        FoundryLocalGetApi;
+        FoundryLocalGetVersionString;
+    local:
+        *;
+};

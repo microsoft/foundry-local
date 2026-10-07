@@ -41,11 +41,12 @@ std::string DefaultUserAgent() {
   return MutableDefaultUserAgent();
 }
 
-void SetDefaultUserAgent(std::string user_agent) {
+void SetDefaultUserAgent(std::string_view user_agent) {
   if (user_agent.empty()) {
-    user_agent = std::string("foundry-local-core/") + FOUNDRY_LOCAL_VERSION;
+    MutableDefaultUserAgent() = std::string("foundry-local-core/") + FOUNDRY_LOCAL_VERSION;
+  } else {
+    MutableDefaultUserAgent() = TelemetryInternal::SanitizeTelemetryValue(user_agent);
   }
-  MutableDefaultUserAgent() = std::move(user_agent);
 }
 
 std::string GenerateGuidV4() {

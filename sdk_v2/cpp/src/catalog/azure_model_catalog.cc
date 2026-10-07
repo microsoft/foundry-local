@@ -27,34 +27,39 @@ namespace {
 CatalogFetchInfo BuildCatalogFetchInfo(const std::string& url, const std::string& correlation_id) {
   CatalogFetchInfo info;
   info.user_agent = DefaultUserAgent();
-  info.correlation_id = correlation_id;
+  info.correlation_id = TelemetryInternal::SanitizeTelemetryIdentifier(correlation_id);
+  if (url.size() > kMaxTelemetryInspectionLength) {
+    info.endpoint = "custom";
+    return info;
+  }
 
-  std::string rest = url;
+  // Inspect only a bounded view; custom endpoint dimensions must not expose caller-controlled hosts or paths.
+  std::string_view rest = url;
   if (auto scheme = rest.find("://"); scheme != std::string::npos) {
-    rest = rest.substr(scheme + 3);
+    rest.remove_prefix(scheme + 3);
   }
   if (auto query = rest.find_first_of("?#"); query != std::string::npos) {
-    rest.resize(query);
+    rest = rest.substr(0, query);
   }
 
-  std::string path;
+  std::string_view path;
   if (auto slash = rest.find('/'); slash == std::string::npos) {
-    info.endpoint = rest;
+    info.endpoint = TelemetryInternal::SanitizeTelemetryValue(rest);
   } else {
-    info.endpoint = rest.substr(0, slash);
+    info.endpoint = TelemetryInternal::SanitizeTelemetryValue(rest.substr(0, slash));
     path = rest.substr(slash + 1);
   }
   if (auto at = info.endpoint.rfind('@'); at != std::string::npos) {
     info.endpoint = info.endpoint.substr(at + 1);
   }
   info.endpoint = ToLower(info.endpoint);
-  if (info.endpoint != "api.catalog.azureml.ms") {
+  if (info.endpoint != "api.catalog.azureml.ms" || path != "asset-gallery/v1.0/models") {
     info.endpoint = "custom";
     return info;
   }
 
   // Only the public Azure catalog contributes endpoint dimensions; custom hosts and paths stay private.
-  info.format = path;
+  info.format = TelemetryInternal::SanitizeTelemetryCatalogFormat(path);
   return info;
 }
 
@@ -255,8 +260,8 @@ std::vector<Model> AzureModelCatalog::FetchModels() const {
 
 std::vector<Model> AzureModelCatalog::FetchModelVersions(
     const std::string& model_alias,
-  const std::string& model_name,
-  int max_versions) const {
+    const std::string& model_name,
+    int max_versions) const {
   std::vector<ModelInfo> model_infos;
   if (cache_only_) {
     // In cache-only mode we have no remote source to query for older versions.
