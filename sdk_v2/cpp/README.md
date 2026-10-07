@@ -299,6 +299,13 @@ for (const std::string& endpoint : manager.GetWebServiceEndpoints()) {
 manager.StopWebService();
 ```
 
+The service accepts a Chat Completions or Responses request body at
+`POST /v1/chat/completions/input_tokens` or `POST /v1/responses/input_tokens` and returns
+`{"object":"response.input_tokens","input_tokens":N}` without generating a response. The count uses
+the same rendered prompt as generation, including supplied tool definitions and stored
+`previous_response_id` history. These routes also work under `/catalogs/local/v1/` for local models.
+The model must be loaded; counting does not reserve Engine capacity or change a cached conversation.
+
 Streaming chat completions, Responses, and audio transcriptions cancel their active inference when the SSE client
 disconnects. The service sends SSE keepalive comments during token silence so a dropped connection can be detected
 without waiting for the next token. Undrained streams are limited to 1 MiB of buffered events; exceeding the limit

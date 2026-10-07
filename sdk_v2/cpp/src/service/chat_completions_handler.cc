@@ -31,7 +31,8 @@ namespace fl {
 // ChatCompletionsHandler — POST /v1/chat/completions
 // ========================================================================
 
-ChatCompletionsHandler::ChatCompletionsHandler(ServiceContext& ctx) : ctx_(ctx) {}
+ChatCompletionsHandler::ChatCompletionsHandler(ServiceContext& ctx, bool count_tokens)
+  : ctx_(ctx), count_tokens_(count_tokens) {}
 
 // --- Validation & model resolution ---
 
@@ -185,6 +186,13 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::ha
   // 6. Run inference via ChatSession
   try {
     auto session = CreateSessionWithTelemetry<ChatSession>(*model, *loaded, ctx_, session_ctx);
+
+    if (count_tokens_) {
+      const auto budget = session->CreateRequestPreflight(session_request)->Execute();
+      tracker->SetStatus(ActionStatus::kSuccess);
+      return JsonResponse(Status::CODE_200,
+                          {{"object", "response.input_tokens"}, {"input_tokens", budget.prompt_tokens}});
+    }
 
     if (stream) {
       // The route action is recorded by the streaming thread when the stream
@@ -366,6 +374,10 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
 
 std::shared_ptr<oatpp::web::server::HttpRequestHandler> CreateChatCompletionsHandler(ServiceContext& ctx) {
   return std::make_shared<ChatCompletionsHandler>(ctx);
+}
+
+std::shared_ptr<oatpp::web::server::HttpRequestHandler> CreateChatCompletionsInputTokensHandler(ServiceContext& ctx) {
+  return std::make_shared<ChatCompletionsHandler>(ctx, true);
 }
 
 }  // namespace fl

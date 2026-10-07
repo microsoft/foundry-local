@@ -25,7 +25,7 @@ struct Request;
 
 class ChatCompletionsHandler : public HttpRequestHandler {
  public:
-  explicit ChatCompletionsHandler(ServiceContext& ctx);
+  explicit ChatCompletionsHandler(ServiceContext& ctx, bool count_tokens = false);
 
   std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest>& request) override;
 
@@ -58,9 +58,11 @@ class ChatCompletionsHandler : public HttpRequestHandler {
                                                     std::unique_ptr<ActionTracker> route_tracker);
 
   ServiceContext& ctx_;
+  bool count_tokens_;
 };
 
 std::shared_ptr<oatpp::web::server::HttpRequestHandler> CreateChatCompletionsHandler(ServiceContext& ctx);
+std::shared_ptr<oatpp::web::server::HttpRequestHandler> CreateChatCompletionsInputTokensHandler(ServiceContext& ctx);
 
 }  // namespace fl
 

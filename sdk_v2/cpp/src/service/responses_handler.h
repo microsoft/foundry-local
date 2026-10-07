@@ -45,7 +45,7 @@ struct ResponseTurn {
 
 class ResponsesHandler : public HttpRequestHandler {
  public:
-  explicit ResponsesHandler(ServiceContext& ctx);
+  explicit ResponsesHandler(ServiceContext& ctx, bool count_tokens = false);
 
   std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest>& request) override;
 
@@ -94,6 +94,7 @@ class ResponsesHandler : public HttpRequestHandler {
                                                     std::unique_ptr<ActionTracker> route_tracker);
 
   ServiceContext& ctx_;
+  bool count_tokens_;
 };
 
 // ========================================================================
@@ -155,6 +156,7 @@ class GetInputItemsHandler : public HttpRequestHandler {
 // --- Factory functions ---
 
 std::shared_ptr<oatpp::web::server::HttpRequestHandler> CreateResponsesHandler(ServiceContext& ctx);
+std::shared_ptr<oatpp::web::server::HttpRequestHandler> CreateResponsesInputTokensHandler(ServiceContext& ctx);
 std::shared_ptr<oatpp::web::server::HttpRequestHandler> CreateGetResponseHandler(ServiceContext& ctx);
 std::shared_ptr<oatpp::web::server::HttpRequestHandler> CreateListResponsesHandler(ServiceContext& ctx);
 std::shared_ptr<oatpp::web::server::HttpRequestHandler> CreateDeleteResponseHandler(ServiceContext& ctx);

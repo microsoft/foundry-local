@@ -988,6 +988,69 @@ TEST_F(WebServiceTest, LocalInferenceRoutesResolveOnlyLocalModels) {
   EXPECT_EQ(public_result.status, 404) << public_result.body.dump(2);
 }
 
+TEST_F(WebServiceTest, InputTokenCountsMatchGenerationWithoutMutatingStoredHistory) {
+  const auto load_result = Get(std::string("/catalogs/local/models/load/") + kResponseStoreTestModelAlias);
+  ASSERT_EQ(load_result["status"], "loaded") << load_result.dump(2);
+
+  const auto prefix = base_url_ + "/catalogs/local/v1/";
+  const std::string model_id = std::string(kResponseStoreTestModelAlias) + ":1";
+  const json chat_request = {
+      {"model", model_id},
+      {"messages", json::array({{{"role", "user"}, {"content", "Count this prompt."}}})},
+      {"max_completion_tokens", 4},
+      {"temperature", 0},
+  };
+  const auto chat_count = PostJson(prefix + "chat/completions/input_tokens", chat_request);
+  ASSERT_EQ(chat_count.status, 200) << chat_count.body.dump(2);
+  EXPECT_EQ(chat_count.body["object"], "response.input_tokens");
+  const auto chat_result = PostJson(prefix + "chat/completions", chat_request);
+  ASSERT_EQ(chat_result.status, 200) << chat_result.body.dump(2);
+  EXPECT_EQ(chat_count.body["input_tokens"], chat_result.body["usage"]["prompt_tokens"]);
+
+  auto chat_with_tools = chat_request;
+  chat_with_tools["tools"] = json::array({{{"type", "function"},
+                                            {"function", {{"name", "lookup"},
+                                                          {"parameters", {{"type", "object"},
+                                                                          {"properties", {{"query", {{"type", "string"}}}}}}}}}}});
+  const auto tool_count = PostJson(prefix + "chat/completions/input_tokens", chat_with_tools);
+  ASSERT_EQ(tool_count.status, 200) << tool_count.body.dump(2);
+  const auto tool_result = PostJson(prefix + "chat/completions", chat_with_tools);
+  ASSERT_EQ(tool_result.status, 200) << tool_result.body.dump(2);
+  EXPECT_EQ(tool_count.body["input_tokens"], tool_result.body["usage"]["prompt_tokens"]);
+
+  const json root_request = {
+      {"model", model_id}, {"input", "First turn"}, {"store", true},
+      {"max_output_tokens", 4}, {"temperature", 0},
+  };
+  const auto before_count = Get("/catalogs/local/v1/responses")["data"].size();
+  const auto root_count = PostJson(prefix + "responses/input_tokens", root_request);
+  ASSERT_EQ(root_count.status, 200) << root_count.body.dump(2);
+  EXPECT_EQ(root_count.body["object"], "response.input_tokens");
+  EXPECT_EQ(Get("/catalogs/local/v1/responses")["data"].size(), before_count);
+
+  const auto root = PostJson(prefix + "responses", root_request);
+  ASSERT_EQ(root.status, 200) << root.body.dump(2);
+  EXPECT_EQ(root_count.body["input_tokens"], root.body["usage"]["input_tokens"]);
+  const auto root_id = root.body.at("id").get<std::string>();
+
+  const json continuation = {
+      {"model", model_id}, {"previous_response_id", root_id}, {"input", "Second turn"},
+      {"max_output_tokens", 4}, {"temperature", 0},
+  };
+  const auto continued_count = PostJson(prefix + "responses/input_tokens", continuation);
+  ASSERT_EQ(continued_count.status, 200) << continued_count.body.dump(2);
+  EXPECT_EQ(Get("/catalogs/local/v1/responses")["data"].size(), before_count + 1);
+  const auto continued = PostJson(prefix + "responses", continuation);
+  ASSERT_EQ(continued.status, 200) << continued.body.dump(2);
+  EXPECT_EQ(continued_count.body["input_tokens"], continued.body["usage"]["input_tokens"]);
+
+  auto unknown = continuation;
+  unknown["previous_response_id"] = "resp_missing";
+  EXPECT_EQ(PostJson(prefix + "responses/input_tokens", unknown).status, 404);
+  EXPECT_EQ(json::parse(TestHttpDelete(base_url_ + "/catalogs/local/v1/responses/" + root_id))["deleted"], true);
+  EXPECT_EQ(Get(std::string("/catalogs/local/models/unload/") + kResponseStoreTestModelAlias)["status"], "unloaded");
+}
+
 TEST_F(WebServiceTest, LocalStoredResponsesRemainIsolatedFromPublicRoutes) {
   auto* model = local_catalog_->GetModel(kResponseStoreTestModelAlias);
   ASSERT_NE(model, nullptr);

@@ -98,7 +98,8 @@ void PublishResponse(PublishRequest request) {
 // ResponsesHandler — POST /v1/responses
 // ========================================================================
 
-ResponsesHandler::ResponsesHandler(ServiceContext& ctx) : ctx_(ctx) {}
+ResponsesHandler::ResponsesHandler(ServiceContext& ctx, bool count_tokens)
+  : ctx_(ctx), count_tokens_(count_tokens) {}
 
 // --- Extracted steps ---
 
@@ -322,6 +323,31 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::handle(
 
   const auto session_context = route_context.AsIndirect();
   try {
+    if (count_tokens_) {
+      ResponseChainContext previous_context_storage;
+      const ResponseChainContext* previous_context = nullptr;
+      if (auto err = LoadPreviousContext(params, previous_context_storage, previous_context)) {
+        tracker->SetStatus(ActionStatus::kClientError);
+        return err;
+      }
+
+      Request session_request = ResponseConverter::ToSessionRequest(params, previous_context);
+      session_request.forced_tool_choice = prepared_request.forced_tool_choice;
+      session_request.raw_envelope_descriptor = prepared_request.raw_envelope_descriptor;
+      for (const auto& [key, value] : prepared_request.options) {
+        session_request.options[key] = value;
+      }
+
+      auto counting_session = CreateSessionWithTelemetry<ChatSession>(*model, *loaded, ctx_, session_context);
+      for (auto& definition : tool_definitions) {
+        counting_session->AddToolDefinition(std::move(definition));
+      }
+      const auto budget = counting_session->CreateRequestPreflight(session_request)->Execute();
+      tracker->SetStatus(ActionStatus::kSuccess);
+      return JsonResponse(Status::CODE_200,
+                          {{"object", "response.input_tokens"}, {"input_tokens", budget.prompt_tokens}});
+    }
+
     // 5. Rebuild previous context only on a session-cache miss — a live session already holds the conversation in its
     //    transcript and KV cache, so a chain that can no longer be reconstructed from the store is irrelevant there.
     ResponseChainContext previous_context_storage;
@@ -1037,6 +1063,10 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> GetInputItemsHandler::hand
 
 std::shared_ptr<oatpp::web::server::HttpRequestHandler> CreateResponsesHandler(ServiceContext& ctx) {
   return std::make_shared<ResponsesHandler>(ctx);
+}
+
+std::shared_ptr<oatpp::web::server::HttpRequestHandler> CreateResponsesInputTokensHandler(ServiceContext& ctx) {
+  return std::make_shared<ResponsesHandler>(ctx, true);
 }
 
 std::shared_ptr<oatpp::web::server::HttpRequestHandler> CreateGetResponseHandler(ServiceContext& ctx) {

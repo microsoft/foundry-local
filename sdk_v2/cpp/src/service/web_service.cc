@@ -187,9 +187,11 @@ void RegisterOpenAIRoutes(const std::shared_ptr<oatpp::web::server::HttpRouter>&
   router->route("GET", prefix + "/v1/models", CreateOpenAIListModelsHandler(ctx));
   router->route("GET", prefix + "/v1/models/{name}", CreateOpenAIRetrieveModelHandler(ctx));
   router->route("POST", prefix + "/v1/chat/completions", CreateChatCompletionsHandler(ctx));
+  router->route("POST", prefix + "/v1/chat/completions/input_tokens", CreateChatCompletionsInputTokensHandler(ctx));
   router->route("POST", prefix + "/v1/audio/transcriptions", CreateAudioTranscriptionsHandler(ctx));
   router->route("POST", prefix + "/v1/embeddings", CreateEmbeddingsHandler(ctx));
   router->route("POST", prefix + "/v1/responses", CreateResponsesHandler(ctx));
+  router->route("POST", prefix + "/v1/responses/input_tokens", CreateResponsesInputTokensHandler(ctx));
   router->route("GET", prefix + "/v1/responses", CreateListResponsesHandler(ctx));
   router->route("GET", prefix + "/v1/responses/{id}", CreateGetResponseHandler(ctx));
   router->route("DELETE", prefix + "/v1/responses/{id}", CreateDeleteResponseHandler(ctx));
