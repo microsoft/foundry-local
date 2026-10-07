@@ -868,6 +868,10 @@ std::vector<fl::ToolDefinition> ExtractResponsesToolDefinitions(const ResponseCr
   }
   tools::ValidateUniqueNames(definitions);
 
+  if (params.parallel_tool_calls.has_value()) {
+    session_request.options["parallel_tool_calls"] = *params.parallel_tool_calls ? "true" : "false";
+  }
+
   // tool_choice: the mode strings flow straight to options. A forced tool additionally narrows the
   // set to the named tool of the matching kind and forces "required".
   if (params.tool_choice.has_value()) {

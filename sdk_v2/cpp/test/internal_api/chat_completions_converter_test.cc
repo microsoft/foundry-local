@@ -56,6 +56,22 @@ TEST(ChatCompletionsConverterTest, GenerateCompletionId_UniqueAcrossCalls) {
   EXPECT_NE(id1, id2);
 }
 
+TEST(ChatCompletionsConverterTest, MapRequestParameters_ParallelToolCallsPreservesExplicitChoice) {
+  ChatCompletionRequest request;
+  Request session_request;
+  MapRequestParameters(request, session_request);
+  EXPECT_EQ(session_request.options.Find("parallel_tool_calls"), nullptr);
+
+  request.parallel_tool_calls = false;
+  MapRequestParameters(request, session_request);
+  ASSERT_NE(session_request.options.Find("parallel_tool_calls"), nullptr);
+  EXPECT_STREQ(session_request.options.Find("parallel_tool_calls"), "false");
+
+  request.parallel_tool_calls = true;
+  MapRequestParameters(request, session_request);
+  EXPECT_STREQ(session_request.options.Find("parallel_tool_calls"), "true");
+}
+
 // ========================================================================
 // ApplyCatalogDefaults
 // ========================================================================

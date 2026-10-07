@@ -926,6 +926,12 @@ ToolCallContext BuildToolCallContextForRequest(const Request& request,
 
   tool_ctx.tool_call_start = GetOptionOrEmpty(effective_options, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR);
   tool_ctx.tool_call_end = GetOptionOrEmpty(effective_options, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR);
+  const auto parallel_tool_calls = GetOptionOrEmpty(effective_options, "parallel_tool_calls");
+  if (parallel_tool_calls == "false") {
+    tool_ctx.parallel_tool_calls = false;
+  } else if (!parallel_tool_calls.empty() && parallel_tool_calls != "true") {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "parallel_tool_calls must be true or false");
+  }
   tool_ctx.template_kwargs_json = GetOptionOrEmpty(effective_options, "chat_template_kwargs");
   if (!tool_ctx.template_kwargs_json.empty()) {
     tool_ctx.template_kwargs_json = NormalizeChatTemplateKwargs(tool_ctx.template_kwargs_json);
@@ -1521,7 +1527,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   bool malformed_tool_output_seen = false;
 
   // The template opens a new assistant turn, so only calls generated in this reply close its visible text.
-  AssistantTurnGuard turn_guard;
+  AssistantTurnGuard turn_guard(cached_tool_ctx_.parallel_tool_calls);
 
   // Marker IDs are derived from the configured strings with the model tokenizer. This detects special markers even
   // when their decoded chunks are empty, while non-reasoning models retain the DEFAULT passthrough. The splitter is
@@ -1578,8 +1584,10 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
         continue;
       }
 
+      if (!turn_guard.RecordToolCall()) {
+        continue;
+      }
       auto call = std::move(std::get<ParsedToolCall>(event));
-      turn_guard.RecordToolCall();
 
       if (streaming_callback) {
         streaming_callback->PushItem(std::make_unique<ToolCallItem>(
@@ -1594,7 +1602,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
   auto emit_segments = [&](const std::vector<ReasoningStreamSplitter::Segment>& segments) {
     for (const auto& seg : segments) {
-      if (malformed_tool_output_seen) {
+      if (malformed_tool_output_seen || turn_guard.TurnEnded()) {
         break;
       }
 
@@ -1736,13 +1744,18 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
     generated_events.clear();
     if (!retry.canceled) {
       for (auto& event : retry.events) {
+        if (turn_guard.TurnEnded()) {
+          break;
+        }
         if (auto* segment = std::get_if<TextSegment>(&event)) {
           if (streaming_callback) {
             streaming_callback->PushItem(std::make_unique<TextItem>(segment->text, segment->type));
           }
         } else {
           auto& call = std::get<ParsedToolCall>(event);
-          turn_guard.RecordToolCall();
+          if (!turn_guard.RecordToolCall()) {
+            continue;
+          }
           if (streaming_callback) {
             streaming_callback->PushItem(std::make_unique<ToolCallItem>(
                 call.id, call.name, call.arguments, /*replayed_from_store=*/false,
@@ -1884,7 +1897,7 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
   bool semantic_output_seen = false;
   bool malformed_tool_output_seen = false;
 
-  AssistantTurnGuard turn_guard;
+  AssistantTurnGuard turn_guard(tool_ctx.parallel_tool_calls);
 
   // Use the same typed segments for streaming and final response construction.
   auto splitter = CreateReasoningSplitter(tool_ctx, Model(), generator->PromptOpensReasoning());
@@ -1925,8 +1938,10 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
         continue;
       }
 
+      if (!turn_guard.RecordToolCall()) {
+        continue;
+      }
       auto call = std::move(std::get<ParsedToolCall>(event));
-      turn_guard.RecordToolCall();
 
       if (is_streaming) {
         auto streamed = chat_completions::MakeToolCall(call.id, call.name, call.arguments,
@@ -1944,7 +1959,7 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
 
   auto process_segments = [&](const std::vector<ReasoningStreamSplitter::Segment>& segments) {
     for (const auto& seg : segments) {
-      if (malformed_tool_output_seen) {
+      if (malformed_tool_output_seen || turn_guard.TurnEnded()) {
         break;
       }
 
@@ -2077,6 +2092,9 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
     malformed_tool_output_seen = false;
     if (!retry.canceled) {
       for (auto& event : retry.events) {
+        if (turn_guard.TurnEnded()) {
+          break;
+        }
         if (auto* segment = std::get_if<TextSegment>(&event)) {
           AppendGeneratedSegment(generated_events, segment->text, segment->type);
           if (is_streaming && !segment->text.empty()) {
