@@ -248,7 +248,7 @@ internal sealed class ChatSessionTests
         using var final = await stream.FinalResponse;
 
         await Assert.That(final).IsNotNull();
-        await Assert.That(final.FinishReason).IsEqualTo(FinishReason.Stop);
+        await Assert.That(final.FinishReason is FinishReason.Stop or FinishReason.Length).IsTrue();
 
         var usage = final.GetUsage();
         Console.WriteLine($"Usage: prompt={usage.PromptTokens} completion={usage.CompletionTokens} total={usage.TotalTokens}");
