@@ -9,8 +9,6 @@
 #include <atomic>
 #include <charconv>
 #include <limits>
-#include <set>
-#include <sstream>
 #include <string_view>
 
 #include "catalog.h"
@@ -88,38 +86,6 @@ uint64_t UnsignedAdditionalOption(const Configuration& config,
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, name,
              " must be a positive integer");
   return value;
-}
-
-std::string JoinTelemetryValues(const std::set<std::string>& values) {
-  std::ostringstream joined;
-  bool first = true;
-  for (const auto& value : values) {
-    if (!first) {
-      joined << ",";
-    }
-    first = false;
-    joined << value;
-  }
-  return joined.str();
-}
-
-HardwareInfo BuildHardwareInfo(const std::map<std::string, std::vector<std::string>>& devices_to_eps) {
-  HardwareInfo info;
-  std::set<std::string> device_types;
-  std::set<std::string> execution_providers;
-  for (const auto& [device_type, providers] : devices_to_eps) {
-    device_types.insert(device_type);
-    info.has_cpu |= device_type == "CPU";
-    info.has_gpu |= device_type == "GPU";
-    info.has_npu |= device_type == "NPU";
-    execution_providers.insert(providers.begin(), providers.end());
-  }
-
-  info.device_type_count = static_cast<int32_t>(device_types.size());
-  info.execution_provider_count = static_cast<int32_t>(execution_providers.size());
-  info.device_types = JoinTelemetryValues(device_types);
-  info.execution_providers = JoinTelemetryValues(execution_providers);
-  return info;
 }
 
 OrtLoggingLevel GetDefaultOrtLoggingLevel(bool genai_verbose_logging_enabled) {
