@@ -3,6 +3,7 @@
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
 #include "service/models_handlers.h"
+#include "service/non_generative_handlers.h"
 
 #include "catalog.h"
 #include "model_info.h"
@@ -63,12 +64,21 @@ class LoadModelHandler : public HttpRequestHandler {
 
     std::string name = name_raw->c_str();
     auto* model = ctx_.catalog.GetModel(name);
+    if (!model) model = ctx_.catalog.GetModelVariant(name);
 
     if (!model) {
       tracker.SetStatus(ActionStatus::kClientError);
       return ErrorResponse(Status::CODE_404, "Model not found", "No model matching '" + name + "'");
     }
     tracker.SetModelId(model->Id());
+
+    if (model->Info().task == "text-ranking" ||
+        model->Info().task == "typed-decision") {
+      tracker.SetStatus(ActionStatus::kClientError);
+      return ErrorResponse(
+          Status::CODE_400, "Load not supported",
+          "Non-generative models load on the first ranking or decision request");
+    }
 
     if (model->IsLoaded()) {
       tracker.SetStatus(ActionStatus::kSkipped);
@@ -119,6 +129,7 @@ class UnloadModelHandler : public HttpRequestHandler {
 
     std::string name = name_raw->c_str();
     auto* model = ctx_.catalog.GetModel(name);
+    if (!model) model = ctx_.catalog.GetModelVariant(name);
 
     if (!model) {
       tracker.SetStatus(ActionStatus::kClientError);
@@ -133,6 +144,15 @@ class UnloadModelHandler : public HttpRequestHandler {
     }
 
     try {
+#ifdef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
+      if (model->Info().task == "text-ranking" ||
+          model->Info().task == "typed-decision") {
+        const bool unloaded = UnloadNonGenerativeRuntime(ctx_, *model);
+        tracker.SetStatus(unloaded ? ActionStatus::kSuccess : ActionStatus::kSkipped);
+        return JsonResponse(Status::CODE_200,
+                            {{"status", unloaded ? "unloaded" : "not_loaded"}});
+      }
+#endif
       model->Unload();
       tracker.SetStatus(ActionStatus::kSuccess);
 

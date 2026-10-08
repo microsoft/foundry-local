@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -20,6 +21,7 @@ namespace fl {
 class ICatalog;
 class ITelemetry;
 class ModelLoadManager;
+class NonGenerativeRuntimeState;
 class SessionManager;
 class ResponseStore;
 
@@ -86,6 +88,7 @@ struct ServiceContext {
   ResponseStore& response_store;
   ITelemetry& telemetry;
   StreamingThreadTracker& thread_tracker;
+  std::shared_ptr<NonGenerativeRuntimeState> non_generative_runtimes;
 };
 
 /// HTTP web service wrapping oatpp.
@@ -99,7 +102,10 @@ class WebService {
  public:
   WebService(ICatalog& public_catalog, ICatalog& local_catalog, ILogger& logger, std::string model_cache_dir,
              ModelLoadManager& model_load_manager, SessionManager& session_manager,
-             ITelemetry& telemetry, std::function<void()> shutdown_callback);
+             ITelemetry& telemetry, std::function<void()> shutdown_callback,
+             uint64_t non_generative_memory_budget_bytes =
+                 std::numeric_limits<uint64_t>::max(),
+             size_t non_generative_readiness_concurrency = 1);
   ~WebService();
 
   WebService(const WebService&) = delete;

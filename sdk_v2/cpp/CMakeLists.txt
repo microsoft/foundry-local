@@ -113,6 +113,25 @@ find_package(OnnxRuntimeGenAI REQUIRED)
 
 find_package(OnnxRuntime REQUIRED)
 
+include(CheckCXXSourceCompiles)
+set(CMAKE_REQUIRED_INCLUDES "${ORT_GENAI_HEADER_DIR}")
+check_cxx_source_compiles(
+    "#include <ort_genai_c.h>
+     int main() {
+       OgaRankingSessionHandle* ranking = nullptr;
+       OgaDecisionSessionHandle* decision = nullptr;
+       return ranking == nullptr && decision == nullptr ? 0 : 1;
+     }"
+    FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
+)
+unset(CMAKE_REQUIRED_INCLUDES)
+if(FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI)
+    add_compile_definitions(FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI=1)
+    message(STATUS "ORT GenAI non-generative runtime APIs: enabled")
+else()
+    message(STATUS "ORT GenAI non-generative runtime APIs: unavailable; routes and runtime disabled")
+endif()
+
 # WinML EP Catalog — Windows-only, for hardware EP discovery and download. The
 # WinML 2.x runtime is reg-free, delay-loaded, and degrades gracefully when the
 # DLL is absent, so it is always included on Windows; other platforms skip it.
@@ -219,6 +238,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/catalog/catalog_client.cc
     src/catalog/local_model_catalog.cc
     src/catalog/local_model_scanner.cc
+    src/catalog/non_generative_package.cc
     src/inferencing/generative/audio/audio_generator.cc
     src/inferencing/generative/audio/audio_session.cc
     src/inferencing/generative/audio/onnx_audio_generator.cc
@@ -273,6 +293,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/contracts/tool_definitions.cc
     src/contracts/audio_transcriptions.cc
     src/contracts/embeddings.cc
+    src/contracts/non_generative.cc
     src/service/audio_transcriptions_handler.cc
     src/service/embeddings_handler.cc
     src/service/chat_completions_handler.cc
@@ -299,6 +320,13 @@ set(FOUNDRY_LOCAL_SOURCES
     ${FOUNDRY_LOCAL_PLATFORM_SOURCES}
     ${FOUNDRY_LOCAL_INTERNAL_HEADERS}
 )
+
+if(FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI)
+    list(APPEND FOUNDRY_LOCAL_SOURCES
+        src/inferencing/predictive/non_generative_runtime.cc
+        src/service/non_generative_handlers.cc
+    )
+endif()
 
 list(APPEND FOUNDRY_LOCAL_SOURCES
     src/inferencing/generative/chat/onnx_chat_engine.cc
@@ -535,13 +563,23 @@ if(TARGET OnnxRuntime::OnnxRuntime)
                 $<TARGET_FILE_DIR:foundry_local>
         )
 
-        if(EXISTS "${ORT_DLL_DIR}/onnxruntime_providers_shared.dll")
+        if(EXISTS "${ORT_GENAI_LIB_DIR}/onnxruntime-genai-cuda.dll")
             add_custom_command(TARGET foundry_local POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${ORT_DLL_DIR}/onnxruntime_providers_shared.dll"
+                    "${ORT_GENAI_LIB_DIR}/onnxruntime-genai-cuda.dll"
                     $<TARGET_FILE_DIR:foundry_local>
             )
         endif()
+
+        foreach(_ORT_PROVIDER shared cuda tensorrt)
+            if(EXISTS "${ORT_DLL_DIR}/onnxruntime_providers_${_ORT_PROVIDER}.dll")
+                add_custom_command(TARGET foundry_local POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${ORT_DLL_DIR}/onnxruntime_providers_${_ORT_PROVIDER}.dll"
+                        $<TARGET_FILE_DIR:foundry_local>
+                )
+            endif()
+        endforeach()
 
         # Copy WinML EP Catalog DLL for runtime EP discovery
         if(WinMLEpCatalog_FOUND AND EXISTS "${WINML_EP_CATALOG_DLL_DIR}/Microsoft.Windows.AI.MachineLearning.dll")
@@ -589,6 +627,20 @@ if(TARGET OnnxRuntime::OnnxRuntime)
                     $<TARGET_FILE_DIR:foundry_local>
             )
         endif()
+        if(EXISTS "${ORT_GENAI_LIB_DIR}/libonnxruntime-genai-cuda.so")
+            add_custom_command(TARGET foundry_local POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${ORT_GENAI_LIB_DIR}/libonnxruntime-genai-cuda.so"
+                    $<TARGET_FILE_DIR:foundry_local>
+            )
+        endif()
+        if(EXISTS "${ORT_LIB_DIR}/libonnxruntime_providers_cuda.so")
+            add_custom_command(TARGET foundry_local POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${ORT_LIB_DIR}/libonnxruntime_providers_cuda.so"
+                    $<TARGET_FILE_DIR:foundry_local>
+            )
+        endif()
     endif()
 endif()
 
@@ -629,6 +681,10 @@ if(FOUNDRY_LOCAL_BUILD_EXAMPLES)
     set_target_properties(tool_calling_example PROPERTIES FOLDER "Examples")
     set_target_properties(realtime_audio_example PROPERTIES FOLDER "Examples")
     set_target_properties(embeddings_example PROPERTIES FOLDER "Examples")
+    if(FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI)
+        add_subdirectory(examples/kev_decision)
+        set_target_properties(kev_decision_example PROPERTIES FOLDER "Examples")
+    endif()
 
     # On Linux, GenAI does dlopen("libonnxruntime.so") internally. Modern GCC
     # emits RUNPATH which doesn't propagate to transitive dlopen calls.
@@ -638,5 +694,8 @@ if(FOUNDRY_LOCAL_BUILD_EXAMPLES)
         target_link_options(tool_calling_example PRIVATE -Wl,--disable-new-dtags)
         target_link_options(realtime_audio_example PRIVATE -Wl,--disable-new-dtags)
         target_link_options(embeddings_example PRIVATE -Wl,--disable-new-dtags)
+        if(FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI)
+            target_link_options(kev_decision_example PRIVATE -Wl,--disable-new-dtags)
+        endif()
     endif()
 endif()

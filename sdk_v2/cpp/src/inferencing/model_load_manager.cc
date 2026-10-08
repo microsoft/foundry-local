@@ -132,6 +132,26 @@ bool ModelLoadManager::HasEP(const std::string& ep_name) const {
   return false;
 }
 
+void ModelLoadManager::PrepareNonGenerativeProvider(
+    std::string_view provider) {
+  if (provider.empty()) return;
+  const auto ep = EPUtils::StringtoEP(provider);
+  if (ep == ExecutionProvider::kDefault || ep == ExecutionProvider::kCPU ||
+      ep == ExecutionProvider::kCUDA)
+    return;
+  if (ep == ExecutionProvider::kUnknown)
+    FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                     "unsupported non-generative execution provider: ",
+                     provider);
+  const auto registration = EPUtils::EPtoRegistrationName(ep);
+  if (registration.empty() ||
+      !ep_detector_.PrepareForModelLoad(registration)) {
+    FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INTERNAL,
+                     "failed to prepare ", registration,
+                     " for non-generative model loading");
+  }
+}
+
 // ---------------------------------------------------------------------------
 // LoadModel
 // ---------------------------------------------------------------------------

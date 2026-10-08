@@ -55,6 +55,10 @@ class ModelLoadManager {
                        std::string_view model_id,
                        ExecutionProvider ep_override = ExecutionProvider::kDefault);
 
+  /// Prepare a dynamically registered execution provider for a non-generative
+  /// runtime. CPU and built-in CUDA require no preparation.
+  void PrepareNonGenerativeProvider(std::string_view provider);
+
   /// Unload a previously loaded model.
   /// @returns true if the model was found and unloaded; false if the model was not loaded
   ///          (idempotent no-op).
