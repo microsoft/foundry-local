@@ -6,6 +6,9 @@
 #include "inferencing/generative/audio/audio_session.h"
 #include "inferencing/generative/chat/chat_session.h"
 #include "inferencing/generative/embeddings/embeddings_session.h"
+#ifdef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
+#include "inferencing/predictive/non_generative_session.h"
+#endif
 #include "inferencing/model_load_manager.h"
 #include "inferencing/session/session_manager.h"
 #include "items/message_item.h"
@@ -94,18 +97,27 @@ std::unique_ptr<Session> Session::Create(const fl::Model& model) {
                        "cannot create session during shutdown");
     }
 
-    if (!model.IsLoaded()) {
+    const auto& info = model.Info();
+    const bool non_generative =
+        info.task == "text-ranking" || info.task == "typed-decision";
+    if (non_generative && !model.IsCached()) {
+      FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                       "model must be cached before creating a session");
+    }
+    if (!non_generative && !model.IsLoaded()) {
       FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model must be loaded before creating a session");
     }
 
-    auto* loaded = mgr.GetModelLoadManager().GetLoadedModel(model.Id(), model.GetPath());
-    if (!loaded) {
+    auto* loaded = non_generative
+                       ? nullptr
+                       : mgr.GetModelLoadManager().GetLoadedModel(
+                             model.Id(), model.GetPath());
+    if (!non_generative && !loaded) {
       FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL, "loaded model not found in load manager");
     }
 
     tracker.SetModelId(model.Id());
 
-    const auto& info = model.Info();
     if (info.task == "chat-completion" || info.task == "vision-language-chat") {
       auto session = std::make_unique<ChatSession>(model, *loaded, logger, telemetry);
       tracker.SetStatus(ActionStatus::kSuccess);
@@ -123,6 +135,15 @@ std::unique_ptr<Session> Session::Create(const fl::Model& model) {
       tracker.SetStatus(ActionStatus::kSuccess);
       return session;
     }
+
+#ifdef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
+    if (non_generative) {
+      auto session =
+          std::make_unique<NonGenerativeSession>(model, logger, telemetry);
+      tracker.SetStatus(ActionStatus::kSuccess);
+      return session;
+    }
+#endif
 
     FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unsupported model task: ", info.task);
   } catch (const std::exception& ex) {
