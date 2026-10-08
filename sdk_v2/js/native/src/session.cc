@@ -788,6 +788,121 @@ Napi::Value ProcessStreamingRequestOn(Napi::Env env, std::shared_ptr<SessT> sess
 }  // namespace
 
 // ──────────────────────────────────────────────────────────────────────────
+// Generic Session
+// ──────────────────────────────────────────────────────────────────────────
+
+Napi::Function GenericSession::Init(Napi::Env env) {
+  return DefineClass(env, "Session",
+                     {
+                         InstanceMethod("processRequest", &GenericSession::ProcessRequest),
+                         InstanceMethod("setOptions", &GenericSession::SetOptions),
+                         InstanceMethod("dispose", &GenericSession::Dispose),
+                         InstanceMethod("isDisposed", &GenericSession::IsDisposed),
+                     });
+}
+
+GenericSession::GenericSession(const Napi::CallbackInfo& info)
+    : Napi::ObjectWrap<GenericSession>(info),
+      scheduler_(std::make_shared<SessionScheduler>()) {
+  Napi::Env env = info.Env();
+  auto* data = env.GetInstanceData<AddonData>();
+  if (info.Length() != 1 || !info[0].IsObject() || data == nullptr ||
+      !info[0].As<Napi::Object>().InstanceOf(data->model_ctor.Value())) {
+    Napi::TypeError::New(env, "Session: expected a Model as the first argument")
+        .ThrowAsJavaScriptException();
+    return;
+  }
+  Napi::Object model_obj = info[0].As<Napi::Object>();
+  Model* model = Napi::ObjectWrap<Model>::Unwrap(model_obj);
+  foundry_local::IModel* native = model != nullptr ? model->native_impl(env) : nullptr;
+  if (native == nullptr) {
+    Napi::TypeError::New(env, "Session: Model is not initialized")
+        .ThrowAsJavaScriptException();
+    return;
+  }
+  auto manager_lifetime = model->LockManager(env);
+  if (manager_lifetime == nullptr) return;
+  try {
+    impl_ = std::make_shared<foundry_local::Session>(*native);
+  } catch (const foundry_local::Error& e) {
+    ThrowFoundryLocalError(env, static_cast<int>(e.Code()), e.what());
+    return;
+  } catch (const std::exception& e) {
+    Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+    return;
+  }
+  manager_lifetime_ = std::move(manager_lifetime);
+  manager_disposed_ = model->disposed_state();
+  manager_ = Napi::Reference<Napi::Object>::New(model->manager().Value(), 1);
+}
+
+bool GenericSession::ThrowIfDisposed(Napi::Env env) {
+  if (impl_ == nullptr) {
+    ThrowFoundryLocalError(env, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Session has been disposed");
+    return true;
+  }
+  if (manager_disposed_->load()) {
+    ThrowFoundryLocalError(env, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Manager has been disposed");
+    return true;
+  }
+  return false;
+}
+
+Napi::Value GenericSession::ProcessRequest(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (ThrowIfDisposed(env)) return env.Undefined();
+  if (info.Length() < 1) {
+    Napi::TypeError::New(env, "processRequest(request: Request)").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  Napi::Function worker_started;
+  if (info.Length() >= 2 && !info[1].IsUndefined()) {
+    if (!info[1].IsFunction()) {
+      Napi::TypeError::New(env, "Internal worker-start hook must be a function")
+          .ThrowAsJavaScriptException();
+      return env.Undefined();
+    }
+    worker_started = info[1].As<Napi::Function>();
+  }
+  Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
+  auto impl = impl_;
+  auto scheduler = scheduler_;
+  return ProcessRequestOn(env, std::move(impl), info[0], manager_lifetime_,
+                          std::move(owner), std::move(scheduler), nullptr,
+                          worker_started);
+}
+
+Napi::Value GenericSession::SetOptions(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (ThrowIfDisposed(env)) return env.Undefined();
+  if (info.Length() < 1 || !info[0].IsObject()) {
+    Napi::TypeError::New(env, "setOptions(options: RequestOptions)").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  if (scheduler_->Busy()) {
+    ThrowFoundryLocalError(env, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                           "setOptions is unavailable while session work is active");
+    return env.Undefined();
+  }
+  Napi::Object opts = info[0].As<Napi::Object>();
+  return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
+    impl_->SetOptions(JsToRequestOptions(env, opts));
+    return env.Undefined();
+  });
+}
+
+Napi::Value GenericSession::Dispose(const Napi::CallbackInfo& info) {
+  impl_.reset();
+  manager_lifetime_.reset();
+  manager_.Reset();
+  return info.Env().Undefined();
+}
+
+Napi::Value GenericSession::IsDisposed(const Napi::CallbackInfo& info) {
+  return Napi::Boolean::New(info.Env(), impl_ == nullptr);
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // ChatSession
 // ──────────────────────────────────────────────────────────────────────────
 
