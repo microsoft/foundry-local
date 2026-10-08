@@ -5,6 +5,9 @@ API. Streaming ASR is the first supported inference scenario. The SDK uses JNA,
 keeps the native runtime and model weights outside the JAR, and exposes
 deterministic `AutoCloseable` lifetimes.
 
+For the shared inference concepts and examples, including this preview's specialized
+audio API, see [Inference with the Foundry Local SDK](../INFERENCING.md).
+
 This package is a preview and is not published to Maven Central yet.
 Its first phase intentionally covers streaming ASR rather than the full
 cross-language SDK surface. Generic Session/Request/Response/Item APIs, Chat,

@@ -4,6 +4,9 @@ Native bindings around the Foundry Local **C++ SDK**, surfaced as an ESM npm pac
 (`foundry-local-sdk`). This README is the orientation guide for a developer who has just
 cloned the repo and wants to build, test, and debug the JS SDK.
 
+For a user-facing introduction to the inference API and cross-language examples, see
+[Inference with the Foundry Local SDK](../INFERENCING.md).
+
 > The architectural plan lives in [docs/PortJsToSdkV2.md](docs/PortJsToSdkV2.md). The
 > implementation conventions live in
 > [.github/instructions/js-sdk-v2.instructions.md](../../.github/instructions/js-sdk-v2.instructions.md)

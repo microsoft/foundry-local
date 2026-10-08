@@ -2,6 +2,9 @@
 
 The Foundry Local Python SDK is a native Python binding for the Foundry Local C++ SDK. It lets you discover, download, load, and run inference against local AI models — chat completions (streaming and non-streaming), tool calling, embeddings, and audio transcription — directly in-process via a [cffi](https://cffi.readthedocs.io/) binding to the Foundry Local native library. No separate service, no HTTP hop.
 
+For an introduction to models, sessions, requests, responses, items, and streaming input
+and output, see [Inference with the Foundry Local SDK](../INFERENCING.md).
+
 ## Features
 
 - **Model Catalog and BYOM** – browse the public catalog or register existing local model assets without copying them
