@@ -92,11 +92,15 @@ final class NativeApi {
     }
 
     static final class ItemApi {
+        static final int TYPE_TEXT = 20;
+        static final int TEXT_OPENAI_JSON = 2;
         static final int CREATE = 0;
         static final int RELEASE = 1;
         static final int GET_TYPE = 2;
         static final int SET_BYTES = 3;
+        static final int SET_TEXT = 5;
         static final int SET_AUDIO = 8;
+        static final int GET_TEXT = 12;
         static final int GET_SPEECH_SEGMENT = 19;
         static final int GET_SPEECH_RESULT = 20;
         static final int GET_QUEUE = 23;
@@ -348,6 +352,13 @@ final class NativeApi {
         public long dataSize;
         public BytesDeleter deleter;
         public Pointer userData;
+    }
+
+    @Structure.FieldOrder({"version", "text", "type"})
+    public static class TextData extends Structure {
+        public int version = VERSION;
+        public Pointer text;
+        public int type;
     }
 
     @Structure.FieldOrder({"version", "kind", "text", "start", "end", "utteranceStart",
