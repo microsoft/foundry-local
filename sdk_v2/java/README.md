@@ -6,9 +6,10 @@ keeps the native runtime and model weights outside the JAR, and exposes
 deterministic `AutoCloseable` lifetimes.
 
 This package is a preview and is not published to Maven Central yet.
-Its first phase intentionally covers streaming ASR rather than the full
-cross-language SDK surface. Generic Session/Request/Response/Item APIs, Chat,
-and native file/URI transcription are future extension points.
+Its first phase intentionally does not expose the full cross-language generic
+Session/Request/Response/Item surface. Streaming ASR plus typed ranking and
+decision sessions are supported; Chat and native file/URI transcription remain
+future extension points.
 The staged Maven coordinates are
 `com.microsoft.foundry:foundry-local-sdk:<preview-version>`.
 
@@ -154,6 +155,31 @@ PCM input is intentionally limited to signed PCM16LE, 16 kHz, mono. Each call
 accepts at most one second of audio, and the SDK applies backpressure after two
 seconds are queued.
 
+## Ranking and typed decisions
+
+`RankingSession` and `DecisionSession` use the same typed JSON contracts as
+`POST /v1/rank` and `POST /v1/systemone`. They internally exchange exactly one
+OpenAI-JSON text item with the native generic session.
+
+```java
+if (!model.isCached()) {
+    throw new IllegalStateException("Download and review the model before opening a session");
+}
+try (var session = model.createRankingSession()) {
+    var request = new RankingRequest(
+            Map.of("weather", "heavy rain"),
+            "Which activity is more suitable?",
+            List.of("Have a picnic", "Visit a museum"));
+    RankingResult result = session.rank(request);
+    System.out.println(result.ranked().get(0).candidate());
+}
+```
+
+For a `typed-decision` model, call `model.createDecisionSession()` and pass a
+`DecisionRequest` containing keyed `DecisionQuestion` values. Ranking and
+decision models must be cached, but callers do not explicitly load or unload
+them; the native session manages their runtime.
+
 ## Ownership and threading
 
 - `FoundryLocalManager` owns catalogs, models, and sessions. Only one manager
@@ -200,3 +226,20 @@ worker survives close. It also launches a child JVM to check that an abandoned
 stream neither blocks nor crashes process exit. The Windows x64 CI lane
 separately probes a checksum-pinned released legacy runtime in a fresh JVM to
 verify rejection before accessing incompatible native function tables.
+
+The CLM/KEV native bridge has a separate opt-in integration test:
+
+```powershell
+mvn -f sdk_v2/java/pom.xml test `
+  -Dtest=NativeNonGenerativeTest `
+  -Dfoundry.test.runtime=<absolute-native-runtime-dir> `
+  -Dfoundry.test.cache=<absolute-model-cache> `
+  -Dfoundry.test.clm=<registered-clm-model-id> `
+  -Dfoundry.test.kev=<registered-kev-model-id>
+```
+
+The equivalent environment variables are
+`FOUNDRY_LOCAL_NATIVE_BIN_DIR`, `FOUNDRY_TEST_DATA_DIR`,
+`FOUNDRY_TEST_CLM_MODEL`, and `FOUNDRY_TEST_KEV_MODEL`. The test creates both
+public sessions, executes one typed request through each native bridge,
+validates the resolved model and result shape, and closes all resources.

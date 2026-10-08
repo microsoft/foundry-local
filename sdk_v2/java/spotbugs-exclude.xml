@@ -2,12 +2,22 @@
 <!-- JNA reads/writes these public Structure fields through native memory, not Java bytecode. -->
 <FindBugsFilter>
   <Match>
-    <Class name="~com\.microsoft\.foundry\.local\.NativeApi\$(AudioData|BytesData|CallbackData|ResultData|SegmentData)"/>
+    <Class name="~com\.microsoft\.foundry\.local\.NativeApi\$(AudioData|BytesData|CallbackData|ResultData|SegmentData|TextData)"/>
     <Bug pattern="URF_UNREAD_PUBLIC_OR_PROTECTED_FIELD,UUF_UNUSED_PUBLIC_OR_PROTECTED_FIELD,UWF_UNWRITTEN_PUBLIC_OR_PROTECTED_FIELD"/>
   </Match>
   <!-- AudioSession intentionally shares the manager's lifecycle monitor with Model and Catalog. -->
   <Match>
     <Class name="com.microsoft.foundry.local.AudioSession"/>
     <Bug pattern="USO_UNSAFE_OBJECT_SYNCHRONIZATION"/>
+  </Match>
+  <!-- JSON sessions intentionally share the manager monitor and have only trusted final subclasses. -->
+  <Match>
+    <Class name="com.microsoft.foundry.local.JsonSession"/>
+    <Bug pattern="CT_CONSTRUCTOR_THROW,USO_UNSAFE_OBJECT_SYNCHRONIZATION"/>
+  </Match>
+  <!-- These record components are wrapped in immutable maps by the compact constructor. -->
+  <Match>
+    <Class name="com.microsoft.foundry.local.DecisionAnswer"/>
+    <Bug pattern="EI_EXPOSE_REP"/>
   </Match>
 </FindBugsFilter>
