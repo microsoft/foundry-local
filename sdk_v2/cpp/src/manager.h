@@ -138,6 +138,7 @@ class Manager {
   const OrtApi* ort_api_ = nullptr;
   OrtEnv* ort_env_ = nullptr;
   std::vector<std::string> registered_ep_libraries_;
+  std::vector<std::string> oga_registered_ep_libraries_;
   std::unique_ptr<ILogger> logger_;
   std::unique_ptr<ITelemetry> telemetry_;
   std::unique_ptr<IEpDetector> ep_detector_;

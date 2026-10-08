@@ -255,7 +255,9 @@ struct WebService::Impl {
 
   Impl(ICatalog& public_catalog, ICatalog& local_catalog, ILogger& logger, std::string model_cache_dir,
        ModelLoadManager& model_load_manager, SessionManager& session_manager,
-       ITelemetry& telemetry, std::function<void()> shutdown_callback)
+       ITelemetry& telemetry, std::function<void()> shutdown_callback,
+       uint64_t non_generative_memory_budget_bytes,
+       size_t non_generative_readiness_concurrency)
       : session_cache(session_manager),
         public_response_store(ResponseStore::kDefaultCapacity, &session_cache),
         local_response_store(ResponseStore::kDefaultCapacity, &session_cache),
@@ -271,7 +273,9 @@ struct WebService::Impl {
                            telemetry,
                            thread_tracker,
 #ifdef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
-                           CreateNonGenerativeRuntimeState()
+                           CreateNonGenerativeRuntimeState(
+                               non_generative_memory_budget_bytes,
+                               non_generative_readiness_concurrency)
 #else
                            nullptr
 #endif
@@ -287,7 +291,9 @@ struct WebService::Impl {
                            telemetry,
                            thread_tracker,
 #ifdef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
-                           CreateNonGenerativeRuntimeState()
+                           CreateNonGenerativeRuntimeState(
+                               non_generative_memory_budget_bytes,
+                               non_generative_readiness_concurrency)
 #else
                            nullptr
 #endif
@@ -297,10 +303,14 @@ struct WebService::Impl {
 
 WebService::WebService(ICatalog& public_catalog, ICatalog& local_catalog, ILogger& logger, std::string model_cache_dir,
                        ModelLoadManager& model_load_manager, SessionManager& session_manager,
-                       ITelemetry& telemetry, std::function<void()> shutdown_callback)
+                       ITelemetry& telemetry, std::function<void()> shutdown_callback,
+                       uint64_t non_generative_memory_budget_bytes,
+                       size_t non_generative_readiness_concurrency)
     : impl_(std::make_unique<Impl>(public_catalog, local_catalog, logger, std::move(model_cache_dir),
                                    model_load_manager, session_manager, telemetry,
-                                   std::move(shutdown_callback))) {}
+                                   std::move(shutdown_callback),
+                                   non_generative_memory_budget_bytes,
+                                   non_generative_readiness_concurrency)) {}
 
 WebService::~WebService() {
   if (impl_->running.load()) {

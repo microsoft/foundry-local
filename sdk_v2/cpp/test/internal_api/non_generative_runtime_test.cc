@@ -64,6 +64,57 @@ TEST(NonGenerativeRuntimeStateTest, FailedColdLoadIsRemovedAndCanBeRetried) {
   EXPECT_EQ(constructions.load(), 2);
 }
 
+TEST(NonGenerativeRuntimeStateTest, RejectsLoadsBeyondMemoryBudget) {
+  auto state = CreateNonGenerativeRuntimeState(100, 1);
+  auto factory = []() -> std::shared_ptr<void> {
+    return std::make_shared<int>(42);
+  };
+
+  EXPECT_NE(state->Acquire("first", "first:1", nullptr, 80, "cpu", factory),
+            nullptr);
+  EXPECT_THROW(
+      state->Acquire("second", "second:1", nullptr, 21, "cpu", factory),
+      std::runtime_error);
+}
+
+TEST(NonGenerativeRuntimeStateTest, SerializesReadinessWithinProviderGroup) {
+  auto state = CreateNonGenerativeRuntimeState(1000, 1);
+  std::promise<void> first_entered;
+  std::promise<void> release_first;
+  auto release_future = release_first.get_future().share();
+  auto first = std::async(std::launch::async, [&] {
+    return state->Acquire(
+        "first", "first:1", nullptr, 1, "cuda",
+        [&]() -> std::shared_ptr<void> {
+          first_entered.set_value();
+          release_future.wait();
+          return std::make_shared<int>(1);
+        });
+  });
+  first_entered.get_future().wait();
+  std::atomic<bool> second_entered{false};
+  auto second = std::async(std::launch::async, [&] {
+    return state->Acquire(
+        "second", "second:1", nullptr, 1, "cuda",
+        [&]() -> std::shared_ptr<void> {
+          second_entered = true;
+          return std::make_shared<int>(2);
+        });
+  });
+  EXPECT_EQ(second.wait_for(std::chrono::milliseconds(20)),
+            std::future_status::timeout);
+  EXPECT_FALSE(second_entered.load());
+
+  auto cpu = state->Acquire(
+      "cpu", "cpu:1", nullptr, 1, "cpu",
+      []() -> std::shared_ptr<void> { return std::make_shared<int>(3); });
+  EXPECT_NE(cpu, nullptr);
+  release_first.set_value();
+  EXPECT_NE(first.get(), nullptr);
+  EXPECT_NE(second.get(), nullptr);
+  EXPECT_TRUE(second_entered.load());
+}
+
 TEST(NonGenerativeRuntimeTest, ExportedPackagesRunWhenConfigured) {
   const auto root_value = test::SafeGetEnv("FOUNDRY_LOCAL_NON_GENERATIVE_TEST_ROOT");
   if (root_value.empty()) {

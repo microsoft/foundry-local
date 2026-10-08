@@ -3,6 +3,7 @@
 #pragma once
 
 #include <filesystem>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -18,6 +19,8 @@ struct NonGenerativePackageMetadata {
   std::string execution_provider;
   std::string provider_variant;
   std::vector<std::string> capabilities;
+  uint64_t package_bytes{};
+  uint64_t estimated_resident_bytes{};
 };
 
 /// Normalize supported provider aliases to ORT GenAI names. CPU normalizes to

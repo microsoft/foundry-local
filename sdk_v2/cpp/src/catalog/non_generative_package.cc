@@ -7,6 +7,7 @@
 #include <fstream>
 #include <algorithm>
 #include <cctype>
+#include <limits>
 #include <stdexcept>
 #include <unordered_set>
 
@@ -156,6 +157,22 @@ std::optional<NonGenerativePackageMetadata> ReadNonGenerativePackage(
       RequiredString(inference["Provider"], "execution_provider"));
   result.provider_variant = RequiredString(inference["Provider"], "variant");
 
+  uint64_t estimated_resident_bytes{};
+  if (inference.contains("Resources")) {
+    const auto& resources = inference["Resources"];
+    if (!resources.is_object() ||
+        !resources.contains("estimated_resident_bytes") ||
+        !resources["estimated_resident_bytes"].is_number_unsigned()) {
+      throw std::invalid_argument(
+          "Resources.estimated_resident_bytes must be an unsigned integer");
+    }
+    estimated_resident_bytes =
+        resources["estimated_resident_bytes"].get<uint64_t>();
+    if (!estimated_resident_bytes)
+      throw std::invalid_argument(
+          "Resources.estimated_resident_bytes must be positive");
+  }
+
   if (!inference.contains("Capabilities") || !inference["Capabilities"].is_array() ||
       inference["Capabilities"].empty()) {
     throw std::invalid_argument("inference_model.json requires non-empty Capabilities");
@@ -220,6 +237,18 @@ std::optional<NonGenerativePackageMetadata> ReadNonGenerativePackage(
     throw std::invalid_argument(
         "typed-decision requires backbone and pointer_head/kev_head");
   }
+  for (const auto& entry :
+       fs::recursive_directory_iterator(canonical_root)) {
+    if (!entry.is_regular_file()) continue;
+    const auto bytes = entry.file_size();
+    if (bytes >
+        std::numeric_limits<uint64_t>::max() - result.package_bytes)
+      throw std::invalid_argument("package byte size overflows uint64");
+    result.package_bytes += bytes;
+  }
+  result.estimated_resident_bytes =
+      estimated_resident_bytes ? estimated_resident_bytes
+                               : result.package_bytes;
   return result;
 }
 

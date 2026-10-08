@@ -4,6 +4,7 @@
 // Tests for ScanLocalModels — discovering locally cached model directories.
 //
 #include "catalog/local_model_scanner.h"
+#include "catalog/non_generative_package.h"
 #include "logger.h"
 
 #include <gtest/gtest.h>
@@ -224,6 +225,37 @@ TEST_F(LocalModelScannerTest, MalformedMultiComponentPackageIsExcluded) {
 TEST_F(LocalModelScannerTest, IncompleteBundleDownloadIsExcluded) {
   CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
   CreateFile("microsoft/clm/download.tmp", "");
+  EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
+}
+
+TEST_F(LocalModelScannerTest, ReadsDeclaredResidentMemoryEstimate) {
+  CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
+  const auto root = fs::path(test_dir_) / "microsoft/clm";
+  nlohmann::json metadata;
+  {
+    std::ifstream input(root / "inference_model.json");
+    input >> metadata;
+  }
+  metadata["Resources"] = {{"estimated_resident_bytes", 123456u}};
+  std::ofstream(root / "inference_model.json") << metadata;
+
+  const auto package = ReadNonGenerativePackage(root);
+  ASSERT_TRUE(package.has_value());
+  EXPECT_EQ(package->estimated_resident_bytes, 123456u);
+  EXPECT_GT(package->package_bytes, 0u);
+}
+
+TEST_F(LocalModelScannerTest, InvalidResidentMemoryEstimateIsExcluded) {
+  CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
+  const auto root = fs::path(test_dir_) / "microsoft/clm";
+  nlohmann::json metadata;
+  {
+    std::ifstream input(root / "inference_model.json");
+    input >> metadata;
+  }
+  metadata["Resources"] = {{"estimated_resident_bytes", 0}};
+  std::ofstream(root / "inference_model.json") << metadata;
+
   EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
 }
 
