@@ -28,6 +28,17 @@
   - [Session](#session)
   - [ChatSession](#chatsession)
   - [RequestPreflightResult](#requestpreflightresult)
+  - [RankingSession](#rankingsession)
+  - [RankingRequest](#rankingrequest)
+  - [RankedCandidate](#rankedcandidate)
+  - [RankingResult](#rankingresult)
+  - [DecisionSession](#decisionsession)
+  - [DecisionQuestionType](#decisionquestiontype)
+  - [DecisionQuestion](#decisionquestion)
+  - [DecisionRequest](#decisionrequest)
+  - [DecisionAnswer](#decisionanswer)
+  - [DecisionUsage](#decisionusage)
+  - [DecisionResult](#decisionresult)
   - [EmbeddingsSession](#embeddingssession)
   - [AudioSession](#audiosession)
   - [ItemQueue](#itemqueue)
@@ -451,6 +462,155 @@ The limit is the Engine's structural request capacity or the Generator's model c
 Request and session state is captured synchronously before the future is returned.
 URI-backed media is resolved during execution. The captured operation executes
 once on the SDK's blocking worker.
+
+### RankingSession
+
+A typed session for cached models whose task is `text-ranking`. Requests and
+results use the same JSON contract as `POST /v1/rank`. Dereferences to
+[`Session`](#session).
+
+```rust
+pub struct RankingSession { /* private fields */ }
+impl Deref for RankingSession { type Target = Session; }
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `new` | `async fn new(model: &Model) -> Result<RankingSession, FoundryLocalError>` | Open a ranking session on a cached `text-ranking` model. Returns `Validation` for any other task. |
+| `rank` | `async fn rank(&self, request: &RankingRequest) -> Result<RankingResult, FoundryLocalError>` | Rank the request's candidate answers. |
+| `into_session` | `fn into_session(self) -> Session` | Consume this handle, yielding the base session. |
+
+### RankingRequest
+
+```rust
+pub struct RankingRequest {
+    pub context: serde_json::Value,
+    pub question: String,
+    pub answers: Vec<String>,
+    pub model: String,
+    pub temperature: f32,
+}
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `new` | `fn new(question: impl Into<String>, answers: Vec<String>) -> Self` | Create a request with null context, model `clm`, and temperature `1`. |
+
+### RankedCandidate
+
+```rust
+pub struct RankedCandidate {
+    pub rank: usize,
+    pub candidate: String,
+    pub probability: f64,
+}
+```
+
+`probability` maps to the endpoint's `prob` JSON field. `rank` is one-based.
+
+### RankingResult
+
+```rust
+pub struct RankingResult {
+    pub model: String,
+    pub ranked: Vec<RankedCandidate>,
+}
+```
+
+### DecisionSession
+
+A typed session for cached models whose task is `typed-decision`. Requests and
+results use the same JSON contract as `POST /v1/systemone`. Dereferences to
+[`Session`](#session).
+
+```rust
+pub struct DecisionSession { /* private fields */ }
+impl Deref for DecisionSession { type Target = Session; }
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `new` | `async fn new(model: &Model) -> Result<DecisionSession, FoundryLocalError>` | Open a decision session on a cached `typed-decision` model. Returns `Validation` for any other task. |
+| `decide` | `async fn decide(&self, request: &DecisionRequest) -> Result<DecisionResult, FoundryLocalError>` | Evaluate all keyed typed questions. |
+| `into_session` | `fn into_session(self) -> Session` | Consume this handle, yielding the base session. |
+
+### DecisionQuestionType
+
+```rust
+pub enum DecisionQuestionType {
+    Noul,
+    Choice,
+    Score,
+}
+```
+
+Serializes as the lowercase values `noul`, `choice`, and `score`.
+
+### DecisionQuestion
+
+```rust
+pub struct DecisionQuestion {
+    pub kind: DecisionQuestionType,
+    pub criteria: serde_json::Value,
+    pub instructions: serde_json::Value,
+}
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `new` | `fn new(kind: DecisionQuestionType) -> Self` | Create a question with null criteria and instructions. |
+
+The `kind` field maps to the endpoint's `type` JSON field.
+
+### DecisionRequest
+
+```rust
+pub struct DecisionRequest {
+    pub state: serde_json::Value,
+    pub questions: BTreeMap<String, DecisionQuestion>,
+    pub model: String,
+    pub temperature: f32,
+}
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `new` | `fn new(questions: BTreeMap<String, DecisionQuestion>) -> Self` | Create a request with null state, model `kev`, and temperature `1`. |
+
+### DecisionAnswer
+
+```rust
+pub struct DecisionAnswer {
+    pub kind: DecisionQuestionType,
+    pub noul: Option<f64>,
+    pub choice: Option<String>,
+    pub score: Option<f64>,
+    pub confidence: Option<f64>,
+    pub probabilities: BTreeMap<String, f64>,
+    pub legend: BTreeMap<String, String>,
+}
+```
+
+The `kind` field maps to the response's `type` JSON field. The result-specific
+field (`noul`, `choice`, or `score`) is populated according to that type.
+
+### DecisionUsage
+
+```rust
+pub struct DecisionUsage {
+    pub billing_units: u64,
+}
+```
+
+### DecisionResult
+
+```rust
+pub struct DecisionResult {
+    pub model: String,
+    pub answers: BTreeMap<String, DecisionAnswer>,
+    pub usage: DecisionUsage,
+}
+```
 
 ### EmbeddingsSession
 
