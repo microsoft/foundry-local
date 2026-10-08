@@ -1052,9 +1052,25 @@ ToolCallContext BuildToolCallContextForRequest(const Request& request,
   if (tool_ctx.HasTools()) {
     ApplyToolChoiceToContext(tool_choice, tool_ctx);
 
+#if defined(FOUNDRY_LOCAL_HAS_DELIMITED_GUIDANCE)
+    if (tool_ctx.tool_output && tool_ctx.text_output && !tool_ctx.HasAnyExplicitGuidance() &&
+        model.HasNativeQwenXmlToolCalls()) {
+      const auto backend_kind = model.GetGenAIConfig().GetChatBackendKind();
+      tool_ctx.qwen_xml_tool_body_grammar = PlanQwenXmlToolBodyGuidance(tool_ctx, true, backend_kind);
+      if (tool_ctx.qwen_xml_tool_body_grammar) {
+        logger.Log(LogLevel::Debug, "Qwen XML region guidance eligible for this request");
+      } else if (backend_kind == ChatBackendKind::kEngine &&
+                 !tool_ctx.forced_tool && !tool_ctx.ActiveRawEnvelope()) {
+        logger.Log(LogLevel::Warning,
+                   "Qwen XML region guidance unavailable: tool schemas or marker configuration are ineligible");
+      }
+    }
+#endif
+
     // Preserve legacy serialized definitions in the prompt, but never let malformed schema data reach generated
-    // guidance. Decoder-specific eligibility is checked only when selecting that decoder.
-    if (tool_ctx.tool_output && BuildToolJsonSchema(tool_ctx) == "{}") {
+    // guidance. Native XML guidance has its own whole-set eligibility check and does not use this JSON schema.
+    if (tool_ctx.tool_output && !tool_ctx.qwen_xml_tool_body_grammar &&
+        BuildToolJsonSchema(tool_ctx) == "{}") {
       if (!tool_ctx.text_output || tool_ctx.forced_tool.has_value()) {
         FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
                  "tool-only output requires valid tool definitions");

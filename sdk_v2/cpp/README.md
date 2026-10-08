@@ -100,6 +100,51 @@ example, the default library and examples are under
 The build places `foundry_local` alongside its ONNX Runtime and ONNX Runtime GenAI
 dependencies. Keep these files together when copying a build to another location.
 
+### Qwen XML region guidance
+
+When the selected GenAI headers and library provide `SetDelimitedGuidance`, Foundry Local
+automatically constrains the body of eligible Qwen XML function calls. Builds against
+older GenAI packages continue to use the existing unguided native XML decoding; no
+caller setting or manual build switch is required. Until the new GenAI package is
+published, use a matching local GenAI build for guided validation.
+
+Eligibility requires native Qwen XML automatic text-and-tools on Engine, distinct
+tool marker token IDs published by GenAI's tokenizer whose decoded strings match
+the effective model markers, no caller guidance or forced/raw tool,
+and a **fully representable** offered set of ordinary function tools. The planner
+accepts at most 64 declared fields per tool and emits required fields before optional fields
+in a canonical order, keeping grammar size linear in the field count. The strict
+decoder still accepts any valid field order. Bounded supported schemas include
+scalar, array, and nested object types, nullable types, enums, local `#/$defs/name`
+references, and selected unions; unsupported or malformed definitions leave the
+entire turn unguided with a warning. Explicitly open root parameter objects are
+ineligible, and the full request is subject to normalization and compiled-grammar
+size budgets. This is not unrestricted JSON Schema support.
+The region grammar constrains function and parameter names, required fields, and
+reserved XML framing, while preserving multiline code and literal `<`. Structured
+values that are not constrained by the grammar are checked by the strict decoder,
+so guidance is not a guarantee that every generated value is valid.
+Ambiguous interrupted calls remain
+subject to strict rejection/finalization rules. As in the existing
+native `auto` path, an interrupted, structurally plausible *incomplete* call
+can be surfaced as text; schema-invalid or unsupported-only function calls cannot
+dispatch, and unrecognizable function declarations cannot leak their XML.
+Admission errors from the local GenAI API are reported, not retried as
+unguided success.
+
+To exercise the guided path with a locally built, matching GenAI runtime and a Qwen
+model, run from the repository root:
+
+```powershell
+python sdk_v2\cpp\test\manual\qwen_region_guidance_smoke.py --model ..\models\qwen_3.8_27b_int4_int8kv_dflash2_int4
+```
+
+This optional Windows ARM64 smoke test requires a built Python SDK binding
+(`--binding <package-directory>` if it is not installed) and CUDA EP. It checks
+that the native Engine installed region guidance on each request, then verifies
+required, optional, parameterless, and multiline tool calls, strict decoding,
+and tool-result continuation; it does not download a model in CI.
+
 ## Quick Start
 
 Include the C++ wrapper and link the `foundry_local` shared library. The example below

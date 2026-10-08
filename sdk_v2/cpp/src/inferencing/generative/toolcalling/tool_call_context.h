@@ -70,6 +70,7 @@ struct ToolCallContext {
   std::optional<ForcedToolChoice> forced_tool;
   std::optional<RawEnvelopeDescriptor> raw_envelope;
   bool guidance_disabled = false;
+  std::optional<std::string> qwen_xml_tool_body_grammar;
 
   const RawEnvelopeDescriptor* ActiveRawEnvelope() const {
     if (!tool_output || !raw_envelope.has_value() || !IsCustomTool(raw_envelope->tool_name)) {
@@ -132,7 +133,8 @@ struct ToolCallContext {
   bool HasSameTools(const ToolCallContext& other) const {
     return tools_json == other.tools_json && tool_kinds == other.tool_kinds &&
            custom_lark_grammars == other.custom_lark_grammars && raw_envelope == other.raw_envelope &&
-           guidance_disabled == other.guidance_disabled;
+           guidance_disabled == other.guidance_disabled &&
+           qwen_xml_tool_body_grammar == other.qwen_xml_tool_body_grammar;
   }
 
   /// Whether the model has known tool call marker tokens.

@@ -3055,7 +3055,7 @@ TEST_F(QwenNativeProductionIntegrationTest,
 }
 
 TEST_F(QwenNativeProductionIntegrationTest,
-       MalformedVersionOneSerializedFunctionSchemaFallsBackToExactText) {
+       MalformedVersionOneSerializedFunctionSchemaFailsClosed) {
   constexpr std::string_view generated =
       "<tool_call>\n<function=legacy>\n<parameter=value>\ntext\n</parameter>\n"
       "</function>\n</tool_call>";
@@ -3094,14 +3094,11 @@ TEST_F(QwenNativeProductionIntegrationTest,
 
   auto request = MakeStatefulRequest("call legacy");
   Response response;
-  session.ProcessRequest(request, response);
+  EXPECT_THROW(session.ProcessRequest(request, response), fl::Exception);
 
   EXPECT_TRUE(generator_created);
-  EXPECT_EQ(streamed_text, generated);
+  EXPECT_TRUE(streamed_text.empty());
   EXPECT_TRUE(Calls(response).empty());
-  EXPECT_EQ(session.Transcript().Messages().back().VisibleText(), generated);
-  EXPECT_TRUE(session.Transcript().Messages().back().ToolCalls().empty());
-  EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
 }
 
 TEST_F(QwenNativeProductionIntegrationTest,
