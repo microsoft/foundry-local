@@ -28,17 +28,52 @@ public final class AudioSession extends OwnedSession {
      * This method does not use the native file/URI transcription path.
      */
     public Transcription transcribeWav(Path wav, Consumer<SpeechEvent> listener) throws IOException {
+        return transcribeWav(wav, null, listener);
+    }
+
+    /**
+     * Decodes a PCM WAV file through the streaming-audio path with a request-scoped language hint.
+     * See {@link #streamPcm(PcmFormat, String, Consumer)} for language semantics.
+     *
+     * @param language native model language code, explicit {@code "auto"}, or {@code null} to omit
+     * @throws IllegalArgumentException if language is blank or contains NUL
+     */
+    public Transcription transcribeWav(Path wav, String language, Consumer<SpeechEvent> listener) throws IOException {
         NativeApi.outsideCallback();
+        validateLanguage(language);
         WavAudio audio = WavAudio.read(wav);
-        return start(audio.pcm(), audio.format(), listener);
+        return start(audio.pcm(), audio.format(), language, listener);
     }
 
     /** Starts a native streaming-audio transcription for PCM chunks supplied by the caller. */
     public Transcription streamPcm(PcmFormat format, Consumer<SpeechEvent> listener) {
-        return start(null, Objects.requireNonNull(format), listener);
+        return streamPcm(format, null, listener);
     }
 
-    private Transcription start(byte[] wav, PcmFormat format, Consumer<SpeechEvent> listener) {
+    /**
+     * Starts PCM transcription with a language hint applied only to this request.
+     * {@code null} preserves the native default; it does not request automatic detection.
+     * Use {@code "auto"} to explicitly request detection on models that support it, or a
+     * model-supported code such as {@code "en-US"} or {@code "zh-CN"}.
+     * Non-null hints are forwarded unchanged. Support depends on the native runtime and model;
+     * unrecognized codes may be ignored by native. This does not filter transcript text.
+     *
+     * @param language native model language code, explicit {@code "auto"}, or {@code null} to omit
+     * @throws IllegalArgumentException if language is blank or contains NUL
+     */
+    public Transcription streamPcm(PcmFormat format, String language, Consumer<SpeechEvent> listener) {
+        NativeApi.outsideCallback();
+        validateLanguage(language);
+        return start(null, Objects.requireNonNull(format), language, listener);
+    }
+
+    static void validateLanguage(String language) {
+        if (language != null && (language.isBlank() || language.indexOf('\0') >= 0)) {
+            throw new IllegalArgumentException("Language must be nonblank and must not contain NUL");
+        }
+    }
+
+    private Transcription start(byte[] wav, PcmFormat format, String language, Consumer<SpeechEvent> listener) {
         NativeApi.outsideCallback();
         synchronized (model.owner) {
             model.owner.checkOpen();
@@ -46,7 +81,7 @@ public final class AudioSession extends OwnedSession {
             if (active != null && !active.isClosed()) {
                 throw new IllegalStateException("Close the previous transcription");
             }
-            active = new Transcription(this, wav, format, Objects.requireNonNull(listener));
+            active = new Transcription(this, wav, format, language, Objects.requireNonNull(listener));
             return active;
         }
     }

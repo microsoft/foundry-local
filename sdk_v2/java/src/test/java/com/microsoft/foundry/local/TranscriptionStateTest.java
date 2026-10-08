@@ -2,6 +2,9 @@
 package com.microsoft.foundry.local;
 
 import static org.junit.jupiter.api.Assertions.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -9,6 +12,24 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 
 class TranscriptionStateTest {
+    @Test void languageHintsAreForwardedOnceWithTheNativeOptionKey() {
+        for (String language : new String[] {"en-US", "zh-CN", "auto", "future-language"}) {
+            List<Map.Entry<String, String>> applied = new ArrayList<>();
+            Transcription.applyLanguage(language, (key, value) -> applied.add(Map.entry(key, value)));
+            assertEquals(List.of(Map.entry("language", language)), applied);
+        }
+    }
+
+    @Test void omittedLanguageDoesNotSetRequestOptions() {
+        Transcription.applyLanguage(null, (key, value) -> fail("Omitted language must not set native options"));
+    }
+
+    @Test void languageOptionErrorsReachTheCaller() {
+        FoundryLocalException failure = new FoundryLocalException(1, "Cannot set request options");
+        assertSame(failure, assertThrows(FoundryLocalException.class, () ->
+                Transcription.applyLanguage("en-US", (key, value) -> { throw failure; })));
+    }
+
     @Test void feederErrorsEscapeAfterCleanup() {
         LinkageError failure = new LinkageError("JNA callback");
         assertSame(failure, assertThrows(LinkageError.class, () ->
