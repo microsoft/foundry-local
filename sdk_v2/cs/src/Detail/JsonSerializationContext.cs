@@ -42,6 +42,10 @@ using OpenAIToolChoice = Betalgo.Ranul.OpenAI.ObjectModels.RequestModels.ToolCho
 [JsonSerializable(typeof(IList<PropertyDefinition>))]
 [JsonSerializable(typeof(LiveAudioTranscriptionRaw))]
 [JsonSerializable(typeof(CoreErrorResponse))]
+[JsonSerializable(typeof(RankingRequest))]
+[JsonSerializable(typeof(RankingResult))]
+[JsonSerializable(typeof(DecisionRequest))]
+[JsonSerializable(typeof(DecisionResult))]
 [JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
                              WriteIndented = false)]
 internal partial class JsonSerializationContext : JsonSerializerContext
