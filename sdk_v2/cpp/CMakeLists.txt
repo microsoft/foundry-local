@@ -627,6 +627,20 @@ if(TARGET OnnxRuntime::OnnxRuntime)
                     $<TARGET_FILE_DIR:foundry_local>
             )
         endif()
+        if(EXISTS "${ORT_GENAI_LIB_DIR}/libonnxruntime-genai-cuda.so")
+            add_custom_command(TARGET foundry_local POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${ORT_GENAI_LIB_DIR}/libonnxruntime-genai-cuda.so"
+                    $<TARGET_FILE_DIR:foundry_local>
+            )
+        endif()
+        if(EXISTS "${ORT_LIB_DIR}/libonnxruntime_providers_cuda.so")
+            add_custom_command(TARGET foundry_local POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${ORT_LIB_DIR}/libonnxruntime_providers_cuda.so"
+                    $<TARGET_FILE_DIR:foundry_local>
+            )
+        endif()
     endif()
 endif()
 

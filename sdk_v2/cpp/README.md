@@ -64,7 +64,9 @@ resolve the request `model` as a local-catalog ID or alias. Multi-component
 packages use the metadata described in
 [`docs/non-generative-packages.md`](docs/non-generative-packages.md). Runtime
 caches are isolated by canonical model identity and provider; active requests
-hold lifecycle ownership and block unload. Explicit local paths remain a
+hold lifecycle ownership and block unload. Each loaded typed runtime executes
+session construction and requests on one dedicated thread so CUDA graph
+capture and replay are not moved across web-service workers. Explicit local paths remain a
 prototype fallback when an alias is not registered:
 
 ```bash

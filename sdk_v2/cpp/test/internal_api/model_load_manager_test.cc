@@ -166,6 +166,27 @@ TEST(ModelLoadManagerTest, LoadRuntimeIdWithWebGpuConfig_WebGpuNotAvailable_Thro
   }
 }
 
+TEST(ModelLoadManagerTest, NonGenerativeWebGpuPreparesDynamicProvider) {
+  GpuEpDetector ep;
+  fl::StderrLogger logger;
+  fl::ModelLoadManager mgr(ep, logger);
+
+  mgr.PrepareNonGenerativeProvider("WebGPU");
+
+  EXPECT_EQ(ep.prepared_ep, "WebGpuExecutionProvider");
+}
+
+TEST(ModelLoadManagerTest, NonGenerativeCpuAndCudaNeedNoDynamicPreparation) {
+  GpuEpDetector ep;
+  fl::StderrLogger logger;
+  fl::ModelLoadManager mgr(ep, logger);
+
+  mgr.PrepareNonGenerativeProvider("");
+  mgr.PrepareNonGenerativeProvider("cuda");
+
+  EXPECT_TRUE(ep.prepared_ep.empty());
+}
+
 TEST(ModelLoadManagerTest, LoadRuntimeIdWithCudaConfig_CudaAvailable_PreparesCuda) {
   GpuEpDetector ep;
   fl::StderrLogger logger;

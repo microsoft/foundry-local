@@ -44,6 +44,55 @@ ORT default provider (an empty provider list); CUDA normalizes to `cuda`.
 Supported aliases also include QNN, WebGPU, DML, OpenVINO, VitisAI, RyzenAI,
 NvTensorRtRtx, and AMDGPU.
 
+Provider libraries are prepared before a non-generative runtime is acquired.
+Foundry Local packages the CUDA add-on and matching ORT provider libraries;
+all ORT core/provider binaries must come from one ABI- and CUDA-compatible
+bundle. WebGPU uses the normal Foundry EP bootstrapper and additionally
+registers the downloaded provider in ORT GenAI's environment.
+
+Optimized fixed-catalog CLM packages may also contain:
+
+- `fused_state_ranking.onnx`
+- `precomputed_action_projections.bin` and its JSON metadata
+- `clm_cuda_graph_buckets.txt` and its JSON profile
+- `safe_encoder/model.onnx`
+- `clm_fallback_idle_ms.txt`
+
+The runtime validates finite intermediate/output values. FP16 remains primary;
+the BF16 safe encoder is acquired only after a non-finite FP16 encoder result.
+Safe encoders are shared process-wide by package/provider identity. Each
+ranking session releases its lease after the package-configured idle timeout,
+and the encoder unloads when no session retains a lease. No optimization
+environment variable is required.
+
+Optional `Resources.estimated_resident_bytes` in `inference_model.json`
+declares the package's qualified resident-memory estimate. When absent,
+Foundry Local conservatively uses the total package file size. The service
+reserves this amount before cold construction and releases it after failed
+load or unload. Configure the process limit with the Foundry additional option
+`NonGenerativeMemoryBudgetBytes`.
+
+Cold initialization and readiness are bounded independently for each provider
+group. The Foundry additional option
+`NonGenerativeReadinessConcurrency` controls the per-provider limit and
+defaults to one, preventing simultaneous large CUDA captures while allowing
+CPU and CUDA packages to initialize independently.
+
+Optional `component_runtime.json` contains generic component execution policy:
+
+```json
+{
+  "schema_version": 1,
+  "components": {
+    "backbone": {"cuda_graph_max_signatures": 4}
+  }
+}
+```
+
+A zero limit disables capture. Positive limits enable bounded multi-signature
+capture with persistent buffers; unseen signatures execute eagerly after the
+budget is exhausted.
+
 Register the root through the local catalog with a matching model ID and task.
 `POST /v1/rank` and `POST /v1/systemone` accept a `model` containing either the
 registered ID or alias. Runtimes are cached by resolved model ID, canonical
