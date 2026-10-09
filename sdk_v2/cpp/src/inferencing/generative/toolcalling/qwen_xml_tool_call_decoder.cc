@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "inferencing/generative/toolcalling/qwen_xml_tool_call_decoder.h"
+#include "inferencing/generative/toolcalling/grammar.h"
+#include "inferencing/generative/toolcalling/tool_call_context.h"
 #include "inferencing/session/tool_registry.h"
 
 #include <nlohmann/json.hpp>
@@ -8,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -28,6 +31,16 @@ constexpr std::string_view kFunctionClose = "</function>\n";
 constexpr std::string_view kFunctionEnd = "</function>\n</tool_call>";
 constexpr std::string_view kParameterEnd = "\n</parameter>\n";
 constexpr size_t kMaxSchemaNesting = 16;
+constexpr size_t kMaxSchemaNormalizationBytes = 8 * 1024 * 1024;
+constexpr size_t kMaxQwenXmlGrammarBytes = 1024 * 1024;
+constexpr std::array<std::string_view, 6> kReservedMarkup = {
+    kQwenXmlToolCallStartMarker,
+    kQwenXmlToolCallEndMarker,
+    kFunctionPrefix,
+    "</function>",
+    kParameterPrefix,
+    "</parameter>",
+};
 
 enum class ParseState {
   kComplete,
@@ -47,6 +60,20 @@ struct FunctionSchema {
 };
 
 using FunctionSchemas = std::unordered_map<std::string, FunctionSchema>;
+
+bool HasCompleteDeclaredSet(const FunctionSchemas& schemas, size_t declaration_count,
+                            const std::unordered_map<std::string, ToolKind>& tool_kinds) {
+  return declaration_count != 0 && schemas.size() == declaration_count &&
+         schemas.size() == tool_kinds.size();
+}
+
+ToolCallPayloadParseResult RejectUndecodableToolCall(std::string_view source, bool) {
+  return {
+      .disposition = ToolCallPayloadDisposition::kMalformed,
+      .consumed_size = source.size(),
+      .calls = {},
+  };
+}
 
 struct BlockParseResult {
   ParseState state = ParseState::kIncomplete;
@@ -107,6 +134,7 @@ std::optional<std::string> GetSupportedType(const Json& schema) {
 bool IsSupportedAnnotation(std::string_view keyword) {
   static const std::unordered_set<std::string_view> kSupportedAnnotations = {
       "$comment",
+      "$schema",
       "default",
       "deprecated",
       "description",
@@ -168,14 +196,109 @@ bool IsSupportedEnum(const Json& schema, std::string_view type) {
     return false;
   }
 
-  std::unordered_set<std::string> seen_values;
-  seen_values.reserve(values.size());
-  for (const auto& value : values) {
-    if (!IsSupportedEnumValue(value, type) || !seen_values.insert(EnumValueKey(value)).second) {
+  return std::ranges::all_of(values, [type](const auto& value) {
+    return IsSupportedEnumValue(value, type);
+  });
+}
+
+// Resolve only local definitions. Expansion is bounded and cyclic references remain ineligible.
+std::optional<Json> NormalizeParameterSchema(const Json& schema, const Json& definitions,
+                                             size_t& remaining_bytes, size_t depth = 0) {
+  if (!schema.is_object() || depth >= kMaxSchemaNesting) {
+    return std::nullopt;
+  }
+
+  const auto schema_size = schema.dump().size();
+  if (schema_size > remaining_bytes) {
+    return std::nullopt;
+  }
+  remaining_bytes -= schema_size;
+
+  if (schema.contains("$ref")) {
+    if (schema.size() != 1 || !schema["$ref"].is_string()) {
+      return std::nullopt;
+    }
+
+    const auto& ref = schema["$ref"].get_ref<const std::string&>();
+    constexpr std::string_view prefix = "#/$defs/";
+    if (!ref.starts_with(prefix) || ref.size() == prefix.size() ||
+        ref.find_first_of("~/", prefix.size()) != std::string::npos ||
+        !definitions.is_object() || !definitions.contains(ref.substr(prefix.size()))) {
+      return std::nullopt;
+    }
+
+    return NormalizeParameterSchema(definitions[ref.substr(prefix.size())], definitions, remaining_bytes, depth + 1);
+  }
+
+  Json result = schema;
+  if (result.contains("type") && result["type"].is_array()) {
+    // Erasing "type" invalidates references into result.
+    const Json types = result["type"];
+    if (types.empty() || !std::ranges::all_of(types, [](const auto& type) { return type.is_string(); })) {
+      return std::nullopt;
+    }
+
+    result.erase("type");
+    Json branches = Json::array();
+    if (types.size() > remaining_bytes / schema_size) {
+      return std::nullopt;
+    }
+    for (const auto& type : types) {
+      Json branch = result;
+      branch["type"] = type;
+      branches.push_back(std::move(branch));
+    }
+
+    result = {{"anyOf", std::move(branches)}};
+  }
+
+  if (result.contains("enum") && result["enum"].is_array()) {
+    Json unique = Json::array();
+    std::unordered_set<std::string> seen;
+    for (const auto& value : result["enum"]) {
+      if (seen.insert(EnumValueKey(value)).second) {
+        unique.push_back(value);
+      }
+    }
+
+    result["enum"] = std::move(unique);
+  }
+
+  const auto normalize_child = [&](Json& child) {
+    auto normalized = NormalizeParameterSchema(child, definitions, remaining_bytes, depth + 1);
+    if (!normalized) {
       return false;
     }
+
+    child = std::move(*normalized);
+    return true;
+  };
+
+  for (const auto* key : {"anyOf", "oneOf", "items", "properties", "additionalProperties"}) {
+    if (!result.contains(key)) {
+      continue;
+    }
+
+    auto& value = result[key];
+    if ((std::string_view(key) == "anyOf" || std::string_view(key) == "oneOf") && value.is_array()) {
+      if (!std::ranges::all_of(value, normalize_child)) {
+        return std::nullopt;
+      }
+    } else if (std::string_view(key) == "properties" && value.is_object()) {
+      for (auto& property : value.items()) {
+        if (!normalize_child(property.value())) {
+          return std::nullopt;
+        }
+      }
+    } else if (std::string_view(key) == "items" && value.is_object() ||
+               std::string_view(key) == "additionalProperties" && value.is_object()) {
+      if (!normalize_child(value)) {
+        return std::nullopt;
+      }
+    }
   }
-  return true;
+
+  return result;
 }
 
 bool IsSupportedParameterSchema(const Json& schema, size_t depth = 0) {
@@ -193,8 +316,23 @@ bool IsSupportedParameterSchema(const Json& schema, size_t depth = 0) {
     }
 
     return std::ranges::all_of(schema["anyOf"], [depth](const auto& branch) {
-      return branch.is_object() && !branch.contains("anyOf") &&
+      return branch.is_object() && !branch.contains("anyOf") && !branch.contains("oneOf") &&
              IsSupportedParameterSchema(branch, depth + 1);
+    });
+  }
+
+  if (schema.contains("oneOf")) {
+    // Top-level XML values have special string decoding, so only nested JSON values may use exclusive unions.
+    if (depth == 0 || schema.contains("allOf") || schema.contains("not") || schema.contains("if") ||
+        !schema["oneOf"].is_array() || schema["oneOf"].empty() ||
+        std::ranges::any_of(schema.items(), [](const auto& item) {
+          return item.key() != "oneOf" && !IsSupportedAnnotation(item.key());
+        })) {
+      return false;
+    }
+
+    return std::ranges::all_of(schema["oneOf"], [depth](const auto& branch) {
+      return IsSupportedParameterSchema(branch, depth + 1);
     });
   }
 
@@ -205,31 +343,56 @@ bool IsSupportedParameterSchema(const Json& schema, size_t depth = 0) {
 
   if (std::ranges::any_of(schema.items(), [&](const auto& item) {
         return item.key() != "type" && !IsSupportedAnnotation(item.key()) &&
-               item.key() != "enum" && !(*type == "array" && item.key() == "items");
+               item.key() != "enum" && item.key() != "const" &&
+               !(*type == "array" && item.key() == "items") &&
+               !(*type == "object" && (item.key() == "properties" || item.key() == "required" ||
+                                        item.key() == "additionalProperties"));
       })) {
     return false;
   }
 
-  return IsSupportedEnum(schema, *type) &&
-         (*type != "array" || !schema.contains("items") ||
-          IsSupportedParameterSchema(schema["items"], depth + 1));
-}
-
-bool HasNestedAnyOf(const Json& schema, size_t depth = 0) {
-  if (!schema.is_object()) {
+  if (!IsSupportedEnum(schema, *type) ||
+      (schema.contains("const") &&
+       (!IsSupportedEnumValue(schema["const"], *type) || schema.contains("enum")))) {
     return false;
   }
-  if (depth != 0 && schema.contains("anyOf")) {
-    return true;
+
+  if (*type == "array") {
+    return !schema.contains("items") || IsSupportedParameterSchema(schema["items"], depth + 1);
   }
-  if (schema.contains("anyOf") &&
-      std::ranges::any_of(schema["anyOf"], [depth](const auto& branch) {
-        return HasNestedAnyOf(branch, depth + 1);
-      })) {
+
+  if (*type != "object") {
     return true;
   }
 
-  return schema.contains("items") && HasNestedAnyOf(schema["items"], depth + 1);
+  if (schema.contains("properties") && !schema["properties"].is_object()) {
+    return false;
+  }
+
+  if (schema.contains("additionalProperties") && !schema["additionalProperties"].is_boolean() &&
+      !IsSupportedParameterSchema(schema["additionalProperties"], depth + 1)) {
+    return false;
+  }
+
+  if (schema.contains("required")) {
+    if (!schema["required"].is_array() ||
+        !std::ranges::all_of(schema["required"], [](const auto& item) { return item.is_string(); })) {
+      return false;
+    }
+
+    std::unordered_set<std::string> required;
+    for (const auto& item : schema["required"]) {
+      const auto& name = item.get_ref<const std::string&>();
+      if (!required.insert(name).second || !schema.value("properties", Json::object()).contains(name)) {
+        return false;
+      }
+    }
+  }
+
+  return !schema.contains("properties") ||
+         std::ranges::all_of(schema["properties"].items(), [depth](const auto& item) {
+           return IsSupportedParameterSchema(item.value(), depth + 1);
+         });
 }
 
 bool IsSupportedParametersObject(const Json& schema) {
@@ -238,23 +401,26 @@ bool IsSupportedParametersObject(const Json& schema) {
   }
 
   return std::ranges::all_of(schema.items(), [](const auto& item) {
-    if (IsSupportedAnnotation(item.key())) {
+    if (IsSupportedAnnotation(item.key()) || item.key() == "$defs") {
       return true;
     }
     if (item.key() == "type" || item.key() == "properties" || item.key() == "required") {
       return true;
     }
-    return item.key() == "additionalProperties" && item.value().is_boolean() &&
-           !item.value().template get<bool>();
+    return item.key() == "additionalProperties" && item.value() == false;
   });
 }
 
 FunctionSchemas ParseFunctionSchemas(
     const std::string& tools_json,
     const std::unordered_map<std::string, ToolKind>& tool_kinds,
-    size_t& declaration_count,
-    bool recovery_aware) {
+    size_t& declaration_count) {
   FunctionSchemas schemas;
+  if (tools_json.size() > kMaxSchemaNormalizationBytes) {
+    return schemas;
+  }
+
+  size_t remaining_bytes = kMaxSchemaNormalizationBytes;
   const auto tools = Json::parse(tools_json, nullptr, false);
   if (!tools.is_array()) {
     return schemas;
@@ -355,11 +521,19 @@ FunctionSchemas ParseFunctionSchemas(
     }
 
     schema.properties = parameters["properties"];
-    const bool properties_valid =
-        std::ranges::all_of(schema.properties.items(), [recovery_aware](const auto& property) {
-          return IsSupportedParameterSchema(property.value()) &&
-                 (!recovery_aware || !HasNestedAnyOf(property.value()));
-        });
+    const auto& definitions = parameters.value("$defs", Json::object());
+    for (auto& property : schema.properties.items()) {
+      auto normalized = NormalizeParameterSchema(property.value(), definitions, remaining_bytes);
+      if (!normalized) {
+        property.value() = Json();
+        continue;
+      }
+
+      property.value() = std::move(*normalized);
+    }
+    const bool properties_valid = std::ranges::all_of(schema.properties.items(), [](const auto& property) {
+      return IsSupportedParameterSchema(property.value());
+    });
     bool required_valid = true;
     if (parameters.contains("required")) {
       if (!parameters["required"].is_array()) {
@@ -384,6 +558,8 @@ FunctionSchemas ParseFunctionSchemas(
   return schemas;
 }
 
+bool IsCompatibleParameterValue(const Json& value, const Json& schema, size_t depth = 0);
+
 bool IsCompatibleJsonValue(const Json& value, const Json& schema, size_t depth = 0) {
   if (depth >= kMaxSchemaNesting) {
     return false;
@@ -403,30 +579,63 @@ bool IsCompatibleJsonValue(const Json& value, const Json& schema, size_t depth =
     compatible = value.is_array() &&
                  (!schema.contains("items") ||
                   std::ranges::all_of(value, [&](const auto& item) {
-                    return IsCompatibleJsonValue(item, schema["items"], depth + 1);
+                    return IsCompatibleParameterValue(item, schema["items"], depth + 1);
                   }));
   }
   if (*type == "object") {
     compatible = value.is_object();
+    if (compatible) {
+      const auto& properties = schema.value("properties", Json::object());
+      compatible = (!schema.contains("required") ||
+                    std::ranges::all_of(schema["required"], [&](const auto& required) {
+                      return value.contains(required.template get_ref<const std::string&>());
+                    })) &&
+                   std::ranges::all_of(value.items(), [&](const auto& item) {
+                     if (properties.contains(item.key())) {
+                       return IsCompatibleParameterValue(item.value(), properties[item.key()], depth + 1);
+                     }
+
+                     if (!schema.contains("additionalProperties")) {
+                       return true;
+                     }
+
+                     const auto& additional = schema["additionalProperties"];
+                     return additional.is_boolean() ? additional.get<bool>() :
+                            IsCompatibleParameterValue(item.value(), additional, depth + 1);
+                   });
+    }
   }
   return compatible &&
          (!schema.contains("enum") ||
           std::ranges::any_of(schema["enum"], [&](const auto& expected) {
             return JsonScalarEquals(value, expected);
-          }));
+          })) &&
+         (!schema.contains("const") || JsonScalarEquals(value, schema["const"]));
 }
 
-bool IsCompatibleParameterValue(const Json& value, const Json& schema) {
-  if (!IsSupportedParameterSchema(schema)) {
+bool IsCompatibleParameterValue(const Json& value, const Json& schema, size_t depth) {
+  if (depth >= kMaxSchemaNesting) {
     return false;
   }
 
+  if (schema.contains("oneOf")) {
+    size_t matches = 0;
+    for (const auto& branch : schema["oneOf"]) {
+      matches += IsCompatibleParameterValue(value, branch, depth + 1) ? 1u : 0u;
+      if (matches > 1) {
+        return false;
+      }
+    }
+
+    return matches == 1;
+  }
+
   if (!schema.contains("anyOf")) {
-    return IsCompatibleJsonValue(value, schema);
+    return IsCompatibleJsonValue(value, schema, depth);
   }
 
   return std::ranges::any_of(schema["anyOf"], [&](const auto& branch) {
-    return IsCompatibleJsonValue(value, branch);
+    return IsCompatibleParameterValue(value, branch, depth + 1);
   });
 }
 
@@ -472,8 +681,8 @@ std::optional<Json> DecodeSimpleParameterValue(std::string_view body, const Json
     return IsCompatibleJsonValue(value, schema) ? std::optional<Json>(std::move(value)) : std::nullopt;
   }
 
-  const auto value = Json::parse(body, nullptr, false);
-  if (value.is_discarded() || !IsCompatibleJsonValue(value, schema)) {
+  const auto value = ParseJsonWithoutDuplicateObjectKeys(body);
+  if (!value || !IsCompatibleJsonValue(*value, schema)) {
     return std::nullopt;
   }
 
@@ -530,14 +739,6 @@ std::optional<Json> DecodeParameterValue(std::string_view body, const Json& sche
 }
 
 bool ContainsReservedFramingMarkup(std::string_view body) {
-  constexpr std::array<std::string_view, 6> kReservedMarkup = {
-      kQwenXmlToolCallStartMarker,
-      kQwenXmlToolCallEndMarker,
-      kFunctionPrefix,
-      "</function>",
-      kParameterPrefix,
-      "</parameter>",
-  };
   return std::ranges::any_of(kReservedMarkup, [&](const auto marker) {
     return body.find(marker) != std::string_view::npos;
   });
@@ -852,20 +1053,153 @@ ToolCallPayloadParseResult ParseBatch(std::string_view source, bool end_of_strea
 
 }  // namespace
 
+std::optional<std::string> BuildQwenXmlToolBodyGrammar(
+    const std::string& tools_json, const std::unordered_map<std::string, ToolKind>& tool_kinds) {
+  size_t declaration_count = 0;
+  const auto schemas = ParseFunctionSchemas(tools_json, tool_kinds, declaration_count);
+  if (!HasCompleteDeclaredSet(schemas, declaration_count, tool_kinds)) {
+    return std::nullopt;
+  }
+
+  std::vector<std::string> names;
+  names.reserve(schemas.size());
+  for (const auto& [name, schema] : schemas) {
+    if (!schema.valid || tool_kinds.at(name) != ToolKind::kFunction ||
+        name.find_first_of("<>=\r\n\t ") != std::string::npos || schema.properties.size() > 64) {
+      return std::nullopt;
+    }
+
+    for (const auto& [property, definition] : schema.properties.items()) {
+      if (property.empty() || property.find_first_of("<>=\r\n\t ") != std::string::npos) {
+        return std::nullopt;
+      }
+    }
+
+    names.push_back(name);
+  }
+
+  std::ranges::sort(names);
+  std::ostringstream grammar;
+  grammar << "start: \"\\n\" (";
+  for (size_t index = 0; index < names.size(); ++index) {
+    if (index != 0) {
+      grammar << " | ";
+    }
+    grammar << "tool_" << index;
+  }
+  grammar << ")\n";
+  // Keep code values and '<' intact while excluding the framing markup rejected by the strict decoder.
+  grammar << "body[suffix=\"\\n</parameter>\\n\"]: BODY\n"
+             "BODY: /(?s:.*)/ & ~/(?s:.*)(";
+  for (size_t index = 0; index < kReservedMarkup.size(); ++index) {
+    if (index != 0) {
+      grammar << "|";
+    }
+    for (const char ch : kReservedMarkup[index]) {
+      if (ch == '/') {
+        grammar << "\\";
+      }
+      grammar << ch;
+    }
+  }
+  grammar << ")(?s:.*)/\n"
+             "ws: /[ \\t\\r\\n]*/\n"
+             "json_string: /\"([^\"\\\\\\x00-\\x1f]|\\\\([\"\\\\\\/bfnrt]|u[0-9a-fA-F]{4}))*\"/\n"
+             "string_array: ws \"[\" ws (json_string (ws \",\" ws json_string)*)? ws \"]\" ws\n";
+
+  for (size_t index = 0; index < names.size(); ++index) {
+    const auto& schema = schemas.at(names[index]);
+    std::vector<std::string> properties;
+    // Required fields lead so the model can still emit optional paths after the required grep pattern.
+    // Preserve schema iteration order within each group; the strict decoder accepts either XML field order.
+    for (const bool required_field : {true, false}) {
+      for (const auto& [property, definition] : schema.properties.items()) {
+        if (schema.required.contains(property) == required_field) {
+          properties.push_back(property);
+        }
+      }
+    }
+
+    grammar << "tool_" << index << ": " << EscapeLarkLiteral("<function=" + names[index] + ">\n")
+            << " state_" << index << "_0\n";
+    // Canonical key order needs only N+1 states; optional fields can be skipped but never repeated.
+    for (size_t field = 0; field < properties.size(); ++field) {
+      const auto& property = properties[field];
+      const auto& definition = schema.properties[property];
+      const bool string_array = GetSupportedType(definition) == "array" &&
+                                definition.contains("items") &&
+                                GetSupportedType(definition["items"]) == "string" &&
+                                !definition["items"].contains("enum");
+      grammar << "state_" << index << "_" << field << ": "
+              << EscapeLarkLiteral("<parameter=" + property + ">\n") << " ";
+      if (string_array) {
+        grammar << "string_array " << EscapeLarkLiteral("\n</parameter>\n");
+      } else {
+        // The strict decoder validates JSON shape, union membership and nested constraints before admission.
+        grammar << "body";
+      }
+
+      grammar << " state_" << index << "_" << (field + 1);
+      if (!schema.required.contains(property)) {
+        grammar << " | state_" << index << "_" << (field + 1);
+      }
+
+      grammar << "\n";
+    }
+
+    grammar << "state_" << index << "_" << properties.size() << ": "
+            << EscapeLarkLiteral("</function>\n") << "\n";
+  }
+
+  auto result = grammar.str();
+  if (result.size() > kMaxQwenXmlGrammarBytes) {
+    return std::nullopt;
+  }
+
+  return result;
+}
+
+std::optional<std::string> PlanQwenXmlToolBodyGuidance(
+    const ToolCallContext& context, bool native_qwen_xml, ChatBackendKind backend_kind) {
+  if (!native_qwen_xml || backend_kind != ChatBackendKind::kEngine ||
+      !context.tool_output || !context.text_output || context.forced_tool ||
+      context.ActiveRawEnvelope() || context.guidance_disabled || context.HasAnyExplicitGuidance() ||
+      context.tool_call_start != kQwenXmlToolCallStartMarker ||
+      context.tool_call_end != kQwenXmlToolCallEndMarker ||
+      !context.tool_call_start_token_id || !context.tool_call_end_token_id ||
+      *context.tool_call_start_token_id < 0 || *context.tool_call_end_token_id < 0 ||
+      context.tool_call_start_token_id == context.tool_call_end_token_id) {
+    return std::nullopt;
+  }
+
+  return BuildQwenXmlToolBodyGrammar(context.tools_json, context.tool_kinds);
+}
+
 ToolCallPayloadParser CreateQwenXmlToolCallPayloadParser(
     std::string tools_json, std::unordered_map<std::string, ToolKind> tool_kinds,
     bool recovery_aware) {
   size_t declaration_count = 0;
-  auto schemas = ParseFunctionSchemas(tools_json, tool_kinds, declaration_count, recovery_aware);
-  if (declaration_count == 0 || schemas.size() != declaration_count ||
-      schemas.size() != tool_kinds.size() ||
-      std::ranges::none_of(schemas, [](const auto& schema) {
-        return schema.second.recognizable;
-      })) {
-    return {};
+  auto schemas = ParseFunctionSchemas(tools_json, tool_kinds, declaration_count);
+  if (!HasCompleteDeclaredSet(schemas, declaration_count, tool_kinds)) {
+    // A present but undecodable offer must retain the selected parser: falling back to the generic
+    // accumulator would expose native XML as assistant text instead of failing the tool turn closed.
+    if (tools_json.empty() && tool_kinds.empty()) {
+      return {};
+    }
+
+    return RejectUndecodableToolCall;
   }
 
-  return [schemas = std::move(schemas), recovery_aware](std::string_view source, bool end_of_stream) {
+  const bool unsupported_only = std::ranges::none_of(schemas, [](const auto& schema) {
+    return schema.second.recognizable;
+  });
+
+  return [schemas = std::move(schemas), recovery_aware, unsupported_only](
+             std::string_view source, bool end_of_stream) {
+    if (unsupported_only) {
+      return RejectUndecodableToolCall(source, end_of_stream);
+    }
+
     return ParseBatch(source, end_of_stream, schemas, recovery_aware);
   };
 }
@@ -880,11 +1214,9 @@ std::vector<ParsedToolCall> ParseQwenGuidedToolCalls(
   }
 
   size_t declaration_count = 0;
-  const auto schemas = ParseFunctionSchemas(
-      tools_json, tool_kinds, declaration_count, /*recovery_aware=*/true);
-  if (declaration_count == 0 || schemas.size() != declaration_count ||
-      schemas.size() != tool_kinds.size() ||
-      std::ranges::none_of(schemas, [](const auto& schema) {
+  const auto schemas = ParseFunctionSchemas(tools_json, tool_kinds, declaration_count);
+  if (!HasCompleteDeclaredSet(schemas, declaration_count, tool_kinds) ||
+      !std::ranges::all_of(schemas, [](const auto& schema) {
         return schema.second.valid;
       })) {
     return {};

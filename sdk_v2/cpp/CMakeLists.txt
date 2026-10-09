@@ -111,6 +111,20 @@ endif()
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 find_package(OnnxRuntimeGenAI REQUIRED)
 
+# Keep the pinned GenAI build usable until its published package includes this API. A matching newer header and
+# library automatically enable per-model guidance without a caller option or a manual build switch.
+include(CheckCXXSourceCompiles)
+set(CMAKE_REQUIRED_LIBRARIES OnnxRuntimeGenAI::OnnxRuntimeGenAI)
+unset(FOUNDRY_LOCAL_HAS_DELIMITED_GUIDANCE CACHE)
+check_cxx_source_compiles("
+    #include <ort_genai.h>
+    int main() {
+        return OgaTurnOptionsSetDelimitedGuidance(nullptr, 1, 2, \"start: x\") != nullptr;
+    }
+" FOUNDRY_LOCAL_HAS_DELIMITED_GUIDANCE)
+unset(CMAKE_REQUIRED_LIBRARIES)
+message(STATUS "GenAI delimited guidance available: ${FOUNDRY_LOCAL_HAS_DELIMITED_GUIDANCE}")
+
 find_package(OnnxRuntime REQUIRED)
 
 # WinML EP Catalog — Windows-only, for hardware EP discovery and download. The
@@ -433,6 +447,9 @@ foundry_local_configure_target(foundry_local_objects PUBLIC)
 # points compile without __declspec(dllimport/dllexport). The DLL gets its
 # exports from the .def file instead.
 target_compile_definitions(foundry_local_objects PRIVATE FL_STATIC_LIBRARY=1)
+if(FOUNDRY_LOCAL_HAS_DELIMITED_GUIDANCE)
+    target_compile_definitions(foundry_local_objects PRIVATE FOUNDRY_LOCAL_HAS_DELIMITED_GUIDANCE=1)
+endif()
 
 # --------------------------------------------------------------------------
 # Shared library — for releases and public API consumers.

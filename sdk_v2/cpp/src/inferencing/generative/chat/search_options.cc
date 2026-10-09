@@ -133,7 +133,8 @@ int64_t ResolveOutputReserve(const SearchOptions& options,
 
 std::optional<TurnGuidanceOptions> ResolveTurnGuidanceOptions(const ToolCallContext& tool_ctx,
                                                               bool prompt_opens_reasoning) {
-  if (tool_ctx.guidance_disabled) {
+  if (tool_ctx.guidance_disabled ||
+      (tool_ctx.qwen_xml_tool_body_grammar && !tool_ctx.HasExplicitGuidance())) {
     return std::nullopt;
   }
 

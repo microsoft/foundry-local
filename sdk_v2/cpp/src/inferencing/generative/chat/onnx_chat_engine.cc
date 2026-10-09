@@ -170,6 +170,19 @@ uint64_t OnnxChatEngine::BeginTurn(const std::shared_ptr<Conversation>& conversa
 
         auto plan = BuildEngineTurnOptionsPlan(options, tool_ctx, model_.GetGenAIConfig().GetChatBackendKind(),
                                                prompt_opens_reasoning);
+#if defined(FOUNDRY_LOCAL_HAS_DELIMITED_GUIDANCE)
+        if (!plan.guidance && tool_ctx.qwen_xml_tool_body_grammar && !tool_ctx.HasAnyExplicitGuidance()) {
+          try {
+            turn_options->SetDelimitedGuidance(*tool_ctx.tool_call_start_token_id,
+                                               *tool_ctx.tool_call_end_token_id,
+                                               tool_ctx.qwen_xml_tool_body_grammar->c_str());
+            model_.GetLogger().Log(LogLevel::Debug, "Qwen XML region guidance installed for Engine turn");
+          } catch (const std::runtime_error& e) {
+            FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+                     "failed to apply Qwen XML region guidance: " + std::string(e.what()));
+          }
+        }
+#endif
         if (plan.max_generated_tokens.has_value()) {
           // Validate only the limit the caller requested. When it is absent, leave the turn uncapped and let OGA
           // enforce the Request's Engine-capability session limit.

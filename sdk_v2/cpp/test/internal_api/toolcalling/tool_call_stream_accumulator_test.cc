@@ -8,6 +8,7 @@
 #include "inferencing/generative/toolcalling/tool_call_stream_accumulator.h"
 #include "inferencing/generative/chat/chat_transcript.h"
 #include "inferencing/generative/toolcalling/qwen_xml_tool_call_decoder.h"
+#include "inferencing/generative/toolcalling/tool_call_context.h"
 #include "inferencing/session/tool_registry.h"
 
 #include <gtest/gtest.h>
@@ -229,7 +230,7 @@ TEST(QwenXmlToolCallAccumulatorTest, UnsupportedSchemaKeywordsRemainUnadmittable
       {{"type", "object"},
        {"properties", {{"value", {{"type", "string"}, {"format", "date-time"}}}}}},
       {{"type", "object"},
-       {"properties", {{"value", {{"$ref", "#/$defs/value"}}}}},
+       {"properties", {{"value", {{"$ref", "#/$defs/missing"}}}}},
        {"$defs", {{"value", {{"type", "string"}}}}}},
   };
 
@@ -248,6 +249,410 @@ TEST(QwenXmlToolCallAccumulatorTest, UnsupportedSchemaKeywordsRemainUnadmittable
     EXPECT_TRUE(ParseQwenGuidedToolCalls(
         R"([{"name":"fn","parameters":{"value":"text"}}])", tools, kinds).empty());
   }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, WholeSetGrammarIncludesGrepPathsAndPreservesMultilineCode) {
+  const std::string tools = R"([
+      {"type":"function","function":{"name":"grep","parameters":{"type":"object",
+        "properties":{"paths":{"type":"array","items":{"type":"string"}},
+                      "query":{"type":"string"}},"required":["paths","query"]}}},
+      {"type":"function","function":{"name":"edit","parameters":{"type":"object",
+        "properties":{"path":{"type":"string"},"code":{"type":"string"}},"required":["path","code"]}}}
+    ])";
+  const std::unordered_map<std::string, ToolKind> kinds{
+      {"grep", ToolKind::kFunction}, {"edit", ToolKind::kFunction}};
+  const auto grammar = BuildQwenXmlToolBodyGrammar(tools, kinds);
+  ASSERT_TRUE(grammar.has_value());
+  EXPECT_NE(grammar->find("<parameter=paths>"), std::string::npos);
+  EXPECT_NE(grammar->find("<parameter=code>"), std::string::npos);
+  EXPECT_NE(grammar->find("body[suffix=\"\\n</parameter>\\n\"]"), std::string::npos);
+  EXPECT_NE(grammar->find("BODY: /(?s:.*)/ & ~/"), std::string::npos);
+  EXPECT_NE(grammar->find("<\\/tool_call>"), std::string::npos);
+  EXPECT_EQ(grammar->find("start: \"<tool_call>\""), std::string::npos);
+
+  const auto valid = RunQwen({"<tool_call>\n<function=grep>\n<parameter=query>\nneedle\n</parameter>\n"
+                              "<parameter=paths>\n[\"src/a.cc\",\"src/b.cc\"]\n</parameter>\n"
+                              "</function>\n</tool_call>"},
+                             tools, kinds);
+  ASSERT_EQ(valid.calls.size(), 1u);
+  EXPECT_EQ(valid.calls.front().arguments, R"({"paths":["src/a.cc","src/b.cc"],"query":"needle"})");
+  EXPECT_TRUE(valid.visible.empty());
+
+  const auto code = RunQwen({"<tool_call>\n<function=edit>\n<parameter=code>\nif (x < 3) {\n"
+                             "  return \"a\\\\b\";\n}\n</parameter>\n<parameter=path>\n"
+                             "src/a.cc\n</parameter>\n</function>\n</tool_call>"},
+                            tools, kinds);
+  ASSERT_EQ(code.calls.size(), 1u);
+  EXPECT_EQ(nlohmann::json::parse(code.calls.front().arguments)["code"],
+            "if (x < 3) {\n  return \"a\\\\b\";\n}");
+  EXPECT_TRUE(code.visible.empty());
+
+  ExpectSchemaFailureWithoutCalls(
+      {"<tool_call>\n<function=grep>\n<parameter=path>\nsrc/a.cc\n</parameter>\n"
+       "<parameter=query>\nneedle\n</parameter>\n</function>\n</tool_call>"},
+      tools, kinds);
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, PlannerUsesLinearStatesForTwelveAndTwentyEightMixedFields) {
+  for (const size_t count : {12u, 28u}) {
+    nlohmann::json properties = nlohmann::json::object();
+    nlohmann::json required = nlohmann::json::array();
+    for (size_t index = 0; index < count; ++index) {
+      const auto name = "field_" + std::to_string(index);
+      properties[name] = {{"type", "string"}};
+      if (index % 2 == 0) {
+        required.push_back(name);
+      }
+    }
+
+    const auto tools = nlohmann::json::array(
+        {{{"type", "function"}, {"function", {{"name", "large"},
+          {"parameters", {{"type", "object"}, {"properties", properties}, {"required", required}}}}}}}).dump();
+    const auto kinds = std::unordered_map<std::string, ToolKind>{{"large", ToolKind::kFunction}};
+    const auto grammar = BuildQwenXmlToolBodyGrammar(tools, kinds);
+    ASSERT_TRUE(grammar) << count;
+    EXPECT_NE(grammar->find("state_0_" + std::to_string(count) + ":"), std::string::npos);
+    EXPECT_EQ(grammar->find("state_0_" + std::to_string(count + 1) + ":"), std::string::npos);
+    if (count == 28) {
+      EXPECT_NE(grammar->find("<parameter=field_27>"), std::string::npos);
+    }
+
+    nlohmann::json arguments = nlohmann::json::object();
+    for (const auto& name : required) {
+      arguments[name.get<std::string>()] = "ok";
+    }
+
+    const auto accepted = ParseQwenGuidedToolCalls(
+        nlohmann::json::array({{{"name", "large"}, {"parameters", arguments}}}).dump(), tools, kinds);
+    ASSERT_EQ(accepted.size(), 1u);
+    EXPECT_EQ(nlohmann::json::parse(accepted.front().arguments), arguments);
+    arguments.erase("field_0");
+    EXPECT_TRUE(ParseQwenGuidedToolCalls(
+        nlohmann::json::array({{{"name", "large"}, {"parameters", arguments}}}).dump(), tools, kinds).empty());
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, SyntheticSeventyEightToolOfferKeepsDeclaredNamesDistinct) {
+  nlohmann::json tools = nlohmann::json::array();
+  std::unordered_map<std::string, ToolKind> kinds;
+  for (size_t index = 0; index < 78; ++index) {
+    const auto name = "tool_" + std::to_string(index);
+    nlohmann::json properties = nlohmann::json::object();
+    properties["value"] = {{"type", "string"}};
+    if (index == 77) {
+      properties["paths"] = {{"anyOf", nlohmann::json::array({
+          {{"type", "string"}}, {{"type", "array"}, {"items", {{"type", "string"}}}}})}};
+    }
+
+    tools.push_back({{"type", "function"}, {"function", {{"name", name},
+        {"parameters", {{"type", "object"}, {"properties", properties}, {"required", {"value"}}}}}}});
+    kinds.emplace(name, ToolKind::kFunction);
+  }
+
+  const auto grammar = BuildQwenXmlToolBodyGrammar(tools.dump(), kinds);
+  ASSERT_TRUE(grammar);
+  EXPECT_NE(grammar->find("tool_77:"), std::string::npos);
+  EXPECT_NE(grammar->find("<function=tool_77>"), std::string::npos);
+  EXPECT_NE(grammar->find("<parameter=paths>"), std::string::npos);
+  EXPECT_EQ(grammar->find("tool_78:"), std::string::npos);
+  EXPECT_EQ(grammar->find("<parameter=path>"), std::string::npos);
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, SyntheticGrepPathsUnionAcceptsStringOrArrayButNeverPathAlias) {
+  const std::string tools =
+      R"([{"type":"function","function":{"name":"grep","parameters":{"type":"object",)"
+      R"("properties":{"paths":{"anyOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}]},)"
+      R"("pattern":{"type":"string"}},"required":["pattern","paths"]}}}])";
+  const auto kinds = std::unordered_map<std::string, ToolKind>{{"grep", ToolKind::kFunction}};
+  const auto grammar = BuildQwenXmlToolBodyGrammar(tools, kinds);
+  ASSERT_TRUE(grammar);
+  EXPECT_NE(grammar->find("<parameter=paths>"), std::string::npos);
+  EXPECT_EQ(grammar->find("<parameter=path>"), std::string::npos);
+
+  for (const auto value : {"src/a.cc", R"(["src/a.cc","src/b.cc"])"}) {
+    const auto call = "<tool_call>\n<function=grep>\n<parameter=paths>\n" + std::string(value) +
+                      "\n</parameter>\n<parameter=pattern>\nneedle\n</parameter>\n</function>\n</tool_call>";
+    const auto result = RunQwen({call}, tools, kinds);
+    ASSERT_EQ(result.calls.size(), 1u) << value;
+    EXPECT_EQ(nlohmann::json::parse(result.calls.front().arguments)["paths"],
+              value[0] == '[' ? nlohmann::json::parse(value) : nlohmann::json(value));
+  }
+
+  ExpectSchemaFailureWithoutCalls(
+      {"<tool_call>\n<function=grep>\n<parameter=path>\nsrc/a.cc\n</parameter>\n"
+       "<parameter=pattern>\nneedle\n</parameter>\n</function>\n</tool_call>"}, tools, kinds);
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, GrepGrammarEmitsRequiredPatternBeforeOptionalPaths) {
+  const std::string tools =
+      R"([{"type":"function","function":{"name":"grep","parameters":{"type":"object",)"
+      R"("properties":{"paths":{"anyOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}]},)"
+      R"("pattern":{"type":"string"},"type":{"type":"string"}},"required":["pattern"]}}}])";
+  const auto kinds = std::unordered_map<std::string, ToolKind>{{"grep", ToolKind::kFunction}};
+  const auto grammar = BuildQwenXmlToolBodyGrammar(tools, kinds);
+  ASSERT_TRUE(grammar);
+
+  const auto required_start = grammar->find("state_0_0:");
+  const auto paths_start = grammar->find("state_0_1:");
+  const auto type_start = grammar->find("state_0_2:");
+  ASSERT_NE(required_start, std::string::npos);
+  ASSERT_NE(paths_start, std::string::npos);
+  ASSERT_NE(type_start, std::string::npos);
+  ASSERT_LT(required_start, paths_start);
+  ASSERT_LT(paths_start, type_start);
+  const auto required_state = grammar->substr(required_start, paths_start - required_start);
+  const auto paths_state = grammar->substr(paths_start, type_start - paths_start);
+  EXPECT_NE(required_state.find("<parameter=pattern>"), std::string::npos);
+  EXPECT_EQ(required_state.find("| state_0_1"), std::string::npos);
+  EXPECT_NE(paths_state.find("<parameter=paths>"), std::string::npos);
+  EXPECT_NE(paths_state.find("| state_0_2"), std::string::npos);
+  EXPECT_EQ(grammar->find("<parameter=path>"), std::string::npos);
+
+  for (const auto& body : {
+           std::string("<parameter=pattern>\nTODO\n</parameter>\n"
+                       "<parameter=paths>\nsrc\n</parameter>\n"),
+           std::string("<parameter=paths>\nsrc\n</parameter>\n"
+                       "<parameter=pattern>\nTODO\n</parameter>\n")}) {
+    const auto output = RunQwen({"<tool_call>\n<function=grep>\n" + body +
+                                 "</function>\n</tool_call>"}, tools, kinds);
+    ASSERT_EQ(output.calls.size(), 1u);
+    EXPECT_EQ(output.calls.front().arguments, R"({"paths":"src","pattern":"TODO"})");
+    EXPECT_TRUE(output.visible.empty());
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, LocalReferencesAndDuplicateEnumsValidateNestedObjects) {
+  const std::string tools =
+      R"([{"type":"function","function":{"name":"save_workflow","parameters":{)"
+      R"("$defs":{"Mode":{"type":"string","enum":["manual","manual","auto"]}},)"
+      R"("type":"object","properties":{"mode":{"anyOf":[{"$ref":"#/$defs/Mode"},{"type":"null"}]},)"
+      R"("steps":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"}},)"
+      R"("required":["name"],"additionalProperties":false}}},"required":["steps"]}}}])";
+  const auto kinds = std::unordered_map<std::string, ToolKind>{{"save_workflow", ToolKind::kFunction}};
+  ASSERT_TRUE(BuildQwenXmlToolBodyGrammar(tools, kinds));
+
+  const auto accepted = ParseQwenGuidedToolCalls(
+      R"([{"name":"save_workflow","parameters":{"mode":"manual","steps":[{"name":"compile"}]}}])",
+      tools, kinds);
+  ASSERT_EQ(accepted.size(), 1u);
+  EXPECT_EQ(nlohmann::json::parse(accepted.front().arguments)["steps"][0]["name"], "compile");
+
+  for (const auto* parameters : {
+           R"({"mode":"unknown","steps":[{"name":"compile"}]})",
+           R"({"mode":"manual","steps":[{"name":7}]})",
+           R"({"mode":"manual","steps":[{"name":"compile","extra":true}]})",
+           R"({"mode":"manual","steps":[{}]})"}) {
+    EXPECT_TRUE(ParseQwenGuidedToolCalls(
+        std::string("[{\"name\":\"save_workflow\",\"parameters\":") + parameters + "}]", tools, kinds).empty())
+        << parameters;
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, NullableObjectAndOpenNestedPropertiesRemainTypeChecked) {
+  const auto tools = R"([{"type":"function","function":{"name":"run_factory","parameters":{"type":"object",)"
+                     R"("properties":{"args":{"type":["object","null"]},"config":{"type":"object",)"
+                     R"("properties":{"enabled":{"type":"boolean"}},"required":["enabled"],)"
+                     R"("additionalProperties":true}},"required":["config"]}}}])";
+  const auto kinds = std::unordered_map<std::string, ToolKind>{{"run_factory", ToolKind::kFunction}};
+  ASSERT_TRUE(BuildQwenXmlToolBodyGrammar(tools, kinds));
+  const auto accepted = ParseQwenGuidedToolCalls(
+      R"([{"name":"run_factory","parameters":{"args":null,"config":{"enabled":true,"extra":42}}}])",
+      tools, kinds);
+  ASSERT_EQ(accepted.size(), 1u);
+  EXPECT_EQ(nlohmann::json::parse(accepted.front().arguments)["args"], nullptr);
+  EXPECT_EQ(nlohmann::json::parse(accepted.front().arguments)["config"]["extra"], 42);
+
+  EXPECT_TRUE(ParseQwenGuidedToolCalls(
+      R"([{"name":"run_factory","parameters":{"args":[],"config":{"enabled":true}}}])",
+      tools, kinds).empty());
+  EXPECT_TRUE(ParseQwenGuidedToolCalls(
+      R"([{"name":"run_factory","parameters":{"config":{"enabled":"true"}}}])",
+      tools, kinds).empty());
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, NestedExclusiveUnionAndConstAdmitOnlyOneMatchingShape) {
+  const std::string tools =
+      R"([{"type":"function","function":{"name":"create","parameters":{"type":"object","properties":{)"
+      R"("attachments":{"type":"array","items":{"oneOf":[)"
+      R"({"type":"object","properties":{"type":{"type":"string","const":"file"},"path":{"type":"string"}},)"
+      R"("required":["type","path"],"additionalProperties":false},)"
+      R"({"type":"object","properties":{"type":{"type":"string","const":"blob"},"data":{"type":"string"}},)"
+      R"("required":["type","data"],"additionalProperties":false}]}}},)"
+      R"("required":["attachments"]}}}])";
+  const auto kinds = std::unordered_map<std::string, ToolKind>{{"create", ToolKind::kFunction}};
+  ASSERT_TRUE(BuildQwenXmlToolBodyGrammar(tools, kinds));
+
+  const auto make_payload = [](std::string_view item) {
+    return std::string(R"([{"name":"create","parameters":{"attachments":[)") +
+           std::string(item) + R"(]}}])";
+  };
+  for (const auto* item : {
+           R"({"type":"file","path":"src/a.cc"})",
+           R"({"type":"blob","data":"aGVsbG8="})"}) {
+    const auto calls = ParseQwenGuidedToolCalls(make_payload(item), tools, kinds);
+    ASSERT_EQ(calls.size(), 1u) << item;
+    EXPECT_EQ(nlohmann::json::parse(calls.front().arguments)["attachments"][0],
+              nlohmann::json::parse(item));
+  }
+
+  for (const auto* item : {
+           R"({"type":"file","data":"not-a-path"})",
+           R"({"type":"blob","data":"ok","path":"unexpected"})",
+           R"({"type":"unknown","path":"src/a.cc"})"}) {
+    EXPECT_TRUE(ParseQwenGuidedToolCalls(make_payload(item), tools, kinds).empty()) << item;
+  }
+
+  const auto overlapping = R"([{"type":"function","function":{"name":"ambiguous",)"
+                           R"("parameters":{"type":"object","properties":{"value":{"type":"array","items":{)"
+                           R"("oneOf":[{"type":"string"},{"type":"string"}]}}},"required":["value"]}}}])";
+  const auto overlap_kinds = std::unordered_map<std::string, ToolKind>{{"ambiguous", ToolKind::kFunction}};
+  ASSERT_TRUE(BuildQwenXmlToolBodyGrammar(overlapping, overlap_kinds));
+  EXPECT_TRUE(ParseQwenGuidedToolCalls(
+      R"([{"name":"ambiguous","parameters":{"value":["matches-both"]}}])",
+      overlapping, overlap_kinds).empty());
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, SyntheticIncompleteRequiredSchemasCannotBeGuessed) {
+  const auto good = nlohmann::json::parse(
+      R"({"type":"function","function":{"name":"grep","parameters":{"type":"object",)"
+      R"("properties":{"paths":{"type":"array","items":{"type":"string"}}},"required":["paths"]}}})");
+  const std::vector<nlohmann::json> invalid_parameters = {
+      nlohmann::json::parse(R"({"type":"object","properties":{"command":{"type":"string"}},)"
+                            R"("required":["command","description"]})"),
+      nlohmann::json::parse(
+          R"({"type":"object","properties":{"meta":{"type":"object","properties":{)"
+          R"("phases":{"type":"array","items":{"type":"object",)"
+          R"("properties":{"name":{"type":"string"}},"required":["name","title"]}}}}}})"),
+  };
+  const auto kinds = std::unordered_map<std::string, ToolKind>{
+      {"grep", ToolKind::kFunction}, {"unknown_schema", ToolKind::kFunction}};
+  for (const auto& parameters : invalid_parameters) {
+    const auto tools = nlohmann::json::array({
+        good, {{"type", "function"}, {"function", {{"name", "unknown_schema"}, {"parameters", parameters}}}}
+    }).dump();
+    EXPECT_FALSE(BuildQwenXmlToolBodyGrammar(tools, kinds)) << parameters.dump();
+    EXPECT_TRUE(ParseQwenGuidedToolCalls(
+        R"([{"name":"grep","parameters":{"paths":["src/a.cc"]}}])", tools, kinds).empty());
+    ExpectSchemaFailureWithoutCalls(
+        {"<tool_call>\n<function=unknown_schema>\n</function>\n</tool_call>"}, tools, kinds);
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, ExplicitlyOpenRootObjectIsNotGuided) {
+  const auto tools = R"([{"type":"function","function":{"name":"search",)"
+                     R"("parameters":{"type":"object","properties":{"pattern":{"type":"string"}},)"
+                     R"("additionalProperties":true}}}])";
+  const auto kinds = std::unordered_map<std::string, ToolKind>{{"search", ToolKind::kFunction}};
+
+  EXPECT_FALSE(BuildQwenXmlToolBodyGrammar(tools, kinds));
+  EXPECT_TRUE(ParseQwenGuidedToolCalls(
+      R"([{"name":"search","parameters":{"pattern":"TODO","unknown":"src"}}])", tools, kinds).empty());
+  ExpectSchemaFailureWithoutCalls(
+      {"<tool_call>\n<function=search>\n<parameter=pattern>\nTODO\n</parameter>\n</function>\n</tool_call>"},
+      tools, kinds);
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, SharedReferenceExpansionHasAnAggregateBudget) {
+  nlohmann::json parameters = {
+      {"type", "object"},
+      {"properties", nlohmann::json::object()},
+      {"$defs", {{"large", {{"type", "string"}, {"title", std::string(1024 * 1024, 'x')}}}}},
+  };
+  for (size_t index = 0; index < 9; ++index) {
+    parameters["properties"]["field" + std::to_string(index)] = {{"$ref", "#/$defs/large"}};
+  }
+
+  const auto tools = nlohmann::json::array({
+      {{"type", "function"}, {"function", {{"name", "large"}, {"parameters", parameters}}}}
+  }).dump();
+  const auto kinds = std::unordered_map<std::string, ToolKind>{{"large", ToolKind::kFunction}};
+
+  EXPECT_FALSE(BuildQwenXmlToolBodyGrammar(tools, kinds));
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, OneOfAndUnresolvedReferencesKeepWholeSetIneligible) {
+  for (const auto* definition : {
+           R"({"oneOf":[{"type":"string"},{"type":"integer"}]})",
+           R"({"$ref":"#/$defs/missing"})",
+           R"({"$ref":"https://example.com/external"})"}) {
+    const auto tools = std::string(R"([{"type":"function","function":{"name":"unsupported",)"
+                                   R"("parameters":{"type":"object","properties":{"value":)") +
+                       definition + R"(}}}}])";
+    const auto kinds = std::unordered_map<std::string, ToolKind>{{"unsupported", ToolKind::kFunction}};
+    EXPECT_FALSE(BuildQwenXmlToolBodyGrammar(tools, kinds)) << definition;
+    EXPECT_TRUE(ParseQwenGuidedToolCalls(
+        R"([{"name":"unsupported","parameters":{"value":"text"}}])", tools, kinds).empty());
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, ScopedPlanningRequiresNativeAutomaticEngineAndAuthoritativeMarkers) {
+  ToolCallContext context;
+  context.tool_output = true;
+  context.text_output = true;
+  context.tool_call_start = "<tool_call>";
+  context.tool_call_end = "</tool_call>";
+  context.tool_call_start_token_id = 248058;
+  context.tool_call_end_token_id = 248059;
+  context.tools_json = R"([{"type":"function","function":{"name":"grep","parameters":{"type":"object",)"
+                       R"("properties":{"paths":{"type":"array","items":{"type":"string"}}},"required":["paths"]}}}])";
+  context.tool_kinds.emplace("grep", ToolKind::kFunction);
+  const auto plan = [&] {
+    return PlanQwenXmlToolBodyGuidance(context, true, ChatBackendKind::kEngine);
+  };
+  EXPECT_TRUE(plan().has_value());
+  EXPECT_FALSE(PlanQwenXmlToolBodyGuidance(context, false, ChatBackendKind::kEngine));
+  EXPECT_FALSE(PlanQwenXmlToolBodyGuidance(context, true, ChatBackendKind::kGenerator));
+  context.guidance_type = "json_schema";
+  context.guidance_data = "{}";
+  EXPECT_FALSE(plan());
+  context.guidance_type.clear();
+  context.guidance_data.clear();
+  context.forced_tool = ForcedToolChoice{"grep", ToolKind::kFunction};
+  EXPECT_FALSE(plan());
+  context.forced_tool.reset();
+  context.text_output = false;
+  EXPECT_FALSE(plan());
+  context.text_output = true;
+  context.tool_call_start_token_id.reset();
+  EXPECT_FALSE(plan());
+  context.tool_call_start_token_id = 248058;
+  context.tool_call_end_token_id.reset();
+  EXPECT_FALSE(plan());
+  context.tool_call_end_token_id = 248059;
+  context.tool_call_start = "<custom_tool_call>";
+  EXPECT_FALSE(plan());
+  context.tool_call_start = "<tool_call>";
+  context.tool_call_end = "</custom_tool_call>";
+  EXPECT_FALSE(plan());
+  context.tool_call_end = "</tool_call>";
+  context.tool_call_start_token_id = -1;
+  EXPECT_FALSE(plan());
+  context.tool_call_start_token_id = 248058;
+  context.tool_call_start_token_id = context.tool_call_end_token_id;
+  EXPECT_FALSE(plan());
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, UnrepresentableWholeSetFallsBackAndHidesUnsupportedXml) {
+  const std::string tools = R"([
+      {"type":"function","function":{"name":"grep","parameters":{"type":"object",
+        "properties":{"paths":{"type":"array","items":{"type":"string"}}},"required":["paths"]}}},
+      {"type":"function","function":{"name":"other","parameters":{"type":"object",
+        "properties":{"value":{"type":"string","pattern":"^[a-z]+$"}}}}}
+    ])";
+  const std::unordered_map<std::string, ToolKind> kinds{
+      {"grep", ToolKind::kFunction}, {"other", ToolKind::kFunction}};
+  EXPECT_FALSE(BuildQwenXmlToolBodyGrammar(tools, kinds).has_value());
+  const std::string only_unsupported =
+      R"([{"type":"function","function":{"name":"other","parameters":{"type":"object",)"
+      R"("properties":{"value":{"type":"string"}},"required":"value"}}}])";
+  const std::unordered_map<std::string, ToolKind> other_kind{{"other", ToolKind::kFunction}};
+  EXPECT_FALSE(BuildQwenXmlToolBodyGrammar(only_unsupported, other_kind).has_value());
+  auto accumulator = MakeQwenAccumulator(only_unsupported, other_kind);
+  auto outputs = RunChunks(accumulator, {"visible ", "<tool_call>\n<function=other>\n",
+                                         "<parameter=value>\nsecret"});
+  EXPECT_TRUE(AnyMalformed(outputs));
+  EXPECT_EQ(CollectVisible(outputs), "visible ");
+  EXPECT_TRUE(CollectCalls(outputs).empty());
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, CopilotToolsDecodeSupportedCallsDespiteOtherUnsupportedSchemas) {
@@ -275,7 +680,7 @@ TEST(QwenXmlToolCallAccumulatorTest, CopilotToolsDecodeSupportedCallsDespiteOthe
         {{"name", "unsupported"},
          {"parameters",
           {{"type", "object"},
-           {"properties", {{"input", {{"type", "object"}, {"properties", {{"value", {{"type", "string"}}}}}}}}}}}}}},
+           {"properties", {{"input", {{"type", "string"}, {"pattern", "^safe$"}}}}}}}}}},
   }).dump();
   const std::unordered_map<std::string, ToolKind> kinds = {
       {"powershell", ToolKind::kFunction},
@@ -720,7 +1125,7 @@ TEST(QwenXmlToolCallAccumulatorTest, UnsupportedOnlyNonObjectRootSchemasFailClos
   }
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, SkippedSerializedDeclarationsDisableExactDecoder) {
+TEST(QwenXmlToolCallAccumulatorTest, SkippedSerializedDeclarationsKeepFailClosedDecoderSelected) {
   const auto supported = nlohmann::json{
       {"type", "function"},
       {"function",
@@ -729,15 +1134,57 @@ TEST(QwenXmlToolCallAccumulatorTest, SkippedSerializedDeclarationsDisableExactDe
   };
   const auto custom_tools =
       nlohmann::json::array({supported, {{"type", "custom"}, {"name", "raw"}}}).dump();
-  EXPECT_FALSE(static_cast<bool>(
+  EXPECT_TRUE(static_cast<bool>(
       CreateQwenXmlToolCallPayloadParser(
           custom_tools, {{"fn", ToolKind::kFunction}, {"raw", ToolKind::kCustom}})));
+  EXPECT_FALSE(BuildQwenXmlToolBodyGrammar(
+      custom_tools, {{"fn", ToolKind::kFunction}, {"raw", ToolKind::kCustom}}));
+  ExpectSchemaFailureWithoutCalls(
+      {"<tool_call>\n<function=fn>\n</function>\n</tool_call>"}, custom_tools,
+      {{"fn", ToolKind::kFunction}, {"raw", ToolKind::kCustom}});
 
   const auto malformed_tools = nlohmann::json::array(
                                    {supported, {{"type", "function"}, {"function", {{"name", 1}}}}})
                                    .dump();
-  EXPECT_FALSE(static_cast<bool>(
+  EXPECT_TRUE(static_cast<bool>(
       CreateQwenXmlToolCallPayloadParser(malformed_tools, {{"fn", ToolKind::kFunction}})));
+  EXPECT_FALSE(BuildQwenXmlToolBodyGrammar(malformed_tools, {{"fn", ToolKind::kFunction}}));
+  ExpectSchemaFailureWithoutCalls(
+      {"<tool_call>\n<function=fn>\n</function>\n</tool_call>"}, malformed_tools,
+      {{"fn", ToolKind::kFunction}});
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, UnrecognizableOfferedToolCannotBecomeGuidedSuccessOrVisibleXml) {
+  const std::string tools =
+      R"([{"type":"function","function":{"name":"known","parameters":{"type":"object","properties":{}}}},)"
+      R"({"type":"function","function":{"name":"undecodable","parameters":{"type":"object","properties":{}}}}])";
+  const auto kinds = std::unordered_map<std::string, ToolKind>{
+      {"known", ToolKind::kFunction}, {"undecodable", ToolKind::kCustom}};
+  const auto undecodable = "<tool_call>\n<function=undecodable>\n</function>\n</tool_call>";
+
+  ASSERT_TRUE(static_cast<bool>(CreateQwenXmlToolCallPayloadParser(tools, kinds)));
+  EXPECT_FALSE(BuildQwenXmlToolBodyGrammar(tools, kinds));
+  ExpectSchemaFailureWithoutCalls({undecodable}, tools, kinds);
+  EXPECT_TRUE(ParseQwenGuidedToolCalls(
+      R"([{"name":"undecodable","parameters":{}}])", tools, kinds).empty());
+  EXPECT_TRUE(ParseQwenGuidedToolCalls(R"([{"name":"known","parameters":{}}])", tools, kinds).empty());
+
+  auto accumulator = MakeQwenAccumulator(tools, kinds);
+  auto outputs = RunChunks(accumulator, {"visible ", undecodable});
+  EXPECT_TRUE(AnyMalformed(outputs));
+  EXPECT_EQ(CollectVisible(outputs), "visible ");
+  EXPECT_TRUE(CollectCalls(outputs).empty());
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, MalformedOfferedJsonNeverFallsBackToGenericXmlPassthrough) {
+  const auto kinds = std::unordered_map<std::string, ToolKind>{{"fn", ToolKind::kFunction}};
+  const std::string call = "<tool_call>\n<function=fn>\n</function>\n</tool_call>";
+  for (const auto& tools : {std::string("{invalid"), std::string("[]")}) {
+    ASSERT_TRUE(static_cast<bool>(CreateQwenXmlToolCallPayloadParser(tools, kinds)));
+    EXPECT_FALSE(BuildQwenXmlToolBodyGrammar(tools, kinds));
+    ExpectSchemaFailureWithoutCalls({call}, tools, kinds);
+    EXPECT_TRUE(ParseQwenGuidedToolCalls(R"([{"name":"fn"}])", tools, kinds).empty());
+  }
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, NonNaturalFinalizationPreservesCompletePendingCallAsExactText) {
@@ -1039,8 +1486,6 @@ TEST(QwenXmlToolCallAccumulatorTest, UndeclaredSecondCallRejectsEntireAdjacentBa
 TEST(QwenXmlToolCallAccumulatorTest, UnsupportedAndAmbiguousSchemasFailClosed) {
   const std::vector<std::string> schemas = {
       R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{)"
-      R"("value":{"type":["string","null"]}}}}}])",
-      R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{)"
       R"("value":{"oneOf":[{"type":"string"},{"type":"null"}]}}}}}])",
       R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{)"
       R"("value":{"type":"date"}}}}}])",
@@ -1103,7 +1548,6 @@ TEST(QwenXmlToolCallAccumulatorTest, ScalarEnumsAcceptOnlyDeclaredValues) {
 TEST(QwenXmlToolCallAccumulatorTest, InvalidEnumDeclarationsRemainUnadmittable) {
   const std::vector<nlohmann::json> schemas = {
       {{"type", "string"}, {"enum", nlohmann::json::array()}},
-      {{"type", "string"}, {"enum", {"same", "same"}}},
       {{"type", "string"}, {"enum", {"text", 1}}},
       {{"type", "boolean"}, {"enum", {true, 1}}},
       {{"type", "array"}, {"enum", nlohmann::json::array({nlohmann::json::array()})}},
@@ -1153,7 +1597,7 @@ TEST(QwenXmlToolCallAccumulatorTest, FloatingNumericEnumDeclarationsRemainUnadmi
   }
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, LargeEnumDeclarationsRejectDuplicates) {
+TEST(QwenXmlToolCallAccumulatorTest, LargeEnumDeclarationsDeduplicateIdenticalValues) {
   nlohmann::json values = nlohmann::json::array();
   for (size_t index = 0; index < 4096; ++index) {
     values.push_back("value-" + std::to_string(index));
@@ -1174,11 +1618,11 @@ TEST(QwenXmlToolCallAccumulatorTest, LargeEnumDeclarationsRejectDuplicates) {
 
   EXPECT_TRUE(static_cast<bool>(make_parser(values)));
   values.push_back("value-2048");
-  const auto invalid_parser = make_parser(std::move(values));
-  ASSERT_TRUE(static_cast<bool>(invalid_parser));
+  const auto duplicate_parser = make_parser(std::move(values));
+  ASSERT_TRUE(static_cast<bool>(duplicate_parser));
   const auto call =
       "<tool_call>\n<function=select>\n<parameter=value>\nvalue-2048\n</parameter>\n</function>\n</tool_call>";
-  EXPECT_EQ(invalid_parser(call, true).disposition, ToolCallPayloadDisposition::kMalformed);
+  EXPECT_EQ(duplicate_parser(call, true).disposition, ToolCallPayloadDisposition::kParsed);
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, NumericEnumDuplicateKeysPreserveJsonRepresentation) {
@@ -1368,14 +1812,10 @@ TEST(QwenXmlToolCallAccumulatorTest, DuplicateDeclarationsFailClosedInEitherOrde
                        {"function", duplicate_first ? duplicate : valid}});
       tools.push_back({{"type", "function"},
                        {"function", duplicate_first ? valid : duplicate}});
-      auto output =
-          RunQwen({generated}, tools.dump(), {{"duplicate", ToolKind::kFunction}});
-      EXPECT_TRUE(output.calls.empty())
-          << "duplicate_first=" << duplicate_first
-          << ", parameters="
-          << (duplicate_parameters.has_value() ? duplicate_parameters->dump()
-                                               : "omitted");
-      EXPECT_EQ(output.visible, generated);
+      SCOPED_TRACE(duplicate_first);
+      SCOPED_TRACE(duplicate_parameters.has_value() ? duplicate_parameters->dump() : "omitted");
+      ExpectSchemaFailureWithoutCalls(
+          {generated}, tools.dump(), {{"duplicate", ToolKind::kFunction}});
     }
   }
 }
@@ -1398,12 +1838,9 @@ TEST(QwenXmlToolCallAccumulatorTest, DuplicateCustomDeclarationsFailClosedInEith
                      {"function", invalid_first ? invalid : valid}});
     tools.push_back({{"type", "function"},
                      {"function", invalid_first ? valid : invalid}});
-    auto acc =
-        MakeQwenAccumulator(tools.dump(), {{"duplicate", ToolKind::kCustom}});
-    auto outputs = RunChunks(acc, {generated});
-
-    EXPECT_TRUE(CollectCalls(outputs).empty()) << "invalid_first=" << invalid_first;
-    EXPECT_EQ(CollectVisible(outputs), generated);
+    SCOPED_TRACE(invalid_first);
+    ExpectSchemaFailureWithoutCalls(
+        {generated}, tools.dump(), {{"duplicate", ToolKind::kCustom}});
   }
 }
 
@@ -1482,7 +1919,7 @@ TEST(QwenXmlToolCallAccumulatorTest, CopilotGlobAnyOfRejectsMalformedAndWrongUni
   }
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, NestedAnyOfArrayItemsFailClosedWhenParserIsAvailable) {
+TEST(QwenXmlToolCallAccumulatorTest, NestedAnyOfArrayItemsAdmitOnlyDeclaredBranches) {
   const std::string tools =
       R"([{"type":"function","function":{"name":"collect","parameters":{"type":"object","properties":{)"
       R"("values":{"type":"array","items":{"anyOf":[{"type":"string"},{"type":"integer"}]}}},)"
@@ -1501,7 +1938,11 @@ TEST(QwenXmlToolCallAccumulatorTest, NestedAnyOfArrayItemsFailClosedWhenParserIs
   EXPECT_TRUE(static_cast<bool>(CreateQwenXmlToolCallPayloadParser(
       tools, {{"collect", ToolKind::kFunction}}, /*recovery_aware=*/true)));
 
-  ExpectSchemaFailureWithoutCalls({generated}, tools, {{"collect", ToolKind::kFunction}});
+  const auto accepted = RunQwen({generated}, tools, {{"collect", ToolKind::kFunction}});
+  ASSERT_EQ(accepted.calls.size(), 1u);
+  EXPECT_EQ(accepted.calls.front().arguments, R"({"values":["src",1]})");
+  EXPECT_TRUE(accepted.visible.empty());
+  EXPECT_TRUE(BuildQwenXmlToolBodyGrammar(tools, {{"collect", ToolKind::kFunction}}));
 
   auto recovery_accumulator =
       MakeQwenAccumulator(tools, {{"collect", ToolKind::kFunction}}, /*recovery_aware=*/true);
@@ -1519,7 +1960,10 @@ TEST(QwenXmlToolCallAccumulatorTest, NestedAnyOfArrayItemsFailClosedWhenParserIs
   EXPECT_TRUE(CollectCalls(recovery_outputs).empty());
 
   const auto guided = R"([{"name":"collect","parameters":{"values":["src",1]}}])";
-  EXPECT_TRUE(ParseQwenGuidedToolCalls(guided, tools, {{"collect", ToolKind::kFunction}}).empty());
+  ASSERT_EQ(ParseQwenGuidedToolCalls(guided, tools, {{"collect", ToolKind::kFunction}}).size(), 1u);
+  EXPECT_TRUE(ParseQwenGuidedToolCalls(
+      R"([{"name":"collect","parameters":{"values":["src",true]}}])",
+      tools, {{"collect", ToolKind::kFunction}}).empty());
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, ProductionNormalizedCustomToolIsDecoded) {
@@ -1565,14 +2009,14 @@ TEST(QwenXmlToolCallAccumulatorTest, CustomPayloadContainingXmlClosingDelimiterR
   EXPECT_TRUE(output.calls.empty());
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, CustomToolWithNoncanonicalSchemaRemainsVisible) {
+TEST(QwenXmlToolCallAccumulatorTest, CustomToolWithNoncanonicalSchemaFailsClosed) {
   const std::string tools =
       R"([{"type":"function","function":{"name":"custom","parameters":{"type":"object","properties":{}}}}])";
   const std::string generated = "<tool_call>\n<function=custom>\n</function>\n</tool_call>";
 
-  auto output = RunQwen({generated}, tools, {{"custom", ToolKind::kCustom}});
-  EXPECT_EQ(output.visible, generated);
-  EXPECT_TRUE(output.calls.empty());
+  const auto kinds = std::unordered_map<std::string, ToolKind>{{"custom", ToolKind::kCustom}};
+  EXPECT_FALSE(BuildQwenXmlToolBodyGrammar(tools, kinds));
+  ExpectSchemaFailureWithoutCalls({generated}, tools, kinds);
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, DeclaredParameterlessSchemaShapesDecodeExactEmptyArguments) {
