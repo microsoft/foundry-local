@@ -64,6 +64,9 @@ struct GenAIConfig {
   /// Borrowed until the config is modified or destroyed; avoids owning copies during telemetry name mapping.
   std::string_view DefaultProviderView() const;
 
+  /// Returns whether any decoder provider-options entry contains the exact provider name.
+  bool HasProvider(std::string_view provider) const;
+
   /// Selects the chat inference backend declared by the model artifact.
   ChatBackendKind GetChatBackendKind() const;
 
