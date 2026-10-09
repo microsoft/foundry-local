@@ -691,6 +691,8 @@ TEST_F(LocalModelCatalogTest, LoadsLegacyRegistrationPropertiesUsingPersistedMod
           {{"alias", "legacy-wrong-alias"},
            {"model_path", model_dir_.string()},
            {"version", 99},
+           {FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, 946684800},
+           {FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR, "2000-01-01T00:00:00Z"},
            {FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "chat-completion"}}}}}},
   };
   std::ofstream(cache_dir / "foundry.local.modelinfo.json") << legacy_index.dump(2);
@@ -703,6 +705,10 @@ TEST_F(LocalModelCatalogTest, LoadsLegacyRegistrationPropertiesUsingPersistedMod
   EXPECT_EQ(model->Info().GetPropertyStr("model_path"), nullptr);
   EXPECT_EQ(model->Info().GetPropertyStr("alias"), nullptr);
   EXPECT_EQ(model->Info().GetPropertyInt("version"), nullptr);
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, int64_t{0}),
+            946684800);
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR, std::string{}),
+            "2000-01-01T00:00:00Z");
 
   nlohmann::json migrated_index;
   std::ifstream(cache_dir / "foundry.local.modelinfo.json") >> migrated_index;
@@ -714,7 +720,13 @@ TEST_F(LocalModelCatalogTest, LoadsLegacyRegistrationPropertiesUsingPersistedMod
   ASSERT_EQ(migrated_index["models"].size(), 2u);
   EXPECT_TRUE(migrated_index["models"][0].contains("model_info"));
   EXPECT_FALSE(migrated_index["models"][0].contains("properties"));
-  EXPECT_NE(restored.GetModelVariant("legacy-model:4"), nullptr);
+  auto restored_again = MakeCatalog();
+  auto* migrated_model = restored_again.GetModelVariant("legacy-model:4");
+  ASSERT_NE(migrated_model, nullptr);
+  EXPECT_EQ(migrated_model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, int64_t{0}),
+            946684800);
+  EXPECT_EQ(migrated_model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR, std::string{}),
+            "2000-01-01T00:00:00Z");
 }
 
 TEST_F(LocalModelCatalogTest, MigratesSchemaV2MetadataUsingAuthoritativeSources) {
@@ -765,9 +777,9 @@ TEST_F(LocalModelCatalogTest, MigratesSchemaV2MetadataUsingAuthoritativeSources)
             "LocalRegistration");
   EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_ENTITY_TYPE_STR, std::string{}), "Model");
   EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR, std::string{}), "ONNX");
-  EXPECT_NE(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR, std::string{}),
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR, std::string{}),
             "2000-01-01T00:00:00Z");
-  EXPECT_NE(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, int64_t{0}), 1);
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, int64_t{0}), 1);
   EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, int64_t{-1}), 8192);
   EXPECT_TRUE(model->Info().execution_provider_override);
   EXPECT_STREQ(model->Info().prompt_templates.Find("user"), "artifact-template");
@@ -788,6 +800,13 @@ TEST_F(LocalModelCatalogTest, MigratesSchemaV2MetadataUsingAuthoritativeSources)
   EXPECT_EQ(migrated_index["models"][0]["model_info"]["promptTemplate"]["user"], "artifact-template");
   EXPECT_FALSE(migrated_index["models"][0]["model_info"].contains("modelSettings"));
   EXPECT_EQ(migrated_index["models"][0]["execution_provider_override"], true);
+
+  auto restored_again = MakeCatalog();
+  auto* migrated_model = restored_again.GetModelVariant("migration-model:2");
+  ASSERT_NE(migrated_model, nullptr);
+  EXPECT_EQ(migrated_model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR, std::string{}),
+            "2000-01-01T00:00:00Z");
+  EXPECT_EQ(migrated_model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, int64_t{0}), 1);
 }
 
 TEST_F(LocalModelCatalogTest, MigratesSchemaV2WithoutProviderToArtifactDefault) {
@@ -866,6 +885,8 @@ TEST_F(LocalModelCatalogTest, MigratesSchemaV2CallerProviderOverrideAndPersistsP
 TEST_F(LocalModelCatalogTest, MissingSchemaV2ArtifactRemainsUncachedAndCanBeUnregistered) {
   auto legacy_info = MakeMetadata();
   legacy_info.model_id = "missing-artifact:1";
+  legacy_info.SetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, 946684800);
+  legacy_info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR, "2000-01-01T00:00:00Z");
   const auto missing_model_path = root_.path() / "missing-model";
 
   const auto cache_dir = root_.path() / "cache" / "models";
@@ -902,9 +923,33 @@ TEST_F(LocalModelCatalogTest, MissingSchemaV2ArtifactRemainsUncachedAndCanBeUnre
   EXPECT_EQ(migrated_index["models"][0]["model_info"]["id"], "missing-artifact:1");
   EXPECT_EQ(migrated_index["models"][0]["metadata_prepared"], false);
 
-  EXPECT_NO_THROW(restored.UnregisterModel("missing-artifact"));
-  EXPECT_EQ(restored.GetModelVariant("missing-artifact:1"), nullptr);
-  ASSERT_EQ(restored.ListModels().size(), 1u);
+  std::filesystem::create_directories(missing_model_path);
+  std::ofstream(missing_model_path / "genai_config.json")
+      << R"({"model":{"type":"phi3","context_length":8192}})";
+
+  auto repaired = MakeCatalog();
+  auto* repaired_model = repaired.GetModelVariant("missing-artifact:1");
+  ASSERT_NE(repaired_model, nullptr);
+  EXPECT_TRUE(repaired_model->IsCached());
+  EXPECT_EQ(repaired_model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, int64_t{-1}),
+            8192);
+  EXPECT_EQ(repaired_model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, int64_t{0}),
+            946684800);
+  EXPECT_EQ(repaired_model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR, std::string{}),
+            "2000-01-01T00:00:00Z");
+
+  ASSERT_NE(repaired.RegisterModel(model_dir_.string(), "repair-trigger:1", MakeMetadata()), nullptr);
+  auto repaired_again = MakeCatalog();
+  auto* persisted_model = repaired_again.GetModelVariant("missing-artifact:1");
+  ASSERT_NE(persisted_model, nullptr);
+  EXPECT_EQ(persisted_model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, int64_t{0}),
+            946684800);
+  EXPECT_EQ(persisted_model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR, std::string{}),
+            "2000-01-01T00:00:00Z");
+
+  EXPECT_NO_THROW(repaired_again.UnregisterModel("missing-artifact"));
+  EXPECT_EQ(repaired_again.GetModelVariant("missing-artifact:1"), nullptr);
+  ASSERT_EQ(repaired_again.ListModels().size(), 2u);
 }
 
 TEST_F(LocalModelCatalogTest, UnsupportedSchemaV2ProviderRemainsRecoverableAcrossMigration) {

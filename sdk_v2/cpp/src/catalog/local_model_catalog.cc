@@ -632,11 +632,21 @@ std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistration
         const auto persisted_provider = info.execution_provider;
         const bool persisted_provider_override =
             schema_version < 3 ? !persisted_provider.empty() : info.execution_provider_override;
+        const auto* created_at = info.GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT);
+        const auto persisted_created_at = created_at ? std::optional<int64_t>(*created_at) : std::nullopt;
+        const auto* creation_time = info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR);
+        const auto persisted_creation_time = creation_time ? std::optional<std::string>(*creation_time) : std::nullopt;
         try {
           const auto config_path = model_path / "genai_config.json";
           const auto genai_config = GenAIConfig::LoadFromFile(config_path.string());
           info = ResolveMetadata(info, model_id, parsed_id.name, parsed_id.version, genai_config);
           info.execution_provider_override = persisted_provider_override;
+          if (persisted_created_at) {
+            info.SetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, *persisted_created_at);
+          }
+          if (persisted_creation_time) {
+            info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR, *persisted_creation_time);
+          }
           metadata_prepared = true;
         } catch (const std::exception&) {
           // Artifact metadata is best effort during migration; the persisted entry remains the recovery handle.
