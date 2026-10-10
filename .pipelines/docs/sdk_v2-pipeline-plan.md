@@ -249,12 +249,12 @@ the Python build stage consumes `pyVersion.txt`; `flcVersion.txt` exists for
 Core publishing.
 
 `sdkVersion` is baked into the native binary via the cmake cache variable
-`FOUNDRY_LOCAL_VERSION_STRING`, so `FoundryLocalGetVersionString()` returns
+`FOUNDRY_LOCAL_PACKAGE_VERSION`, so `FoundryLocalGetVersionString()` returns
 the same string that appears in the `.nupkg` filename. Each platform build
 stage:
 
 1. Depends on `compute_version` and downloads the `version-info` artifact.
-2. Reads `sdkVersion.txt` and sets `FOUNDRY_LOCAL_VERSION_STRING`.
+2. Reads `sdkVersion.txt` and sets `FOUNDRY_LOCAL_PACKAGE_VERSION`.
 3. Passes the combined defines to `build.py --cmake_extra_defines`.
 
 Local developer builds (no `-D` override) use the `PROJECT_VERSION` from

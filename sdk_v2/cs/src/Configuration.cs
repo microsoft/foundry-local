@@ -66,6 +66,8 @@ public class Configuration
     /// <summary>
     /// Catalog URLs with optional per-catalog filter overrides.
     /// Each entry is a (url, filter) pair where filter may be null to use the default.
+    /// Prefix catalog-v2 deployment-option values with <c>deploymentOptions=</c>.
+    /// Unqualified values retain the legacy <c>foundryLocal</c> tag semantics.
     /// Defaults to the Azure Foundry Local Catalog if empty.
     /// </summary>
     public IList<(string Url, string? Filter)>? CatalogUrls { get; init; }

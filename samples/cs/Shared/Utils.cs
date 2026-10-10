@@ -53,6 +53,12 @@ internal static class Utils
 
     private static async Task ShowSpinner(string msg, CancellationToken token)
     {
+        if (Console.IsOutputRedirected)
+        {
+            Console.WriteLine($"{msg}...");
+            return;
+        }
+
         Console.OutputEncoding = Encoding.UTF8;
 
         var sequence = new[] { '◴','◷','◶','◵' };

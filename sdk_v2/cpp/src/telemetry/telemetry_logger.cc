@@ -8,8 +8,20 @@
 
 namespace fl {
 
+namespace {
+
+std::string Text(std::string_view value) {
+  return TelemetryInternal::SanitizeTelemetryValue(value);
+}
+
+std::string Id(std::string_view value) {
+  return TelemetryInternal::SanitizeTelemetryIdentifier(value);
+}
+
+}  // namespace
+
 TelemetryLogger::TelemetryLogger(const std::string& app_name, ILogger& logger)
-    : app_name_(app_name), logger_(logger) {
+    : app_name_(Text(app_name)), logger_(logger) {
 }
 
 void TelemetryLogger::RecordAction(Action action, ActionStatus status, const InvocationContext& context,
@@ -17,16 +29,16 @@ void TelemetryLogger::RecordAction(Action action, ActionStatus status, const Inv
   logger_.Log(LogLevel::Debug,
               fmt::format("[Telemetry] Action AppName={} UserAgent={} CorrelationId={} Action={} Status={} "
                           "Direct={} TimeMs={} ModelId={}",
-                          app_name_, context.user_agent, context.correlation_id, ActionToString(action),
-                          ActionStatusToString(status), !context.indirect, duration_ms, model_id));
+                          app_name_, Text(context.user_agent), Id(context.correlation_id), ActionToString(action),
+                          ActionStatusToString(status), !context.indirect, duration_ms, Id(model_id)));
 }
 
 void TelemetryLogger::RecordException(Action action, const std::exception& exception,
                                       const InvocationContext& context) {
   logger_.Log(LogLevel::Debug,
               fmt::format("[Telemetry] Error AppName={} UserAgent={} CorrelationId={} Action={} Exception={}",
-                          app_name_, context.user_agent, context.correlation_id, ActionToString(action),
-                          ScrubStringForTelemetry(exception.what())));
+                          app_name_, Text(context.user_agent), Id(context.correlation_id), ActionToString(action),
+                          Text(BoundedTelemetryCString(exception.what()))));
 }
 
 void TelemetryLogger::RecordModelUsage(const ModelUsageInfo& info) {
@@ -35,8 +47,8 @@ void TelemetryLogger::RecordModelUsage(const ModelUsageInfo& info) {
                           "Stream={} Direct={} TimeToFirstTokenMs={} "
                           "TotalTimeMs={} TotalTokens={} InputTokenCount={} NumMessages={} MemoryUsedMB={} "
                           "CpuTimeMs={} GpuMemoryUsedMB={}",
-                          app_name_, info.user_agent, info.correlation_id, info.model_id,
-                          info.execution_provider, info.stream, !info.indirect,
+                          app_name_, Text(info.user_agent), Id(info.correlation_id), Id(info.model_id),
+                          Id(info.execution_provider), info.stream, !info.indirect,
                           info.time_to_first_token_ms, info.total_time_ms, info.total_tokens,
                           info.input_token_count, info.num_messages, info.memory_used_mb,
                           info.cpu_time_ms, info.gpu_memory_used_mb));
@@ -47,8 +59,9 @@ void TelemetryLogger::RecordAudioUsage(const AudioUsageInfo& info) {
               fmt::format("[Telemetry] AudioModel AppName={} UserAgent={} CorrelationId={} ModelId={} EP={} "
                           "AudioSource={} Language={} Stream={} Direct={} TotalTimeMs={} TotalTokens={} "
                           "InputTokenCount={} CompletionTokenCount={} AudioDurationMs={} SampleRate={} Channels={}",
-                          app_name_, info.user_agent, info.correlation_id, info.model_id, info.execution_provider,
-                          info.audio_source, info.language, info.stream, !info.indirect, info.total_time_ms,
+                          app_name_, Text(info.user_agent), Id(info.correlation_id), Id(info.model_id),
+                          Id(info.execution_provider), Text(info.audio_source), Text(info.language),
+                          info.stream, !info.indirect, info.total_time_ms,
                           info.total_tokens, info.input_token_count, info.completion_token_count,
                           info.audio_duration_ms, info.sample_rate, info.channels));
 }
@@ -57,7 +70,7 @@ void TelemetryLogger::RecordEpDownloadAttempt(const EpDownloadAttemptInfo& info)
   logger_.Log(LogLevel::Debug,
               fmt::format("[Telemetry] EPDownloadAttempt AppName={} UserAgent={} CorrelationId={} Attempts={} "
                           "NumProviders={} Succeeded={} Failed={} Resolved={} Status={} TimeMs={}",
-                          app_name_, info.user_agent, info.correlation_id, info.attempts, info.num_providers,
+                          app_name_, Text(info.user_agent), Id(info.correlation_id), info.attempts, info.num_providers,
                           info.succeeded, info.failed, info.resolved,
                           ActionStatusToString(info.status), info.duration_ms));
 }
@@ -67,10 +80,10 @@ void TelemetryLogger::RecordEpDownloadAndRegister(const EpDownloadAndRegisterInf
               fmt::format("[Telemetry] EPDownloadAndRegister AppName={} UserAgent={} CorrelationId={} Provider={} "
                           "InitReadyState={} DownloadReadyState={} DownloadStatus={} DownloadTimeMs={} "
                           "RegisterReadyState={} RegisterStatus={} RegisterTimeMs={}",
-                          app_name_, info.user_agent, info.correlation_id, info.provider_name,
-                          info.init_ready_state, info.download_ready_state,
+                          app_name_, Text(info.user_agent), Id(info.correlation_id), Id(info.provider_name),
+                          Text(info.init_ready_state), Text(info.download_ready_state),
                           ActionStatusToString(info.download_status), info.download_duration_ms,
-                          info.register_ready_state, ActionStatusToString(info.register_status),
+                          Text(info.register_ready_state), ActionStatusToString(info.register_status),
                           info.register_duration_ms));
 }
 
@@ -80,20 +93,21 @@ void TelemetryLogger::RecordDownload(const DownloadInfo& info) {
                           "LockWaitMs={} EnumerationMs={} DownloadMs={} TotalSizeBytes={} "
                           "AlreadyCachedBytes={} FileCount={} SkippedFileCount={} "
                           "DownloadWaitResult={} MaxConcurrency={}",
-                          app_name_, info.user_agent, info.correlation_id, info.model_id,
+                          app_name_, Text(info.user_agent), Id(info.correlation_id), Id(info.model_id),
                           ActionStatusToString(info.status), info.lock_wait_ms,
                           info.enumeration_ms, info.download_ms, info.total_size_bytes,
                           info.already_cached_bytes, info.file_count, info.skipped_file_count,
-                          info.download_wait_result, info.max_concurrency));
+                          Text(info.download_wait_result), info.max_concurrency));
 }
 
 void TelemetryLogger::RecordCatalogFetch(const CatalogFetchInfo& info) {
   logger_.Log(LogLevel::Debug,
               fmt::format("[Telemetry] CatalogFetch AppName={} Operation={} Endpoint={} Region={} Format={} "
                           "Status={} TimeMs={} ModelCount={} Error={} UserAgent={} CorrelationId={}",
-                          app_name_, info.operation, info.endpoint, info.region, info.format,
+                          app_name_, Text(info.operation), Text(info.endpoint), Text(info.region),
+                          TelemetryInternal::SanitizeTelemetryCatalogFormat(info.format),
                           ActionStatusToString(info.status), info.duration_ms, info.model_count,
-                          ScrubStringForTelemetry(info.error_message), info.user_agent, info.correlation_id));
+                          Text(info.error_message), Text(info.user_agent), Id(info.correlation_id)));
 }
 
 void TelemetryLogger::RecordProcessInfo(const ProcessInfo& info) {
@@ -103,18 +117,18 @@ void TelemetryLogger::RecordProcessInfo(const ProcessInfo& info) {
                           "ContainerType={} IsVirtualMachine={} VirtualizationType={} IsEmulator={} "
                           "HostEnvironment={} EnvironmentDetectionConfidence={} "
                           "DeviceIdScope={} CpuCount={} TotalMemoryMB={}",
-                          app_name_, info.app_version, info.os_name, info.os_version,
-                          info.cpu_arch, info.process_name, info.device_id_status, info.is_container,
-                          info.container_type, info.is_virtual_machine, info.virtualization_type,
-                          info.is_emulator, info.host_environment, info.environment_detection_confidence,
-                          info.device_id_scope, info.cpu_count, info.total_memory_mb));
+                          app_name_, Text(info.app_version), Text(info.os_name), Text(info.os_version),
+                          Text(info.cpu_arch), Text(info.process_name), Text(info.device_id_status), info.is_container,
+                          Text(info.container_type), info.is_virtual_machine, Text(info.virtualization_type),
+                          info.is_emulator, Text(info.host_environment), Text(info.environment_detection_confidence),
+                          Text(info.device_id_scope), info.cpu_count, info.total_memory_mb));
 }
 
 void TelemetryLogger::RecordHardwareInfo(const HardwareInfo& info) {
   logger_.Log(LogLevel::Debug,
               fmt::format("[Telemetry] HardwareInfo AppName={} DeviceTypes={} ExecutionProviders={} "
                           "DeviceTypeCount={} ExecutionProviderCount={} HasCPU={} HasGPU={} HasNPU={}",
-                          app_name_, info.device_types, info.execution_providers, info.device_type_count,
+                          app_name_, Text(info.device_types), Text(info.execution_providers), info.device_type_count,
                           info.execution_provider_count, info.has_cpu, info.has_gpu, info.has_npu));
 }
 

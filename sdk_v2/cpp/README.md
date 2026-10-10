@@ -41,6 +41,23 @@ clears an inherited default for that request.
 For OpenAI JSON requests, the payload takes precedence over request options, followed
 by session defaults. Omitting kwargs inherits the session default, if any.
 
+## Native Export Isolation
+
+The shared library exports only `FoundryLocalGetApi` and `FoundryLocalGetVersionString`.
+ELF builds use a version script and `--exclude-libs,ALL` to keep bundled dependencies
+and compiler compatibility archives private. macOS/iOS use an exported-symbols
+allowlist; Windows retains its explicit `.def` exports. Static and OBJECT libraries
+remain available to white-box tests. Linux's statically linked internal test executable
+also localizes archive-owned symbols so telemetry-thread vtables cannot interpose
+with GenAI. The public export allowlist applies to `foundry_local`, not separately
+shipped shared dependencies.
+
+Model-free exact-export checks run in Linux and macOS builds; Linux also checks
+strong/weak archive isolation, private transport symbols in internal tests, and runtime
+calls through the public fixture API.
+ELF checks inspect external definitions only: local symbols retained in `.dynsym`
+by GCC compatibility objects are not public exports.
+
 ## Build From Source
 
 From this directory:

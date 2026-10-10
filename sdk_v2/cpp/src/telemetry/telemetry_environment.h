@@ -2,13 +2,49 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "telemetry/telemetry_redaction.h"
+
 #include <cctype>
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 
 namespace fl {
 
 namespace TelemetryInternal {
+
+#ifdef _WIN32
+template <typename Reader>
+std::optional<std::string> ReadWindowsEnvironment(const char* name, Reader&& read) {
+  auto needed = read(name, nullptr, uint32_t{0});
+  if (!needed) {
+    return std::nullopt;
+  }
+  if (*needed <= 1) {
+    return std::string{};
+  }
+
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    if (*needed - 1 > kMaxTelemetryEnvironmentLength) {
+      return std::nullopt;
+    }
+
+    std::string value(*needed, '\0');
+    const auto written = read(name, value.data(), *needed);
+    if (!written || *written == 0) {
+      return std::nullopt;
+    }
+    if (*written < *needed) {
+      value.resize(*written);
+      return value;
+    }
+
+    needed = written;
+  }
+  return std::nullopt;
+}
+#endif
 
 struct HostEnvironmentEvidence {
   bool docker_marker = false;
@@ -37,6 +73,7 @@ struct HostEnvironmentInfo {
 };
 
 inline std::string_view TrimAscii(std::string_view value) {
+  value = value.substr(0, 3 * kMaxTelemetryProbeLength);
   while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front())) != 0) {
     value.remove_prefix(1);
   }
@@ -47,7 +84,7 @@ inline std::string_view TrimAscii(std::string_view value) {
 }
 
 inline std::string ToLowerAscii(std::string_view value) {
-  std::string out(value);
+  std::string out(value.substr(0, 3 * kMaxTelemetryProbeLength));
   for (char& c : out) {
     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   }
@@ -61,27 +98,29 @@ inline bool ContainsAscii(std::string_view haystack, std::string_view needle) {
 // Classifies only positive evidence. "undetected" deliberately does not claim bare metal.
 inline HostEnvironmentInfo ClassifyHostEnvironment(const HostEnvironmentEvidence& evidence) {
   const std::string container_name = ToLowerAscii(TrimAscii(evidence.systemd_container));
-  const std::string combined_container_evidence = ToLowerAscii(evidence.cgroup + " " + container_name);
+  const std::string combined_container_evidence =
+      ToLowerAscii(std::string(std::string_view(evidence.cgroup).substr(0, 3 * kMaxTelemetryProbeLength)) +
+                   " " + container_name);
 
   const char* container_type = "none";
   int container_confidence = 0;
-  if (evidence.kubernetes || ContainsAscii(combined_container_evidence, "kubepods")) {
+  if (evidence.kubernetes || combined_container_evidence.find("kubepods") != std::string::npos) {
     container_type = "kubernetes";
     container_confidence = 2;
   } else if (evidence.aws_ecs) {
     container_type = "amazonECS";
     container_confidence = 2;
-  } else if (evidence.podman_marker || ContainsAscii(combined_container_evidence, "libpod") ||
-             ContainsAscii(combined_container_evidence, "podman")) {
+  } else if (evidence.podman_marker || combined_container_evidence.find("libpod") != std::string::npos ||
+             combined_container_evidence.find("podman") != std::string::npos) {
     container_type = "podman";
     container_confidence = 2;
-  } else if (evidence.docker_marker || ContainsAscii(combined_container_evidence, "docker")) {
+  } else if (evidence.docker_marker || combined_container_evidence.find("docker") != std::string::npos) {
     container_type = "docker";
     container_confidence = 2;
-  } else if (ContainsAscii(combined_container_evidence, "containerd")) {
+  } else if (combined_container_evidence.find("containerd") != std::string::npos) {
     container_type = "containerd";
     container_confidence = 1;
-  } else if (ContainsAscii(combined_container_evidence, "lxc")) {
+  } else if (combined_container_evidence.find("lxc") != std::string::npos) {
     container_type = "lxc";
     container_confidence = 1;
   } else if (!container_name.empty() && container_name != "none") {
@@ -191,8 +230,11 @@ class TelemetryEnvironment {
   /// value is not "0", "false", "no", or "off" (case-insensitive).
   static bool IsTruthyValue(std::string_view value);
 
-  /// Read an env var (cross-platform). Returns empty string if unset.
+  /// Read a complete env var, up to 32 KiB. Oversized values are rejected with a warning, never truncated as paths.
   static std::string GetEnv(const char* name);
+
+  /// Unset/empty values succeed; rejected reads return nullopt so paths cannot fall back to a different location.
+  static std::optional<std::string> TryGetEnv(const char* name);
 };
 
 }  // namespace fl

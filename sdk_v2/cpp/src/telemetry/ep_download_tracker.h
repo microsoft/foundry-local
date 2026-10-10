@@ -27,9 +27,9 @@ enum class EpReadyState {
 ///     exception, e.g. "EP already registered, nothing to download")
 class EpDownloadTracker {
  public:
-  EpDownloadTracker(std::string provider_name,
-                    std::string user_agent,
-                    std::string correlation_id,
+  EpDownloadTracker(std::string_view provider_name,
+                    std::string_view user_agent,
+                    std::string_view correlation_id,
                     ITelemetry& telemetry);
   ~EpDownloadTracker();
 

@@ -262,7 +262,8 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
     try {
       telemetry_.RecordEpDownloadAttempt(info);
     } catch (const std::exception& ex) {
-      logger_.Log(LogLevel::Warning, std::string("telemetry EPDownloadAttempt failed: ") + ex.what());
+      logger_.Log(LogLevel::Warning, "telemetry EPDownloadAttempt failed: " +
+                                         TelemetryInternal::SanitizeTelemetryValue(BoundedTelemetryCString(ex.what())));
     } catch (...) {
       logger_.Log(LogLevel::Warning, "telemetry EPDownloadAttempt failed.");
     }

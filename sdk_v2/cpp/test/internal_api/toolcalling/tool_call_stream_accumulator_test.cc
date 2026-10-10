@@ -168,11 +168,15 @@ bool AnyMalformed(const std::vector<ToolCallStreamAccumulator::Output>& outputs)
   return std::ranges::any_of(outputs, [](const auto& output) { return output.malformed; });
 }
 
-void ExpectExactVisibleWithoutCalls(const std::vector<std::string>& chunks,
-                                    const std::string& expected) {
-  auto output = RunQwen(chunks);
-  EXPECT_EQ(output.visible, expected);
-  EXPECT_TRUE(output.calls.empty());
+void ExpectSchemaFailureWithoutCalls(
+    const std::vector<std::string>& chunks,
+    const std::string& tools = kQwenTools,
+    const std::unordered_map<std::string, ToolKind>& kinds = kQwenToolKinds) {
+  auto accumulator = MakeQwenAccumulator(tools, kinds);
+  auto outputs = RunChunks(accumulator, chunks);
+  EXPECT_TRUE(AnyMalformed(outputs));
+  EXPECT_TRUE(CollectVisible(outputs).empty());
+  EXPECT_TRUE(CollectCalls(outputs).empty());
 }
 
 void ExpectTwoCallsAroundVisibleTail(const std::vector<std::string>& chunks,
@@ -218,7 +222,7 @@ TEST(QwenXmlToolCallAccumulatorTest, ValidCallIsHiddenAndEmittedOnlyWhenBatchEnd
   EXPECT_FALSE(acc.InsideToolCall());
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, UnsupportedSchemaKeywordsDisableExactDecoder) {
+TEST(QwenXmlToolCallAccumulatorTest, UnsupportedSchemaKeywordsRemainUnadmittable) {
   const std::vector<nlohmann::json> schemas = {
       {{"type", "object"},
        {"properties", {{"value", {{"type", "string"}, {"pattern", "^[a-z]+$"}}}}}},
@@ -236,12 +240,436 @@ TEST(QwenXmlToolCallAccumulatorTest, UnsupportedSchemaKeywordsDisableExactDecode
                              {"function", {{"name", "fn"}, {"parameters", parameters}}}}})
                            .dump();
 
-    EXPECT_FALSE(static_cast<bool>(
-        CreateQwenXmlToolCallPayloadParser(tools, {{"fn", ToolKind::kFunction}})));
+    const auto kinds = std::unordered_map<std::string, ToolKind>{{"fn", ToolKind::kFunction}};
+    ASSERT_TRUE(static_cast<bool>(CreateQwenXmlToolCallPayloadParser(tools, kinds)));
+    const std::string call =
+        "<tool_call>\n<function=fn>\n<parameter=value>\ntext\n</parameter>\n</function>\n</tool_call>";
+    ExpectSchemaFailureWithoutCalls({call}, tools, kinds);
+    EXPECT_TRUE(ParseQwenGuidedToolCalls(
+        R"([{"name":"fn","parameters":{"value":"text"}}])", tools, kinds).empty());
   }
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, RequiredAdditionalPropertyDisablesExactDecoder) {
+TEST(QwenXmlToolCallAccumulatorTest, CopilotToolsDecodeSupportedCallsDespiteOtherUnsupportedSchemas) {
+  const auto tools = nlohmann::json::array({
+      {{"type", "function"},
+       {"function",
+        {{"name", "powershell"},
+         {"parameters",
+          {{"type", "object"},
+           {"properties", {{"command", {{"type", "string"}}}, {"description", {{"type", "string"}}}}},
+           {"required", nlohmann::json::array({"command", "description"})}}}}}},
+      {{"type", "function"},
+       {"function",
+        {{"name", "github-mcp-server-issue_read"},
+         {"parameters",
+          {{"type", "object"},
+           {"properties",
+            {{"method", {{"type", "string"}, {"enum", nlohmann::json::array({"get", "get_comments"})}}},
+             {"owner", {{"type", "string"}, {"x-mcp-header", "owner"}}},
+             {"repo", {{"type", "string"}, {"x-mcp-header", "repo"}}},
+             {"issue_number", {{"type", "number"}}}}},
+           {"required", nlohmann::json::array({"method", "owner", "repo", "issue_number"})}}}}}},
+      {{"type", "function"},
+       {"function",
+        {{"name", "unsupported"},
+         {"parameters",
+          {{"type", "object"},
+           {"properties", {{"input", {{"type", "object"}, {"properties", {{"value", {{"type", "string"}}}}}}}}}}}}}},
+  }).dump();
+  const std::unordered_map<std::string, ToolKind> kinds = {
+      {"powershell", ToolKind::kFunction},
+      {"github-mcp-server-issue_read", ToolKind::kFunction},
+      {"unsupported", ToolKind::kFunction},
+  };
+  ASSERT_TRUE(static_cast<bool>(CreateQwenXmlToolCallPayloadParser(tools, kinds, true)));
+
+  const std::string issue_call =
+      "<tool_call>\n<function=github-mcp-server-issue_read>\n"
+      "<parameter=method>\nget\n</parameter>\n"
+      "<parameter=owner>\nmicrosoft\n</parameter>\n"
+      "<parameter=repo>\nonnxruntime-genai\n</parameter>\n"
+      "<parameter=issue_number>\n2653\n</parameter>\n"
+      "</function>\n</tool_call>";
+  const auto accepted = RunQwen({issue_call}, tools, kinds);
+  EXPECT_TRUE(accepted.visible.empty());
+  ASSERT_EQ(accepted.calls.size(), 1u);
+  EXPECT_EQ(accepted.calls.front().name, "github-mcp-server-issue_read");
+  EXPECT_EQ(nlohmann::json::parse(accepted.calls.front().arguments),
+            nlohmann::json({{"method", "get"}, {"owner", "microsoft"}, {"repo", "onnxruntime-genai"},
+                            {"issue_number", 2653}}));
+
+  const std::string unsupported_call =
+      "<tool_call>\n<function=unsupported>\n<parameter=input>\n{\"value\":\"x\"}\n</parameter>\n"
+      "</function>\n</tool_call>";
+  ExpectSchemaFailureWithoutCalls({unsupported_call}, tools, kinds);
+  ExpectSchemaFailureWithoutCalls({issue_call + unsupported_call}, tools, kinds);
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, CopilotGrepPathMismatchWithValidSiblingFailsClosed) {
+  const std::string tools =
+      R"([{"type":"function","function":{"name":"grep","parameters":{"type":"object","properties":{)"
+      R"("pattern":{"type":"string"},"paths":{"anyOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}]},)"
+      R"("-n":{"type":"boolean"}},"required":["pattern"]}}},)"
+      R"({"type":"function","function":{"name":"powershell","parameters":{"type":"object","properties":{)"
+      R"("command":{"type":"string"},"description":{"type":"string"}},"required":["command","description"]}}}])";
+  const std::unordered_map<std::string, ToolKind> kinds = {
+      {"grep", ToolKind::kFunction}, {"powershell", ToolKind::kFunction}};
+  const std::string grep_prefix =
+      "<tool_call>\n<function=grep>\n<parameter=-n>\ntrue\n</parameter>\n"
+      "<parameter=pattern>\njson\n</parameter>\n";
+  const std::string grep_suffix = "</function>\n</tool_call>";
+  const std::string powershell =
+      "\n<tool_call>\n<function=powershell>\n<parameter=command>\nGet-ChildItem\n</parameter>\n"
+      "<parameter=description>\nList files\n</parameter>\n</function>\n</tool_call>";
+  const std::string invalid = grep_prefix + "<parameter=path>\nsrc\n</parameter>\n" +
+                              grep_suffix + powershell;
+  const std::string valid = grep_prefix + "<parameter=paths>\nsrc\n</parameter>\n" +
+                            grep_suffix + powershell;
+
+  for (const bool recovery_aware : {false, true}) {
+    for (const auto& chunks : std::vector<std::vector<std::string>>{
+             {invalid}, SplitAt(invalid, invalid.find(powershell)), SplitIntoBytes(invalid)}) {
+      auto accumulator = MakeQwenAccumulator(tools, kinds, recovery_aware);
+      auto outputs = RunChunks(accumulator, chunks);
+      EXPECT_TRUE(AnyMalformed(outputs));
+      EXPECT_TRUE(CollectVisible(outputs).empty());
+      EXPECT_TRUE(CollectCalls(outputs).empty());
+    }
+  }
+
+  auto valid_output = RunQwen({valid}, tools, kinds);
+  EXPECT_TRUE(valid_output.visible.empty());
+  ASSERT_EQ(valid_output.calls.size(), 2u);
+  EXPECT_EQ(nlohmann::json::parse(valid_output.calls.front().arguments).at("paths"), "src");
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, InterruptedKnownInvalidPrefixesFailClosedWithoutClosingMarker) {
+  const auto unsupported_tools =
+      R"([{"type":"function","function":{"name":"unsupported","parameters":{"type":"array","items":{"type":"string"}}}}])";
+  const std::vector<std::pair<std::string, std::string>> invalid = {
+      {"<tool_call>\n<function=typed>\n<parameter=path>\nsrc\n", kQwenTools},
+      {"<tool_call>\n<function=unsupported>\n<parameter=value>\nsrc\n", unsupported_tools},
+  };
+
+  for (const auto& [candidate, tools] : invalid) {
+    for (const auto& chunks : std::vector<std::vector<std::string>>{{candidate}, SplitIntoBytes(candidate)}) {
+      const auto kinds = tools == kQwenTools
+                             ? kQwenToolKinds
+                             : std::unordered_map<std::string, ToolKind>{{"unsupported", ToolKind::kFunction}};
+      auto accumulator = MakeQwenAccumulator(tools, kinds, /*recovery_aware=*/true);
+      ToolCallStreamAccumulator::Output interrupted;
+      for (const auto& chunk : chunks) {
+        auto output = accumulator.Push(chunk);
+        EXPECT_TRUE(output.events.empty());
+      }
+      interrupted = accumulator.RejectPendingSelectedPayload();
+      EXPECT_TRUE(interrupted.malformed) << candidate;
+      EXPECT_TRUE(interrupted.events.empty()) << candidate;
+    }
+  }
+
+  const std::string ambiguous = "<tool_call>\n<function=typed>\n<parameter=text>\ntruncated";
+  auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, /*recovery_aware=*/true);
+  EXPECT_FALSE(accumulator.Push(ambiguous).malformed);
+  const auto interrupted = accumulator.RejectPendingSelectedPayload();
+  EXPECT_FALSE(interrupted.malformed);
+  ASSERT_EQ(interrupted.events.size(), 1u);
+  EXPECT_EQ(std::get<std::string>(interrupted.events.front()), ambiguous);
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, InvalidSiblingAfterUnknownOrRejectedCallFailsClosed) {
+  const std::string unknown = "<tool_call>\n<function=missing>\n</function>\n</tool_call>";
+  const std::string unclosed_function = "<tool_call>\n<function=missing>\n</tool_call>";
+  const std::string rejected = "<tool_call>\n<function=typed>\n<param=text>\nx\n</param>\n"
+                               "</function>\n</tool_call>";
+  const std::string invalid = "<tool_call>\n<function=typed>\n<parameter=path>\nsrc\n</parameter>\n"
+                              "</function>\n</tool_call>";
+
+  for (const auto& first : {unknown, unclosed_function, rejected}) {
+    for (const auto& generated : {first + invalid, invalid + first}) {
+      for (const auto& chunks : std::vector<std::vector<std::string>>{{generated}, SplitIntoBytes(generated)}) {
+        ExpectSchemaFailureWithoutCalls(chunks);
+      }
+    }
+  }
+
+  const auto visible = RunQwen({unknown + kValidZeroQwenCall});
+  EXPECT_EQ(visible.visible, unknown + kValidZeroQwenCall);
+  EXPECT_TRUE(visible.calls.empty());
+
+  const std::string literal = "<tool_call>\n<function=missing>\n<parameter=text>\n"
+                              "literal </tool_call> and <tool_call>\n<function=typed>\n"
+                              "<parameter=path>\nsrc\n</parameter> not a sibling\n"
+                              "</parameter>\n</function>\n</tool_call>";
+  const std::string literal_outer_end = "<tool_call>\n<function=missing>\n<parameter=x>\n"
+                                        "literal </function>\n</tool_call> within the body\n"
+                                        "</parameter>\n</function>\n</tool_call>";
+  const std::string literal_outer_end_and_start =
+      "<tool_call>\n<function=missing>\n<parameter=x>\n"
+      "literal </function>\n</tool_call> and <tool_call> not a sibling\n"
+      "</parameter>\n</function>\n</tool_call>";
+  const std::string literal_outer_end_and_line_start =
+      "<tool_call>\n<function=missing>\n<parameter=x>\n"
+      "literal </function>\n</tool_call> and <tool_call>\nnot a sibling\n"
+      "</parameter>\n</function>\n</tool_call>";
+  const std::string literal_sibling_header =
+      "<tool_call>\n<function=missing>\n<parameter=x>\n"
+      "literal </tool_call>\n<tool_call>\n<function=typed>\nnot a sibling\n"
+      "</parameter>\n</function>\n</tool_call>";
+  const std::string literal_combined_close_and_sibling_header =
+      "<tool_call>\n<function=missing>\n<parameter=x>\n"
+      "literal </function>\n</tool_call>\n<tool_call>\n<function=typed>\n"
+      "not a sibling\n</parameter>\n</function>\n</tool_call>";
+  const std::string literal_multiple_combined_closes =
+      "<tool_call>\n<function=missing>\n<parameter=x>\n"
+      "literal </function>\n</tool_call> not a sibling\n"
+      "literal </function>\n</tool_call>\n<tool_call>\n<function=typed>\n"
+      "not a sibling\n</parameter>\n</function>\n</tool_call>";
+  for (const auto& candidate : {literal, literal_outer_end, literal_outer_end_and_start,
+                                literal_outer_end_and_line_start, literal_sibling_header,
+                                literal_combined_close_and_sibling_header,
+                                literal_multiple_combined_closes}) {
+    SCOPED_TRACE(candidate);
+    for (const bool recovery_aware : {false, true}) {
+      for (const auto& chunks : std::vector<std::vector<std::string>>{
+               {candidate}, SplitIntoBytes(candidate)}) {
+        auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, recovery_aware);
+        auto outputs = RunChunks(accumulator, chunks);
+        EXPECT_FALSE(AnyMalformed(outputs)) << candidate;
+        EXPECT_EQ(CollectVisible(outputs), candidate) << candidate;
+        EXPECT_TRUE(CollectCalls(outputs).empty()) << candidate;
+      }
+      for (size_t split = 0; split <= candidate.size(); ++split) {
+        auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, recovery_aware);
+        auto outputs = RunChunks(accumulator, SplitAt(candidate, split));
+        EXPECT_FALSE(AnyMalformed(outputs)) << "split=" << split;
+        EXPECT_EQ(CollectVisible(outputs), candidate) << "split=" << split;
+        EXPECT_TRUE(CollectCalls(outputs).empty()) << "split=" << split;
+      }
+    }
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, UnclosedRejectedParameterCannotConsumeInvalidSibling) {
+  const std::string unknown =
+      "<tool_call>\n<function=missing>\n<parameter=x>\nbody\n"
+      "</function>\n</tool_call>";
+  const std::string unknown_with_literal_candidate =
+      "<tool_call>\n<function=missing>\n<parameter=x>\nbody\n"
+      "</function>\n</tool_call> and <tool_call>\nnot a sibling";
+  const std::string invalid =
+      "<tool_call>\n<function=typed>\n<parameter=path>\nsrc\n"
+      "</parameter>\n</function>\n</tool_call>";
+
+  for (const auto& generated : {unknown + "\n" + invalid, invalid + "\n" + unknown,
+                                unknown_with_literal_candidate + "\n" + invalid}) {
+    for (const bool recovery_aware : {false, true}) {
+      {
+        auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, recovery_aware);
+        auto outputs = RunChunks(accumulator, SplitIntoBytes(generated));
+        EXPECT_TRUE(AnyMalformed(outputs));
+        EXPECT_TRUE(CollectVisible(outputs).empty());
+        EXPECT_TRUE(CollectCalls(outputs).empty());
+      }
+      for (size_t split = 0; split <= generated.size(); ++split) {
+        auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, recovery_aware);
+        auto outputs = RunChunks(accumulator, SplitAt(generated, split));
+        EXPECT_TRUE(AnyMalformed(outputs)) << "split=" << split;
+        EXPECT_TRUE(CollectVisible(outputs).empty()) << "split=" << split;
+        EXPECT_TRUE(CollectCalls(outputs).empty()) << "split=" << split;
+      }
+    }
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, MissingFunctionCloseCannotConsumeInvalidSibling) {
+  const std::string unknown =
+      "<tool_call>\n<function=missing>\n<parameter=x>\nbody\n</tool_call>";
+  const std::string unknown_with_literal_end =
+      "<tool_call>\n<function=missing>\n<parameter=x>\n"
+      "literal </tool_call> not a sibling\n</tool_call>";
+  const std::string unknown_without_tool_close =
+      "<tool_call>\n<function=missing>\n<parameter=x>\nbody\n</function>\n";
+  const std::string unknown_with_closed_parameter =
+      "<tool_call>\n<function=missing>\n<parameter=x>\nbody\n</parameter>\n";
+  const std::string invalid =
+      "<tool_call>\n<function=typed>\n<parameter=path>\nsrc\n"
+      "</parameter>\n</function>\n</tool_call>";
+  const std::string missing_required =
+      "<tool_call>\n<function=typed>\n</function>\n</tool_call>";
+
+  for (const auto& first : {unknown, unknown_with_literal_end,
+                            unknown_without_tool_close, unknown_with_closed_parameter}) {
+    for (const auto& sibling : {invalid, missing_required}) {
+      for (const auto& generated : {first + "\n" + sibling, sibling + "\n" + first}) {
+        SCOPED_TRACE(generated);
+        for (const bool recovery_aware : {false, true}) {
+          const auto parsed =
+              CreateQwenXmlToolCallPayloadParser(kQwenTools, kQwenToolKinds, recovery_aware)(generated, true);
+          EXPECT_EQ(parsed.disposition, ToolCallPayloadDisposition::kMalformed);
+          for (const auto& chunks : std::vector<std::vector<std::string>>{
+                   {generated}, SplitIntoBytes(generated)}) {
+            auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, recovery_aware);
+            auto outputs = RunChunks(accumulator, chunks);
+            EXPECT_TRUE(AnyMalformed(outputs));
+            EXPECT_TRUE(CollectVisible(outputs).empty());
+            EXPECT_TRUE(CollectCalls(outputs).empty());
+          }
+          for (size_t split = 0; split <= generated.size(); ++split) {
+            SCOPED_TRACE(split);
+            auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, recovery_aware);
+            auto outputs = RunChunks(accumulator, SplitAt(generated, split));
+            EXPECT_TRUE(AnyMalformed(outputs));
+            EXPECT_TRUE(CollectVisible(outputs).empty());
+            EXPECT_TRUE(CollectCalls(outputs).empty());
+          }
+        }
+      }
+    }
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, AmbiguousNestedCallMarkupFailsClosed) {
+  const std::string ambiguous =
+      "<tool_call>\n<function=missing>\n<parameter=x>\n"
+      "literal </tool_call>\n<tool_call>\n<function=typed>\n"
+      "<parameter=path>\nsrc\n</parameter> not a sibling\n"
+      "</parameter>\n</function>\n</tool_call>";
+
+  for (const bool recovery_aware : {false, true}) {
+    for (const auto& chunks : std::vector<std::vector<std::string>>{
+             {ambiguous}, SplitIntoBytes(ambiguous)}) {
+      auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, recovery_aware);
+      auto outputs = RunChunks(accumulator, chunks);
+      EXPECT_TRUE(AnyMalformed(outputs));
+      EXPECT_TRUE(CollectVisible(outputs).empty());
+      EXPECT_TRUE(CollectCalls(outputs).empty());
+    }
+    for (size_t split = 0; split <= ambiguous.size(); ++split) {
+      SCOPED_TRACE(split);
+      auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, recovery_aware);
+      auto outputs = RunChunks(accumulator, SplitAt(ambiguous, split));
+      EXPECT_TRUE(AnyMalformed(outputs));
+      EXPECT_TRUE(CollectVisible(outputs).empty());
+      EXPECT_TRUE(CollectCalls(outputs).empty());
+    }
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, RejectedBodyCannotConsumeSiblingMissingToolClose) {
+  const std::string generated =
+      "<tool_call>\n<function=missing>\n<parameter=x>\nbody\n"
+      "</function>\n</tool_call>\n"
+      "<tool_call>\n<function=typed>\n</function>\n";
+
+  for (const bool recovery_aware : {false, true}) {
+    for (const auto& chunks : std::vector<std::vector<std::string>>{
+             {generated}, SplitIntoBytes(generated)}) {
+      auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, recovery_aware);
+      auto outputs = RunChunks(accumulator, chunks);
+      EXPECT_TRUE(AnyMalformed(outputs));
+      EXPECT_TRUE(CollectVisible(outputs).empty());
+      EXPECT_TRUE(CollectCalls(outputs).empty());
+    }
+
+    for (size_t split = 0; split <= generated.size(); ++split) {
+      SCOPED_TRACE(split);
+      auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, recovery_aware);
+      auto outputs = RunChunks(accumulator, SplitAt(generated, split));
+      EXPECT_TRUE(AnyMalformed(outputs));
+      EXPECT_TRUE(CollectVisible(outputs).empty());
+      EXPECT_TRUE(CollectCalls(outputs).empty());
+    }
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, IndependentValidCallSurvivesLaterInvalidBatchAcrossSplits) {
+  const std::string invalid =
+      "<tool_call>\n<function=typed>\n<parameter=path>\nsrc\n"
+      "</parameter>\n</function>\n</tool_call>";
+  const std::string prose = "\nordinary prose\n";
+  const std::string generated = kValidZeroQwenCall + prose + invalid + " tail";
+  for (const bool recovery_aware : {false, true}) {
+    {
+      auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, recovery_aware);
+      auto outputs = RunChunks(accumulator, SplitIntoBytes(generated));
+      EXPECT_TRUE(AnyMalformed(outputs));
+      EXPECT_EQ(CollectVisible(outputs), prose);
+      auto calls = CollectCalls(outputs);
+      ASSERT_EQ(calls.size(), 1u);
+      EXPECT_EQ(calls.front().name, "zero");
+    }
+    for (size_t split = 0; split <= generated.size(); ++split) {
+      auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, recovery_aware);
+      auto outputs = RunChunks(accumulator, SplitAt(generated, split));
+      EXPECT_TRUE(AnyMalformed(outputs)) << "split=" << split;
+      EXPECT_EQ(CollectVisible(outputs), prose) << "split=" << split;
+      auto calls = CollectCalls(outputs);
+      ASSERT_EQ(calls.size(), 1u) << "split=" << split;
+      EXPECT_EQ(calls.front().name, "zero") << "split=" << split;
+    }
+
+    auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, recovery_aware);
+    auto adjacent = RunChunks(accumulator, SplitIntoBytes(kValidZeroQwenCall + "\n" + invalid));
+    EXPECT_TRUE(AnyMalformed(adjacent));
+    EXPECT_TRUE(CollectCalls(adjacent).empty());
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, VisiblePrefixBeforeInvalidCallAndTailIsChunkInvariant) {
+  const std::string invalid =
+      "<tool_call>\n<function=typed>\n<parameter=path>\nsrc\n</parameter>\n</function>\n</tool_call>";
+  const std::string generated = "safe prefix" + invalid + " tail";
+  for (size_t split = 0; split <= generated.size(); ++split) {
+    auto accumulator = MakeQwenAccumulator();
+    auto outputs = RunChunks(accumulator, SplitAt(generated, split));
+    EXPECT_TRUE(AnyMalformed(outputs)) << "split=" << split;
+    EXPECT_EQ(CollectVisible(outputs), "safe prefix") << "split=" << split;
+    EXPECT_TRUE(CollectCalls(outputs).empty()) << "split=" << split;
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, InvalidCallWithLiteralClosingMarkerCannotExposeTailOrAdjacentCall) {
+  const auto unsupported_tools = nlohmann::json::array({
+      {{"type", "function"},
+       {"function",
+        {{"name", "unsupported"},
+         {"parameters", {{"type", "array"}, {"items", {{"type", "string"}}}}}}}},
+      {{"type", "function"},
+       {"function", {{"name", "zero"}, {"parameters", {{"type", "object"},
+                                                       {"properties", nlohmann::json::object()}}}}}},
+  }).dump();
+  const std::string unsupported =
+      "<tool_call>\n<function=unsupported>\n<parameter=value>\n"
+      "literal </tool_call> inside body\n</parameter>\n</function>\n</tool_call>";
+  const std::string undeclared =
+      "<tool_call>\n<function=typed>\n<parameter=unknown>\n"
+      "literal </tool_call> inside body\n</parameter>\n</function>\n</tool_call>";
+  const std::string valid_before_invalid =
+      "<tool_call>\n<function=typed>\n<parameter=text>\n"
+      "literal </tool_call> inside body\n</parameter>\n"
+      "<parameter=unknown>\nlater\n</parameter>\n</function>\n</tool_call>";
+
+  for (const auto& [call, tools, kinds] : std::vector<std::tuple<
+           std::string, std::string, std::unordered_map<std::string, ToolKind>>>{
+           {unsupported, unsupported_tools,
+            {{"unsupported", ToolKind::kFunction}, {"zero", ToolKind::kFunction}}},
+           {undeclared, kQwenTools, kQwenToolKinds},
+           {valid_before_invalid, kQwenTools, kQwenToolKinds}}) {
+    const std::string generated = call + "\n" + kValidZeroQwenCall + " visible tail";
+    const auto literal_end = generated.find("</tool_call>");
+    const auto outer_end = generated.find("</tool_call>", literal_end + 1);
+    for (const auto& chunks : std::vector<std::vector<std::string>>{
+             {generated}, SplitAt(generated, literal_end + 6),
+             SplitAt(generated, outer_end), SplitIntoBytes(generated)}) {
+      SCOPED_TRACE(call);
+      ExpectSchemaFailureWithoutCalls(chunks, tools, kinds);
+    }
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, AdditionalPropertiesTrueIsNotMistakenForInvalidArguments) {
   const auto tools = nlohmann::json::array(
                          {{{"type", "function"},
                            {"function",
@@ -253,8 +681,43 @@ TEST(QwenXmlToolCallAccumulatorTest, RequiredAdditionalPropertyDisablesExactDeco
                                {"additionalProperties", true}}}}}}})
                          .dump();
 
-  EXPECT_FALSE(static_cast<bool>(
-      CreateQwenXmlToolCallPayloadParser(tools, {{"fn", ToolKind::kFunction}})));
+  const auto kinds = std::unordered_map<std::string, ToolKind>{{"fn", ToolKind::kFunction}};
+  ASSERT_TRUE(static_cast<bool>(CreateQwenXmlToolCallPayloadParser(tools, kinds)));
+  const std::string call =
+      "<tool_call>\n<function=fn>\n<parameter=dynamic>\ntext\n</parameter>\n</function>\n</tool_call>";
+  ExpectSchemaFailureWithoutCalls({call}, tools, kinds);
+  EXPECT_TRUE(ParseQwenGuidedToolCalls(
+      R"([{"name":"fn","parameters":{"dynamic":"text"}}])", tools, kinds).empty());
+
+  const auto open_schema =
+      R"([{"type":"function","function":{"name":"fn","parameters":{"type":"object",)"
+      R"("properties":{"fixed":{"type":"string"}},"additionalProperties":true}}}])";
+  ExpectSchemaFailureWithoutCalls({call}, open_schema, kinds);
+  EXPECT_TRUE(ParseQwenGuidedToolCalls(
+      R"([{"name":"fn","parameters":{"dynamic":"text"}}])", open_schema, kinds).empty());
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, UnsupportedOnlyNonObjectRootSchemasFailClosed) {
+  const std::vector<nlohmann::json> parameter_schemas = {
+      {{"type", "array"}, {"items", {{"type", "string"}}}},
+      {{"type", nlohmann::json::array({"object", "null"})}},
+      true,
+  };
+  const auto kinds = std::unordered_map<std::string, ToolKind>{{"fn", ToolKind::kFunction}};
+  const std::string call =
+      "<tool_call>\n<function=fn>\n<parameter=dynamic>\ntext\n</parameter>\n</function>\n</tool_call>";
+
+  for (const auto& parameters : parameter_schemas) {
+    SCOPED_TRACE(parameters.dump());
+    const auto tools = nlohmann::json::array(
+                           {{{"type", "function"},
+                             {"function", {{"name", "fn"}, {"parameters", parameters}}}}})
+                           .dump();
+    ASSERT_TRUE(static_cast<bool>(CreateQwenXmlToolCallPayloadParser(tools, kinds)));
+    ExpectSchemaFailureWithoutCalls({call}, tools, kinds);
+    EXPECT_TRUE(ParseQwenGuidedToolCalls(
+        R"([{"name":"fn","parameters":{"dynamic":"text"}}])", tools, kinds).empty());
+  }
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, SkippedSerializedDeclarationsDisableExactDecoder) {
@@ -288,6 +751,28 @@ TEST(QwenXmlToolCallAccumulatorTest, NonNaturalFinalizationPreservesCompletePend
   EXPECT_EQ(CollectVisible(outputs), kValidTypedQwenCall);
   EXPECT_TRUE(CollectCalls(outputs).empty());
   EXPECT_FALSE(acc.InsideToolCall());
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, InterruptedCompleteSchemaViolationCannotBecomeVisibleText) {
+  const std::string invalid =
+      "<tool_call>\n<function=typed>\n<parameter=unknown>\nvalue\n</parameter>\n"
+      "</function>\n</tool_call>";
+
+  for (size_t split = 0; split <= invalid.size(); ++split) {
+    auto acc = MakeQwenAccumulator();
+    auto chunks = SplitAt(invalid, split);
+    std::vector<ToolCallStreamAccumulator::Output> outputs;
+    for (const auto& chunk : chunks) {
+      outputs.push_back(acc.Push(chunk));
+    }
+    outputs.push_back(acc.RejectPendingSelectedPayload());
+    outputs.push_back(acc.Push(kValidTypedQwenCall + "tail"));
+    outputs.push_back(acc.Flush());
+
+    EXPECT_TRUE(AnyMalformed(outputs)) << "split=" << split;
+    EXPECT_TRUE(CollectVisible(outputs).empty()) << "split=" << split;
+    EXPECT_TRUE(CollectCalls(outputs).empty()) << "split=" << split;
+  }
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, NonNaturalFinalizationKeepsAlreadyAdmittedCallTerminal) {
@@ -398,6 +883,26 @@ TEST(QwenXmlToolCallAccumulatorTest, SchemaTypesAreDecodedAsCompatibleJson) {
   EXPECT_TRUE(output.visible.empty());
 }
 
+TEST(QwenXmlToolCallAccumulatorTest, PythonBooleanLiteralsDecodeWithoutAcceptingOtherNonJsonValues) {
+  for (const auto& [body, expected] : std::vector<std::pair<std::string, bool>>{
+           {"True", true}, {"False", false}}) {
+    const auto output = RunQwen({
+        "<tool_call>\n<function=typed>\n"
+        "<parameter=text>\nhello\n</parameter>\n"
+        "<parameter=boolean>\n" + body + "\n</parameter>\n"
+        "</function>\n</tool_call>",
+    });
+    EXPECT_TRUE(output.visible.empty());
+    ASSERT_EQ(output.calls.size(), 1u);
+    EXPECT_EQ(nlohmann::json::parse(output.calls.front().arguments).at("boolean"), expected);
+  }
+
+  const std::string unsupported =
+      "<tool_call>\n<function=typed>\n<parameter=text>\nhello\n</parameter>\n"
+      "<parameter=boolean>\nTRUE\n</parameter>\n</function>\n</tool_call>";
+  ExpectSchemaFailureWithoutCalls({unsupported});
+}
+
 TEST(QwenXmlToolCallAccumulatorTest, MultilineAndEmptyStringsPreserveExactBodies) {
   const std::string generated =
       "<tool_call>\n"
@@ -464,7 +969,7 @@ TEST(QwenXmlToolCallAccumulatorTest, EditSourceComparisonOperatorsRemainExactStr
   EXPECT_TRUE(output.visible.empty());
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, ReservedNestedQwenMarkupRemainsExactVisibleText) {
+TEST(QwenXmlToolCallAccumulatorTest, ReservedNestedQwenMarkupFailsClosed) {
   const std::string function_tools =
       R"([{"type":"function","function":{"name":"edit","parameters":{"type":"object","properties":{)"
       R"("new_str":{"type":"string"}},"required":["new_str"]}}}])";
@@ -481,13 +986,12 @@ TEST(QwenXmlToolCallAccumulatorTest, ReservedNestedQwenMarkupRemainsExactVisible
   for (const auto& [tools, kinds, function, parameter, body] : cases) {
     const auto generated = "<tool_call>\n<function=" + function + ">\n<parameter=" + parameter +
                            ">\n" + body + "\n</parameter>\n</function>\n</tool_call>";
-    auto output = RunQwen({generated}, tools, kinds);
-    EXPECT_TRUE(output.calls.empty()) << body;
-    EXPECT_EQ(output.visible, generated) << body;
+    SCOPED_TRACE(body);
+    ExpectSchemaFailureWithoutCalls({generated}, tools, kinds);
   }
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, InvalidSchemaValuesRejectTheExactCandidate) {
+TEST(QwenXmlToolCallAccumulatorTest, InvalidSchemaValuesFailClosed) {
   const std::vector<std::string> generated = {
       "<tool_call>\n<function=typed>\n<parameter=text>\nok\n</parameter>\n"
       "<parameter=integer>\n1.5\n</parameter>\n</function>\n</tool_call>",
@@ -498,13 +1002,11 @@ TEST(QwenXmlToolCallAccumulatorTest, InvalidSchemaValuesRejectTheExactCandidate)
   };
 
   for (const auto& candidate : generated) {
-    auto output = RunQwen({candidate});
-    EXPECT_EQ(output.visible, candidate);
-    EXPECT_TRUE(output.calls.empty());
+    ExpectSchemaFailureWithoutCalls({candidate});
   }
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, InvalidNamesAndRequiredParametersRejectWholeBatchExactly) {
+TEST(QwenXmlToolCallAccumulatorTest, InvalidNamesRemainVisibleButInvalidParametersFailClosed) {
   const std::vector<std::string> generated = {
       "<tool_call>\n<function=missing>\n</function>\n</tool_call>",
       "<tool_call>\n<function=typed>\n</function>\n</tool_call>",
@@ -514,14 +1016,18 @@ TEST(QwenXmlToolCallAccumulatorTest, InvalidNamesAndRequiredParametersRejectWhol
       "<parameter=unknown>\nb\n</parameter>\n</function>\n</tool_call>",
   };
 
-  for (const auto& candidate : generated) {
-    auto output = RunQwen({candidate});
-    EXPECT_EQ(output.visible, candidate);
-    EXPECT_TRUE(output.calls.empty());
+  for (size_t index = 0; index < generated.size(); ++index) {
+    if (index == 0) {
+      auto output = RunQwen({generated[index]});
+      EXPECT_EQ(output.visible, generated[index]);
+      EXPECT_TRUE(output.calls.empty());
+    } else {
+      ExpectSchemaFailureWithoutCalls({generated[index]});
+    }
   }
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, InvalidSecondCallRejectsEntireAdjacentBatch) {
+TEST(QwenXmlToolCallAccumulatorTest, UndeclaredSecondCallRejectsEntireAdjacentBatch) {
   const std::string generated =
       "<tool_call>\n<function=zero>\n</function>\n</tool_call>\n"
       "<tool_call>\n<function=missing>\n</function>\n</tool_call>";
@@ -530,7 +1036,7 @@ TEST(QwenXmlToolCallAccumulatorTest, InvalidSecondCallRejectsEntireAdjacentBatch
   EXPECT_TRUE(output.calls.empty());
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, UnsupportedAndAmbiguousSchemasRemainVisible) {
+TEST(QwenXmlToolCallAccumulatorTest, UnsupportedAndAmbiguousSchemasFailClosed) {
   const std::vector<std::string> schemas = {
       R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{)"
       R"("value":{"type":["string","null"]}}}}}])",
@@ -550,9 +1056,7 @@ TEST(QwenXmlToolCallAccumulatorTest, UnsupportedAndAmbiguousSchemasRemainVisible
       "<tool_call>\n<function=bad>\n<parameter=value>\ntext\n</parameter>\n</function>\n</tool_call>";
 
   for (const auto& schema : schemas) {
-    auto output = RunQwen({generated}, schema, {{"bad", ToolKind::kFunction}});
-    EXPECT_EQ(output.visible, generated);
-    EXPECT_TRUE(output.calls.empty());
+    ExpectSchemaFailureWithoutCalls({generated}, schema, {{"bad", ToolKind::kFunction}});
   }
 }
 
@@ -592,13 +1096,11 @@ TEST(QwenXmlToolCallAccumulatorTest, ScalarEnumsAcceptOnlyDeclaredValues) {
     EXPECT_TRUE(accepted.visible.empty());
 
     const auto rejected_call = make_call(test_case.rejected);
-    auto rejected = RunQwen({rejected_call}, tools, {{"select", ToolKind::kFunction}});
-    EXPECT_TRUE(rejected.calls.empty());
-    EXPECT_EQ(rejected.visible, rejected_call);
+    ExpectSchemaFailureWithoutCalls({rejected_call}, tools, {{"select", ToolKind::kFunction}});
   }
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, InvalidEnumDeclarationsDisableExactDecoder) {
+TEST(QwenXmlToolCallAccumulatorTest, InvalidEnumDeclarationsRemainUnadmittable) {
   const std::vector<nlohmann::json> schemas = {
       {{"type", "string"}, {"enum", nlohmann::json::array()}},
       {{"type", "string"}, {"enum", {"same", "same"}}},
@@ -618,12 +1120,15 @@ TEST(QwenXmlToolCallAccumulatorTest, InvalidEnumDeclarationsDisableExactDecoder)
                 {"parameters", {{"type", "object"}, {"properties", {{"value", schema}}}}}}}}})
             .dump();
 
-    EXPECT_FALSE(static_cast<bool>(
-        CreateQwenXmlToolCallPayloadParser(tools, {{"select", ToolKind::kFunction}})));
+    const auto kinds = std::unordered_map<std::string, ToolKind>{{"select", ToolKind::kFunction}};
+    ASSERT_TRUE(static_cast<bool>(CreateQwenXmlToolCallPayloadParser(tools, kinds)));
+    const std::string call =
+        "<tool_call>\n<function=select>\n<parameter=value>\ntext\n</parameter>\n</function>\n</tool_call>";
+    ExpectSchemaFailureWithoutCalls({call}, tools, kinds);
   }
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, FloatingNumericEnumDeclarationsDisableExactDecoder) {
+TEST(QwenXmlToolCallAccumulatorTest, FloatingNumericEnumDeclarationsRemainUnadmittable) {
   const std::vector<nlohmann::json> schemas = {
       {{"type", "number"}, {"enum", {1.0}}},
       {{"type", "number"}, {"enum", {0.1}}},
@@ -640,8 +1145,11 @@ TEST(QwenXmlToolCallAccumulatorTest, FloatingNumericEnumDeclarationsDisableExact
                 {"parameters", {{"type", "object"}, {"properties", {{"value", schema}}}}}}}}})
             .dump();
 
-    EXPECT_FALSE(static_cast<bool>(
-        CreateQwenXmlToolCallPayloadParser(tools, {{"select", ToolKind::kFunction}})));
+    const auto kinds = std::unordered_map<std::string, ToolKind>{{"select", ToolKind::kFunction}};
+    ASSERT_TRUE(static_cast<bool>(CreateQwenXmlToolCallPayloadParser(tools, kinds)));
+    const std::string call =
+        "<tool_call>\n<function=select>\n<parameter=value>\n1\n</parameter>\n</function>\n</tool_call>";
+    ExpectSchemaFailureWithoutCalls({call}, tools, kinds);
   }
 }
 
@@ -666,7 +1174,11 @@ TEST(QwenXmlToolCallAccumulatorTest, LargeEnumDeclarationsRejectDuplicates) {
 
   EXPECT_TRUE(static_cast<bool>(make_parser(values)));
   values.push_back("value-2048");
-  EXPECT_FALSE(static_cast<bool>(make_parser(std::move(values))));
+  const auto invalid_parser = make_parser(std::move(values));
+  ASSERT_TRUE(static_cast<bool>(invalid_parser));
+  const auto call =
+      "<tool_call>\n<function=select>\n<parameter=value>\nvalue-2048\n</parameter>\n</function>\n</tool_call>";
+  EXPECT_EQ(invalid_parser(call, true).disposition, ToolCallPayloadDisposition::kMalformed);
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, NumericEnumDuplicateKeysPreserveJsonRepresentation) {
@@ -701,9 +1213,7 @@ TEST(QwenXmlToolCallAccumulatorTest, StringEnumInsideAnyOfIsEnforced) {
   }
 
   const auto rejected_call = make_call("slow");
-  auto rejected = RunQwen({rejected_call}, tools, {{"select", ToolKind::kFunction}});
-  EXPECT_TRUE(rejected.calls.empty());
-  EXPECT_EQ(rejected.visible, rejected_call);
+  ExpectSchemaFailureWithoutCalls({rejected_call}, tools, {{"select", ToolKind::kFunction}});
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, RoundedFloatingValueNeverMatchesIntegerNumberEnum) {
@@ -715,9 +1225,7 @@ TEST(QwenXmlToolCallAccumulatorTest, RoundedFloatingValueNeverMatchesIntegerNumb
            "\n</parameter>\n</function>\n</tool_call>";
   };
   const auto rounded_call = make_call("9007199254740993.0");
-  auto rounded = RunQwen({rounded_call}, tools, {{"select", ToolKind::kFunction}});
-  EXPECT_TRUE(rounded.calls.empty());
-  EXPECT_EQ(rounded.visible, rounded_call);
+  ExpectSchemaFailureWithoutCalls({rounded_call}, tools, {{"select", ToolKind::kFunction}});
 
   const auto kinds = std::unordered_map<std::string, ToolKind>{{"select", ToolKind::kFunction}};
   EXPECT_TRUE(ParseQwenGuidedToolCalls(
@@ -739,9 +1247,7 @@ TEST(QwenXmlToolCallAccumulatorTest, ArrayItemsEnforceScalarEnums) {
   EXPECT_TRUE(accepted.visible.empty());
 
   const auto rejected_call = make_call(R"(["other"])");
-  auto rejected = RunQwen({rejected_call}, tools, {{"select", ToolKind::kFunction}});
-  EXPECT_TRUE(rejected.calls.empty());
-  EXPECT_EQ(rejected.visible, rejected_call);
+  ExpectSchemaFailureWithoutCalls({rejected_call}, tools, {{"select", ToolKind::kFunction}});
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, InvalidEnumValueRejectsEntireAdjacentBatch) {
@@ -754,9 +1260,7 @@ TEST(QwenXmlToolCallAccumulatorTest, InvalidEnumValueRejectsEntireAdjacentBatch)
   };
   const auto generated = make_call("fast") + "\n" + make_call("unsupported");
 
-  auto output = RunQwen({generated}, tools, {{"select", ToolKind::kFunction}});
-  EXPECT_TRUE(output.calls.empty());
-  EXPECT_EQ(output.visible, generated);
+  ExpectSchemaFailureWithoutCalls({generated}, tools, {{"select", ToolKind::kFunction}});
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, GuidedCallsEnforceEnumMembership) {
@@ -974,13 +1478,11 @@ TEST(QwenXmlToolCallAccumulatorTest, CopilotGlobAnyOfRejectsMalformedAndWrongUni
         "</parameter>\n"
         "</function>\n"
         "</tool_call>";
-    auto output = RunQwen({generated}, tools, {{"glob", ToolKind::kFunction}});
-    EXPECT_TRUE(output.calls.empty()) << body;
-    EXPECT_EQ(output.visible, generated) << body;
+    ExpectSchemaFailureWithoutCalls({generated}, tools, {{"glob", ToolKind::kFunction}});
   }
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, NestedAnyOfArrayItemsRemainExactVisibleText) {
+TEST(QwenXmlToolCallAccumulatorTest, NestedAnyOfArrayItemsFailClosedWhenParserIsAvailable) {
   const std::string tools =
       R"([{"type":"function","function":{"name":"collect","parameters":{"type":"object","properties":{)"
       R"("values":{"type":"array","items":{"anyOf":[{"type":"string"},{"type":"integer"}]}}},)"
@@ -996,12 +1498,10 @@ TEST(QwenXmlToolCallAccumulatorTest, NestedAnyOfArrayItemsRemainExactVisibleText
 
   EXPECT_TRUE(static_cast<bool>(
       CreateQwenXmlToolCallPayloadParser(tools, {{"collect", ToolKind::kFunction}})));
-  EXPECT_FALSE(static_cast<bool>(CreateQwenXmlToolCallPayloadParser(
+  EXPECT_TRUE(static_cast<bool>(CreateQwenXmlToolCallPayloadParser(
       tools, {{"collect", ToolKind::kFunction}}, /*recovery_aware=*/true)));
 
-  auto output = RunQwen({generated}, tools, {{"collect", ToolKind::kFunction}});
-  EXPECT_TRUE(output.calls.empty());
-  EXPECT_EQ(output.visible, generated);
+  ExpectSchemaFailureWithoutCalls({generated}, tools, {{"collect", ToolKind::kFunction}});
 
   auto recovery_accumulator =
       MakeQwenAccumulator(tools, {{"collect", ToolKind::kFunction}}, /*recovery_aware=*/true);
@@ -1014,8 +1514,8 @@ TEST(QwenXmlToolCallAccumulatorTest, NestedAnyOfArrayItemsRemainExactVisibleText
       "</function>\n"
       "</tool_call>";
   auto recovery_outputs = RunChunks(recovery_accumulator, {malformed});
-  EXPECT_FALSE(AnyMalformed(recovery_outputs));
-  EXPECT_EQ(CollectVisible(recovery_outputs), malformed);
+  EXPECT_TRUE(AnyMalformed(recovery_outputs));
+  EXPECT_TRUE(CollectVisible(recovery_outputs).empty());
   EXPECT_TRUE(CollectCalls(recovery_outputs).empty());
 
   const auto guided = R"([{"name":"collect","parameters":{"values":["src",1]}}])";
@@ -1114,7 +1614,7 @@ TEST(QwenXmlToolCallAccumulatorTest, LegacyDirectNameWithoutTypeDecodes) {
 }
 
 TEST(QwenXmlToolCallAccumulatorTest,
-     MalformedParameterSchemasRejectEntireAdjacentBatchExactly) {
+     MalformedParameterSchemasFailEntireAdjacentBatchClosed) {
   const std::vector<nlohmann::json> malformed_parameters = {
       1,
       "object",
@@ -1149,15 +1649,13 @@ TEST(QwenXmlToolCallAccumulatorTest,
              {{"type", "function"},
               {"function", {{"name", "bad"}, {"parameters", parameters}}}}})
             .dump();
-    auto output = RunQwen(
+    ExpectSchemaFailureWithoutCalls(
         {generated}, tools,
         {{"zero", ToolKind::kFunction}, {"bad", ToolKind::kFunction}});
-    EXPECT_EQ(output.visible, generated);
-    EXPECT_TRUE(output.calls.empty());
   }
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, ExcessiveArraySchemaNestingRemainsExactVisibleText) {
+TEST(QwenXmlToolCallAccumulatorTest, ExcessiveArraySchemaNestingFailsClosed) {
   nlohmann::json value_schema = {{"type", "string"}};
   for (size_t depth = 0; depth < 16; ++depth) {
     value_schema = {{"type", "array"}, {"items", std::move(value_schema)}};
@@ -1173,21 +1671,17 @@ TEST(QwenXmlToolCallAccumulatorTest, ExcessiveArraySchemaNestingRemainsExactVisi
       nlohmann::json::array({{{"type", "function"}, {"function", function}}}).dump();
   const std::string generated =
       "<tool_call>\n<function=deep>\n<parameter=value>\n[]\n</parameter>\n</function>\n</tool_call>";
-  auto output = RunQwen({generated}, tools, {{"deep", ToolKind::kFunction}});
-  EXPECT_TRUE(output.calls.empty());
-  EXPECT_EQ(output.visible, generated);
+  ExpectSchemaFailureWithoutCalls({generated}, tools, {{"deep", ToolKind::kFunction}});
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, ParameterWithoutSchemaRejectsEntireAdjacentBatchExactly) {
+TEST(QwenXmlToolCallAccumulatorTest, ParameterWithoutSchemaFailsEntireAdjacentBatchClosed) {
   const auto tools =
       R"([{"type":"function","function":{"name":"zero","parameters":{"type":"object"}}}])";
   const std::string generated =
       "<tool_call>\n<function=zero>\n<parameter=unknown>\nvalue\n</parameter>\n"
       "</function>\n</tool_call>\n" +
       kValidZeroQwenCall;
-  auto output = RunQwen({generated}, tools, {{"zero", ToolKind::kFunction}});
-  EXPECT_EQ(output.visible, generated);
-  EXPECT_TRUE(output.calls.empty());
+  ExpectSchemaFailureWithoutCalls({generated}, tools, {{"zero", ToolKind::kFunction}});
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, MalformedAndIncompleteCandidatesRemainExactVisibleText) {
@@ -1197,7 +1691,6 @@ TEST(QwenXmlToolCallAccumulatorTest, MalformedAndIncompleteCandidatesRemainExact
       "<tool_call>\n<function=typed>\n<parameter=text>\nprefix\n</parameter>\nsuffix\n"
       "</parameter>\n</function>\n</tool_call>",
       "<tool_call>\n<function=typed>\n<param=text>\nx\n</param>\n</function>\n</tool_call>",
-      "<tool_call>\n<function=typed>\n<parameter=text>\nx\n</function>\n</parameter>\n</function>\n</tool_call>",
       "<tool_call>\n<function=typed>\n<parameter=text>\ntruncated",
   };
 
@@ -1206,6 +1699,11 @@ TEST(QwenXmlToolCallAccumulatorTest, MalformedAndIncompleteCandidatesRemainExact
     EXPECT_EQ(output.visible, candidate);
     EXPECT_TRUE(output.calls.empty());
   }
+
+  ExpectSchemaFailureWithoutCalls({
+      "<tool_call>\n<function=typed>\n<parameter=text>\nx\n</function>\n"
+      "</parameter>\n</function>\n</tool_call>",
+  });
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, RecoveryAwareQualifiedStructuralFailuresAreSuppressed) {
@@ -1224,9 +1722,23 @@ TEST(QwenXmlToolCallAccumulatorTest, RecoveryAwareQualifiedStructuralFailuresAre
   }
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, RecoveryAwareOrdinaryRejectionsRemainExactVisibleText) {
+TEST(QwenXmlToolCallAccumulatorTest, RecoveryAwareUnknownToolsRemainVisible) {
   const std::vector<std::string> generated = {
       "<tool_call>\n<function=missing>\n</function>\n</tool_call>",
+  };
+
+  for (const auto& candidate : generated) {
+    auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, /*recovery_aware=*/true);
+    auto outputs = RunChunks(accumulator, {candidate});
+
+    EXPECT_FALSE(AnyMalformed(outputs)) << candidate;
+    EXPECT_EQ(CollectVisible(outputs), candidate);
+    EXPECT_TRUE(CollectCalls(outputs).empty()) << candidate;
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, RecoveryAwareSchemaViolationsFailClosed) {
+  const std::vector<std::string> generated = {
       "<tool_call>\n<function=typed>\n</function>\n</tool_call>",
       "<tool_call>\n<function=typed>\n<parameter=text>\nok\n</parameter>\n"
       "<parameter=unknown>\nvalue\n</parameter>\n</function>\n</tool_call>",
@@ -1238,8 +1750,8 @@ TEST(QwenXmlToolCallAccumulatorTest, RecoveryAwareOrdinaryRejectionsRemainExactV
     auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, /*recovery_aware=*/true);
     auto outputs = RunChunks(accumulator, {candidate});
 
-    EXPECT_FALSE(AnyMalformed(outputs)) << candidate;
-    EXPECT_EQ(CollectVisible(outputs), candidate);
+    EXPECT_TRUE(AnyMalformed(outputs)) << candidate;
+    EXPECT_TRUE(CollectVisible(outputs).empty()) << candidate;
     EXPECT_TRUE(CollectCalls(outputs).empty()) << candidate;
   }
 }
@@ -1306,14 +1818,14 @@ TEST(QwenXmlToolCallAccumulatorTest, BacktickAndTildeFencedExamplesStayVisibleAc
   }
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, OversizedCallRejectsWhitespaceAdjacentCallInOneChunk) {
+TEST(QwenXmlToolCallAccumulatorTest, OversizedCallFailsClosedWithWhitespaceAdjacentCallsInOneChunk) {
   const auto generated =
       MakeOversizedQwenCall() + " \n\t" + kValidZeroQwenCall + "\n" + kValidZeroQwenCall;
 
-  ExpectExactVisibleWithoutCalls({generated}, generated);
+  ExpectSchemaFailureWithoutCalls({generated});
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, OversizedCallRejectsWhitespaceAdjacentCallAcrossStructuralSplits) {
+TEST(QwenXmlToolCallAccumulatorTest, OversizedCallFailsClosedAcrossStructuralSplits) {
   const auto oversized = MakeOversizedQwenCall();
   const std::string whitespace = " \n\t";
   const auto generated = oversized + whitespace + kValidZeroQwenCall;
@@ -1340,25 +1852,24 @@ TEST(QwenXmlToolCallAccumulatorTest, OversizedCallRejectsWhitespaceAdjacentCallA
 
   for (const auto split : split_positions) {
     SCOPED_TRACE("split=" + std::to_string(split));
-    ExpectExactVisibleWithoutCalls(SplitAt(generated, split), generated);
+    ExpectSchemaFailureWithoutCalls(SplitAt(generated, split));
   }
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, OversizedCallRejectsWhitespaceAdjacentCallByteAtATime) {
+TEST(QwenXmlToolCallAccumulatorTest, OversizedCallFailsClosedByteAtATime) {
   const auto generated = MakeOversizedQwenCall() + " \n\t" + kValidZeroQwenCall;
 
-  ExpectExactVisibleWithoutCalls(SplitIntoBytes(generated), generated);
+  ExpectSchemaFailureWithoutCalls(SplitIntoBytes(generated));
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, OversizedCandidateDoesNotHideIndependentLaterCallAcrossEverySplit) {
+TEST(QwenXmlToolCallAccumulatorTest, OversizedCandidateFailsClosedEvenBeforeIndependentLaterCall) {
   const auto oversized = MakeOversizedQwenCall();
   const std::string generated = oversized + " visible " + kValidZeroQwenCall + " tail";
 
-  for (size_t split = 0; split <= generated.size(); ++split) {
-    auto output = RunQwen(SplitAt(generated, split));
-    ASSERT_EQ(output.calls.size(), 1u) << "split=" << split;
-    EXPECT_EQ(output.calls[0].name, "zero") << "split=" << split;
-    EXPECT_EQ(output.visible, oversized + " visible  tail") << "split=" << split;
+  for (const auto split : {size_t{0}, kSelectedPayloadBufferLimit - 1,
+                           kSelectedPayloadBufferLimit, oversized.size(), generated.size()}) {
+    SCOPED_TRACE(split);
+    ExpectSchemaFailureWithoutCalls(SplitAt(generated, split));
   }
 }
 
@@ -1370,23 +1881,14 @@ std::string MakeBoundaryStraddledOversizedCandidate() {
          std::string(closing_prefix) + "call>";
 }
 
-void ExpectBoundaryStraddledOversizeRecovery(const std::vector<std::string>& chunks,
-                                             const std::string& rejected) {
-  auto output = RunQwen(chunks);
-  ASSERT_EQ(output.calls.size(), 1u);
-  EXPECT_EQ(output.calls.front().name, "zero");
-  EXPECT_EQ(output.calls.front().arguments, "{}");
-  EXPECT_EQ(output.visible, rejected + " visible  tail");
-}
-
-TEST(QwenXmlToolCallAccumulatorTest, BoundaryStraddledOversizeClosePreservesLaterCallInOneChunk) {
+TEST(QwenXmlToolCallAccumulatorTest, BoundaryStraddledOversizeCloseFailsClosedInOneChunk) {
   const auto rejected = MakeBoundaryStraddledOversizedCandidate();
   const auto generated = rejected + " visible " + kValidZeroQwenCall + " tail";
 
-  ExpectBoundaryStraddledOversizeRecovery({generated}, rejected);
+  ExpectSchemaFailureWithoutCalls({generated});
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, BoundaryStraddledOversizeClosePreservesLaterCallAtEveryCloseSplit) {
+TEST(QwenXmlToolCallAccumulatorTest, BoundaryStraddledOversizeCloseFailsClosedAtEveryCloseSplit) {
   const auto rejected = MakeBoundaryStraddledOversizedCandidate();
   const auto generated = rejected + " visible " + kValidZeroQwenCall + " tail";
   constexpr auto close_size = std::string_view("</tool_call>").size();
@@ -1394,16 +1896,15 @@ TEST(QwenXmlToolCallAccumulatorTest, BoundaryStraddledOversizeClosePreservesLate
 
   for (size_t offset = 0; offset <= close_size; ++offset) {
     SCOPED_TRACE("offset=" + std::to_string(offset));
-    ExpectBoundaryStraddledOversizeRecovery(
-        SplitAt(generated, close_start + offset), rejected);
+    ExpectSchemaFailureWithoutCalls(SplitAt(generated, close_start + offset));
   }
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, BoundaryStraddledOversizeClosePreservesLaterCallByteAtATime) {
+TEST(QwenXmlToolCallAccumulatorTest, BoundaryStraddledOversizeCloseFailsClosedByteAtATime) {
   const auto rejected = MakeBoundaryStraddledOversizedCandidate();
   const auto generated = rejected + " visible " + kValidZeroQwenCall + " tail";
 
-  ExpectBoundaryStraddledOversizeRecovery(SplitIntoBytes(generated), rejected);
+  ExpectSchemaFailureWithoutCalls(SplitIntoBytes(generated));
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, CandidateAtLimitIsParsedBeforeOversizedRejection) {
@@ -1479,7 +1980,7 @@ TEST(QwenXmlToolCallAccumulatorTest, ExactlyLimitSizedCandidateHandlesWhitespace
   }
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, ExactlyLimitSizedCandidateRejectsWhitespaceAdjacentBatchAtEveryMarkerSplit) {
+TEST(QwenXmlToolCallAccumulatorTest, LimitSizedCandidateAndAdjacentBatchFailsClosedAtEveryMarkerSplit) {
   const std::string separator = " \n\t";
   constexpr size_t partial_marker_size = 5;
   const auto candidate =
@@ -1487,12 +1988,12 @@ TEST(QwenXmlToolCallAccumulatorTest, ExactlyLimitSizedCandidateRejectsWhitespace
   const auto generated = candidate + separator + kValidZeroQwenCall;
   const auto adjacent_start = candidate.size() + separator.size();
 
-  ExpectExactVisibleWithoutCalls({generated}, generated);
+  ExpectSchemaFailureWithoutCalls({generated});
   for (size_t offset = 0; offset <= std::string_view("<tool_call>").size(); ++offset) {
     SCOPED_TRACE("offset=" + std::to_string(offset));
-    ExpectExactVisibleWithoutCalls(SplitAt(generated, adjacent_start + offset), generated);
+    ExpectSchemaFailureWithoutCalls(SplitAt(generated, adjacent_start + offset));
   }
-  ExpectExactVisibleWithoutCalls(SplitIntoBytes(generated), generated);
+  ExpectSchemaFailureWithoutCalls(SplitIntoBytes(generated));
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, ExactlyLimitSizedCandidateFinalizesBeforePartialMarkerAtEos) {
@@ -1526,13 +2027,12 @@ TEST(QwenXmlToolCallAccumulatorTest, ExactlyLimitSizedPartialMarkerMismatchBecom
   }
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, CandidateOneByteOverLimitRemainsExactVisibleText) {
+TEST(QwenXmlToolCallAccumulatorTest, CandidateOneByteOverLimitFailsClosed) {
   const auto candidate = MakeSizedQwenCall(kSelectedPayloadBufferLimit + 1);
 
-  ExpectExactVisibleWithoutCalls({candidate}, candidate);
-  ExpectExactVisibleWithoutCalls(
-      SplitAt(candidate, kSelectedPayloadBufferLimit), candidate);
-  ExpectExactVisibleWithoutCalls(SplitIntoBytes(candidate), candidate);
+  ExpectSchemaFailureWithoutCalls({candidate});
+  ExpectSchemaFailureWithoutCalls(SplitAt(candidate, kSelectedPayloadBufferLimit));
+  ExpectSchemaFailureWithoutCalls(SplitIntoBytes(candidate));
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, ByteSizedChunksPerformBoundedSelectedPayloadParseWork) {

@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "telemetry/telemetry_redaction.h"
+
 #include <cstdint>
 #include <string_view>
 
@@ -19,6 +21,8 @@ inline double SampleRateForAction(std::string_view action_name) {
 }
 
 inline uint64_t HashSamplingKey(std::string_view app_session_guid, std::string_view event_key) {
+  app_session_guid = TelemetryIdentifierView(app_session_guid);
+  event_key = TelemetryIdentifierView(event_key);
   uint64_t hash = 14695981039346656037ULL;
   for (const unsigned char c : app_session_guid) {
     hash ^= c;
@@ -39,7 +43,6 @@ inline bool ShouldSampleTelemetryEvent(std::string_view app_session_guid, std::s
   if (sample_rate_percent >= 100.0) {
     return true;
   }
-
   // One million buckets support rates down to 0.0001% while keeping the decision stable for every event
   // sharing the same correlation key. The random process GUID prevents sequential keys from biasing samples.
   constexpr uint64_t kBucketCount = 1'000'000;

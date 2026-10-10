@@ -9,7 +9,6 @@
 #include "inferencing/model_load_manager.h"
 #include "inferencing/session/session_manager.h"
 #include "items/message_item.h"
-#include "items/text_item.h"
 #include "manager.h"
 #include "model.h"
 #include "telemetry/telemetry.h"
@@ -36,22 +35,7 @@ void LogUsageTelemetryFailure(ILogger& logger) noexcept {
   }
 }
 
-struct RequestMessageCount {
-  uint64_t count = 0;
-};
-
-void from_json(const nlohmann::json& json, RequestMessageCount& result) {
-  const auto messages = json.find("messages");
-  if (messages == json.end()) {
-    return;
-  }
-  if (!messages->is_array()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "messages must be an array");
-  }
-  result.count = messages->size();
-}
-
-uint64_t CountRequestMessages(const Request& request) {
+uint64_t CountTypedRequestMessages(const Request& request) {
   uint64_t count = 0;
   for (const auto* item : request.items) {
     if (!item) {
@@ -60,11 +44,6 @@ uint64_t CountRequestMessages(const Request& request) {
 
     if (item->type == FOUNDRY_LOCAL_ITEM_MESSAGE || item->type == FOUNDRY_LOCAL_ITEM_TOOL_RESULT) {
       ++count;
-    } else if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
-      const auto& text = static_cast<const TextItem&>(*item);
-      if (text.text_type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON) {
-        count += nlohmann::json::parse(text.text).get<RequestMessageCount>().count;
-      }
     }
   }
 
@@ -364,18 +343,24 @@ void Session::RecordUsage(const Request& request, const Response& response,
                           const InvocationContext& context, int64_t total_time_ms) {
   // This boundary covers metric preparation as well as emission; neither may change inference results.
   try {
-    ModelUsageInfo usage;
-    usage.model_id = CatalogModel().Id();
-    usage.execution_provider = ExecutionProvider();
-    if (usage.execution_provider.empty()) {
-      usage.execution_provider = CatalogModel().Info().execution_provider;
+    if (!response.openai_json_message_count.has_value()) {
+      LogUsageTelemetryFailure(logger_);
+      return;
     }
 
-    usage.user_agent = context.user_agent;
-    usage.correlation_id = context.correlation_id;
+    ModelUsageInfo usage;
+    usage.model_id = TelemetryInternal::SanitizeTelemetryIdentifier(CatalogModel().Id());
+    usage.execution_provider = TelemetryInternal::SanitizeTelemetryIdentifier(ExecutionProvider());
+    if (usage.execution_provider.empty()) {
+      usage.execution_provider =
+          TelemetryInternal::SanitizeTelemetryIdentifier(CatalogModel().Info().execution_provider);
+    }
+
+    usage.user_agent = TelemetryInternal::SanitizeTelemetryValue(context.user_agent);
+    usage.correlation_id = TelemetryInternal::SanitizeTelemetryIdentifier(context.correlation_id);
     usage.indirect = context.indirect;
     usage.stream = static_cast<bool>(callback_fn_);
-    usage.num_messages = CountRequestMessages(request);
+    usage.num_messages = CountTypedRequestMessages(request) + *response.openai_json_message_count;
     usage.total_time_ms = total_time_ms;
     usage.total_tokens = TelemetryTokenCount(response.usage.total_tokens);
     usage.input_token_count = TelemetryTokenCount(response.usage.prompt_tokens);

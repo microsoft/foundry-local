@@ -73,7 +73,8 @@ class BaseModelCatalog : public ICatalog {
   /// Maps to C# `BaseModelCatalog.GetModelVersionsAsync` -> derived overrides.
   virtual std::vector<Model> FetchModelVersions(
       const std::string& /*model_alias*/,
-      const std::string& /*model_name*/ = "") const {
+      const std::string& /*model_name*/,
+      int /*max_versions*/) const {
     return {};
   }
 

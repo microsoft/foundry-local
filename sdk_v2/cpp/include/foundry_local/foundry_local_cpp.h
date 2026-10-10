@@ -250,6 +250,10 @@ class Configuration {
 
   /// Optional. Add a catalog URL to connect to.
   /// Defaults to the Azure Foundry Local Catalog if none are added.
+  /// Legacy Azure `https://ai.azure.com/.../ux/v1.0` URLs are unsupported. Compatible custom
+  /// catalog endpoints may use a different path.
+  /// Prefix catalog-v2 deployment-option overrides with `deploymentOptions=`. Unqualified
+  /// overrides retain the legacy `foundryLocal` tag semantics.
   Configuration& AddCatalogUrl(const std::string& url,
                                const std::optional<std::string>& filter_override = std::nullopt);
 
@@ -792,6 +796,7 @@ class ICatalog {
   /// Get every individual model variant currently present in the local cache.
   virtual ModelList GetCachedModels() const = 0;
 
+  /// Get every loaded leaf variant, independently of each alias group's selected variant.
   virtual ModelList GetLoadedModels() const = 0;
   virtual std::unique_ptr<IModel> GetModel(const std::string& alias) const = 0;
   virtual std::unique_ptr<IModel> GetModelVariant(const std::string& model_id) const = 0;

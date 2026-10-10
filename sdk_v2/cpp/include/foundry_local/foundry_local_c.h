@@ -1003,7 +1003,12 @@ struct flConfigurationApi {
   FL_API_STATUS(SetModelCacheDir, _In_ flConfiguration* config, _In_ const char* dir);
   /// Optional. Add a catalog URL. Defaults to the Azure Foundry Local Catalog if none added.
   /// Multiple catalogs can be added. Catalogs priority is determined by the order they were added.
-  /// @param filter_override Optional filter string for this catalog. Pass NULL for no override.
+  /// Legacy Azure `https://ai.azure.com/.../ux/v1.0` URLs are unsupported. Compatible custom
+  /// catalog endpoints may use a different path.
+  /// @param filter_override Optional filter string for this catalog. Pass NULL, an empty string,
+  /// or `''` for the default `Foundry Local on Devices` deployment option. Prefix catalog-v2
+  /// deployment-option values with `deploymentOptions=`. Unqualified values retain the legacy
+  /// `foundryLocal` tag semantics.
   FL_API_STATUS(AddCatalogUrl, _In_ flConfiguration* config, _In_ const char* url,
                 _In_opt_ const char* filter_override);
   /// Optional. Azure region for the model registry download endpoint

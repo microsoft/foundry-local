@@ -3,6 +3,7 @@
 #include "telemetry/device_id.h"
 
 #include "platform/telemetry_device_id.h"
+#include "logger.h"
 #include "util/sha256.h"
 
 #include <utility>
@@ -47,7 +48,14 @@ std::filesystem::path TelemetryDeviceId::EnsureCacheDirectory() {
 }
 
 std::string TelemetryDeviceId::HashForTelemetry(std::string_view raw_device_id) {
-  return raw_device_id.empty() ? std::string{} : "c:" + Sha256String(raw_device_id);
+  if (raw_device_id.empty()) {
+    return {};
+  }
+  if (!IsValidGuid(raw_device_id)) {
+    StderrLogger{}.Log(LogLevel::Warning, "[Telemetry] Invalid device GUID rejected");
+    return {};
+  }
+  return "c:" + Sha256String(raw_device_id);
 }
 
 bool TelemetryDeviceId::IsValidGuid(std::string_view value) {

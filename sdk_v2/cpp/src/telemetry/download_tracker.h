@@ -16,8 +16,8 @@ namespace fl {
 /// happy path or SetStatus(kSkipped) when the model was already cached.
 class DownloadTracker {
  public:
-  DownloadTracker(std::string model_id,
-                  std::string user_agent,
+  DownloadTracker(std::string_view model_id,
+                  std::string_view user_agent,
                   ITelemetry& telemetry);
   ~DownloadTracker();
 
@@ -33,7 +33,9 @@ class DownloadTracker {
   void SetFileCount(int32_t v) { info_.file_count = v; }
   void SetSkippedFileCount(int32_t v) { info_.skipped_file_count = v; }
   void SetDownloadMs(int64_t v) { info_.download_ms = v; }
-  void SetDownloadWaitResult(std::string v) { info_.download_wait_result = std::move(v); }
+  void SetDownloadWaitResult(std::string_view v) {
+    info_.download_wait_result = TelemetryInternal::SanitizeTelemetryValue(v);
+  }
   void SetMaxConcurrency(int32_t v) { info_.max_concurrency = v; }
 
   /// Start the timer for the download phase. Kept for callers that do not have

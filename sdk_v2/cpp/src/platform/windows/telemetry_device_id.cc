@@ -176,7 +176,12 @@ std::filesystem::path EnsureStorageDirectory() {
 }
 
 std::filesystem::path GetCacheDirectory() {
-  auto base = TelemetryEnvironment::GetEnv("LOCALAPPDATA");
+  auto cache_base = TelemetryEnvironment::TryGetEnv("LOCALAPPDATA");
+  if (!cache_base) {
+    return {};
+  }
+
+  auto base = std::move(*cache_base);
   if (base.empty()) {
     const auto user_profile = TelemetryEnvironment::GetEnv("USERPROFILE");
     if (!user_profile.empty()) {

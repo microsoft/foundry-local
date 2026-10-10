@@ -63,6 +63,7 @@ TEST(HttpUserAgentTest, KeepsOnlyKnownProductAndNumericReleaseVersion) {
   EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/1.0-secret"), "unknown-http-client");
   EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/1.0-dev.1234private"), "unknown-http-client");
   EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/1..2"), "unknown-http-client");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/" + std::string(1024 * 1024, '1')), "unknown-http-client");
 }
 
 class WebUsageTelemetry : public TelemetryLogger {

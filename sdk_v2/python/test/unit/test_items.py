@@ -197,6 +197,59 @@ class TestBytesItem:
         assert "BytesItem" in repr(BytesItem(b"hi"))
 
 
+class TestBufferOwnership:
+    @pytest.mark.parametrize("native_type", ["flBytesData", "flImageData", "flAudioData"])
+    def test_failed_setter_releases_buffer(self, native_type):
+        from foundry_local_sdk._native import ffi
+        from foundry_local_sdk import items
+
+        previous = set(items._native_buffers)
+
+        def fail(_ptr, _data):
+            raise RuntimeError("setter failed")
+
+        with pytest.raises(RuntimeError, match="setter failed"):
+            items._set_owned_buffer(ffi.NULL, ffi.new(f"{native_type}*"), b"payload", fail)
+        assert set(items._native_buffers) == previous
+
+    @pytest.mark.parametrize("item_class", [BytesItem, ImageItem, AudioItem])
+    @pytest.mark.parametrize("payload", [b"", bytes(i % 251 for i in range(3200))])
+    def test_transferred_buffer_survives_wrapper_collection(self, item_class, payload):
+        from foundry_local_sdk.item_queue import ItemQueue
+        from foundry_local_sdk import items
+
+        previous = set(items._native_buffers)
+        with ItemQueue() as queue:
+            raw = bytearray(payload)
+            item = item_class(raw) if item_class is BytesItem else item_class("pcm", raw)
+            queue.push(item)
+            del item, raw
+            gc.collect()
+            churn = [bytes(bytearray([i % 255] * 3200)) for i in range(500)]
+            with queue.try_pop() as readback:
+                assert isinstance(readback, item_class)
+                assert readback.data == payload
+            del churn
+        assert set(items._native_buffers) == previous
+
+    @pytest.mark.parametrize("item_class", [BytesItem, ImageItem, AudioItem])
+    def test_request_owns_buffer_until_native_release(self, item_class):
+        from foundry_local_sdk.request import Request
+        from foundry_local_sdk import items
+
+        previous = set(items._native_buffers)
+        payload = bytearray(b"keep alive")
+        with Request() as request:
+            item = item_class(payload) if item_class is BytesItem else item_class("pcm", payload)
+            request.add_item(item)
+            del item
+            payload[:] = b"overwritten"
+            gc.collect()
+            assert request.get_item(0).data == b"keep alive"
+            assert set(items._native_buffers) != previous
+        assert set(items._native_buffers) == previous
+
+
 class TestImageItem:
     def test_inline_data_construct(self):
         item = ImageItem("png", b"\x89PNG\r\n")

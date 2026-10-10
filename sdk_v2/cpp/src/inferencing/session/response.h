@@ -34,6 +34,9 @@ struct Response {
   // arbitrary response metadata (e.g. completion_id, created, model).
   // internal usage only currently but can be surfaced if needed.
   KeyValuePairs metadata;
+
+  // Captured by inference's JSON parser; telemetry must not reparse or retain the request body.
+  std::optional<uint64_t> openai_json_message_count{0};
 };
 
 }  // namespace fl
