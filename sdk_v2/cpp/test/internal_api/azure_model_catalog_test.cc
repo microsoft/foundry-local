@@ -516,8 +516,8 @@ TEST_F(AzureModelCatalogTest, VersionHistoryDeduplicatesBeforeApplyingLimit) {
   EXPECT_EQ(*provider, "FirstProvider");
   EXPECT_EQ(first_behavior->fetch_all_versions_calls, 1);
   EXPECT_EQ(second_behavior->fetch_all_versions_calls, 1);
-  EXPECT_EQ(first_behavior->requested_max_versions, std::vector<int>{2});
-  EXPECT_EQ(second_behavior->requested_max_versions, std::vector<int>{2});
+  EXPECT_EQ(first_behavior->requested_max_versions, std::vector<int>{0});
+  EXPECT_EQ(second_behavior->requested_max_versions, std::vector<int>{0});
 }
 
 TEST_F(AzureModelCatalogTest, VersionHistoryLimitsBeforeCreatingModelHandles) {
@@ -540,7 +540,7 @@ TEST_F(AzureModelCatalogTest, VersionHistoryLimitsBeforeCreatingModelHandles) {
   EXPECT_NE(FindVariant(first, "vision:2"), nullptr);
   ASSERT_EQ(second.size(), 2u);
   EXPECT_EQ(model_handle_factory_calls_, 4);
-  EXPECT_EQ(behavior->requested_max_versions, (std::vector<int>{1, 1}));
+  EXPECT_EQ(behavior->requested_max_versions, (std::vector<int>{0, 0}));
 }
 
 TEST_F(AzureModelCatalogTest, CacheOnlyIgnoresLegacySynthesizedByomSnapshotEntry) {

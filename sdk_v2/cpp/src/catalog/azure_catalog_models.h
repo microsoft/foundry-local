@@ -38,6 +38,18 @@ struct AzureCatalogRequest {
 
 // --- Response types ---
 
+struct CatalogModelPackageVariant {
+  std::optional<std::string> name;
+  std::optional<std::string> execution_provider;
+  std::optional<std::string> device;
+  std::optional<std::string> compatibility_string;
+};
+
+struct CatalogModelPackageMetadata {
+  std::optional<int> schema_version;
+  std::vector<CatalogModelPackageVariant> variants;
+};
+
 struct TextLimits {
   std::optional<int64_t> input_context_window;
   std::optional<int64_t> max_output_tokens;
@@ -56,6 +68,8 @@ struct VariantMetadata {
   std::optional<std::string> device;
   std::optional<std::string> execution_provider;
   std::optional<int64_t> file_size_bytes;
+  std::optional<std::string> model_format;
+  std::optional<CatalogModelPackageMetadata> model_package;
 };
 
 struct VariantParent {
@@ -112,6 +126,8 @@ void to_json(nlohmann::json& j, const AzureCatalogRequest& r);
 
 // --- Response deserialization (from_json) ---
 
+void from_json(const nlohmann::json& j, CatalogModelPackageVariant& v);
+void from_json(const nlohmann::json& j, CatalogModelPackageMetadata& p);
 void from_json(const nlohmann::json& j, TextLimits& t);
 void from_json(const nlohmann::json& j, ModelLimits& m);
 void from_json(const nlohmann::json& j, VariantMetadata& v);

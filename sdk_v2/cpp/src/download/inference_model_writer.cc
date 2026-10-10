@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 #include "download/inference_model_writer.h"
 #include "exception.h"
+#include "util/model_layout.h"
 
 #include <nlohmann/json.hpp>
 
@@ -48,6 +49,10 @@ void WriteInferenceModelJson(const std::string& directory,
 }
 
 void FixVariantInferenceModelJson(const std::string& model_directory) {
+  if (ClassifyModelLayout(model_directory) == ModelLayout::ModelPackage) {
+    return;
+  }
+
   auto inference_model_path = std::filesystem::path(model_directory) / kInferenceModelFileName;
   if (!std::filesystem::exists(inference_model_path)) {
     return;  // Nothing to fix

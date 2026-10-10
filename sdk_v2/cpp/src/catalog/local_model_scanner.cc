@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "catalog/local_model_scanner.h"
+#include "util/model_layout.h"
 
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
@@ -15,7 +16,6 @@ namespace fs = std::filesystem;
 
 namespace {
 
-const char* kGenAIConfigFileName = "genai_config.json";
 const char* kDownloadSignalFileName = "download.tmp";
 const char* kInferenceModelFileName = "inference_model.json";
 
@@ -44,22 +44,34 @@ std::string ReadModelNameFromInferenceModel(const fs::path& dir) {
   return {};
 }
 
-/// Check if a directory is a valid cached model directory.
-/// Must have genai_config.json, no download.tmp, and an inference_model.json with a Name.
-bool IsValidModelDirectory(const fs::path& dir) {
-  if (!fs::exists(dir / kGenAIConfigFileName)) {
+bool HasCompletionMarker(const fs::path& dir) {
+  std::error_code ec;
+  const auto is_regular_file = fs::is_regular_file(dir / kInferenceModelFileName, ec);
+  return !ec && is_regular_file;
+}
+
+bool IsCompleteModelDirectory(const fs::path& dir) {
+  std::error_code ec;
+  const auto download_in_progress = fs::exists(dir / kDownloadSignalFileName, ec);
+  if (ec || download_in_progress) {
     return false;
   }
 
-  if (fs::exists(dir / kDownloadSignalFileName)) {
-    return false;  // Incomplete download.
+  return HasCompletionMarker(dir);
+}
+
+void AddModelDirectory(const fs::path& dir, std::map<std::string, std::string>& results) {
+  auto model_name = ReadModelNameFromInferenceModel(dir);
+  if (model_name.empty()) {
+    return;
   }
 
-  if (!fs::exists(dir / kInferenceModelFileName)) {
-    return false;
+  // If the model name doesn't contain a ':' version separator, append ":0".
+  if (model_name.find(':') == std::string::npos) {
+    model_name += ":0";
   }
 
-  return true;
+  results[model_name] = dir.string();
 }
 
 /// Recursively scan a directory for valid model directories.
@@ -71,19 +83,18 @@ void ScanDirectory(const fs::path& dir,
       return;
     }
 
-    // Check if this directory itself is a valid model directory.
-    if (IsValidModelDirectory(dir)) {
-      auto model_name = ReadModelNameFromInferenceModel(dir);
-      if (!model_name.empty()) {
-        // If the model name doesn't contain a ':' version separator, append ":0".
-        if (model_name.find(':') == std::string::npos) {
-          model_name += ":0";
-        }
-
-        results[model_name] = dir.string();
+    const auto layout = ClassifyModelLayout(dir);
+    if (layout == ModelLayout::ModelPackage) {
+      if (IsCompleteModelDirectory(dir)) {
+        AddModelDirectory(dir, results);
       }
 
-      // Don't recurse into a valid model directory — it's a leaf.
+      // Package children are implementation details, not independently loadable models.
+      return;
+    }
+
+    if (layout == ModelLayout::FlatModel && IsCompleteModelDirectory(dir)) {
+      AddModelDirectory(dir, results);
       return;
     }
 
