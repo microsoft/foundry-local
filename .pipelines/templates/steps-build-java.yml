@@ -120,3 +120,54 @@ steps:
     ORT_TELEMETRY_DISABLED: '1'
     ${{ if eq(parameters.rid, 'win-x64') }}:
       FOUNDRY_TEST_LEGACY_BIN_DIR: $(foundryLegacyNativeDir)
+
+- ${{ if eq(parameters.rid, 'win-x64') }}:
+  - task: Maven@4
+    displayName: 'Prepare multilingual Java ASR model'
+    inputs:
+      mavenPOMFile: 'sdk_v2/java/pom.xml'
+      goals: 'test-compile org.codehaus.mojo:exec-maven-plugin:3.5.0:exec'
+      options: >-
+        --batch-mode --no-transfer-progress
+        -Drevision=$(javaSdkVersion)-preview
+        "-Dexec.executable=$(foundryJavaHome)\bin\java.exe"
+        -Dexec.classpathScope=test
+        "-Dexec.args=-classpath %classpath com.microsoft.foundry.local.PrepareAudioLanguageModel"
+      publishJUnitResults: false
+      javaHomeOption: Path
+      jdkDirectory: '$(foundryJavaHome)'
+      mavenVersionOption: Path
+      mavenDirectory: '$(foundryMavenHome)'
+    env:
+      FOUNDRY_LOCAL_NATIVE_BIN_DIR: $(flNativeDir)
+      FOUNDRY_TEST_DATA_DIR: '${{ parameters.testDataSharedDir }}'
+      FOUNDRY_TEST_APP_DATA_DIR: '$(Build.BinariesDirectory)/java-language-model-app'
+      FOUNDRY_TEST_MODEL: 'nemotron-3.5-asr-streaming-0.6b-generic-cpu:3'
+      ORT_TELEMETRY_DISABLED: '1'
+
+  - task: Maven@4
+    displayName: 'Verify fixed language and auto with multilingual speech'
+    inputs:
+      mavenPOMFile: 'sdk_v2/java/pom.xml'
+      goals: 'test'
+      options: >-
+        --batch-mode --no-transfer-progress
+        -Drevision=$(javaSdkVersion)-preview
+        -Dtest=NativeAudioLanguageTest
+        -Dfoundry.test.language.required=true
+        -Dfoundry.test.language.distinguishesDefault=true
+      publishJUnitResults: true
+      testResultsFiles: 'sdk_v2/java/target/surefire-reports/TEST-com.microsoft.foundry.local.NativeAudioLanguageTest.xml'
+      testRunTitle: 'Java SDK multilingual language selection'
+      javaHomeOption: Path
+      jdkDirectory: '$(foundryJavaHome)'
+      mavenVersionOption: Path
+      mavenDirectory: '$(foundryMavenHome)'
+    env:
+      FOUNDRY_LOCAL_NATIVE_BIN_DIR: $(flNativeDir)
+      FOUNDRY_TEST_DATA_DIR: '${{ parameters.testDataSharedDir }}'
+      FOUNDRY_TEST_MODEL: 'nemotron-3.5-asr-streaming-0.6b-generic-cpu:3'
+      FOUNDRY_TEST_WAV: '$(Build.SourcesDirectory)/sdk_v2/testdata/AudioLanguage.fr-FR.wav'
+      FOUNDRY_TEST_LANGUAGE: 'fr-FR'
+      FOUNDRY_TEST_LANGUAGE_EXPECTED: 'dans le parc'
+      ORT_TELEMETRY_DISABLED: '1'
