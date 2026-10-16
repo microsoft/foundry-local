@@ -3,12 +3,15 @@
 #pragma once
 
 #include "inferencing/generative/audio/audio_generator.h"
+#include "inferencing/generative/audio/whisper_timestamp_rules.h"
 #include "inferencing/generative/genai_model_instance.h"
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 // Forward declarations — avoid pulling ort_genai.h into the header
 struct OgaGenerator;
@@ -22,6 +25,7 @@ namespace fl {
 namespace AudioInternal {
 
 bool IsWhisperLanguageSupported(const std::string& language);
+std::string BuildWhisperPrompt(const std::string& language, bool enable_timestamps);
 
 }  // namespace AudioInternal
 
@@ -44,6 +48,9 @@ class OnnxAudioGenerator : public AudioGenerator {
   int PromptTokenCount() const override;
   void Cancel() override;
 
+  /// Timestamp represented by the most recently generated token, or nullopt when it was not a timestamp.
+  std::optional<int64_t> LastTimestampMilliseconds() const;
+
   /// Factory: create a fully configured generator for audio transcription from a file.
   ///
   /// @param audio_file_path  Path to the audio file on disk
@@ -62,7 +69,12 @@ class OnnxAudioGenerator : public AudioGenerator {
                      std::unique_ptr<OgaGeneratorParams> gen_params,
                      std::unique_ptr<OgaGenerator> generator,
                      std::unique_ptr<OgaTokenizerStream> stream,
-                     int prompt_token_count);
+                     int prompt_token_count,
+                     std::optional<AudioInternal::WhisperTimestampTokens> timestamp_tokens,
+                     std::optional<int> audio_end_timestamp_index);
+
+  /// Mask next-token logits with Whisper's timestamp rules so the decoder emits timed segment boundaries.
+  void ApplyTimestampRules();
 
   // Destruction is reverse-declaration order. audios_ and inputs_ are declared first
   // so they are destroyed last — the generator holds pointers into them.
@@ -72,6 +84,10 @@ class OnnxAudioGenerator : public AudioGenerator {
   std::unique_ptr<OgaGenerator> generator_;
   std::unique_ptr<OgaTokenizerStream> stream_;
   int prompt_token_count_ = 0;
+  std::optional<AudioInternal::WhisperTimestampTokens> timestamp_tokens_;
+  std::optional<int> audio_end_timestamp_index_;  // audio end in 0.02s steps, capped at one window; nullopt if unknown
+  std::vector<int32_t> generated_tokens_;  // tokens generated after the prompt, input to the timestamp rules
+  std::optional<int32_t> last_generated_token_;
   std::atomic<bool> cancelled_{false};
 };
 
