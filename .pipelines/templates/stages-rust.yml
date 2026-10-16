@@ -86,6 +86,8 @@ stages:
     timeoutInMinutes: 90
     pool:
       name: onnxruntime-Ubuntu2404-AMD-CPU
+      demands:
+      - ImageOverride -equals onnxruntime-ubuntu2404-nvme-x64
       os: linux
     templateContext:
       inputs:
