@@ -20,5 +20,5 @@ The tests will automatically find the models in the configured test model cache 
 
 ```bash
 cd /path/to/parent-dir/foundry-local-sdk/sdk/cs/test/FoundryLocal.Tests
-dotnet test Microsoft.AI.Foundry.Local.Tests.csproj --configuration Release# Running Local Model Tests
+dotnet test Microsoft.AI.Foundry.Local.Tests.csproj --configuration Release
 ```
