@@ -4,7 +4,7 @@ version = "1.0.0"
 edition = "2021"
 
 [dependencies]
-foundry-local-sdk = { path = "../../../sdk/rust", features = ["winml"] }
+foundry-local-sdk = { path = "../../../sdk_v2/rust" }
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 anyhow = "1"

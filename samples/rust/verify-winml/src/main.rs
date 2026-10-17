@@ -6,9 +6,8 @@
 //   3. Streaming chat completions work on an accelerated model
 
 use foundry_local_sdk::{
-    ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage,
-    ChatCompletionRequestUserMessage, DeviceType, FoundryLocalConfig,
-    FoundryLocalManager, Model,
+    ChatSession, DeviceType, FoundryLocalConfig, FoundryLocalManager, Item, Model, Request,
+    RequestOptions, SearchOptions, TextKind,
 };
 use std::io::{self, Write};
 use tokio_stream::StreamExt;
@@ -18,12 +17,16 @@ const FAIL: &str = "\x1b[91m[FAIL]\x1b[0m";
 const INFO: &str = "\x1b[94m[INFO]\x1b[0m";
 const WARN: &str = "\x1b[93m[WARN]\x1b[0m";
 
-fn is_accelerated_variant(model: &Model) -> bool {
-    model.info()
+fn is_accelerated_variant(model: &Model) -> anyhow::Result<bool> {
+    let info = model.info()?;
+    Ok(matches!(
+        info.task.as_deref(),
+        Some("chat-completion" | "vision-language-chat")
+    ) && info
         .runtime
         .as_ref()
         .map(|rt| matches!(rt.device_type, DeviceType::GPU | DeviceType::NPU))
-        .unwrap_or(false)
+        .unwrap_or(false))
 }
 
 #[tokio::main]
@@ -71,25 +74,28 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    match manager.download_and_register_eps_with_progress(None, {
-        let mut last_progress_ep: Option<String> = None;
-        let mut last_progress_percent = -1.0f64;
+    match manager
+        .download_and_register_eps_with_progress(None, {
+            let mut last_progress_ep: Option<String> = None;
+            let mut last_progress_percent = -1.0f64;
 
-        move |ep_name: &str, percent: f64| {
-            if last_progress_ep
-                .as_ref()
-                .map(|current| current != ep_name || percent < last_progress_percent)
-                .unwrap_or(false)
-            {
-                println!();
+            move |ep_name: &str, percent: f64| {
+                if last_progress_ep
+                    .as_ref()
+                    .map(|current| current != ep_name || percent < last_progress_percent)
+                    .unwrap_or(false)
+                {
+                    println!();
+                }
+
+                last_progress_ep = Some(ep_name.to_string());
+                last_progress_percent = percent;
+                print!("\r  Downloading {ep_name}: {percent:.1}%");
+                io::stdout().flush().ok();
             }
-
-            last_progress_ep = Some(ep_name.to_string());
-            last_progress_percent = percent;
-            print!("\r  Downloading {ep_name}: {percent:.1}%");
-            io::stdout().flush().ok();
-        }
-    }).await {
+        })
+        .await
+    {
         Ok(result) => {
             println!();
             println!(
@@ -138,15 +144,14 @@ async fn main() -> anyhow::Result<()> {
     let mut accelerated_variants = Vec::new();
     for model in &models {
         for variant in model.variants() {
-            if is_accelerated_variant(variant.as_ref()) {
-                let device = variant
-                    .info()
+            if is_accelerated_variant(variant.as_ref())? {
+                let info = variant.info()?;
+                let device = info
                     .runtime
                     .as_ref()
                     .map(|rt| format!("{:?}", rt.device_type))
                     .unwrap_or_else(|| "?".to_string());
-                let ep = variant
-                    .info()
+                let ep = info
                     .runtime
                     .as_ref()
                     .map(|rt| rt.execution_provider.as_str())
@@ -162,7 +167,10 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    println!("{INFO} Accelerated model variants: {}", accelerated_variants.len());
+    println!(
+        "{INFO} Accelerated model variants: {}",
+        accelerated_variants.len()
+    );
     let has_accelerated_models = !accelerated_variants.is_empty();
     let status = if has_accelerated_models { PASS } else { FAIL };
     println!(
@@ -188,13 +196,16 @@ async fn main() -> anyhow::Result<()> {
     let mut last_load_error: Option<String> = None;
 
     for candidate in accelerated_variants {
-        let candidate_ep = candidate
-            .info()
+        let info = candidate.info()?;
+        let candidate_ep = info
             .runtime
             .as_ref()
             .map(|rt| rt.execution_provider.as_str())
             .unwrap_or("unknown");
-        println!("\n{INFO} Trying model: {} (EP: {candidate_ep})", candidate.id());
+        println!(
+            "\n{INFO} Trying model: {} (EP: {candidate_ep})",
+            candidate.id()
+        );
 
         if !candidate.is_cached().await? {
             match candidate
@@ -244,8 +255,9 @@ async fn main() -> anyhow::Result<()> {
     results.push(("Model Download", downloaded_any));
 
     let Some(model) = model else {
-        let detail = last_load_error
-            .unwrap_or_else(|| "No accelerated variant could be loaded on this machine".to_string());
+        let detail = last_load_error.unwrap_or_else(|| {
+            "No accelerated variant could be loaded on this machine".to_string()
+        });
         println!("{FAIL} Model Load - {detail}");
         results.push(("Model Load", false));
         print_summary(&results);
@@ -260,29 +272,38 @@ async fn main() -> anyhow::Result<()> {
     println!("  Step 4: Streaming Chat Completions");
     println!("{}\n", "=".repeat(60));
 
-    let messages: Vec<ChatCompletionRequestMessage> = vec![
-        ChatCompletionRequestSystemMessage::from("You are a helpful assistant.").into(),
-        ChatCompletionRequestUserMessage::from("What is 2 + 2? Reply with just the number.").into(),
-    ];
+    let session = ChatSession::new(&model).await?;
+    session
+        .set_options(RequestOptions {
+            search: SearchOptions {
+                temperature: Some(0.0),
+                max_output_tokens: Some(16),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .await?;
 
-    let client = model.create_chat_client().temperature(0.0).max_tokens(16);
-    match client.complete_streaming_chat(&messages, None).await {
+    match Ok::<_, anyhow::Error>(session.process_streaming_request(Request::from_items(vec![
+        Item::system_message(vec![Item::text("You are a helpful assistant.")]),
+        Item::user_message(vec![Item::text(
+            "What is 2 + 2? Reply with just the number.",
+        )]),
+    ]))) {
         Ok(mut stream) => {
             let mut full_response = String::new();
             let start = std::time::Instant::now();
             while let Some(chunk) = stream.next().await {
                 match chunk {
-                    Ok(c) => {
-                        if let Some(text) = c
-                            .choices
-                            .first()
-                            .and_then(|ch| ch.delta.content.as_deref())
-                        {
-                            print!("{text}");
-                            io::stdout().flush().ok();
-                            full_response.push_str(text);
-                        }
+                    Ok(foundry_local_sdk::Item::Text {
+                        text,
+                        kind: TextKind::Default,
+                    }) => {
+                        print!("{text}");
+                        io::stdout().flush().ok();
+                        full_response.push_str(&text);
                     }
+                    Ok(_) => {}
                     Err(e) => {
                         println!("\n{FAIL} Streaming chunk error: {e}");
                         break;
@@ -305,6 +326,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    drop(session);
     if let Err(e) = model.unload().await {
         println!("{WARN} Failed to unload model: {e}");
     } else {

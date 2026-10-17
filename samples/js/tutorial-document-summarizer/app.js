@@ -1,24 +1,55 @@
 // <complete_code>
 // <imports>
-import { FoundryLocalManager } from 'foundry-local-sdk';
+import { ChatSession, FoundryLocalManager, Item, Request } from 'foundry-local-sdk';
 import { readFileSync, readdirSync, statSync } from 'fs';
 import { join, basename } from 'path';
 // </imports>
 
-async function summarizeFile(chatClient, filePath, systemPrompt) {
-    const content = readFileSync(filePath, 'utf-8');
-    const messages = [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: content }
-    ];
-
-    const response = await chatClient.completeChat(messages);
-    console.log(response.choices[0]?.message?.content);
+function collectText(items) {
+    const parts = [];
+    for (const item of items) {
+        if (item.type === 'text' && (item.textType ?? 'default') === 'default') {
+            parts.push(item.text);
+        } else if (item.type === 'message') {
+            if (Array.isArray(item.parts)) {
+                for (const part of item.parts) {
+                    if (part.type === 'text' && (part.textType ?? 'default') === 'default') {
+                        parts.push(part.text);
+                    }
+                }
+            } else if (typeof item.content === 'string') {
+                parts.push(item.content);
+            }
+        }
+    }
+    return parts.join('');
 }
 
-async function summarizeDirectory(chatClient, directory, systemPrompt) {
+async function summarizeFile(model, filePath, systemPrompt) {
+    const content = readFileSync(filePath, 'utf-8');
+    const session = new ChatSession(model);
+    session.setOptions({
+        search: {
+            temperature: 0.7,
+            maxOutputTokens: 512
+        }
+    });
+
+    try {
+        const response = await session.processRequest(
+            new Request()
+                .addItem(Item.systemMessage(systemPrompt))
+                .addItem(Item.userMessage(content))
+        );
+        console.log(collectText(response.output));
+    } finally {
+        session.dispose();
+    }
+}
+
+async function summarizeDirectory(model, directory, systemPrompt) {
     const txtFiles = readdirSync(directory)
-        .filter(f => f.endsWith('.txt'))
+        .filter((f) => f.endsWith('.txt'))
         .sort();
 
     if (txtFiles.length === 0) {
@@ -28,19 +59,17 @@ async function summarizeDirectory(chatClient, directory, systemPrompt) {
 
     for (const fileName of txtFiles) {
         console.log(`--- ${fileName} ---`);
-        await summarizeFile(chatClient, join(directory, fileName), systemPrompt);
+        await summarizeFile(model, join(directory, fileName), systemPrompt);
         console.log();
     }
 }
 
 // <init>
-// Initialize the Foundry Local SDK
 const manager = FoundryLocalManager.create({
     appName: 'foundry_local_samples',
     logLevel: 'info'
 });
 
-// Download and register all execution providers.
 let currentEp = '';
 await manager.downloadAndRegisterEps((epName, percent) => {
     if (epName !== currentEp) {
@@ -51,7 +80,6 @@ await manager.downloadAndRegisterEps((epName, percent) => {
 });
 if (currentEp !== '') process.stdout.write('\n');
 
-// Select and load a model from the catalog
 const model = await manager.catalog.getModel('qwen2.5-0.5b');
 
 await model.download((progress) => {
@@ -61,9 +89,6 @@ console.log('\nModel downloaded.');
 
 await model.load();
 console.log('Model loaded and ready.\n');
-
-// Create a chat client
-const chatClient = model.createChatClient();
 // </init>
 
 // <summarization>
@@ -78,18 +103,15 @@ const target = process.argv[2] || 'document.txt';
 try {
     const stats = statSync(target);
     if (stats.isDirectory()) {
-        await summarizeDirectory(chatClient, target, systemPrompt);
+        await summarizeDirectory(model, target, systemPrompt);
     } else {
         console.log(`--- ${basename(target)} ---`);
-        await summarizeFile(chatClient, target, systemPrompt);
+        await summarizeFile(model, target, systemPrompt);
     }
-} catch {
-    console.log(`--- ${basename(target)} ---`);
-    await summarizeFile(chatClient, target, systemPrompt);
+} finally {
+    await model.unload();
 }
 // </summarization>
 
-// Clean up
-await model.unload();
 console.log('\nModel unloaded. Done!');
 // </complete_code>

@@ -6,7 +6,7 @@
     "start": "node src/app.js"
   },
   "dependencies": {
-    "foundry-local-sdk": "latest",
+    "foundry-local-sdk": "file:../../../sdk_v2/js",
     "openai": "^6.25.0"
   }
 }

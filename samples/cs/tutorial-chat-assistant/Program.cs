@@ -1,7 +1,6 @@
 // <complete_code>
 // <imports>
 using Microsoft.AI.Foundry.Local;
-using Betalgo.Ranul.OpenAI.ObjectModels.RequestModels;
 using Microsoft.Extensions.Logging;
 // </imports>
 
@@ -22,7 +21,7 @@ var logger = loggerFactory.CreateLogger<Program>();
 
 // Initialize the singleton instance
 await FoundryLocalManager.CreateAsync(config, logger);
-var mgr = FoundryLocalManager.Instance;
+using var mgr = FoundryLocalManager.Instance;
 
 // Download and register all execution providers.
 var currentEp = "";
@@ -51,64 +50,68 @@ await model.DownloadAsync(progress =>
 await model.LoadAsync();
 Console.WriteLine("Model loaded and ready.");
 
-// Get a chat client
-var chatClient = await model.GetChatClientAsync();
-// </init>
-
-// <system_prompt>
-// Start the conversation with a system prompt
-var messages = new List<ChatMessage>
+try
 {
-    new ChatMessage
+    using var session = new ChatSession(model);
+    session.SetStreaming(true);
+    // </init>
+
+    // <system_prompt>
+    // Start the conversation with a system prompt
+    var firstTurn = true;
+    const string systemPrompt = "You are a helpful, friendly assistant. Keep your responses " +
+        "concise and conversational. If you don't know something, say so.";
+    // </system_prompt>
+
+    Console.WriteLine("\nChat assistant ready! Type 'quit' to exit.\n");
+
+    // <conversation_loop>
+    while (true)
     {
-        Role = "system",
-        Content = "You are a helpful, friendly assistant. Keep your responses " +
-                  "concise and conversational. If you don't know something, say so."
-    }
-};
-// </system_prompt>
-
-Console.WriteLine("\nChat assistant ready! Type 'quit' to exit.\n");
-
-// <conversation_loop>
-while (true)
-{
-    Console.Write("You: ");
-    var userInput = Console.ReadLine();
-    if (string.IsNullOrWhiteSpace(userInput) ||
-        userInput.Equals("quit", StringComparison.OrdinalIgnoreCase) ||
-        userInput.Equals("exit", StringComparison.OrdinalIgnoreCase))
-    {
-        break;
-    }
-
-    // Add the user's message to conversation history
-    messages.Add(new ChatMessage { Role = "user", Content = userInput });
-
-    // <streaming>
-    // Stream the response token by token
-    Console.Write("Assistant: ");
-    var fullResponse = string.Empty;
-    var streamingResponse = chatClient.CompleteChatStreamingAsync(messages, ct);
-    await foreach (var chunk in streamingResponse)
-    {
-        var content = chunk.Choices[0].Message.Content;
-        if (!string.IsNullOrEmpty(content))
+        Console.Write("You: ");
+        var userInput = Console.ReadLine();
+        if (string.IsNullOrWhiteSpace(userInput) ||
+            userInput.Equals("quit", StringComparison.OrdinalIgnoreCase) ||
+            userInput.Equals("exit", StringComparison.OrdinalIgnoreCase))
         {
-            Console.Write(content);
-            Console.Out.Flush();
-            fullResponse += content;
+            break;
         }
-    }
-    Console.WriteLine("\n");
-    // </streaming>
 
-    // Add the complete response to conversation history
-    messages.Add(new ChatMessage { Role = "assistant", Content = fullResponse });
+        // The session retains completed turns; send only new input.
+        using var request = new Request();
+        if (firstTurn)
+        {
+            request.AddItem(MessageItem.System(systemPrompt));
+        }
+        request.AddItem(MessageItem.User(userInput));
+
+        // <streaming>
+        // Stream the response token by token
+        Console.Write("Assistant: ");
+        await using var stream = session.ProcessStreamingRequestAsync(request, ct);
+        await foreach (var item in stream)
+        {
+            using (item)
+            {
+                if (item is TextItem { Type: TextItemType.Default } text)
+                {
+                    Console.Write(text.Text);
+                    Console.Out.Flush();
+                }
+            }
+        }
+        Console.WriteLine("\n");
+        // </streaming>
+
+        firstTurn = false;
+    }
 }
 // </conversation_loop>
 
 // Clean up - unload the model
-await model.UnloadAsync();
+finally
+{
+    await model.UnloadAsync();
+}
 Console.WriteLine("Model unloaded. Goodbye!");
 // </complete_code>

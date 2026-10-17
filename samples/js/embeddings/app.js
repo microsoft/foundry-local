@@ -1,9 +1,23 @@
 // <complete_code>
 // <imports>
-import { FoundryLocalManager } from 'foundry-local-sdk';
+import { EmbeddingsSession, FoundryLocalManager, Item, Request } from 'foundry-local-sdk';
 // </imports>
 
-// Initialize the Foundry Local SDK
+function tensorToFloats(item) {
+    if (item.type !== 'tensor') {
+        throw new TypeError(`Expected tensor output, got ${item.type}`);
+    }
+
+    if (item.dataType !== 'float') {
+        throw new TypeError(`Expected float tensor output, got ${item.dataType}`);
+    }
+
+    const bytes = new Uint8Array(item.data);
+    const aligned = new Uint8Array(bytes.byteLength);
+    aligned.set(bytes);
+    return new Float32Array(aligned.buffer);
+}
+
 console.log('Initializing Foundry Local SDK...');
 
 // <init>
@@ -15,59 +29,58 @@ const manager = FoundryLocalManager.create({
 console.log('✓ SDK initialized successfully');
 
 // <model_setup>
-// Get an embedding model
 const modelAlias = 'qwen3-embedding-0.6b';
 const model = await manager.catalog.getModel(modelAlias);
 
-// Download the model
 console.log(`\nDownloading model ${modelAlias}...`);
 await model.download((progress) => {
     process.stdout.write(`\rDownloading... ${progress.toFixed(2)}%`);
 });
 console.log('\n✓ Model downloaded');
 
-// Load the model
 console.log(`\nLoading model ${modelAlias}...`);
 await model.load();
 console.log('✓ Model loaded');
 // </model_setup>
 
-// <single_embedding>
-// Create embedding client
-console.log('\nCreating embedding client...');
-const embeddingClient = model.createEmbeddingClient();
-console.log('✓ Embedding client created');
+const session = new EmbeddingsSession(model);
 
-// Generate a single embedding
-console.log('\n--- Single Embedding ---');
-const response = await embeddingClient.generateEmbedding(
-    'The quick brown fox jumps over the lazy dog'
-);
+try {
+    // <single_embedding>
+    console.log('\nCreating embeddings session...');
+    console.log('✓ Embeddings session created');
 
-const embedding = response.data[0].embedding;
-console.log(`Dimensions: ${embedding.length}`);
-console.log(`First 5 values: [${embedding.slice(0, 5).map(v => v.toFixed(6)).join(', ')}]`);
-// </single_embedding>
+    console.log('\n--- Single Embedding ---');
+    const response = await session.processRequest(
+        new Request().addItem(Item.text('The quick brown fox jumps over the lazy dog'))
+    );
 
-// <batch_embedding>
-// Generate embeddings for multiple inputs
-console.log('\n--- Batch Embeddings ---');
-const batchResponse = await embeddingClient.generateEmbeddings([
-    'Machine learning is a subset of artificial intelligence',
-    'The capital of France is Paris',
-    'Rust is a systems programming language'
-]);
+    const embedding = tensorToFloats(response.output[0]);
+    console.log(`Dimensions: ${embedding.length}`);
+    console.log(`First 5 values: [${Array.from(embedding.slice(0, 5)).map((v) => v.toFixed(6)).join(', ')}]`);
+    // </single_embedding>
 
-console.log(`Number of embeddings: ${batchResponse.data.length}`);
-for (let i = 0; i < batchResponse.data.length; i++) {
-    console.log(`  [${i}] Dimensions: ${batchResponse.data[i].embedding.length}`);
+    // <batch_embedding>
+    console.log('\n--- Batch Embeddings ---');
+    const batchResponse = await session.processRequest(
+        new Request()
+            .addItem(Item.text('Machine learning is a subset of artificial intelligence'))
+            .addItem(Item.text('The capital of France is Paris'))
+            .addItem(Item.text('Rust is a systems programming language'))
+    );
+
+    console.log(`Number of embeddings: ${batchResponse.output.length}`);
+    for (let i = 0; i < batchResponse.output.length; i++) {
+        console.log(`  [${i}] Dimensions: ${tensorToFloats(batchResponse.output[i]).length}`);
+    }
+    // </batch_embedding>
+} finally {
+    session.dispose();
+
+    // <cleanup>
+    console.log('\nUnloading model...');
+    await model.unload();
+    console.log('✓ Model unloaded');
+    // </cleanup>
 }
-// </batch_embedding>
-
-// <cleanup>
-// Unload the model
-console.log('\nUnloading model...');
-await model.unload();
-console.log('✓ Model unloaded');
-// </cleanup>
 // </complete_code>

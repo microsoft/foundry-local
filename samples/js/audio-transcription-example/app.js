@@ -1,9 +1,12 @@
 // <complete_code>
 // <imports>
-import { FoundryLocalManager } from 'foundry-local-sdk';
+import { AudioSession, FoundryLocalManager, Item, Request } from 'foundry-local-sdk';
 // </imports>
 
-// Initialize the Foundry Local SDK
+function findSpeechResult(items) {
+    return items.find((item) => item.type === 'speechResult') ?? null;
+}
+
 console.log('Initializing Foundry Local SDK...');
 
 // <init>
@@ -14,7 +17,6 @@ const manager = FoundryLocalManager.create({
 // </init>
 console.log('✓ SDK initialized successfully');
 
-// Download and register all execution providers.
 let currentEp = '';
 await manager.downloadAndRegisterEps((epName, percent) => {
     if (epName !== currentEp) {
@@ -26,52 +28,66 @@ await manager.downloadAndRegisterEps((epName, percent) => {
 if (currentEp !== '') process.stdout.write('\n');
 
 // <model_setup>
-// Get the model object
-const modelAlias = 'whisper-tiny'; // Using an available model from the list above
-let model = await manager.catalog.getModel(modelAlias);
+const modelAlias = 'whisper-tiny';
+const model = await manager.catalog.getModel(modelAlias);
 console.log(`Using model: ${model.id}`);
 
-// Download the model
 console.log(`\nDownloading model ${modelAlias}...`);
 await model.download((progress) => {
     process.stdout.write(`\rDownloading... ${progress.toFixed(2)}%`);
 });
 console.log('\n✓ Model downloaded');
 
-// Load the model
 console.log(`\nLoading model ${modelAlias}...`);
 await model.load();
 console.log('✓ Model loaded');
 // </model_setup>
 
-// <transcription>
-// Create audio client
-console.log('\nCreating audio client...');
-const audioClient = model.createAudioClient();
-console.log('✓ Audio client created');
+const session = new AudioSession(model);
 
-// Example audio transcription
-const audioFile = process.argv[2] || './Recording.mp3';
-console.log(`\nTranscribing ${audioFile}...`);
-const transcription = await audioClient.transcribe(audioFile);
+try {
+    // <transcription>
+    console.log('\nCreating audio session...');
+    console.log('✓ Audio session created');
 
-console.log('\nAudio transcription result:');
-console.log(transcription.text);
-console.log('✓ Audio transcription completed');
+    const audioFile = process.argv[2] || './Recording.mp3';
 
-// Same example but with streaming transcription using async iteration
-console.log('\nTesting streaming audio transcription...');
-for await (const result of audioClient.transcribeStreaming(audioFile)) {
-    // Output the intermediate transcription results as they are received without line ending
-    process.stdout.write(result.text);
+    console.log(`\nTranscribing ${audioFile}...`);
+    const request = new Request()
+        .addItem(Item.audioFromUri(audioFile))
+        .setOptions({ additionalOptions: { language: 'en' } });
+
+    const transcription = await session.processRequest(request);
+    const result = findSpeechResult(transcription.output);
+    if (!result) {
+        throw new Error('Expected a speechResult item in the transcription response.');
+    }
+
+    console.log('\nAudio transcription result:');
+    console.log(result.text);
+    console.log('✓ Audio transcription completed');
+
+    console.log('\nTesting streaming audio transcription...');
+    const stream = session.processStreamingRequest(
+        new Request()
+            .addItem(Item.audioFromUri(audioFile))
+            .setOptions({ additionalOptions: { language: 'en' } })
+    );
+
+    for await (const item of stream) {
+        if (item.type === 'speechSegment') {
+            process.stdout.write(item.text);
+        }
+    }
+    console.log('\n✓ Streaming transcription completed');
+    // </transcription>
+} finally {
+    session.dispose();
+
+    // <cleanup>
+    console.log('Unloading model...');
+    await model.unload();
+    console.log('✓ Model unloaded');
+    // </cleanup>
 }
-console.log('\n✓ Streaming transcription completed');
-// </transcription>
-
-// <cleanup>
-// Unload the model
-console.log('Unloading model...');
-await model.unload();
-console.log(`✓ Model unloaded`);
-// </cleanup>
 // </complete_code>

@@ -2,13 +2,11 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
-// <imports>
 use std::env;
 use std::io::{self, Write};
 
-use foundry_local_sdk::{FoundryLocalConfig, FoundryLocalManager};
+use foundry_local_sdk::{AudioSession, FoundryLocalConfig, FoundryLocalManager, Item, Request};
 use tokio_stream::StreamExt;
-// </imports>
 
 const ALIAS: &str = "whisper-tiny";
 
@@ -17,17 +15,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Audio Transcription Example");
     println!("===========================\n");
 
-    // Accept an optional audio file path as a CLI argument, defaulting to Recording.mp3.
     let audio_path = env::args()
         .nth(1)
         .unwrap_or_else(|| "Recording.mp3".to_string());
 
-    // ── 1. Initialise the manager ────────────────────────────────────────
-    // <init>
     let manager = FoundryLocalManager::create(FoundryLocalConfig::new("foundry_local_samples"))?;
-    // </init>
 
-    // Download and register all execution providers.
     manager
         .download_and_register_eps_with_progress(None, {
             let mut current_ep = String::new();
@@ -45,8 +38,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     println!();
 
-    // ── 2. Pick the whispermodel and ensure it is downloaded ────────────
-    // <model_setup>
     let model = manager.catalog().get_model(ALIAS).await?;
     println!("Model: {} (id: {})", model.alias(), model.id());
 
@@ -64,35 +55,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Loading model...");
     model.load().await?;
     println!("✓ Model loaded\n");
-    // </model_setup>
 
-    // <transcription>
-    // ── 3. Create an audio client────────────────────────────────────────
-    let audio_client = model.create_audio_client();
+    let session = AudioSession::new(&model).await?;
 
-    // ── 4. Non-streaming transcription ───────────────────────────────────
     println!("--- Non-streaming transcription ---");
-    let result = audio_client.transcribe(&audio_path).await?;
-    println!("Transcription: {}", result.text);
+    let result = session
+        .transcribe(Item::audio_uri(&audio_path, None::<String>, 0, 0))
+        .await?;
+    println!("Transcription: {result}");
 
-    // ── 5. Streaming transcription ───────────────────────────────────────
     println!("--- Streaming transcription ---");
     print!("Transcription: ");
-    let mut stream = audio_client.transcribe_streaming(&audio_path).await?;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
-        print!("{}", chunk.text);
-        io::stdout().flush().ok();
+    let mut stream = session.process_streaming_request(Request::from_items(vec![Item::audio_uri(
+        &audio_path,
+        None::<String>,
+        0,
+        0,
+    )]));
+    while let Some(item) = stream.next().await {
+        if let foundry_local_sdk::Item::SpeechSegment(segment) = item? {
+            if !segment.text.is_empty() {
+                print!("{}", segment.text);
+                io::stdout().flush().ok();
+            }
+        }
     }
-    println!("\n");
-    // </transcription>
+    let final_response = stream.response().await?;
+    if let Some(result) = final_response
+        .items
+        .iter()
+        .find_map(|item| item.as_speech_result())
+    {
+        println!("\n[aggregate] {}", result.text);
+    } else {
+        println!();
+    }
 
-    // ── 6. Unload the model──────────────────────────────────────────────
-    // <cleanup>
-    println!("Unloading model...");
+    drop(session);
+    println!("\nUnloading model...");
     model.unload().await?;
     println!("Done.");
-    // </cleanup>
 
     Ok(())
 }

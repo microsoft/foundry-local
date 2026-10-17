@@ -1,18 +1,38 @@
 # <complete_code>
 # <imports>
-from foundry_local_sdk import Configuration, FoundryLocalManager
+from foundry_local_sdk import (
+    ChatSession,
+    Configuration,
+    FoundryLocalManager,
+    MessageItem,
+    Request,
+    RequestOptions,
+    SearchOptions,
+    TextItem,
+    TextItemType,
+)
 # </imports>
+
+
+def print_response_text(response) -> None:
+    for item in response:
+        if isinstance(item, TextItem) and item.type == TextItemType.DEFAULT:
+            print(item.text, end="", flush=True)
+        elif hasattr(item, "parts"):
+            for part in item.parts:
+                if isinstance(part, TextItem) and part.type == TextItemType.DEFAULT:
+                    print(part.text, end="", flush=True)
+    print()
 
 
 def main():
     # <init>
-    # Initialize the Foundry Local SDK
     config = Configuration(app_name="foundry_local_samples")
     FoundryLocalManager.initialize(config)
     manager = FoundryLocalManager.instance
 
-    # Download and register all execution providers.
     current_ep = ""
+
     def ep_progress(ep_name: str, percent: float):
         nonlocal current_ep
         if ep_name != current_ep:
@@ -25,7 +45,6 @@ def main():
     if current_ep:
         print()
 
-    # Select and load a model from the catalog
     model = manager.catalog.get_model("qwen2.5-0.5b")
     model.download(
         lambda progress: print(
@@ -37,31 +56,27 @@ def main():
     print()
     model.load()
     print("Model loaded and ready.")
-
-    # Get a chat client
-    client = model.get_chat_client()
     # </init>
 
-    # <streaming>
-    # Create the conversation messages
-    messages = [
-        {"role": "user", "content": "What is the golden ratio?"}
-    ]
+    try:
+        with ChatSession(model) as session:
+            session.set_options(
+                RequestOptions(search=SearchOptions(temperature=0.0, max_output_tokens=256))
+            )
 
-    # Stream the response token by token
-    print("Assistant: ", end="", flush=True)
-    for chunk in client.complete_streaming_chat(messages):
-        if not chunk.choices:  # the final chunk can carry no choices
-            continue
-        content = chunk.choices[0].delta.content
-        if content:
-            print(content, end="", flush=True)
-    print()
-    # </streaming>
-
-    # Clean up
-    model.unload()
-    print("Model unloaded.")
+            # <streaming>
+            with Request().add_item(MessageItem.user("What is the golden ratio?")) as request:
+                print("Assistant: ", end="", flush=True)
+                session.set_streaming(True)
+                with session.process_streaming_request(request) as stream:
+                    for item in stream:
+                        if isinstance(item, TextItem) and item.type == TextItemType.DEFAULT:
+                            print(item.text, end="", flush=True)
+                print()
+            # </streaming>
+    finally:
+        model.unload()
+        print("Model unloaded.")
 
 
 if __name__ == "__main__":

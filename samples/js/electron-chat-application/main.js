@@ -45,7 +45,6 @@ app.on('activate', () => {
 // SDK Management
 let manager = null;
 let currentModel = null;
-let chatClient = null;
 let webServiceStarted = false;
 const SERVICE_PORT = 47392;
 const SERVICE_URL = `http://127.0.0.1:${SERVICE_PORT}`;
@@ -108,11 +107,11 @@ ipcMain.handle('get-models', async () => {
       variants: m.variants.map(v => ({
         id: v.id,
         alias: v.alias,
-        displayName: v.modelInfo.displayName || v.alias,
+        displayName: v.info.displayName || v.alias,
         isCached: cachedIds.has(v.id),
-        fileSizeMb: v.modelInfo.fileSizeMb,
-        modelType: v.modelInfo.modelType,
-        publisher: v.modelInfo.publisher
+        fileSizeMb: v.info.fileSizeMb,
+        modelType: v.info.modelType,
+        publisher: v.info.publisher
       }))
     }));
     
@@ -152,7 +151,6 @@ ipcMain.handle('load-model', async (event, modelAlias) => {
       } catch (e) {
         // Ignore unload errors
       }
-      chatClient = null;
     }
     
     const model = await manager.catalog.getModel(modelAlias);
@@ -165,13 +163,12 @@ ipcMain.handle('load-model', async (event, modelAlias) => {
     
     await model.load();
     
-    // Wait for model to be fully loaded before creating chat client
+    // Wait for model to be fully loaded before exposing it to the renderer
     while (!(await model.isLoaded())) {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     
     currentModel = model;
-    chatClient = model.createChatClient();
     
     return { success: true, modelId: model.id };
   } catch (error) {
@@ -185,7 +182,6 @@ ipcMain.handle('unload-model', async () => {
     if (currentModel) {
       await currentModel.unload();
       currentModel = null;
-      chatClient = null;
     }
     return { success: true };
   } catch (error) {
@@ -204,10 +200,9 @@ ipcMain.handle('delete-model', async (event, modelAlias) => {
     if (currentModel && currentModel.alias === modelAlias) {
       await currentModel.unload();
       currentModel = null;
-      chatClient = null;
     }
     
-    model.removeFromCache();
+    await model.removeFromCache();
     return { success: true };
   } catch (error) {
     console.error('Error deleting model:', error);
@@ -306,7 +301,7 @@ ipcMain.handle('get-whisper-models', async () => {
     .map(m => ({
       alias: m.alias,
       isCached: m.isCached,
-      fileSizeMb: m.variants[0]?.modelInfo?.fileSizeMb
+      fileSizeMb: m.variants[0]?.info.fileSizeMb
     }));
 });
 
@@ -343,8 +338,8 @@ ipcMain.handle('transcribe-audio', async (event, audioFilePath, base64Data) => {
     
     // Use the smallest cached whisper model
     const selectedModel = whisperModels.sort((a, b) => {
-      const sizeA = a.variants[0]?.modelInfo?.fileSizeMb || 0;
-      const sizeB = b.variants[0]?.modelInfo?.fileSizeMb || 0;
+      const sizeA = a.variants[0]?.info.fileSizeMb || 0;
+      const sizeB = b.variants[0]?.info.fileSizeMb || 0;
       return sizeA - sizeB;
     })[0];
     
@@ -357,14 +352,26 @@ ipcMain.handle('transcribe-audio', async (event, audioFilePath, base64Data) => {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     
-    // Create audio client and transcribe
-    const audioClient = whisperModel.createAudioClient();
-    const result = await audioClient.transcribe(tempFilePath);
-    
-    // Unload whisper model
-    await whisperModel.unload();
-    
-    return result;
+    const { AudioSession, Item, Request } = await import('foundry-local-sdk');
+    try {
+      const audioSession = new AudioSession(whisperModel);
+      try {
+        const response = await audioSession.processRequest(
+          new Request()
+            .addItem(Item.audioFromUri(tempFilePath))
+            .setOptions({ additionalOptions: { language: 'en' } })
+        );
+        const result = response.output.find(item => item.type === 'speechResult');
+        if (!result || result.type !== 'speechResult') {
+          throw new Error('Expected a speechResult item from AudioSession');
+        }
+        return { text: result.text, segments: result.segments };
+      } finally {
+        audioSession.dispose();
+      }
+    } finally {
+      await whisperModel.unload();
+    }
   } finally {
     // Clean up temp file
     try {

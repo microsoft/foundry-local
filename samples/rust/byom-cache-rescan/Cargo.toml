@@ -1,0 +1,11 @@
+[package]
+name = "byom-cache-rescan"
+version = "0.1.0"
+edition = "2021"
+description = "End-to-end verification of the BYOM cache-rescan fix using the Foundry Local Rust SDK"
+
+[dependencies]
+foundry-local-sdk = { path = "../../../sdk_v2/rust" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }
+tokio-stream = "0.1"
+serde_json = "1"

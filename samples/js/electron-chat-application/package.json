@@ -8,7 +8,7 @@
     "dev": "electron . --enable-logging"
   },
   "dependencies": {
-    "foundry-local-sdk": "latest",
+    "foundry-local-sdk": "file:../../../sdk_v2/js",
     "highlight.js": "^11.11.1",
     "marked": "^15.0.6"
   },

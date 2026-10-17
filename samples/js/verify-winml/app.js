@@ -7,7 +7,7 @@
  *   3. Streaming chat completions work on an accelerated model
  */
 
-import { FoundryLocalManager } from "foundry-local-sdk";
+import { ChatSession, FoundryLocalManager, Item, Request } from "foundry-local-sdk";
 
 const PASS = "\x1b[92m[PASS]\x1b[0m";
 const FAIL = "\x1b[91m[FAIL]\x1b[0m";
@@ -34,8 +34,27 @@ function isAcceleratedVariant(variant) {
   return Boolean(runtime && ["GPU", "NPU"].includes(runtime.deviceType));
 }
 
+function collectText(items) {
+  const parts = [];
+  for (const item of items) {
+    if (item.type === "text" && (item.textType ?? "default") === "default") {
+      parts.push(item.text);
+    } else if (item.type === "message") {
+      if (Array.isArray(item.parts)) {
+        for (const part of item.parts) {
+          if (part.type === "text" && (part.textType ?? "default") === "default") {
+            parts.push(part.text);
+          }
+        }
+      } else if (typeof item.content === "string") {
+        parts.push(item.content);
+      }
+    }
+  }
+  return parts.join("");
+}
+
 async function main() {
-  // ── 0. Initialize FoundryLocalManager ──────────────────────
   printSeparator("Initialization");
   const manager = FoundryLocalManager.create({
     appName: "verify_winml",
@@ -43,7 +62,6 @@ async function main() {
   });
   console.log(`${INFO} FoundryLocalManager initialized.`);
 
-  // ── 1. Discover & Register EPs ────────────────────────────
   printSeparator("Step 1: Discover & Register Execution Providers");
   let eps = [];
   try {
@@ -104,13 +122,11 @@ async function main() {
     return;
   }
 
-  // ── 2. List Models & Find Accelerated Variants ────────────
   printSeparator("Step 2: Model Catalog - Accelerated Models");
   const models = await manager.catalog.getModels();
   console.log(`${INFO} Total models in catalog: ${models.length}`);
 
   const acceleratedVariants = [];
-
   for (const model of models) {
     for (const variant of model.variants) {
       if (isAcceleratedVariant(variant)) {
@@ -140,7 +156,6 @@ async function main() {
     process.exit(1);
   }
 
-  // ── 3. Download & Load Model ──────────────────────────────
   printSeparator("Step 3: Download & Load Model");
 
   let chosen = null;
@@ -187,29 +202,37 @@ async function main() {
 
   logResult("Model Load", true, `Loaded ${chosen.id}`);
 
-  // ── 4. Streaming Chat Completions (Native SDK) ────────────
   printSeparator("Step 4: Streaming Chat Completions (Native)");
-  const messages = [
-    { role: "system", content: "You are a helpful assistant." },
-    { role: "user", content: "What is 2 + 2? Reply with just the number." },
-  ];
 
   try {
-    const client = chosen.createChatClient();
-    client.settings.temperature = 0;
-    client.settings.maxTokens = 16;
-    let responseText = "";
+    const session = new ChatSession(chosen);
+    session.setOptions({
+      search: {
+        temperature: 0,
+        maxOutputTokens: 16,
+      },
+    });
+
     const start = Date.now();
-    for await (const chunk of client.completeStreamingChat(messages)) {
-      const content = chunk?.choices?.[0]?.delta?.content;
+    let responseText = "";
+    const stream = session.processStreamingRequest(
+      new Request()
+        .addItem(Item.systemMessage("You are a helpful assistant."))
+        .addItem(Item.userMessage("What is 2 + 2? Reply with just the number.")),
+    );
+
+    for await (const item of stream) {
+      const content = collectText([item]);
       if (content) {
         responseText += content;
         process.stdout.write(content);
       }
     }
+
     const elapsed = ((Date.now() - start) / 1000).toFixed(2);
     console.log();
     logResult("Streaming Chat (Native)", responseText.length > 0, `${responseText.length} chars in ${elapsed}s`);
+    session.dispose();
   } catch (e) {
     logResult("Streaming Chat (Native)", false, e.message);
   }

@@ -3,6 +3,8 @@ using Microsoft.AI.Foundry.Local;
 using OpenAI;
 using OpenAI.Chat;
 using System.ClientModel;
+using System.Globalization;
+using System.Text;
 using System.Text.Json;
 
 var config = new Configuration
@@ -18,7 +20,7 @@ var config = new Configuration
 
 // Initialize the singleton instance.
 await FoundryLocalManager.CreateAsync(config, Utils.GetAppLogger());
-var mgr = FoundryLocalManager.Instance;
+using var mgr = FoundryLocalManager.Instance;
 
 
 // Download and register all execution providers.
@@ -96,8 +98,8 @@ var tools = new List<ChatTool>
         {
             "type": "object",
             "properties": {
-                "first": { "type": "number", "description": "The first number in the operation" },
-                "second": { "type": "number", "description": "The second number in the operation" }
+                "first": { "type": "integer", "description": "The first number in the operation" },
+                "second": { "type": "integer", "description": "The second number in the operation" }
             },
             "required": ["first", "second"]
         }
@@ -119,7 +121,7 @@ foreach (var tool in tools)
 
 // Get a streaming chat completion response
 var completionUpdates = chatClient.CompleteChatStreaming(messages, options);
-var toolCalls = new List<StreamingChatToolCallUpdate>();
+var toolUpdates = new SortedDictionary<int, (string? Id, string? Name, StringBuilder Arguments)>();
 Console.Write($"[ASSISTANT]: ");
 foreach (var completionUpdate in completionUpdates)
 {
@@ -128,32 +130,49 @@ foreach (var completionUpdate in completionUpdates)
         Console.Write(completionUpdate.ContentUpdate[0].Text);
     }
 
-    if (completionUpdate.FinishReason == ChatFinishReason.ToolCalls)
+    foreach (var update in completionUpdate.ToolCallUpdates)
     {
-        foreach (var toolCall in completionUpdate.ToolCallUpdates)
+        if (!toolUpdates.TryGetValue(update.Index, out var call))
         {
-            toolCalls.Add(toolCall);
+            call = (null, null, new StringBuilder());
         }
+        call.Id = update.ToolCallId ?? call.Id;
+        call.Name = update.FunctionName ?? call.Name;
+        if (update.FunctionArgumentsUpdate is not null)
+        {
+            call.Arguments.Append(update.FunctionArgumentsUpdate.ToString());
+        }
+        toolUpdates[update.Index] = call;
     }
 }
 Console.WriteLine();
 
+var toolCalls = toolUpdates.Values.Select(call => ChatToolCall.CreateFunctionToolCall(
+    call.Id ?? throw new InvalidOperationException("Tool call is missing its ID."),
+    call.Name ?? throw new InvalidOperationException("Tool call is missing its function name."),
+    BinaryData.FromString(call.Arguments.ToString()))).ToArray();
+if (toolCalls.Length == 0)
+{
+    throw new InvalidOperationException("The model did not produce the required tool call.");
+}
+messages.Add(new AssistantChatMessage(toolCalls));
 
 // Invoke tools called and append responses to the chat
 foreach (var toolCall in toolCalls)
 {
-    if (toolCall.FunctionName == "multiply_numbers")
+    if (toolCall.FunctionName != "multiply_numbers")
     {
-        var arguments = JsonDocument.Parse(toolCall.FunctionArgumentsUpdate.ToString()).RootElement;
-        var first = arguments.GetProperty("first").GetInt32();
-        var second = arguments.GetProperty("second").GetInt32();
-
-        Console.WriteLine($"\nInvoking tool: {toolCall.FunctionName} with arguments {first} and {second}");
-        var result = Utils.MultiplyNumbers(first, second);
-        Console.WriteLine($"Tool response: {result.ToString()}");
-
-        messages.Add(ChatMessage.CreateToolMessage(toolCallId: "abcd1234", content: result.ToString()));
+        throw new InvalidOperationException($"Unexpected tool: {toolCall.FunctionName}");
     }
+    using var arguments = JsonDocument.Parse(toolCall.FunctionArguments.ToString());
+    var first = arguments.RootElement.GetProperty("first").GetInt32();
+    var second = arguments.RootElement.GetProperty("second").GetInt32();
+
+    Console.WriteLine($"\nInvoking tool: {toolCall.FunctionName} with arguments {first} and {second}");
+    var result = Utils.MultiplyNumbers(first, second);
+    Console.WriteLine($"Tool response: {result}");
+
+    messages.Add(ChatMessage.CreateToolMessage(toolCall.Id, result.ToString(CultureInfo.InvariantCulture)));
 }
 Console.WriteLine("\nTool calls completed. Prompting model to continue conversation...\n");
 

@@ -4,7 +4,7 @@ Real-time microphone-to-text transcription using the Foundry Local C# SDK with N
 
 ## Prerequisites
 
-- [Foundry Local](https://github.com/microsoft/Foundry-Local) installed
+- SDK v2 and its matching native runtime (see [shared setup](../README.md))
 - .NET 9 SDK
 - A microphone (optional — falls back to synthetic audio on non-Windows or with `--synth`)
 
@@ -22,7 +22,7 @@ dotnet restore
 dotnet run
 ```
 
-Speak into your microphone. Transcription appears in real-time (cyan text). Press `ENTER` to stop recording.
+Speak into your microphone. Transcription tokens appear in real time. Press `ENTER` to stop recording.
 
 To force synthetic audio (e.g., for CI or non-Windows):
 
@@ -33,33 +33,40 @@ dotnet run -- --synth
 ## How it works
 
 1. Initializes the Foundry Local SDK and loads the Nemotron ASR model
-2. Creates a `LiveAudioTranscriptionSession` with 16kHz/16-bit/mono PCM settings
+2. Creates an `AudioSession` with streaming enabled and an input `ItemQueue`
 3. Captures microphone audio via `NAudio.WaveInEvent` (or generates synthetic audio as fallback)
-4. Pushes PCM chunks to the SDK via `session.AppendAsync()` through a bounded channel for backpressure
-5. Reads transcription results via `await foreach (var result in session.GetStream())`
-6. Access text via `result.Content[0].Text` (OpenAI Realtime ConversationItem pattern)
+4. Pushes owned 16kHz/16-bit/mono PCM `BytesItem` chunks into the queue through a bounded capture channel
+5. Reads `SpeechSegmentItem` results from `ProcessStreamingRequestAsync`
+6. Marks the queue finished, awaits the final `SpeechResultItem`, and disposes the session before unloading the model
+
+Current models emit token deltas with `SpeechSegmentKind.None`. A `Partial`
+segment, if supplied by a model, is a cumulative hypothesis rather than a delta.
 
 ## API
 
 ```csharp
-var audioClient = await model.GetAudioClientAsync();
-var session = audioClient.CreateLiveTranscriptionSession();
-session.Settings.SampleRate = 16000;
-session.Settings.Channels = 1;
-session.Settings.Language = "en";
+using var session = new AudioSession(model);
+session.SetStreaming(true);
+using var queue = new ItemQueue();
+using var request = new Request();
+request.AddItem(AudioItem.CreateFormatDescriptor("pcm", 16000, 1));
+request.AddItem(queue, takeOwnership: false);
+await using var stream = session.ProcessStreamingRequestAsync(request);
 
-await session.StartAsync();
+using var audio = BytesItem.CreateOwned(pcmBytes.AsMemory());
+queue.Push(audio);
+queue.MarkFinished();
 
-// Push audio
-await session.AppendAsync(pcmBytes);
-
-// Read results
-await foreach (var result in session.GetStream())
+await foreach (var item in stream)
 {
-    Console.WriteLine(result.Content[0].Text);       // transcribed text
-    Console.WriteLine(result.Content[0].Transcript); // alias (OpenAI compat)
-    Console.WriteLine(result.IsFinal);               // true for final results
+    using (item)
+    {
+        if (item is SpeechSegmentItem segment)
+        {
+            Console.WriteLine($"{segment.Kind}: {segment.Text}");
+        }
+    }
 }
-
-await session.StopAsync();
+using var response = await stream.FinalResponse;
+Console.WriteLine(response.OfType<SpeechResultItem>().Single().Text);
 ```

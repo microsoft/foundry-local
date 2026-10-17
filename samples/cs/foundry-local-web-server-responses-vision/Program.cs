@@ -35,7 +35,7 @@ var config = new Configuration
 };
 
 await FoundryLocalManager.CreateAsync(config, Utils.GetAppLogger());
-var mgr = FoundryLocalManager.Instance;
+using var mgr = FoundryLocalManager.Instance;
 
 Console.WriteLine("\nDownloading execution providers:");
 var currentEp = "";

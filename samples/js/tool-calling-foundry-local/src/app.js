@@ -28,7 +28,7 @@ async function runToolCallingExample() {
     console.log("Initializing Foundry Local SDK...");
     manager = FoundryLocalManager.create({
       appName: "foundry_local_samples",
-      serviceEndpoint: "http://localhost:5000",
+      webServiceUrls: "http://localhost:5000",
       logLevel: "info"
     });
     // </init>
@@ -70,6 +70,7 @@ async function runToolCallingExample() {
 
     // <tool_loop>
     // Prepare messages
+    /** @type {import('openai/resources/chat/completions').ChatCompletionMessageParam[]} */
     const messages = [
       {
         role: "system",
@@ -79,6 +80,7 @@ async function runToolCallingExample() {
     ];
 
     // Prepare tools
+    /** @type {import('openai/resources/chat/completions').ChatCompletionTool[]} */
     const tools = [
       {
         type: "function",
@@ -105,7 +107,8 @@ async function runToolCallingExample() {
 
     // Start the conversation
     console.log("Chat completion response:");
-    const toolCallResponses = [];
+    let assistantContent = "";
+    const toolCallState = new Map();
 
     const firstStream = await openai.chat.completions.create({
       model: model.id,
@@ -116,36 +119,68 @@ async function runToolCallingExample() {
     });
 
     for await (const chunk of firstStream) {
-      const content = chunk.choices?.[0]?.delta?.content;
+      const choice = chunk.choices?.[0];
+      const content = choice?.delta?.content;
       if (content) {
+        assistantContent += content;
         process.stdout.write(content);
       }
 
-      if (chunk.choices?.[0]?.finish_reason === "tool_calls") {
-        toolCallResponses.push(chunk);
+      const toolCalls = choice?.delta?.tool_calls ?? [];
+      for (const toolCall of toolCalls) {
+        const index = toolCall.index ?? 0;
+        const existing = toolCallState.get(index) ?? {
+          id: "",
+          type: "function",
+          function: { name: "", arguments: "" },
+        };
+
+        if (toolCall.id) {
+          existing.id = toolCall.id;
+        }
+        if (toolCall.type) {
+          existing.type = toolCall.type;
+        }
+        if (toolCall.function?.name) {
+          existing.function.name = toolCall.function.name;
+        }
+        if (toolCall.function?.arguments) {
+          existing.function.arguments += toolCall.function.arguments;
+        }
+
+        toolCallState.set(index, existing);
       }
     }
     console.log();
 
+    const resolvedToolCalls = [...toolCallState.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([, toolCall]) => toolCall);
+
+    if (resolvedToolCalls.length > 0) {
+      messages.push({
+        role: "assistant",
+        content: assistantContent || null,
+        tool_calls: resolvedToolCalls,
+      });
+    }
+
     // Invoke tools called and append responses to the chat
-    for (const chunk of toolCallResponses) {
-      const toolCalls = chunk.choices?.[0]?.message?.tool_calls ?? chunk.choices?.[0]?.delta?.tool_calls ?? [];
-      for (const toolCall of toolCalls) {
-        if (toolCall.function?.name === "multiply_numbers") {
-          const args = JSON.parse(toolCall.function.arguments || "{}");
-          const first = args.first;
-          const second = args.second;
+    for (const toolCall of resolvedToolCalls) {
+      if (toolCall.function?.name === "multiply_numbers") {
+        const args = JSON.parse(toolCall.function.arguments || "{}");
+        const first = args.first;
+        const second = args.second;
 
-          console.log(`\nInvoking tool: ${toolCall.function.name} with arguments ${first} and ${second}`);
-          const result = multiplyNumbers(first, second);
-          console.log(`Tool response: ${result}`);
+        console.log(`\nInvoking tool: ${toolCall.function.name} with arguments ${first} and ${second}`);
+        const result = multiplyNumbers(first, second);
+        console.log(`Tool response: ${result}`);
 
-          messages.push({
-            role: "tool",
-            tool_call_id: toolCall.id,
-            content: result.toString()
-          });
-        }
+        messages.push({
+          role: "tool",
+          tool_call_id: toolCall.id,
+          content: result.toString()
+        });
       }
     }
 

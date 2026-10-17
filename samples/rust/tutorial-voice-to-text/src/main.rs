@@ -1,24 +1,14 @@
 // <complete_code>
-// <imports>
 use foundry_local_sdk::{
-    ChatCompletionRequestMessage,
-    ChatCompletionRequestSystemMessage,
-    ChatCompletionRequestUserMessage,
-    FoundryLocalConfig, FoundryLocalManager,
+    AudioSession, ChatSession, FoundryLocalConfig, FoundryLocalManager, Item, Request,
+    RequestOptions, SearchOptions,
 };
 use std::io::{self, Write};
-// </imports>
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // <init>
-    // Initialize the Foundry Local SDK
-    let manager = FoundryLocalManager::create(
-        FoundryLocalConfig::new("note-taker"),
-    )?;
-    // </init>
+    let manager = FoundryLocalManager::create(FoundryLocalConfig::new("note-taker"))?;
 
-    // Download and register all execution providers.
     manager
         .download_and_register_eps_with_progress(None, {
             let mut current_ep = String::new();
@@ -36,13 +26,7 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     println!();
 
-    // <transcription>
-    // Load the speech-to-text model
-    let speech_model = manager
-        .catalog()
-        .get_model("whisper-tiny")
-        .await?;
-
+    let speech_model = manager.catalog().get_model("whisper-tiny").await?;
     if !speech_model.is_cached().await? {
         println!("Downloading speech model...");
         speech_model
@@ -53,28 +37,18 @@ async fn main() -> anyhow::Result<()> {
             .await?;
         println!();
     }
-
     speech_model.load().await?;
     println!("Speech model loaded.");
 
-    // Transcribe the audio file
-    let audio_client = speech_model.create_audio_client();
-    let transcription = audio_client
-        .transcribe("meeting-notes.wav")
+    let audio_session = AudioSession::new(&speech_model).await?;
+    let transcription = audio_session
+        .transcribe(Item::audio_uri("meeting-notes.wav", None::<String>, 0, 0))
         .await?;
-    println!("\nTranscription:\n{}", transcription.text);
-
-    // Unload the speech model to free memory
+    println!("\nTranscription:\n{}", transcription);
+    drop(audio_session);
     speech_model.unload().await?;
-    // </transcription>
 
-    // <summarization>
-    // Load the chat model for summarization
-    let chat_model = manager
-        .catalog()
-        .get_model("qwen2.5-0.5b")
-        .await?;
-
+    let chat_model = manager.catalog().get_model("qwen2.5-0.5b").await?;
     if !chat_model.is_cached().await? {
         println!("Downloading chat model...");
         chat_model
@@ -85,44 +59,34 @@ async fn main() -> anyhow::Result<()> {
             .await?;
         println!();
     }
-
     chat_model.load().await?;
     println!("Chat model loaded.");
 
-    // Summarize the transcription into organized notes
-    let client = chat_model
-        .create_chat_client()
-        .temperature(0.7)
-        .max_tokens(512);
-
-    let messages: Vec<ChatCompletionRequestMessage> = vec![
-        ChatCompletionRequestSystemMessage::from(
-            "You are a note-taking assistant. Summarize \
-             the following transcription into organized, \
-             concise notes with bullet points.",
-        )
-        .into(),
-        ChatCompletionRequestUserMessage::from(
-            transcription.text.as_str(),
-        )
-        .into(),
-    ];
-
-    let response = client
-        .complete_chat(&messages, None)
+    let chat_session = ChatSession::new(&chat_model).await?;
+    chat_session
+        .set_options(RequestOptions {
+            search: SearchOptions {
+                temperature: Some(0.7),
+                max_output_tokens: Some(512),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
         .await?;
-    let summary = response.choices[0]
-        .message
-        .content
-        .as_deref()
-        .unwrap_or("");
-    println!("\nSummary:\n{}", summary);
 
-    // Clean up
+    let response = chat_session
+        .process_request(Request::from_items(vec![
+            Item::system_message(vec![Item::text(
+                "You are a note-taking assistant. Summarize the following transcription into organized, concise notes with bullet points.",
+            )]),
+            Item::user_message(vec![Item::text(transcription)]),
+        ]))
+        .await?;
+    println!("\nSummary:\n{}", response.text());
+
+    drop(chat_session);
     chat_model.unload().await?;
     println!("\nDone. Models unloaded.");
-    // </summarization>
-
     Ok(())
 }
 // </complete_code>

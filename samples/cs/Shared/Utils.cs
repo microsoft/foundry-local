@@ -4,6 +4,15 @@ using System.Text;
 
 internal static class Utils
 {
+    internal static string GetResponseText(Response response)
+    {
+        return string.Concat(response.OfType<MessageItem>()
+            .SelectMany(message => message.Parts)
+            .OfType<TextItem>()
+            .Where(text => text.Type == TextItemType.Default)
+            .Select(text => text.Text));
+    }
+
     private static readonly ILoggerFactory _loggerFactory;
 
     static Utils()
@@ -43,10 +52,10 @@ internal static class Utils
                 Console.WriteLine($"\nWarning: {fex.Message}");
                 return;
             }
-            
+
             throw;  // rethrow otherwise
         }
-        
+
         cts.Cancel();       // stop the spinner
         await spinnerTask;  // wait for spinner to exit
     }
@@ -61,7 +70,7 @@ internal static class Utils
 
         Console.OutputEncoding = Encoding.UTF8;
 
-        var sequence = new[] { '◴','◷','◶','◵' };
+        var sequence = new[] { '◴', '◷', '◶', '◵' };
 
         int counter = 0;
 

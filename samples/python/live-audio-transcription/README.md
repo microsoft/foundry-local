@@ -1,12 +1,14 @@
 # Live Audio Transcription Example
 
-Real-time microphone-to-text transcription using the Foundry Local Python SDK with Nemotron ASR.
+Real-time microphone-to-text transcription using the Foundry Local **v2**
+Python SDK with a typed `AudioSession`.
 
 ## Prerequisites
 
-- [Foundry Local](https://github.com/microsoft/Foundry-Local) installed
-- Python 3.9+
-- A microphone (optional — falls back to synthetic audio with `--synth` or if PyAudio is unavailable)
+- SDK v2 source package and native runtime (see the [Python samples setup](../README.md))
+- Python 3.11+
+- A microphone (optional — falls back to synthetic audio with `--synth` or if
+  PyAudio is unavailable)
 
 ## Setup
 
@@ -14,56 +16,36 @@ Real-time microphone-to-text transcription using the Foundry Local Python SDK wi
 pip install -r requirements.txt
 ```
 
-> **Note:** `pyaudio` is **optional** — it provides cross-platform microphone capture. Without it, the example falls back to synthetic audio for testing.
->
-> Install manually if needed:
-> ```bash
-> pip install pyaudio
-> ```
+`pyaudio` is optional for live microphone capture.
 
 ## Run
 
 ```bash
 python src/app.py
-```
-
-Speak into your microphone. Transcription appears in real-time. Press `Ctrl+C` to stop.
-
-To force synthetic audio (e.g., for CI or when no microphone is available):
-
-```bash
 python src/app.py --synth
 ```
 
 ## How it works
 
-1. Initializes the Foundry Local SDK and loads the Nemotron ASR model
-2. Creates a `LiveAudioTranscriptionSession` with 16kHz/16-bit/mono PCM settings
-3. Captures microphone audio via `pyaudio` (or generates synthetic audio as fallback)
-4. Pushes PCM chunks to the SDK via `session.append()`
-5. Reads transcription results in a background thread via `for result in session.get_stream()`
-6. Access text via `result.content[0].text` (OpenAI Realtime ConversationItem pattern)
+1. Loads `nemotron-speech-streaming-en-0.6b`
+2. Creates a typed `AudioSession`
+3. Builds a request with:
+   - `AudioItem.create_format_descriptor("pcm", sample_rate=16000, channels=1)`
+   - a borrowed `ItemQueue` carrying **`BytesItem` PCM chunks only**
+4. Streams microphone or synthetic audio into the queue
+5. Prints incremental `SpeechSegmentItem` deltas as they arrive
+6. Reads the terminal `SpeechResultItem` from `stream.final_response`
 
-## API
+## Important streaming behavior
 
-```python
-audio_client = model.get_audio_client()
-session = audio_client.create_live_transcription_session()
-session.settings.sample_rate = 16000
-session.settings.channels = 1
-session.settings.language = "en"
+Current Whisper and Nemotron streaming models emit **`SpeechSegmentKind.NONE`**
+for token deltas. Future models may also emit `PARTIAL` and `FINAL`.
 
-session.start()
+- `NONE`: print as incremental text delta
+- `PARTIAL`: print as a cumulative hypothesis
+- `FINAL`: treat as a stabilized segment if a future model emits it
+- final `SpeechResultItem`: full transcript for the whole request
 
-# Push audio
-session.append(pcm_bytes)
-
-# Read results (typically on a background thread)
-for result in session.get_stream():
-    print(result.content[0].text)        # transcribed text
-    print(result.content[0].transcript)  # alias (OpenAI compat)
-    print(result.is_final)               # True for final results
-
-session.stop()
-session.close()
-```
+Do **not** push `AudioItem` instances into the queue. The queue payloads must
+be `BytesItem` chunks; the audio format is declared once by the descriptor item
+on the request.

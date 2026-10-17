@@ -1,19 +1,43 @@
 # <complete_code>
 # <imports>
-from foundry_local_sdk import Configuration, FoundryLocalManager
+from foundry_local_sdk import (
+    AudioItem,
+    AudioSession,
+    ChatSession,
+    Configuration,
+    FoundryLocalManager,
+    MessageItem,
+    Request,
+    RequestOptions,
+    SearchOptions,
+    SpeechResultItem,
+    TextItem,
+    TextItemType,
+)
 # </imports>
+
+
+def extract_text(response) -> str:
+    parts: list[str] = []
+    for item in response:
+        if isinstance(item, TextItem) and item.type == TextItemType.DEFAULT:
+            parts.append(item.text)
+        elif hasattr(item, "parts"):
+            for part in item.parts:
+                if isinstance(part, TextItem) and part.type == TextItemType.DEFAULT:
+                    parts.append(part.text)
+    return "".join(parts)
 
 
 def main():
     # <init>
-    # Initialize the Foundry Local SDK
     config = Configuration(app_name="foundry_local_samples")
     FoundryLocalManager.initialize(config)
     manager = FoundryLocalManager.instance
     # </init>
 
-    # Download and register all execution providers.
     current_ep = ""
+
     def ep_progress(ep_name: str, percent: float):
         nonlocal current_ep
         if ep_name != current_ep:
@@ -27,7 +51,6 @@ def main():
         print()
 
     # <transcription>
-    # Load the speech-to-text model
     speech_model = manager.catalog.get_model("whisper-tiny")
     speech_model.download(
         lambda progress: print(
@@ -40,17 +63,20 @@ def main():
     speech_model.load()
     print("Speech model loaded.")
 
-    # Transcribe the audio file
-    audio_client = speech_model.get_audio_client()
-    transcription = audio_client.transcribe("meeting-notes.wav")
-    print(f"\nTranscription:\n{transcription.text}")
+    with AudioSession(speech_model) as audio_session:
+        with Request().add_item(AudioItem.from_uri("meeting-notes.wav")) as request:
+            request.set_options(RequestOptions(additional_options={"language": "en"}))
+            with audio_session.process_request(request) as response:
+                result = next((item for item in response if isinstance(item, SpeechResultItem)), None)
+                if result is None:
+                    raise RuntimeError("Expected a SpeechResultItem in the audio response")
+                transcription = result.text
+    print(f"\nTranscription:\n{transcription}")
 
-    # Unload the speech model to free memory
     speech_model.unload()
     # </transcription>
 
     # <summarization>
-    # Load the chat model for summarization
     chat_model = manager.catalog.get_model("qwen2.5-0.5b")
     chat_model.download(
         lambda progress: print(
@@ -63,24 +89,22 @@ def main():
     chat_model.load()
     print("Chat model loaded.")
 
-    # Summarize the transcription into organized notes
-    client = chat_model.get_chat_client()
-    messages = [
-        {
-            "role": "system",
-            "content": "You are a note-taking assistant. "
-                       "Summarize the following transcription "
-                       "into organized, concise notes with "
-                       "bullet points.",
-        },
-        {"role": "user", "content": transcription.text},
-    ]
+    with ChatSession(chat_model) as session:
+        session.set_options(
+            RequestOptions(search=SearchOptions(temperature=0.7, max_output_tokens=512))
+        )
+        with Request() as request:
+            request.add_item(
+                MessageItem.system(
+                    "You are a note-taking assistant. Summarize the following "
+                    "transcription into organized, concise notes with bullet points."
+                )
+            )
+            request.add_item(MessageItem.user(transcription))
+            with session.process_request(request) as response:
+                summary = extract_text(response)
 
-    response = client.complete_chat(messages)
-    summary = response.choices[0].message.content
     print(f"\nSummary:\n{summary}")
-
-    # Clean up
     chat_model.unload()
     print("\nDone. Models unloaded.")
     # </summarization>

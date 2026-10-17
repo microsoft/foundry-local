@@ -66,16 +66,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if list_models {
         let all_models = manager.catalog().get_models().await?;
-        let mut vision_models: Vec<_> = all_models
-            .into_iter()
-            .filter(|m| {
-                m.info()
-                    .task
-                    .as_deref()
-                    .map(|t| t.to_lowercase().contains("vision"))
-                    .unwrap_or(false)
-            })
-            .collect();
+        let mut vision_models = Vec::new();
+        for model in all_models {
+            if model
+                .info()?
+                .task
+                .as_deref()
+                .map(|task| task.contains("vision"))
+                .unwrap_or(false)
+            {
+                vision_models.push(model);
+            }
+        }
         vision_models.sort_by(|a, b| a.alias().cmp(b.alias()));
 
         if vision_models.is_empty() {
@@ -94,7 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "ALIAS", "INPUT MODALITIES", "OUTPUT MODALITIES", "TASK"
         );
         for m in &vision_models {
-            let info = m.info();
+            let info = m.info()?;
             println!(
                 "  {:<32}  {:<20}  {:<20}  {:<24}  {}",
                 m.alias(),
@@ -104,33 +106,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 info.capabilities.as_deref().unwrap_or(""),
             );
 
-            let mut variants = m.variants();
+            let mut variants = m
+                .variants()
+                .into_iter()
+                .map(|variant| variant.info().map(|info| (info, variant)))
+                .collect::<Result<Vec<_>, _>>()?;
             if variants.is_empty() {
                 continue;
             }
-            variants.sort_by(|a, b| {
-                let ad = a
-                    .info()
+            variants.sort_by(|(a_info, a), (b_info, b)| {
+                let ad = a_info
                     .runtime
                     .as_ref()
                     .map(|r| format!("{:?}", r.device_type))
                     .unwrap_or_default();
-                let bd = b
-                    .info()
+                let bd = b_info
                     .runtime
                     .as_ref()
                     .map(|r| format!("{:?}", r.device_type))
                     .unwrap_or_default();
                 ad.cmp(&bd)
                     .then_with(|| {
-                        let ae = a
-                            .info()
+                        let ae = a_info
                             .runtime
                             .as_ref()
                             .map(|r| r.execution_provider.clone())
                             .unwrap_or_default();
-                        let be = b
-                            .info()
+                        let be = b_info
                             .runtime
                             .as_ref()
                             .map(|r| r.execution_provider.clone())
@@ -144,8 +146,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "      {:<54}  {:<6}  {:<32}  {:>10}  CACHED",
                 "VARIANT ID", "DEVICE", "EXECUTION PROVIDER", "SIZE (MB)"
             );
-            for v in &variants {
-                let info = v.info();
+            for (info, v) in &variants {
                 let device = info
                     .runtime
                     .as_ref()
@@ -160,7 +161,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Some(s) => format!("{:>10}", s),
                     None => " ".repeat(10),
                 };
-                let cached = if v.is_cached().await.unwrap_or(false) { "yes" } else { "no" };
+                let cached = if v.is_cached().await? { "yes" } else { "no" };
                 println!(
                     "      {:<54}  {:<6}  {:<32}  {}  {}",
                     v.id(),
@@ -287,8 +288,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 break 'outer;
             }
             if let Ok(event) = serde_json::from_str::<Value>(data) {
-                if event.get("type").and_then(|t| t.as_str())
-                    == Some("response.output_text.delta")
+                if event.get("type").and_then(|t| t.as_str()) == Some("response.output_text.delta")
                 {
                     if let Some(delta) = event.get("delta").and_then(|d| d.as_str()) {
                         print!("{delta}");

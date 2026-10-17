@@ -2,10 +2,6 @@
 // <imports>
 using System.Text.Json;
 using Microsoft.AI.Foundry.Local;
-using Betalgo.Ranul.OpenAI.ObjectModels.RequestModels;
-using Betalgo.Ranul.OpenAI.ObjectModels.ResponseModels;
-using Betalgo.Ranul.OpenAI.ObjectModels.SharedModels;
-using ToolChoice = Betalgo.Ranul.OpenAI.ObjectModels.RequestModels.ToolChoice;
 using Microsoft.Extensions.Logging;
 // </imports>
 
@@ -13,46 +9,25 @@ CancellationToken ct = CancellationToken.None;
 
 // <tool_definitions>
 // --- Tool definitions ---
-List<ToolDefinition> tools =
-[
-    new ToolDefinition
+const string weatherSchema = """
     {
-        Type = "function",
-        Function = new FunctionDefinition()
-        {
-            Name = "get_weather",
-            Description = "Get the current weather for a location",
-            Parameters = new PropertyDefinition()
-            {
-                Type = "object",
-                Properties = new Dictionary<string, PropertyDefinition>()
-                {
-                    { "location", new PropertyDefinition() { Type = "string", Description = "The city or location" } },
-                    { "unit", new PropertyDefinition() { Type = "string", Description = "Temperature unit (celsius or fahrenheit)" } }
-                },
-                Required = ["location"]
-            }
-        }
-    },
-    new ToolDefinition
-    {
-        Type = "function",
-        Function = new FunctionDefinition()
-        {
-            Name = "calculate",
-            Description = "Perform a math calculation",
-            Parameters = new PropertyDefinition()
-            {
-                Type = "object",
-                Properties = new Dictionary<string, PropertyDefinition>()
-                {
-                    { "expression", new PropertyDefinition() { Type = "string", Description = "The math expression to evaluate" } }
-                },
-                Required = ["expression"]
-            }
-        }
+      "type": "object",
+      "properties": {
+        "location": { "type": "string", "description": "The city or location" },
+        "unit": { "type": "string", "enum": ["celsius", "fahrenheit"] }
+      },
+      "required": ["location"]
     }
-];
+    """;
+const string calculateSchema = """
+    {
+      "type": "object",
+      "properties": {
+        "expression": { "type": "string", "description": "The math expression to evaluate" }
+      },
+      "required": ["expression"]
+    }
+    """;
 
 // --- Tool implementations ---
 string ExecuteTool(string functionName, JsonElement arguments)
@@ -121,7 +96,7 @@ using var loggerFactory = LoggerFactory.Create(builder =>
 var logger = loggerFactory.CreateLogger<Program>();
 
 await FoundryLocalManager.CreateAsync(config, logger);
-var mgr = FoundryLocalManager.Instance;
+using var mgr = FoundryLocalManager.Instance;
 
 // Download and register all execution providers.
 var currentEp = "";
@@ -149,94 +124,76 @@ await model.DownloadAsync(progress =>
 await model.LoadAsync();
 Console.WriteLine("Model loaded and ready.");
 
-var chatClient = await model.GetChatClientAsync();
-chatClient.Settings.ToolChoice = ToolChoice.Auto;
-
-var messages = new List<ChatMessage>
+try
 {
-    new ChatMessage
+    using var session = new ChatSession(model);
+    session.AddToolDefinition("get_weather", "Get example weather for a location (simulated data).", weatherSchema);
+    session.AddToolDefinition("calculate", "Perform a math calculation.", calculateSchema);
+    var firstTurn = true;
+    // </init>
+
+    // <tool_loop>
+    Console.WriteLine("\nTool-calling assistant ready! Type 'quit' to exit.\n");
+
+    while (true)
     {
-        Role = "system",
-        Content = "You are a helpful assistant with access to tools. " +
-                  "Use them when needed to answer questions accurately."
-    }
-};
-// </init>
-
-// <tool_loop>
-Console.WriteLine("\nTool-calling assistant ready! Type 'quit' to exit.\n");
-
-while (true)
-{
-    Console.Write("You: ");
-    var userInput = Console.ReadLine();
-    if (string.IsNullOrWhiteSpace(userInput) ||
-        userInput.Equals("quit", StringComparison.OrdinalIgnoreCase) ||
-        userInput.Equals("exit", StringComparison.OrdinalIgnoreCase))
-    {
-        break;
-    }
-
-    messages.Add(new ChatMessage
-    {
-        Role = "user",
-        Content = userInput
-    });
-
-    var response = await chatClient.CompleteChatAsync(
-        messages, tools, ct
-    );
-
-    var choice = response.Choices[0].Message;
-
-    if (choice.ToolCalls is { Count: > 0 })
-    {
-        messages.Add(choice);
-
-        foreach (var toolCall in choice.ToolCalls)
+        Console.Write("You: ");
+        var userInput = Console.ReadLine();
+        if (string.IsNullOrWhiteSpace(userInput) ||
+            userInput.Equals("quit", StringComparison.OrdinalIgnoreCase) ||
+            userInput.Equals("exit", StringComparison.OrdinalIgnoreCase))
         {
-            var toolArgs = JsonDocument.Parse(
-                toolCall.FunctionCall.Arguments
-            ).RootElement;
-            Console.WriteLine(
-                $"  Tool call: {toolCall.FunctionCall.Name}({toolArgs})"
-            );
-
-            var result = ExecuteTool(
-                toolCall.FunctionCall.Name, toolArgs
-            );
-            messages.Add(new ChatMessage
-            {
-                Role = "tool",
-                ToolCallId = toolCall.Id,
-                Content = result
-            });
+            break;
         }
 
-        var finalResponse = await chatClient.CompleteChatAsync(
-            messages, tools, ct
-        );
-        var answer = finalResponse.Choices[0].Message.Content ?? "";
-        messages.Add(new ChatMessage
+        var request = new Request();
+        if (firstTurn)
         {
-            Role = "assistant",
-            Content = answer
-        });
-        Console.WriteLine($"Assistant: {answer}\n");
-    }
-    else
-    {
-        var answer = choice.Content ?? "";
-        messages.Add(new ChatMessage
+            request.AddItem(MessageItem.System("You are a helpful assistant with access to tools. " +
+                "Use them when needed to answer questions accurately."));
+            firstTurn = false;
+        }
+        request.AddItem(MessageItem.User(userInput));
+        const int maxToolRounds = 10;
+        for (var round = 0; ; round++)
         {
-            Role = "assistant",
-            Content = answer
-        });
-        Console.WriteLine($"Assistant: {answer}\n");
+            using (var currentRequest = request)
+            using (var response = await session.ProcessRequestAsync(currentRequest, ct))
+            {
+                var calls = response.OfType<ToolCallItem>().ToArray();
+                if (calls.Length == 0)
+                {
+                    Console.WriteLine($"Assistant: {Utils.GetResponseText(response)}\n");
+                    break;
+                }
+                if (round >= maxToolRounds)
+                {
+                    throw new InvalidOperationException("The model exceeded the tool-call round limit.");
+                }
+                var followUp = new Request();
+                try
+                {
+                    foreach (var call in calls)
+                    {
+                        using var arguments = JsonDocument.Parse(call.Arguments);
+                        Console.WriteLine($"  Tool call: {call.Name}({arguments.RootElement})");
+                        followUp.AddItem(new ToolResultItem(call.CallId, ExecuteTool(call.Name, arguments.RootElement)));
+                    }
+                }
+                catch
+                {
+                    followUp.Dispose();
+                    throw;
+                }
+                request = followUp;
+            }
+        }
     }
 }
-
-await model.UnloadAsync();
+finally
+{
+    await model.UnloadAsync();
+}
 Console.WriteLine("Model unloaded. Goodbye!");
 // </tool_loop>
 // </complete_code>

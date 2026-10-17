@@ -9,7 +9,6 @@
 
 using Microsoft.AI.Foundry.Local;
 using Microsoft.Extensions.Logging;
-using Betalgo.Ranul.OpenAI.ObjectModels.RequestModels;
 
 const string PASS = "\x1b[92m[PASS]\x1b[0m";
 const string FAIL = "\x1b[91m[FAIL]\x1b[0m";
@@ -66,7 +65,7 @@ using var loggerFactory = LoggerFactory.Create(builder =>
 var logger = loggerFactory.CreateLogger<Program>();
 
 await FoundryLocalManager.CreateAsync(config, logger);
-var mgr = FoundryLocalManager.Instance;
+using var mgr = FoundryLocalManager.Instance;
 Console.WriteLine($"{INFO} FoundryLocalManager initialized.");
 
 // ── 1. Discover & Register EPs ────────────────────────────
@@ -163,7 +162,8 @@ foreach (var model in models)
 {
     foreach (var variant in model.Variants)
     {
-        if (IsAcceleratedVariant(variant))
+        if (IsAcceleratedVariant(variant) &&
+            variant.Info?.Task is "chat-completion" or "vision-language-chat")
         {
             acceleratedVariants.Add(variant);
             var runtime = variant.Info?.Runtime;
@@ -239,25 +239,29 @@ LogResult("Model Load", true, $"Loaded {chosen.Id}");
 PrintSeparator("Step 4: Streaming Chat Completions (Native)");
 try
 {
-    var chatClient = await chosen.GetChatClientAsync();
-    chatClient.Settings.Temperature = 0;
-    chatClient.Settings.MaxTokens = 16;
-    var messages = new List<ChatMessage>
+    using var session = new ChatSession(chosen);
+    session.SetOptions(new RequestOptions
     {
-        new() { Role = "system", Content = "You are a helpful assistant." },
-        new() { Role = "user", Content = "What is 2 + 2? Reply with just the number." },
-    };
+        Search = new SearchOptions { Temperature = 0, MaxOutputTokens = 16 }
+    });
+    session.SetStreaming(true);
+    using var request = new Request();
+    request.AddItem(MessageItem.System("You are a helpful assistant."));
+    request.AddItem(MessageItem.User("What is 2 + 2? Reply with just the number."));
 
     var fullResponse = "";
     var start = DateTime.UtcNow;
-    await foreach (var chunk in chatClient.CompleteChatStreamingAsync(messages, ct))
+    await using var stream = session.ProcessStreamingRequestAsync(request, ct);
+    await foreach (var item in stream)
     {
-        var content = chunk.Choices?.FirstOrDefault()?.Message?.Content;
-        if (!string.IsNullOrEmpty(content))
+        using (item)
         {
-            Console.Write(content);
-            Console.Out.Flush();
-            fullResponse += content;
+            if (item is TextItem { Type: TextItemType.Default } text)
+            {
+                Console.Write(text.Text);
+                Console.Out.Flush();
+                fullResponse += text.Text;
+            }
         }
     }
 

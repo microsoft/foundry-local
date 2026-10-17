@@ -19,7 +19,7 @@ var config = new Configuration
 
 // Initialize the singleton instance.
 await FoundryLocalManager.CreateAsync(config, Utils.GetAppLogger());
-var mgr = FoundryLocalManager.Instance;
+using var mgr = FoundryLocalManager.Instance;
 
 
 // Ensure that any Execution Provider (EP) downloads run and are completed.

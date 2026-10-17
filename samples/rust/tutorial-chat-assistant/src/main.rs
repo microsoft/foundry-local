@@ -1,21 +1,15 @@
 // <complete_code>
-// <imports>
 use foundry_local_sdk::{
-    ChatCompletionRequestMessage,
-    ChatCompletionRequestSystemMessage, ChatCompletionRequestUserMessage,
-    FoundryLocalConfig, FoundryLocalManager,
+    ChatSession, FoundryLocalConfig, FoundryLocalManager, Item, Request, RequestOptions,
+    SearchOptions, TextKind,
 };
 use std::io::{self, BufRead, Write};
 use tokio_stream::StreamExt;
-// </imports>
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // <init>
-    // Initialize the Foundry Local SDK
     let manager = FoundryLocalManager::create(FoundryLocalConfig::new("chat-assistant"))?;
 
-    // Download and register all execution providers.
     manager
         .download_and_register_eps_with_progress(None, {
             let mut current_ep = String::new();
@@ -33,9 +27,7 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     println!();
 
-    // Select and load a model from the catalog
     let model = manager.catalog().get_model("qwen2.5-0.5b").await?;
-
     if !model.is_cached().await? {
         println!("Downloading model...");
         model
@@ -50,25 +42,22 @@ async fn main() -> anyhow::Result<()> {
     model.load().await?;
     println!("Model loaded and ready.");
 
-    // Create a chat client
-    let client = model.create_chat_client().temperature(0.7).max_tokens(512);
-    // </init>
-
-    // <system_prompt>
-    // Start the conversation with a system prompt
-    let mut messages: Vec<ChatCompletionRequestMessage> = vec![
-        ChatCompletionRequestSystemMessage::from(
-            "You are a helpful, friendly assistant. Keep your responses \
-             concise and conversational. If you don't know something, say so.",
-        )
-        .into(),
-    ];
-    // </system_prompt>
+    let session = ChatSession::new(&model).await?;
+    session
+        .set_options(RequestOptions {
+            search: SearchOptions {
+                temperature: Some(0.7),
+                max_output_tokens: Some(512),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .await?;
 
     println!("\nChat assistant ready! Type 'quit' to exit.\n");
 
     let stdin = io::stdin();
-    // <conversation_loop>
+    let mut first_turn = true;
     loop {
         print!("You: ");
         io::stdout().flush()?;
@@ -81,40 +70,34 @@ async fn main() -> anyhow::Result<()> {
             break;
         }
 
-        // Add the user's message to conversation history
-        messages.push(ChatCompletionRequestUserMessage::from(input).into());
-
-        // <streaming>
-        // Stream the response token by token
         print!("Assistant: ");
         io::stdout().flush()?;
-        let mut full_response = String::new();
-        let mut stream = client.complete_streaming_chat(&messages, None).await?;
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
-            if let Some(choice) = chunk.choices.first() {
-                if let Some(ref content) = choice.delta.content {
-                    print!("{content}");
-                    io::stdout().flush()?;
-                    full_response.push_str(content);
-                }
+        let mut items = Vec::new();
+        if first_turn {
+            items.push(Item::system_message(vec![Item::text(
+                "You are a helpful, friendly assistant. Keep your responses concise and conversational. If you don't know something, say so.",
+            )]));
+            first_turn = false;
+        }
+        items.push(Item::user_message(vec![Item::text(input)]));
+
+        let mut stream = session.process_streaming_request(Request::from_items(items));
+        while let Some(item) = stream.next().await {
+            if let foundry_local_sdk::Item::Text {
+                text,
+                kind: TextKind::Default,
+            } = item?
+            {
+                print!("{text}");
+                io::stdout().flush()?;
             }
         }
         println!("\n");
-        // </streaming>
-
-        // Add the complete response to conversation history
-        let assistant_msg: ChatCompletionRequestMessage = serde_json::from_value(
-            serde_json::json!({"role": "assistant", "content": full_response}),
-        )?;
-        messages.push(assistant_msg);
     }
-    // </conversation_loop>
 
-    // Clean up - unload the model
+    drop(session);
     model.unload().await?;
     println!("Model unloaded. Goodbye!");
-
     Ok(())
 }
 // </complete_code>

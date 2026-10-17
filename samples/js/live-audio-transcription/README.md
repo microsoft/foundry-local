@@ -1,11 +1,12 @@
 # Live Audio Transcription Example
 
-Real-time microphone-to-text transcription using the Foundry Local JS SDK with Nemotron ASR.
+Real-time microphone-to-text transcription using the Foundry Local **v2**
+JavaScript SDK with a typed `AudioSession`.
 
 ## Prerequisites
 
-- [Foundry Local](https://github.com/microsoft/Foundry-Local) installed
-- Node.js 18+
+- Built SDK v2 source package and native runtime (see the [JavaScript samples setup](../README.md))
+- Node.js 20+
 - A microphone (optional — falls back to synthetic audio)
 
 ## Setup
@@ -14,7 +15,8 @@ Real-time microphone-to-text transcription using the Foundry Local JS SDK with N
 npm install
 ```
 
-> **Note:** `naudiodon2` is optional — provides cross-platform microphone capture. Without it, the example falls back to synthetic audio for testing.
+`naudiodon2` is optional for microphone capture. Without it, the sample pushes
+synthetic PCM chunks to exercise the streaming contract.
 
 ## Run
 
@@ -22,37 +24,27 @@ npm install
 node app.js
 ```
 
-Speak into your microphone. Transcription appears in real-time. Press `Ctrl+C` to stop.
-
 ## How it works
 
-1. Initializes the Foundry Local SDK and loads the Nemotron ASR model
-2. Creates a `LiveAudioTranscriptionSession` with 16kHz/16-bit/mono PCM settings
-3. Captures microphone audio via `naudiodon2` (or generates synthetic audio as fallback)
-4. Pushes PCM chunks to the SDK via `session.append()`
-5. Reads transcription results via `for await (const result of session.getStream())`
-6. Access text via `result.content[0].text` (OpenAI Realtime ConversationItem pattern)
+1. Loads `nemotron-speech-streaming-en-0.6b`
+2. Creates a typed `AudioSession`
+3. Builds a request with:
+   - an audio format descriptor: `Item.audioDescriptor("pcm", 16000, 1)`
+   - a borrowed `ItemQueue` carrying **`Item.bytes(...)` entries only**
+4. Streams audio chunks from `naudiodon2` (or synthetic fallback)
+5. Prints incremental `speechSegment` deltas as they arrive
+6. Reads the terminal `speechResult` from `stream.response`
 
-## API
+## Important streaming behavior
 
-```javascript
-const audioClient = model.createAudioClient();
-const session = audioClient.createLiveTranscriptionSession();
-session.settings.sampleRate = 16000;
-session.settings.channels = 1;
-session.settings.language = 'en';
+Current Whisper and Nemotron streaming models emit **`SpeechSegmentKind.None`**
+for token deltas. Future models may also emit `Partial` and `Final`.
 
-await session.start();
+- `None`: print as incremental text delta
+- `Partial`: print as a cumulative hypothesis
+- `Final`: treat as a stabilized segment if a future model emits it
+- final `speechResult`: full transcript for the whole request
 
-// Push audio
-await session.append(pcmBytes);
-
-// Read results
-for await (const result of session.getStream()) {
-    console.log(result.content[0].text);       // transcribed text
-    console.log(result.content[0].transcript); // alias (OpenAI compat)
-    console.log(result.is_final);              // true for final results
-}
-
-await session.stop();
-```
+Do **not** push `audio` items into the queue. The queue payloads must be raw
+bytes items; the audio format is declared once by the descriptor item on the
+request.

@@ -11,10 +11,9 @@ EP-backed model variants and finishes with one native streaming chat check.
 
 ## Build & Run
 
-This sample uses the `Microsoft.AI.Foundry.Local` SDK package selected by
-the shared central package versions. The SDK package owns its native
-WinML runtime dependency on Windows, so it restores the matching
-runtime package transitively.
+This sample references SDK v2 from source. Follow the [shared setup](../README.md)
+to build the matching native runtime with WinML support or select its runtime
+package. Native chat uses `ChatSession` and typed items, not Betalgo.
 
 ```bash
 dotnet run

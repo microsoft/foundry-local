@@ -1,7 +1,6 @@
 // <complete_code>
 // <imports>
 using Microsoft.AI.Foundry.Local;
-using Betalgo.Ranul.OpenAI.ObjectModels.RequestModels;
 using Microsoft.Extensions.Logging;
 using System.Text;
 // </imports>
@@ -25,7 +24,7 @@ var logger = loggerFactory.CreateLogger<Program>();
 
 // Initialize the singleton instance
 await FoundryLocalManager.CreateAsync(config, logger);
-var mgr = FoundryLocalManager.Instance;
+using var mgr = FoundryLocalManager.Instance;
 
 // Download and register all execution providers.
 var currentEp = "";
@@ -58,21 +57,36 @@ await speechModel.LoadAsync();
 Console.WriteLine("Speech model loaded.");
 
 // Transcribe the audio file
-var audioClient = await speechModel.GetAudioClientAsync();
 var transcriptionText = new StringBuilder();
 
-Console.WriteLine("\nTranscription:");
-var audioResponse = audioClient
-    .TranscribeAudioStreamingAsync("meeting-notes.wav", ct);
-await foreach (var chunk in audioResponse)
+try
 {
-    Console.Write(chunk.Text);
-    transcriptionText.Append(chunk.Text);
+    using var session = new AudioSession(speechModel);
+    session.SetStreaming(true);
+    using var request = new Request();
+    request.AddItem(new AudioItem(Path.GetFullPath(args.Length > 0 ? args[0] : "meeting-notes.wav")));
+    Console.WriteLine("\nTranscription:");
+    await using var stream = session.ProcessStreamingRequestAsync(request, ct);
+    await foreach (var item in stream)
+    {
+        using (item)
+        {
+            if (item is SpeechSegmentItem segment)
+            {
+                Console.Write(segment.Kind == SpeechSegmentKind.Partial ? $"\r{segment.Text}" : segment.Text);
+            }
+        }
+    }
+    using var response = await stream.FinalResponse;
+    transcriptionText.Append(response.OfType<SpeechResultItem>().Single().Text);
+    Console.WriteLine();
 }
-Console.WriteLine();
 
 // Unload the speech model to free memory
-await speechModel.UnloadAsync();
+finally
+{
+    await speechModel.UnloadAsync();
+}
 // </transcription>
 
 // <summarization>
@@ -90,29 +104,22 @@ await chatModel.LoadAsync();
 Console.WriteLine("Chat model loaded.");
 
 // Summarize the transcription into organized notes
-var chatClient = await chatModel.GetChatClientAsync();
-var messages = new List<ChatMessage>
+try
 {
-    new ChatMessage
-    {
-        Role = "system",
-        Content = "You are a note-taking assistant. Summarize " +
-                  "the following transcription into organized, " +
-                  "concise notes with bullet points."
-    },
-    new ChatMessage
-    {
-        Role = "user",
-        Content = transcriptionText.ToString()
-    }
-};
-
-var chatResponse = await chatClient.CompleteChatAsync(messages, ct);
-var summary = chatResponse.Choices[0].Message.Content;
-Console.WriteLine($"\nSummary:\n{summary}");
+    using var session = new ChatSession(chatModel);
+    using var request = new Request();
+    request.AddItem(MessageItem.System("You are a note-taking assistant. Summarize " +
+        "the following transcription into organized, concise notes with bullet points."));
+    request.AddItem(MessageItem.User(transcriptionText.ToString()));
+    using var response = await session.ProcessRequestAsync(request, ct);
+    Console.WriteLine($"\nSummary:\n{Utils.GetResponseText(response)}");
+}
 
 // Clean up
-await chatModel.UnloadAsync();
+finally
+{
+    await chatModel.UnloadAsync();
+}
 Console.WriteLine("\nDone. Models unloaded.");
 // </summarization>
 // </complete_code>

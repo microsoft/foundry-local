@@ -12,7 +12,7 @@ var config = new Configuration
 
 // Initialize the singleton instance.
 await FoundryLocalManager.CreateAsync(config, Utils.GetAppLogger());
-var mgr = FoundryLocalManager.Instance;
+using var mgr = FoundryLocalManager.Instance;
 // </init>
 
 // <model_setup>
@@ -39,36 +39,50 @@ Console.WriteLine("done.");
 // </model_setup>
 
 // <single_embedding>
-// Get an embedding client
-var embeddingClient = await model.GetEmbeddingClientAsync();
+try
+{
+    using var session = new EmbeddingsSession(model);
 
-// Generate a single embedding
-Console.WriteLine("\n--- Single Embedding ---");
-var response = await embeddingClient.GenerateEmbeddingAsync("The quick brown fox jumps over the lazy dog");
-var embedding = response.Data[0].Embedding;
-Console.WriteLine($"Dimensions: {embedding.Count}");
-Console.WriteLine($"First 5 values: [{string.Join(", ", embedding.Take(5).Select(v => v.ToString("F6")))}]");
-// </single_embedding>
+    // Generate a single embedding
+    Console.WriteLine("\n--- Single Embedding ---");
+    using var request = new Request();
+    request.AddItem(new TextItem("The quick brown fox jumps over the lazy dog"));
+    using var response = await session.ProcessRequestAsync(request);
+    var embedding = response.OfType<TensorItem>().Single().ToArray<float>();
+    Console.WriteLine($"Dimensions: {embedding.Length}");
+    Console.WriteLine($"First 5 values: [{string.Join(", ", embedding.Take(5).Select(v => v.ToString("F6")))}]");
+    // </single_embedding>
 
-// <batch_embedding>
-// Generate embeddings for multiple inputs
-Console.WriteLine("\n--- Batch Embeddings ---");
-var batchResponse = await embeddingClient.GenerateEmbeddingsAsync([
-    "Machine learning is a subset of artificial intelligence",
+    // <batch_embedding>
+    // Generate embeddings for multiple inputs
+    Console.WriteLine("\n--- Batch Embeddings ---");
+    string[] inputs = [
+        "Machine learning is a subset of artificial intelligence",
     "The capital of France is Paris",
     "Rust is a systems programming language"
-]);
+    ];
+    using var batchRequest = new Request();
+    foreach (var input in inputs)
+    {
+        batchRequest.AddItem(new TextItem(input));
+    }
+    using var batchResponse = await session.ProcessRequestAsync(batchRequest);
+    var tensors = batchResponse.OfType<TensorItem>().ToArray();
 
-Console.WriteLine($"Number of embeddings: {batchResponse.Data.Count}");
-for (var i = 0; i < batchResponse.Data.Count; i++)
-{
-    Console.WriteLine($"  [{i}] Dimensions: {batchResponse.Data[i].Embedding.Count}");
+    Console.WriteLine($"Number of embeddings: {tensors.Length}");
+    for (var i = 0; i < tensors.Length; i++)
+    {
+        Console.WriteLine($"  [{i}] Dimensions: {tensors[i].ElementCount}");
+    }
 }
 // </batch_embedding>
 
 // <cleanup>
 // Tidy up - unload the model
-await model.UnloadAsync();
+finally
+{
+    await model.UnloadAsync();
+}
 Console.WriteLine("\nModel unloaded.");
 // </cleanup>
 // </complete_code>

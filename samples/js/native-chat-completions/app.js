@@ -1,7 +1,32 @@
 // <complete_code>
 // <imports>
-import { FoundryLocalManager } from 'foundry-local-sdk';
+import { ChatSession, FoundryLocalManager, Item, Request } from 'foundry-local-sdk';
 // </imports>
+
+function collectText(items) {
+    const parts = [];
+    for (const item of items) {
+        if (item.type === 'text') {
+            if ((item.textType ?? 'default') === 'default') {
+                parts.push(item.text);
+            }
+            continue;
+        }
+
+        if (item.type === 'message') {
+            if (Array.isArray(item.parts)) {
+                for (const part of item.parts) {
+                    if (part.type === 'text' && (part.textType ?? 'default') === 'default') {
+                        parts.push(part.text);
+                    }
+                }
+            } else if (typeof item.content === 'string') {
+                parts.push(item.content);
+            }
+        }
+    }
+    return parts.join('');
+}
 
 // Initialize the Foundry Local SDK
 console.log('Initializing Foundry Local SDK...');
@@ -25,8 +50,6 @@ for (const ep of eps) {
 }
 
 // Download and register all execution providers with per-EP progress.
-// EP packages include dependencies and may be large.
-// Download is only required again if a new version of the EP is released.
 console.log('\nDownloading execution providers:');
 if (eps.length > 0) {
     let currentEp = '';
@@ -45,58 +68,65 @@ if (eps.length > 0) {
 }
 
 // <model_setup>
-// Get the model object
-const modelAlias = 'qwen2.5-0.5b'; // Using an available model from the list above
+const modelAlias = 'qwen2.5-0.5b';
 const model = await manager.catalog.getModel(modelAlias);
 
-// Download the model
 console.log(`\nDownloading model ${modelAlias}...`);
 await model.download((progress) => {
     process.stdout.write(`\rDownloading... ${progress.toFixed(2)}%`);
 });
 console.log('\n✓ Model downloaded');
 
-// Load the model
 console.log(`\nLoading model ${modelAlias}...`);
 await model.load();
 console.log('✓ Model loaded');
 // </model_setup>
 
-// <chat_completion>
-// Create chat client
-console.log('\nCreating chat client...');
-const chatClient = model.createChatClient();
-console.log('✓ Chat client created');
-
-// Example chat completion
-console.log('\nTesting chat completion...');
-const completion = await chatClient.completeChat([
-    { role: 'user', content: 'Why is the sky blue?' }
-]);
-
-console.log('\nChat completion result:');
-console.log(completion.choices[0]?.message?.content);
-// </chat_completion>
-
-// <streaming>
-// Example streaming completion
-console.log('\nTesting streaming completion...');
-for await (const chunk of chatClient.completeStreamingChat(
-    [{ role: 'user', content: 'Write a short poem about programming.' }]
-)) {
-    const content = chunk.choices?.[0]?.delta?.content;
-    if (content) {
-        process.stdout.write(content);
+const session = new ChatSession(model);
+session.setOptions({
+    search: {
+        temperature: 0.7,
+        maxOutputTokens: 256
     }
-}
-console.log('\n');
-// </streaming>
+});
 
-// <cleanup>
-// Unload the model
-console.log('Unloading model...');
-await model.unload();
-console.log(`✓ Model unloaded`);
-// </cleanup>
+try {
+    // <chat_completion>
+    console.log('\nCreating chat session...');
+    console.log('✓ Chat session created');
+
+    console.log('\nTesting chat completion...');
+    const completion = await session.processRequest(
+        new Request()
+            .addItem(Item.systemMessage('You are a helpful assistant.'))
+            .addItem(Item.userMessage('Why is the sky blue?'))
+    );
+
+    console.log('\nChat completion result:');
+    console.log(collectText(completion.output));
+    // </chat_completion>
+
+    // <streaming>
+    console.log('\nTesting streaming completion...');
+    const stream = session.processStreamingRequest(
+        new Request().addItem(Item.userMessage('Write a short poem about programming.'))
+    );
+
+    for await (const item of stream) {
+        const text = collectText([item]);
+        if (text) {
+            process.stdout.write(text);
+        }
+    }
+    console.log('\n');
+    // </streaming>
+} finally {
+    session.dispose();
+
+    // <cleanup>
+    console.log('Unloading model...');
+    await model.unload();
+    console.log('✓ Model unloaded');
+    // </cleanup>
+}
 // </complete_code>
-    

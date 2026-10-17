@@ -1,18 +1,10 @@
 <Project>
+  <ItemGroup>
+    <ProjectReference Include="$(MSBuildThisFileDirectory)..\..\sdk_v2\cs\src\Microsoft.AI.Foundry.Local.csproj" />
+  </ItemGroup>
 
-  <!-- Fix a RuntimeIdentifier at evaluation time on every platform.
-
-       The Microsoft.AI.Foundry.Local[.Core] package's build/*.targets default
-       RuntimeIdentifier to $(NETCoreSdkRuntimeIdentifier) when it is empty. Those
-       targets run during build (after restore), so if we leave the RID unset here,
-       restore produces a RID-less assets file while build asks for a RID-specific
-       target -> NETSDK1047. Setting the RID early keeps restore and build in sync.
-
-       $(NETCoreSdkRuntimeIdentifier) is intentionally NOT used here because
-       Directory.Build.props is evaluated before Sdk.props initializes that property.
-       Instead, use static OS + architecture detection, which is always available.
-       The sample solutions build as AnyCPU, so the host architecture is the only
-       input we need. -->
+  <!-- Select the host RID before restore so native runtime assets and build use the same target.
+       NETCoreSdkRuntimeIdentifier is not initialized yet when this file is evaluated. -->
   <PropertyGroup Condition="'$(RuntimeIdentifier)'==''">
     <_OSArch>$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)</_OSArch>
 

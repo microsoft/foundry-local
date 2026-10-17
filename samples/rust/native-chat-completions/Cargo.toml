@@ -5,9 +5,6 @@ edition = "2021"
 description = "Native SDK chat completions (non-streaming and streaming) using the Foundry Local Rust SDK"
 
 [dependencies]
-foundry-local-sdk = { path = "../../../sdk/rust" }
+foundry-local-sdk = { path = "../../../sdk_v2/rust" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tokio-stream = "0.1"
-
-[target.'cfg(windows)'.dependencies]
-foundry-local-sdk = { path = "../../../sdk/rust", features = ["winml"] }

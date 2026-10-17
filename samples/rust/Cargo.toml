@@ -12,5 +12,6 @@ members = [
     "tutorial-tool-calling",
     "tutorial-voice-to-text",
     "verify-winml",
+    "byom-cache-rescan",
 ]
 resolver = "2"

@@ -13,7 +13,7 @@ var config = new Configuration
 
 // Initialize the singleton instance.
 await FoundryLocalManager.CreateAsync(config, Utils.GetAppLogger());
-var mgr = FoundryLocalManager.Instance;
+using var mgr = FoundryLocalManager.Instance;
 
 
 // Ensure that any Execution Provider (EP) downloads run and are completed.
@@ -62,26 +62,37 @@ Console.WriteLine("done.");
 
 
 // <transcription>
-// Get an audio client
-var audioClient = await model.GetAudioClientAsync();
-audioClient.Settings.Language = "en";
-
-// Get a transcription with streaming outputs
-var audioFile = args.Length > 0 ? args[0] : Path.Combine(AppContext.BaseDirectory, "Recording.mp3");
-Console.WriteLine($"Transcribing audio with streaming output: {Path.GetFileName(audioFile)}");
-var response = audioClient.TranscribeAudioStreamingAsync(audioFile, CancellationToken.None);
-await foreach (var chunk in response)
+try
 {
-    Console.Write(chunk.Text);
-    Console.Out.Flush();
+    using var session = new AudioSession(model);
+    session.SetOptions(new RequestOptions { AdditionalOptions = new Dictionary<string, string> { ["language"] = "en" } });
+    session.SetStreaming(true);
+    var audioFile = args.Length > 0 ? args[0] : Path.Combine(AppContext.BaseDirectory, "Recording.mp3");
+    Console.WriteLine($"Transcribing audio with streaming output: {Path.GetFileName(audioFile)}");
+    using var request = new Request();
+    request.AddItem(new AudioItem(Path.GetFullPath(audioFile)));
+    await using var stream = session.ProcessStreamingRequestAsync(request);
+    await foreach (var item in stream)
+    {
+        using (item)
+        {
+            if (item is SpeechSegmentItem segment)
+            {
+                Console.Write(segment.Kind == SpeechSegmentKind.Partial ? $"\r{segment.Text}" : segment.Text);
+                Console.Out.Flush();
+            }
+        }
+    }
+    Console.WriteLine();
 }
-
-Console.WriteLine();
 // </transcription>
 
 
 // <cleanup>
 // Tidy up - unload the model
-await model.UnloadAsync();
+finally
+{
+    await model.UnloadAsync();
+}
 // </cleanup>
 // </complete_code>

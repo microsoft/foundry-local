@@ -4,10 +4,12 @@ on:
   pull_request:
     paths:
       - 'samples/**'
+      - 'sdk_v2/**'
       - '.github/workflows/samples-integration-test.yml'
   push:
     paths:
       - 'samples/**'
+      - 'sdk_v2/**'
       - '.github/workflows/samples-integration-test.yml'
     branches:
       - main
@@ -20,6 +22,8 @@ jobs:
   # ── Python Samples ──────────────────────────────────────────────────
   python-samples:
     runs-on: ${{ matrix.platform }}-latest
+    env:
+      PIP_NO_INPUT: '1'
     strategy:
       fail-fast: false
       matrix:
@@ -42,22 +46,51 @@ jobs:
           pip config set global.extra-index-url https://pypi.org/simple/
           pip config set global.pre true
 
-      - name: Build and install SDK from source
-        working-directory: sdk/python
+      - name: Configure SDK v2 source and install its dependencies
         shell: pwsh
         run: |
-          python -m pip install build
-          echo '__version__ = "0.0.0-dev"' > src/version.py
-          python -m build --wheel --outdir dist/
-          $wheel = (Get-ChildItem dist/*.whl | Select-Object -First 1).FullName
-          pip install $wheel
+          # Sample import/syntax checks use SDK source; native wheels need the packaging pipeline's C++ artifacts.
+          $source = (Resolve-Path sdk_v2/python/src).Path
+          "PYTHONPATH=$source" >> $env:GITHUB_ENV
+          $dependencies = @'
+          import json
+          import pathlib
+          import tomllib
+
+          metadata = tomllib.loads(pathlib.Path("sdk_v2/python/pyproject.toml").read_text(encoding="utf-8"))
+          versions = json.loads(pathlib.Path("sdk_v2/deps_versions.json").read_text(encoding="utf-8"))
+          for dependency in metadata["project"]["dependencies"]:
+              dependency = dependency.replace(
+                  "onnxruntime==0.0.0", "onnxruntime==" + versions["onnxruntime"]["version"]
+              ).replace(
+                  "onnxruntime-genai-core==0.0.0", "onnxruntime-genai-core==" + versions["onnxruntime-genai"]["version"]
+              )
+              print(dependency)
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw "Reading SDK dependency manifests failed" }
+          python -m pip install @dependencies
+          if ($LASTEXITCODE -ne 0) { throw "Installing Python SDK dependencies failed" }
+
+      - name: Import-check Python v2 APIs
+        shell: pwsh
+        run: |
+          python -c "from foundry_local_sdk import AudioItem, AudioSession, BytesItem, CatalogType, ChatSession, EmbeddingsSession, FoundryLocalManager, ItemQueue, MessageItem, ModelInfoBuilder, Request, RequestOptions, SearchOptions, SpeechResultItem, SpeechSegmentItem, ToolChoice, ToolResultItem; print('Python v2 imports OK')"
 
       - name: Install sample dependencies
         shell: pwsh
         run: |
           Get-ChildItem samples/python/*/requirements.txt -ErrorAction SilentlyContinue | ForEach-Object {
             Write-Host "Installing dependencies for $($_.Directory.Name)..."
-            pip install -r $_.FullName
+            # The SDK is supplied by PYTHONPATH, not a published package.
+            $requirements = @(Get-Content $_.FullName | Where-Object {
+              $_.Trim() -and $_ -notmatch '^\s*(#|foundry-local-sdk(?:[<>=!~;\s\[]|$))'
+            })
+            if ($requirements.Count -gt 0) {
+              $manifest = Join-Path $env:RUNNER_TEMP "$($_.Directory.Name)-requirements.txt"
+              $requirements | Set-Content $manifest
+              python -m pip install -r $manifest
+              if ($LASTEXITCODE -ne 0) { throw "Installing dependencies failed: $($_.Directory.Name)" }
+            }
           }
 
       - name: Syntax check Python samples
@@ -68,7 +101,7 @@ jobs:
           foreach ($sample in $samples) {
             $name = $sample.Directory.Parent.Name
             Write-Host "=== Checking: $name ==="
-            python -m py_compile $sample.FullName
+            python -c "import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig'), filename=sys.argv[1])" $sample.FullName
             if ($LASTEXITCODE -ne 0) {
               Write-Host "FAILED: $name"
               $failed += $name
@@ -100,72 +133,82 @@ jobs:
         with:
           node-version: '20.x'
 
-      - name: Setup Python (for node-gyp)
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.x'
-
-      - name: Setup .NET SDK for NuGet authentication
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
-        with:
-          dotnet-version: '10.0.x'
-
       - name: Remove .npmrc (use public registry)
-        working-directory: sdk/js
+        working-directory: sdk_v2/js
         shell: pwsh
         run: |
           if (Test-Path .npmrc) { Remove-Item .npmrc -Force; Write-Host "Removed .npmrc" }
 
-      - name: Build Node-API addon
+      - name: Build SDK v2 TypeScript from source
+        working-directory: sdk_v2/js
         shell: pwsh
-        working-directory: sdk/js
         run: |
-          npm install --no-save node-gyp node-api-headers --registry https://registry.npmjs.org
-          Set-Location native
-          npx node-gyp rebuild
-          $platformKey = node -e 'process.stdout.write(process.platform + "-" + process.arch)'
-          $destDir = "../prebuilds/$platformKey"
-          New-Item -ItemType Directory -Path $destDir -Force | Out-Null
-          Copy-Item "build/Release/foundry_local_napi.node" "$destDir/foundry_local_napi.node" -Force
-          Write-Host "Built addon for $platformKey -> $destDir/foundry_local_napi.node"
+          npm install --ignore-scripts --registry https://registry.npmjs.org
+          if ($LASTEXITCODE -ne 0) { throw "Installing JavaScript SDK dependencies failed" }
+          npm run build:ts
 
-      - name: Build SDK from source
-        working-directory: sdk/js
+      - name: Import-check JS v2 APIs
+        shell: pwsh
         run: |
-          npm install
-          npm run build
-          npm link
+          node --input-type=module -e "const {pathToFileURL} = await import('node:url'); const {resolve} = await import('node:path'); const sdk = await import(pathToFileURL(resolve('sdk_v2/js/dist/index.js')).href); const names = ['AudioSession','ChatSession','EmbeddingsSession','FoundryLocalManager','Item','ItemQueue','ModelInfoBuilder','Request']; for (const name of names) { if (!(name in sdk)) throw new Error('Missing export: ' + name); } console.log('JS v2 imports OK');"
 
       - name: Syntax check JS samples
         shell: pwsh
         run: |
           $failed = @()
-          # Find all sample app.js files (either in root or src/)
-          $samples = @()
-          $samples += Get-ChildItem samples/js/*/app.js -ErrorAction SilentlyContinue
-          $samples += Get-ChildItem samples/js/*/src/app.js -ErrorAction SilentlyContinue
-          foreach ($sample in $samples) {
-            $dir = if ($sample.Directory.Name -eq 'src') { $sample.Directory.Parent } else { $sample.Directory }
+          foreach ($dir in Get-ChildItem samples/js -Directory) {
             $name = $dir.Name
             Write-Host "=== Checking: $name ==="
-            # Link SDK and install dependencies
+            # Install dependencies from each sample manifest; the manifest pins
+            # foundry-local-sdk to the in-repo sdk_v2/js source via file: path.
             Push-Location $dir.FullName
-            npm link foundry-local-sdk 2>$null
-            if (Test-Path "package.json") { npm install 2>$null }
+            if (Test-Path "package.json") {
+              npm install --ignore-scripts --registry https://registry.npmjs.org
+              if ($LASTEXITCODE -ne 0) {
+                Pop-Location
+                throw "Dependency installation failed: $name"
+              }
+            }
             Pop-Location
-            # Syntax check
-            node --check $sample.FullName 2>&1
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host "FAILED: $name"
-              $failed += $name
-            } else {
-              Write-Host "OK: $name"
+            $files = Get-ChildItem $dir.FullName -Recurse -File -Filter "*.js" |
+              Where-Object { $_.FullName -notmatch '[/\\](node_modules|dist|build)[/\\]' }
+            foreach ($file in $files) {
+              node --check $file.FullName
+              if ($LASTEXITCODE -ne 0) {
+                $failed += $file.FullName
+              }
             }
           }
           if ($failed.Count -gt 0) {
             Write-Error "Failed syntax checks: $($failed -join ', ')"
             exit 1
           }
+
+  cpp-samples:
+    runs-on: ${{ matrix.platform }}-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [windows, macos]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Compile C++ sample against SDK v2 headers
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force sdk_v2/cpp/build | Out-Null
+          if ($IsWindows) {
+            $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+            $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+            if (-not $vs) { throw "Visual C++ toolchain not found" }
+            $vcvars = Join-Path $vs "VC/Auxiliary/Build/vcvars64.bat"
+            & $env:ComSpec /c "call `"$vcvars`" && cl /nologo /std:c++20 /EHsc /W4 /WX /c /I sdk_v2/cpp/include /Fo:sdk_v2/cpp/build/sample-live-audio.obj samples/cpp/live-audio-transcription/main.cpp"
+          } else {
+            clang++ -std=c++20 -Wall -Wextra -Werror -fsyntax-only -I sdk_v2/cpp/include samples/cpp/live-audio-transcription/main.cpp
+          }
+          if ($LASTEXITCODE -ne 0) { throw "C++ sample compilation failed" }
 
   # ── C# Samples ─────────────────────────────────────────────────────
   cs-samples:
@@ -185,23 +228,8 @@ jobs:
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: |
-            8.0.x
+            9.0.x
             10.0.x
-
-      - name: Build SDK from source
-        shell: pwsh
-        run: |
-          # Build cross-platform SDK package
-          # Note: /p:TreatWarningsAsErrors=false avoids failing on SDK doc warnings
-          dotnet pack sdk/cs/src/Microsoft.AI.Foundry.Local.csproj `
-            -o local-packages `
-            /p:Version=0.9.0-dev `
-            /p:IsPacking=true `
-            /p:TreatWarningsAsErrors=false `
-            --configuration Release
-          
-          Write-Host "Local packages:"
-          Get-ChildItem local-packages/*.nupkg | ForEach-Object { Write-Host "  $($_.Name)" }
 
       - name: Build C# samples
         shell: pwsh
@@ -211,7 +239,7 @@ jobs:
           foreach ($proj in $projects) {
             $name = $proj.BaseName
             Write-Host "`n=== Building: $name ==="
-            dotnet build $proj.FullName --configuration Debug 2>&1
+            dotnet build $proj.FullName --configuration Debug -warnaserror:CS0618 2>&1
             if ($LASTEXITCODE -ne 0) {
               Write-Host "BUILD FAILED: $name"
               $failed += $name
@@ -241,6 +269,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
+          toolchain: stable
           components: clippy
 
       - name: Cache cargo dependencies
@@ -252,10 +281,10 @@ jobs:
         shell: pwsh
         run: |
           # Remove crates-io redirect in SDK (points to Azure Artifacts)
-          $configPath = "sdk/rust/.cargo/config.toml"
+          $configPath = "sdk_v2/rust/.cargo/config.toml"
           if (Test-Path $configPath) {
             Remove-Item $configPath
-            Write-Host "Removed sdk/rust/.cargo/config.toml"
+            Write-Host "Removed sdk_v2/rust/.cargo/config.toml"
           }
           # Remove crates-io redirect in samples
           $configPath = "samples/rust/.cargo/config.toml"

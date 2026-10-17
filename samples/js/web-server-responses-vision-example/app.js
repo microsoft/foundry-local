@@ -49,7 +49,7 @@ if (currentEp !== '') process.stdout.write('\n');
 // </init>
 
 if (listModels) {
-    const allModels = await manager.catalog.listModels();
+    const allModels = await manager.catalog.getModels();
     const visionModels = allModels
         .filter((m) => (m.info?.task ?? '').toLowerCase().includes('vision'))
         .sort((a, b) => a.alias.localeCompare(b.alias));
@@ -85,7 +85,7 @@ if (listModels) {
             const device = v.info?.runtime?.deviceType ?? '';
             const ep = v.info?.runtime?.executionProvider ?? '';
             const size = v.info?.fileSizeMb != null ? String(v.info.fileSizeMb).padStart(10) : ''.padStart(10);
-            const cached = (await v.isCached()) ? 'yes' : 'no';
+            const cached = v.isCached ? 'yes' : 'no';
             console.log(`      ${v.id.padEnd(54)}  ${device.padEnd(6)}  ${ep.padEnd(32)}  ${size}  ${cached}`);
         }
     }
@@ -93,12 +93,11 @@ if (listModels) {
 }
 
 // <model_setup>
-let model = await manager.catalog.getModel(modelIdentifier);
+const allModels = await manager.catalog.getModels();
+const identifier = modelIdentifier.toLowerCase();
+const model = allModels.find((m) => m.alias.toLowerCase() === identifier)
+    ?? allModels.flatMap((m) => m.variants).find((v) => v.id.toLowerCase() === identifier);
 if (!model) {
-    model = await manager.catalog.getModelVariant(modelIdentifier);
-}
-if (!model) {
-    const allModels = await manager.catalog.listModels();
     console.error(`\nModel '${modelIdentifier}' not found in catalog (tried alias and variant id).`);
     console.error(`Available aliases: ${allModels.map((m) => m.alias).join(', ')}`);
     console.error('Run with --list-models to see variant ids.');
