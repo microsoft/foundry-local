@@ -31,6 +31,7 @@
 #include "telemetry/one_ds_telemetry.h"
 #include "telemetry/telemetry_environment.h"
 #include "telemetry/telemetry_metadata.h"
+#include "util/process_shutdown.h"
 #include "util/string_utils.h"
 #include "utils.h"
 
@@ -193,6 +194,13 @@ struct Manager::InstanceOwner {
   }
 
   ~InstanceOwner() {
+    // DLL process detach runs after Windows terminates other threads, which may still own our locks.
+    // Leave the Manager and its workers to process reclamation; ordinary Destroy/FreeLibrary still clean up.
+    if (IsDllShutdownInProgress()) {
+      (void)instance.release();
+      return;
+    }
+
     std::lock_guard<std::mutex> lock(s_mutex_);
     s_destroyed_ = true;
     instance.reset();

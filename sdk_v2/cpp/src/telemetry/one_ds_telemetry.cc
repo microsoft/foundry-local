@@ -9,6 +9,7 @@
 #include "telemetry/telemetry_environment.h"
 #include "telemetry/telemetry_redaction.h"
 #include "telemetry/telemetry_sampling.h"
+#include "util/process_shutdown.h"
 
 #include <fmt/format.h>
 
@@ -328,6 +329,12 @@ OneDsTelemetry::OneDsTelemetry(const std::string& app_name,
 }
 
 OneDsTelemetry::~OneDsTelemetry() {
+  // During DLL process detach, locks may belong to terminated threads and uploader callbacks cannot drain.
+  if (IsDllShutdownInProgress()) {
+    (void)impl_.release();
+    return;
+  }
+
   std::unique_lock<std::shared_mutex> lock(mutex_);
   if (!initialized_.load(std::memory_order_acquire) || !impl_ || impl_->log_manager == nullptr) {
     return;
