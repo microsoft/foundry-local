@@ -100,8 +100,10 @@ TEST(BlobDownloadStateTest, SaveAndLoadRoundTrip) {
   {
     auto s = BlobDownloadState::CreateNew("blob", local, kBlobSize, kChunkSize, kNumChunks);
     for (int32_t i : {0, 2, 4, 6, 8}) {
+      s->chunk_md5[static_cast<size_t>(i)].fill(static_cast<uint8_t>(i + 1));
       s->MarkChunkComplete(i);
     }
+    s->etag = "\"blob-etag\"";
     s->SaveState(fl::test::NullLog());
   }
   auto loaded = BlobDownloadState::LoadState("blob", local, kBlobSize, kChunkSize, kNumChunks,
@@ -109,8 +111,10 @@ TEST(BlobDownloadStateTest, SaveAndLoadRoundTrip) {
   ASSERT_NE(loaded, nullptr);
   EXPECT_EQ(loaded->completed_count, 5);
   EXPECT_EQ(loaded->highest_completed_chunk, 8);
+  EXPECT_EQ(loaded->etag, "\"blob-etag\"");
   for (int32_t i : {0, 2, 4, 6, 8}) {
     EXPECT_TRUE(loaded->IsChunkComplete(i)) << "chunk " << i;
+    EXPECT_EQ(loaded->chunk_md5[static_cast<size_t>(i)][0], i + 1);
   }
   for (int32_t i : {1, 3, 5, 7, 9}) {
     EXPECT_FALSE(loaded->IsChunkComplete(i)) << "chunk " << i;
@@ -130,6 +134,7 @@ TEST(BlobDownloadStateTest, SaveStateAdvancesBitmapByteAlignedStart) {
   for (int32_t i = 0; i < 80; ++i) {
     s->MarkChunkComplete(i);
   }
+
   s->SaveState(fl::test::NullLog());
   // 64 bits = 1 full word; next 16 bits in word 1. Aligned start lands on
   // 80 (multiple of 8).
@@ -191,6 +196,55 @@ TEST(BlobDownloadStateTest, SaveStateFromUnalignedStartDoesNotMarkPendingComplet
   EXPECT_EQ(pending.front(), 65);
 }
 
+TEST(BlobDownloadStateTest, InvalidationReopensImplicitPrefixAndSurvivesReload) {
+  auto dir = TempPath::CreateTempDir();
+  const auto local = dir.path() / "blob.bin";
+  auto state = BlobDownloadState::CreateNew("blob", local, kBlobSize, kChunkSize, kNumChunks);
+  for (int32_t i = 0; i < kNumChunks; ++i) {
+    state->MarkChunkComplete(i);
+  }
+
+  ASSERT_TRUE(state->SaveState(fl::test::NullLog()));
+  state->MarkChunkIncomplete(2);
+  state->MarkChunkIncomplete(9);
+  ASSERT_TRUE(state->SaveState(fl::test::NullLog()));
+
+  auto loaded = BlobDownloadState::LoadState("blob", local, kBlobSize, kChunkSize, kNumChunks, fl::test::NullLog());
+  ASSERT_NE(loaded, nullptr);
+  EXPECT_EQ(loaded->GetPendingChunks(), (std::vector<int32_t>{2, 9}));
+  EXPECT_EQ(loaded->completed_count, 8);
+  EXPECT_EQ(loaded->highest_completed_chunk, 8);
+}
+
+TEST(BlobDownloadStateTest, RejectsLegacyStateWithoutChecksums) {
+  auto dir = TempPath::CreateTempDir();
+  const auto local = dir.path() / "blob.bin";
+  auto state = BlobDownloadState::CreateNew("blob", local, kBlobSize, kChunkSize, kNumChunks);
+  ASSERT_TRUE(state->SaveState(fl::test::NullLog()));
+  {
+    std::fstream file(BlobDownloadState::GetStateFilePath(local), std::ios::binary | std::ios::in | std::ios::out);
+    file.seekp(4);
+    file.put(1);
+  }
+
+  EXPECT_EQ(BlobDownloadState::LoadState("blob", local, kBlobSize, kChunkSize, kNumChunks, fl::test::NullLog()), nullptr);
+}
+
+TEST(BlobDownloadStateTest, RejectsTruncatedChecksumsAndInconsistentCompletionCount) {
+  auto dir = TempPath::CreateTempDir();
+  const auto local = dir.path() / "blob.bin";
+  auto state = BlobDownloadState::CreateNew("blob", local, kBlobSize, kChunkSize, kNumChunks);
+  state->MarkChunkComplete(0);
+  ASSERT_TRUE(state->SaveState(fl::test::NullLog()));
+  const auto sidecar = BlobDownloadState::GetStateFilePath(local);
+  fs::resize_file(sidecar, fs::file_size(sidecar) - 1);
+  EXPECT_EQ(BlobDownloadState::LoadState("blob", local, kBlobSize, kChunkSize, kNumChunks, fl::test::NullLog()), nullptr);
+
+  state->completed_count = 2;
+  ASSERT_TRUE(state->SaveState(fl::test::NullLog()));
+  EXPECT_EQ(BlobDownloadState::LoadState("blob", local, kBlobSize, kChunkSize, kNumChunks, fl::test::NullLog()), nullptr);
+}
+
 TEST(BlobDownloadStateTest, LoadStateReturnsNullWhenFileMissing) {
   auto d = TempPath::CreateTempDir();
   auto local = d.path() / "blob.bin";
@@ -204,8 +258,8 @@ TEST(BlobDownloadStateTest, LoadStateRejectsBadMagic) {
   auto sidecar = BlobDownloadState::GetStateFilePath(local);
   {
     std::ofstream f(sidecar, std::ios::binary);
-    f << "ZZZZ";  // wrong magic
-    f.put(static_cast<char>(0));  // version
+    f << "ZZZZ";                            // wrong magic
+    f.put(static_cast<char>(0));            // version
     for (int i = 0; i < 64; ++i) f.put(0);  // padding
   }
   auto s = BlobDownloadState::LoadState("blob", local, kBlobSize, kChunkSize, kNumChunks, fl::test::NullLog());

@@ -41,6 +41,15 @@ bool WriteFileAt(std::intptr_t handle, std::int64_t offset, const std::uint8_t* 
   return true;
 }
 
+bool FlushFile(std::intptr_t handle, std::string& error) {
+  while (::fsync(static_cast<int>(handle)) != 0) {
+    if (errno == EINTR) continue;
+    error = "fsync failed (errno " + std::to_string(errno) + ")";
+    return false;
+  }
+  return true;
+}
+
 bool CloseFile(std::intptr_t handle, std::string& error) {
   int fd = static_cast<int>(handle);
   // A failing close() can surface a deferred write error (e.g. EIO, or ENOSPC on

@@ -54,6 +54,14 @@ bool WriteFileAt(std::intptr_t handle, std::int64_t offset, const std::uint8_t* 
   return true;
 }
 
+bool FlushFile(std::intptr_t handle, std::string& error) {
+  if (!::FlushFileBuffers(reinterpret_cast<HANDLE>(handle))) {
+    error = "FlushFileBuffers failed (Win32 err " + std::to_string(::GetLastError()) + ")";
+    return false;
+  }
+  return true;
+}
+
 bool CloseFile(std::intptr_t handle, std::string& error) {
   HANDLE h = reinterpret_cast<HANDLE>(handle);
   if (!::CloseHandle(h)) {

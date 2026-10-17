@@ -31,4 +31,7 @@ bool WriteFileAt(std::intptr_t handle, std::int64_t offset, const std::uint8_t* 
 /// be incomplete even when every write succeeded.
 bool CloseFile(std::intptr_t handle, std::string& error);
 
+/// Commit buffered writes to storage before publishing a completed download.
+bool FlushFile(std::intptr_t handle, std::string& error);
+
 }  // namespace fl::platform

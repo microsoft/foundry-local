@@ -27,6 +27,9 @@
 #include <foundry_local/foundry_local_c.h>
 #include <nlohmann/json.hpp>
 #include <gtest/gtest.h>
+#include <azure/core/cryptography/hash.hpp>
+#include <azure/core/http/transport.hpp>
+#include <azure/core/io/body_stream.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -61,12 +64,17 @@ std::string ReadFile(const fs::path& path) {
   return ss.str();
 }
 
+std::vector<uint8_t> Md5(std::string_view bytes) {
+  Azure::Core::Cryptography::Md5Hash hash;
+  return hash.Final(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size());
+}
+
 void DownloadBlobsToDirectoryForTest(IBlobDownloader& downloader,
                                      const std::string& sas_uri,
                                      const std::string& output_directory,
                                      const BlobDownloadOptions& options) {
   BlobDownloadStats stats;
-  DownloadBlobsToDirectory(downloader, sas_uri, output_directory, options, stats);
+  DownloadBlobsToDirectory(downloader, sas_uri, output_directory, options, stats, fl::test::NullLog());
 }
 
 class RecordingDownloadTelemetry final : public TelemetryLogger {
@@ -102,6 +110,7 @@ class MockBlobDownloader : public IBlobDownloader {
   std::vector<BlobItemInfo> blobs_to_return;
   std::vector<std::string> downloaded_blobs;  // names of blobs that were "downloaded"
   std::string expected_sas_uri;
+  std::string download_content;
 
   std::vector<BlobItemInfo> ListBlobs(const std::string& sas_uri) override {
     if (!expected_sas_uri.empty()) {
@@ -123,7 +132,11 @@ class MockBlobDownloader : public IBlobDownloader {
       fs::create_directories(parent);
     }
     std::ofstream f(local_path);
-    f << "mock content for " << blob_name;
+    if (download_content.empty()) {
+      f << "mock content for " << blob_name;
+    } else {
+      f << download_content;
+    }
 
     // Report byte count for progress tracking (content_length from the matching blob)
     if (bytes_written_cb) {
@@ -553,14 +566,14 @@ TEST(BlobDownloadTest, HandlesEmptyBlobList) {
 // Skip-existing (Increment 1: resumable downloads)
 // ========================================================================
 
-TEST(BlobDownloadTest, SkipsExistingFilesWithCorrectSize) {
+TEST(BlobDownloadTest, SkipsExistingFilesWithMatchingPublishedChecksum) {
   auto tmpdir = TempPath::CreateTempDir();
   // Pre-create one of the blobs at the expected size on disk.
   std::ofstream(tmpdir.path() / "weights.safetensors") << std::string(1000, 'X');
 
   MockBlobDownloader mock;
   mock.blobs_to_return = {
-      {"weights.safetensors", 1000},
+      {"weights.safetensors", 1000, Md5(std::string(1000, 'X'))},
       {"config.json", 100},
   };
 
@@ -597,7 +610,7 @@ TEST(BlobDownloadTest, ReportsSkippedBytesInInitialProgress) {
 
   MockBlobDownloader mock;
   mock.blobs_to_return = {
-      {"already.bin", 500},
+      {"already.bin", 500, Md5(std::string(500, 'X'))},
       {"missing.bin", 1500},
   };
 
@@ -624,8 +637,8 @@ TEST(BlobDownloadTest, EmitsHundredPercentWhenEverythingIsCached) {
 
   MockBlobDownloader mock;
   mock.blobs_to_return = {
-      {"a.bin", 100},
-      {"b.bin", 200},
+      {"a.bin", 100, Md5(std::string(100, 'A'))},
+      {"b.bin", 200, Md5(std::string(200, 'B'))},
   };
 
   std::vector<float> progress_values;
@@ -640,6 +653,38 @@ TEST(BlobDownloadTest, EmitsHundredPercentWhenEverythingIsCached) {
   EXPECT_TRUE(mock.downloaded_blobs.empty());
   ASSERT_FALSE(progress_values.empty());
   EXPECT_FLOAT_EQ(progress_values.front(), 100.0f);
+}
+
+TEST(BlobDownloadTest, RedownloadsFullSizeFilesWithoutProofOfIntegrity) {
+  auto tmpdir = TempPath::CreateTempDir();
+  std::ofstream(tmpdir.path() / "weights.bin", std::ios::binary) << std::string(1000, '\0');
+
+  MockBlobDownloader mock;
+  mock.blobs_to_return = {{"weights.bin", 1000}};
+  DownloadBlobsToDirectoryForTest(mock, "", tmpdir.string(), {});
+
+  EXPECT_EQ(mock.downloaded_blobs, std::vector<std::string>{"weights.bin"});
+}
+
+TEST(BlobDownloadTest, RedownloadsSameSizeFilesWithIncorrectChecksum) {
+  auto tmpdir = TempPath::CreateTempDir();
+  std::ofstream(tmpdir.path() / "weights.bin", std::ios::binary) << std::string(1000, '\0');
+
+  MockBlobDownloader mock;
+  mock.blobs_to_return = {{"weights.bin", 1000, Md5(std::string(1000, 'X'))}};
+  mock.download_content = std::string(1000, 'X');
+  DownloadBlobsToDirectoryForTest(mock, "", tmpdir.string(), {});
+
+  EXPECT_EQ(mock.downloaded_blobs, std::vector<std::string>{"weights.bin"});
+}
+
+TEST(BlobDownloadTest, RejectsDownloadedFileWithIncorrectPublishedChecksum) {
+  auto tmpdir = TempPath::CreateTempDir();
+  MockBlobDownloader mock;
+  mock.blobs_to_return = {{"weights.bin", 1000, Md5(std::string(1000, 'X'))}};
+  mock.download_content = std::string(1000, '\0');
+
+  EXPECT_THROW(DownloadBlobsToDirectoryForTest(mock, "", tmpdir.string(), {}), fl::Exception);
 }
 
 // ========================================================================
@@ -744,7 +789,8 @@ TEST(BlobDownloadTest, FailedTransferPreservesTransferDuration) {
   BlobDownloadStats stats;
 
   EXPECT_THROW(
-      DownloadBlobsToDirectory(downloader, "https://test.blob/c?sig=x", tmpdir.string(), BlobDownloadOptions{}, stats),
+      DownloadBlobsToDirectory(downloader, "https://test.blob/c?sig=x", tmpdir.string(), BlobDownloadOptions{}, stats,
+                               fl::test::NullLog()),
       std::runtime_error);
 
   EXPECT_GE(stats.download_ms, 20);
@@ -1156,12 +1202,12 @@ TEST_F(ModelCacheRemovalTest, RemovesNonstandardRevisionRootWithDownloadState) {
     std::ofstream(imported_root / "v3" / "weights.onnx") << "payload";
     std::ofstream(imported_root / "v3" / "weights.onnx.dlstate") << "resume state";
     std::ofstream(imported_root / "v2" / "inference_model.json") << "corrupt metadata";
-    std::ofstream(imported_root / marker) << "42";
     fs::create_directories(root_);
     std::ofstream(root_ / "unrelated.txt") << "preserve";
     const auto scanned = ScanLocalModels(cache_.string(), fl::test::NullLog());
     ASSERT_EQ(scanned.at(info_.model_id), (imported_root / "v3").string());
     auto model = MakeModel(scanned.at(info_.model_id));
+    std::ofstream(imported_root / marker) << "42";
 
     ASSERT_NO_THROW(model.RemoveFromCache());
 
@@ -2217,6 +2263,44 @@ TEST(DownloadManagerTest, AcceptsNormalModelIdAndPublisher) {
 
 namespace {
 
+class BlobIntegrityTransport final : public Azure::Core::Http::HttpTransport {
+ public:
+  std::vector<uint8_t> payload = std::vector<uint8_t>(32, 42);
+  std::string checksum = "SaaDheEjzuynJH8eW6AEpQ==";
+  bool include_checksum = true;
+  bool saw_checksum_request = false;
+  bool saw_etag_condition = false;
+
+  std::unique_ptr<Azure::Core::Http::RawResponse> Send(Azure::Core::Http::Request& request,
+                                                       const Azure::Core::Context&) override {
+    using namespace Azure::Core::Http;
+    const bool is_head = request.GetMethod() == HttpMethod::Head;
+    auto response = std::make_unique<RawResponse>(1, 1, is_head ? HttpStatusCode::Ok : HttpStatusCode::PartialContent,
+                                                  "OK");
+    response->SetHeader("etag", "\"test-etag\"");
+    response->SetHeader("last-modified", "Wed, 14 Oct 2026 00:00:00 GMT");
+    response->SetHeader("x-ms-creation-time", "Wed, 14 Oct 2026 00:00:00 GMT");
+    response->SetHeader("x-ms-server-encrypted", "true");
+    response->SetHeader("x-ms-blob-type", "BlockBlob");
+    response->SetHeader("content-length", std::to_string(payload.size()));
+    response->SetBodyStream(std::make_unique<Azure::Core::IO::MemoryBodyStream>(nullptr, 0));
+    if (!is_head) {
+      const auto headers = request.GetHeaders();
+      const auto checksum_header = headers.find("x-ms-range-get-content-md5");
+      saw_checksum_request = checksum_header != headers.end() && checksum_header->second == "true";
+      const auto etag_header = headers.find("if-match");
+      saw_etag_condition = etag_header != headers.end() && etag_header->second == "\"test-etag\"";
+      response->SetHeader("content-range", "bytes 0-31/32");
+      if (include_checksum) {
+        response->SetHeader("content-md5", checksum);
+      }
+      response->SetBodyStream(std::make_unique<Azure::Core::IO::MemoryBodyStream>(payload));
+    }
+
+    return response;
+  }
+};
+
 /// Test double for AzureBlobDownloader. Overrides the protected virtuals so
 /// chunked-download orchestration can be exercised without network I/O.
 class FakeChunkAzureDownloader : public AzureBlobDownloader {
@@ -2278,6 +2362,58 @@ class FakeChunkAzureDownloader : public AzureBlobDownloader {
 
 }  // namespace
 
+TEST(AzureBlobDownloaderIntegrityTest, VerifiesServiceChecksumAndPinsRangeToETag) {
+  auto tmpdir = TempPath::CreateTempDir();
+  const auto local = tmpdir.path() / "blob.bin";
+  auto transport = std::make_shared<BlobIntegrityTransport>();
+  AzureBlobDownloader downloader(fl::test::NullLog(), transport);
+
+  EXPECT_NO_THROW(downloader.DownloadBlob("https://test.blob.core.windows.net/container", "blob", local.string(), 1));
+  EXPECT_TRUE(transport->saw_checksum_request);
+  EXPECT_TRUE(transport->saw_etag_condition);
+  EXPECT_FALSE(fs::exists(BlobDownloadState::GetStateFilePath(local)));
+}
+
+TEST(AzureBlobDownloaderIntegrityTest, RejectsMissingAndMismatchedServiceChecksums) {
+  for (const bool include_checksum : {false, true}) {
+    auto tmpdir = TempPath::CreateTempDir();
+    const auto local = tmpdir.path() / "blob.bin";
+    auto transport = std::make_shared<BlobIntegrityTransport>();
+    transport->include_checksum = include_checksum;
+    transport->checksum = "AAAAAAAAAAAAAAAAAAAAAA==";
+    AzureBlobDownloader downloader(fl::test::NullLog(), transport);
+
+    EXPECT_THROW(downloader.DownloadBlob("https://test.blob.core.windows.net/container", "blob", local.string(), 1),
+                 fl::Exception);
+    auto state = BlobDownloadState::LoadState("blob", local, 32, 2 * 1024 * 1024, 1, fl::test::NullLog());
+    ASSERT_NE(state, nullptr);
+    EXPECT_EQ(state->completed_count, 0);
+  }
+}
+
+TEST(AzureBlobDownloaderIntegrityTest, ReusesVerifiedFilesAndRepairsSameLengthCorruption) {
+  auto tmpdir = TempPath::CreateTempDir();
+  const auto local = tmpdir.path() / "blob.bin";
+  auto transport = std::make_shared<BlobIntegrityTransport>();
+  AzureBlobDownloader downloader(fl::test::NullLog(), transport);
+  downloader.DownloadBlob("https://test.blob.core.windows.net/container", "blob", local.string(), 1);
+  ASSERT_TRUE(fs::exists(BlobDownloadState::GetVerifiedStateFilePath(local)));
+
+  MockBlobDownloader listing;
+  listing.blobs_to_return = {{"blob.bin", 32, {}, "\"test-etag\""}};
+  DownloadBlobsToDirectoryForTest(listing, "", tmpdir.string(), {});
+  EXPECT_TRUE(listing.downloaded_blobs.empty());
+
+  {
+    std::fstream file(local, std::ios::binary | std::ios::in | std::ios::out);
+    file.put('\0');
+  }
+  downloader.DownloadBlob("https://test.blob.core.windows.net/container", "blob", local.string(), 1);
+  EXPECT_EQ(ReadFile(local), std::string(32, '*'));
+  DownloadBlobsToDirectoryForTest(listing, "", tmpdir.string(), {});
+  EXPECT_TRUE(listing.downloaded_blobs.empty());
+}
+
 TEST(AzureBlobDownloaderResumeTest, SkipsChunksAlreadyMarkedCompleteInSidecar) {
   auto tmpdir = TempPath::CreateTempDir();
   auto local = tmpdir.path() / "blob.bin";
@@ -2296,6 +2432,8 @@ TEST(AzureBlobDownloaderResumeTest, SkipsChunksAlreadyMarkedCompleteInSidecar) {
   {
     auto state = BlobDownloadState::CreateNew("blob", local, kBlobSize, kChunkSize, kNumChunks);
     for (int32_t i = 0; i < 5; ++i) {
+      const auto digest = Md5(std::string(kChunkSize, '\0'));
+      std::copy(digest.begin(), digest.end(), state->chunk_md5[static_cast<size_t>(i)].begin());
       state->MarkChunkComplete(i);
     }
     state->SaveState(fl::test::NullLog());
@@ -2374,6 +2512,95 @@ TEST(AzureBlobDownloaderResumeTest, DownloadsAllChunksWhenSidecarMissing) {
   EXPECT_EQ(fs::file_size(local), static_cast<uintmax_t>(kBlobSize));
 }
 
+TEST(AzureBlobDownloaderResumeTest, RepairsSameLengthCorruptionInCompletedChunk) {
+  auto tmpdir = TempPath::CreateTempDir();
+  auto local = tmpdir.path() / "blob.bin";
+  constexpr int32_t kChunkSize = 2 * 1024 * 1024;
+  constexpr int64_t kBlobSize = 2 * int64_t{kChunkSize} + 17;
+  {
+    std::ofstream file(local, std::ios::binary);
+    file << std::string(static_cast<size_t>(kBlobSize), '\0');
+  }
+
+  auto state = BlobDownloadState::CreateNew("blob", local, kBlobSize, kChunkSize, 3);
+  for (int32_t i = 0; i < 3; ++i) {
+    const auto digest = Md5(std::string(i == 2 ? 17 : kChunkSize, '\0'));
+    std::copy(digest.begin(), digest.end(), state->chunk_md5[static_cast<size_t>(i)].begin());
+    state->MarkChunkComplete(i);
+  }
+
+  ASSERT_TRUE(state->SaveState(fl::test::NullLog()));
+  {
+    std::fstream file(local, std::ios::binary | std::ios::in | std::ios::out);
+    file.seekp(kChunkSize);
+    file.put('X');
+  }
+
+  FakeChunkAzureDownloader downloader;
+  downloader.blob_size = kBlobSize;
+  downloader.DownloadBlob("", "blob", local.string(), 2);
+
+  EXPECT_EQ(downloader.requested_offsets, std::vector<int64_t>{kChunkSize});
+  EXPECT_FALSE(fs::exists(BlobDownloadState::GetStateFilePath(local)));
+  EXPECT_EQ(fs::file_size(local), static_cast<uintmax_t>(kBlobSize));
+}
+
+TEST(AzureBlobDownloaderResumeTest, ChangedETagDiscardsCompletedChunks) {
+  auto tmpdir = TempPath::CreateTempDir();
+  auto local = tmpdir.path() / "blob.bin";
+  std::ofstream(local, std::ios::binary) << std::string(32, '\0');
+  auto state = BlobDownloadState::CreateNew("blob", local, 32, 2 * 1024 * 1024, 1);
+  state->etag = "\"old-blob\"";
+  const auto digest = Md5(std::string(32, '\0'));
+  std::copy(digest.begin(), digest.end(), state->chunk_md5[0].begin());
+  state->MarkChunkComplete(0);
+  ASSERT_TRUE(state->SaveState(fl::test::NullLog()));
+
+  FakeChunkAzureDownloader downloader;
+  downloader.blob_size = 32;
+  downloader.DownloadBlob("", "blob", local.string(), 1);
+
+  EXPECT_EQ(downloader.chunk_call_count.load(), 1);
+}
+
+TEST(AzureBlobDownloaderResumeTest, ShortChunkCannotPublishPreallocatedFile) {
+  auto tmpdir = TempPath::CreateTempDir();
+  auto local = tmpdir.path() / "blob.bin";
+  FakeChunkAzureDownloader downloader;
+  downloader.blob_size = 32;
+  downloader.chunk_hook = [](int64_t, int64_t, const auto& sink, const auto&) {
+    const uint8_t byte = 42;
+    sink(&byte, 1);
+  };
+
+  EXPECT_THROW(downloader.DownloadBlob("", "blob", local.string(), 1), fl::Exception);
+
+  auto state = BlobDownloadState::LoadState("blob", local, 32, 2 * 1024 * 1024, 1, fl::test::NullLog());
+  ASSERT_NE(state, nullptr);
+  EXPECT_EQ(state->completed_count, 0);
+  EXPECT_EQ(fs::file_size(local), 32u);
+}
+
+TEST(AzureBlobDownloaderResumeTest, DetectsOnDiskCorruptionBeforeReportingSuccess) {
+  auto tmpdir = TempPath::CreateTempDir();
+  auto local = tmpdir.path() / "blob.bin";
+  FakeChunkAzureDownloader downloader;
+  downloader.blob_size = 32;
+  auto corrupt_after_write = [&](int64_t) {
+    std::fstream file(local, std::ios::binary | std::ios::in | std::ios::out);
+    file.put('X');
+  };
+
+  EXPECT_THROW(downloader.DownloadBlob("", "blob", local.string(), 1, corrupt_after_write), fl::Exception);
+
+  auto state = BlobDownloadState::LoadState("blob", local, 32, 2 * 1024 * 1024, 1, fl::test::NullLog());
+  ASSERT_NE(state, nullptr);
+  EXPECT_EQ(state->completed_count, 0);
+
+  downloader.DownloadBlob("", "blob", local.string(), 1);
+  EXPECT_FALSE(fs::exists(BlobDownloadState::GetStateFilePath(local)));
+}
+
 TEST(AzureBlobDownloaderResumeTest, PersistsSidecarOnChunkFailure) {
   auto tmpdir = TempPath::CreateTempDir();
   auto local = tmpdir.path() / "blob.bin";
@@ -2414,13 +2641,7 @@ TEST(AzureBlobDownloaderResumeTest, PersistsSidecarOnChunkFailure) {
   EXPECT_LT(retry_state->completed_count, kNumChunks);
 }
 
-// Regression: the sidecar must reach disk before the data file is pre-allocated,
-// not only after save_interval chunks. Open() pre-allocates the file to full
-// size, and IsDownloadNeeded treats "full-size data file + no sidecar" as a
-// completed download. So a crash in the window between pre-allocation and the
-// first periodic save would otherwise leave a full-size, empty file that the
-// next run skips — silently serving zeros. Verify a sidecar is already present
-// the moment the first chunk is requested.
+// Persist explicit incomplete state before pre-allocation, including when the first chunk never completes.
 TEST(AzureBlobDownloaderResumeTest, SidecarExistsBeforeFirstChunkCompletes) {
   auto tmpdir = TempPath::CreateTempDir();
   auto local = tmpdir.path() / "blob.bin";

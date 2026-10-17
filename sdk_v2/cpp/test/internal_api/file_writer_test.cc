@@ -6,6 +6,7 @@
 // disjoint-range positional writes.
 
 #include "download/file_writer.h"
+#include "exception.h"
 #include "test_helpers.h"
 #include <gtest/gtest.h>
 
@@ -32,7 +33,7 @@ TEST(FileWriterTest, OpenCreatesFileAtRequestedSize) {
   auto p = TempPath::CreateTempFile();
   FileWriter w(fl::test::NullLog());
   w.Open(p.path(), 4096);
-  w.Close();
+  w.Finish();
   EXPECT_TRUE(fs::exists(p.path()));
   EXPECT_EQ(fs::file_size(p.path()), 4096u);
 }
@@ -45,6 +46,7 @@ TEST(FileWriterTest, OpenPreservesExistingFileAtSameSize) {
     f.seekp(1023);
     f.put('\0');
   }
+
   // Plant a known byte at offset 100.
   {
     std::fstream f(p.path(), std::ios::binary | std::ios::in | std::ios::out);
@@ -61,6 +63,11 @@ TEST(FileWriterTest, OpenPreservesExistingFileAtSameSize) {
   f.seekg(100);
   int byte = f.get();
   EXPECT_EQ(byte, 0xAB);
+}
+
+TEST(FileWriterTest, FinishReportsInvalidHandleInsteadOfAcceptingUnflushedData) {
+  FileWriter writer(fl::test::NullLog());
+  EXPECT_THROW(writer.Finish(), fl::Exception);
 }
 
 TEST(FileWriterTest, OpenRecreatesFileWhenSizeDiffers) {

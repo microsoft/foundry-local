@@ -67,7 +67,7 @@ void ScanDirectory(const fs::path& dir,
                    std::map<std::string, std::string>& results,
                    ILogger& logger) {
   try {
-    if (!fs::exists(dir) || !fs::is_directory(dir)) {
+    if (!fs::exists(dir) || !fs::is_directory(dir) || fs::exists(dir / kDownloadSignalFileName)) {
       return;
     }
 

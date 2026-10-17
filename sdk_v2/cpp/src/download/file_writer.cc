@@ -77,6 +77,19 @@ void FileWriter::WriteAt(int64_t offset, const uint8_t* data, size_t len) {
   }
 }
 
+void FileWriter::Finish() {
+  std::string error;
+  if (!platform::FlushFile(handle_, error)) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "FileWriter " + error);
+  }
+
+  const auto handle = handle_;
+  handle_ = platform::kInvalidFileHandle;
+  if (!platform::CloseFile(handle, error)) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "FileWriter " + error);
+  }
+}
+
 void FileWriter::Close() {
   if (handle_ != platform::kInvalidFileHandle) {
     std::string error;
