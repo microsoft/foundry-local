@@ -58,12 +58,12 @@ constexpr std::string_view kQwenToolResultProjection =
     "<tool_response>\n"
     "probe-result-second\n"
     "</tool_response><|im_end|>\n";
-constexpr std::string_view kQwenReasoningProjection =
+  constexpr std::string_view kQwenReasoningProjection =
     "<|im_start|>assistant\n<think>\nreasoning-probe-private-a\n</think>\n\n"
     "reasoning-probe-visible-a<|im_end|>\n"
     "<|im_start|>assistant\n<think>\nreasoning-probe-private-b\n</think>\n\n"
     "reasoning-probe-visible-b<|im_end|>\n";
-constexpr std::string_view kQwenNoPreserveReasoningProjection =
+  constexpr std::string_view kQwenNoPreserveReasoningProjection =
     "<|im_start|>assistant\nreasoning-probe-visible-a<|im_end|>\n"
     "<|im_start|>assistant\nreasoning-probe-visible-b<|im_end|>\n";
 

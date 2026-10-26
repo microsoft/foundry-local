@@ -1211,6 +1211,7 @@ ToolCallContext BuildToolCallContextForRequest(const Request& request,
       if (!request.raw_envelope_descriptor && !tool_ctx.forced_tool) {
         tool_ctx.raw_envelope.reset();
       }
+
     }
   }
 
@@ -1844,8 +1845,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
     if (chat_session_internal::PushDecodedFragment(
             token, token_id, active_stop_filter, splitter, emit_segments,
-            cached_tool_ctx_.tool_plan && inside_payload) ||
-        stop_sequence_matched) {
+            cached_tool_ctx_.tool_plan && inside_payload) || stop_sequence_matched) {
       stop_sequence_matched = true;
       break;
     }
@@ -2243,8 +2243,7 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
 
     if (chat_session_internal::PushDecodedFragment(
             token, token_id, active_stop_filter, splitter, process_segments,
-            tool_ctx.tool_plan && inside_payload) ||
-        stop_sequence_matched) {
+            tool_ctx.tool_plan && inside_payload) || stop_sequence_matched) {
       stop_sequence_matched = true;
       break;
     }
