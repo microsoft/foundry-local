@@ -1,9 +1,6 @@
-parameters:
-  artifactFeeds: 'Lotus'
+# Install pinned Maven and configure the authenticated Lotus upstream mirror.
 
-# Install a pinned Maven version for self-hosted agents that do not provide it.
 steps:
-
 # TODO: Add this into the image
 - task: UniversalPackages@0
   displayName: 'Download Maven'
@@ -15,135 +12,64 @@ steps:
     vstsPackageVersion: '3.9.9'
     downloadDirectory: '$(Agent.TempDirectory)/foundry-java-tools'
 
-- pwsh: |
-    $ErrorActionPreference = 'Stop'
+- task: PowerShell@2
+  displayName: 'Bootstrap Maven 3.9.9'
+  inputs:
+    targetType: inline
+    pwsh: true
+    script: |
+      $ErrorActionPreference = 'Stop'
 
-    $version = '3.9.9'
-    $tools = Join-Path '$(Agent.TempDirectory)' 'foundry-java-tools'
-    $archive = Join-Path $tools "apache-maven-$version-bin.zip"
-    $mavenHome = Join-Path $tools "apache-maven-$version"
-    $mavenCommand = if ($IsWindows) { 'bin/mvn.cmd' } else { 'bin/mvn' }
-    $maven = Join-Path $mavenHome $mavenCommand
+      $version = '3.9.9'
+      $tools = Join-Path '$(Agent.TempDirectory)' 'foundry-java-tools'
+      $archive = Join-Path $tools "apache-maven-$version-bin.zip"
+      $mavenHome = Join-Path $tools "apache-maven-$version"
+      $mavenCommand = if ($IsWindows) { 'bin/mvn.cmd' } else { 'bin/mvn' }
+      $maven = Join-Path $mavenHome $mavenCommand
 
-    ls $tools
-
-    if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) {
-      throw "Unable to find Maven zip"
-    }
-
-    $expected = '8beac8d11ef208f1e2a8df0682b9448a9a363d2ad13ca74af43705549e72e74' +
-      'c9378823bf689287801cbbfc2f6ea9596201d19ccacfdfb682ee8a2ff4c4418ba'
-    if ((Get-FileHash -LiteralPath $archive -Algorithm SHA512).Hash -ne $expected) {
-      throw 'Maven archive checksum mismatch.'
-    }
-
-    Expand-Archive -LiteralPath $archive -DestinationPath $tools -Force
-
-    if (-not $IsWindows) {
-      & chmod u+x $maven
-      if ($LASTEXITCODE -ne 0) {
-        throw "Could not make Maven executable: $maven"
+      if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) {
+        throw "Unable to find Maven archive: $archive"
       }
-    }
 
-    Write-Host "##vso[task.setvariable variable=foundryMavenHome]$mavenHome"
-    Write-Host "##vso[task.prependpath]$(Join-Path $mavenHome 'bin')"
+      $expected = '8beac8d11ef208f1e2a8df0682b9448a9a363d2ad13ca74af43705549e72e74' +
+        'c9378823bf689287801cbbfc2f6ea9596201d19ccacfdfb682ee8a2ff4c4418ba'
+      if ((Get-FileHash -LiteralPath $archive -Algorithm SHA512).Hash -ne $expected) {
+        throw 'Maven archive checksum mismatch.'
+      }
+      Expand-Archive -LiteralPath $archive -DestinationPath $tools -Force
+
+      if (-not $IsWindows) {
+        & chmod u+x $maven
+        if ($LASTEXITCODE -ne 0) {
+          throw "Could not make Maven executable: $maven"
+        }
+      }
+
+      $settings = Join-Path $tools 'settings.xml'
+      @'
+      <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">
+        <servers>
+          <server>
+            <id>Lotus</id>
+            <username>AzureDevOps</username>
+            <password>${env.SYSTEM_ACCESSTOKEN}</password>
+          </server>
+        </servers>
+        <mirrors>
+          <mirror>
+            <id>Lotus</id>
+            <url>https://pkgs.dev.azure.com/aiinfra/_packaging/Lotus/maven/v1</url>
+            <mirrorOf>*</mirrorOf>
+          </mirror>
+        </mirrors>
+      </settings>
+      '@ | Set-Content -LiteralPath $settings -Encoding utf8
+
+      Write-Host "##vso[task.setvariable variable=foundryMavenHome]$mavenHome"
+      Write-Host "##vso[task.setvariable variable=foundryMavenSettings]$settings"
+      Write-Host "##vso[task.prependpath]$(Join-Path $mavenHome 'bin')"
 
 - script: |
     echo "Verifying Maven installation..."
     mvn --version
   displayName: 'Verify Maven Version'
-
-# Creates/touches ~/.m2/settings.xml
-- task: MavenAuthenticate@0
-  inputs:
-    artifactsFeeds: ${{ parameters.artifactFeeds }}
-
-- task: PowerShell@2
-  displayName: 'Maven/Gradle - mirror / feed via `${{ parameters.artifactFeeds }}`'
-  env:
-    central_maven_feed_name: ${{ parameters.artifactFeeds }}
-  inputs:
-    targetType: 'inline'
-    script: |
-      # Force everything in Maven to go through & authenticate using the main feed.
-      # HACK: Does not escape `parameters.artifactFeeds`. Assumes pattern is [A-Za-z0-9]+.
-      # HACK: Assumes feed is a org-scoped feed in `aiinfra`.
-      $m2SettingsXmlPath = "~/.m2/settings.xml"
-        $m2SettingsContent = Get-Content $m2SettingsXmlPath -Raw
-
-      if ($m2SettingsContent -match '<mirrors>') {
-        echo "##vso[task.logissue type=error]Configuration already contains `<mirrors>`, cannot inject feed mirror w/o corrupting existing config."
-        exit 1
-      }
-
-      echo "Injecting Maven mirrors section for 1ES feed"
-      $( $m2SettingsContent -replace '</settings>', "<mirrors><mirror><id>${env:central_maven_feed_name}</id><name>1ES Feed Override</name><url>https://aiinfra.pkgs.visualstudio.com/_packaging/${env:central_maven_feed_name}/maven/v1</url><mirrorOf>*</mirrorOf></mirror></mirrors></settings>" ) | `
-        Set-Content $m2SettingsXmlPath
-
-
-      # gradle - inject 1ES feed repo into plugin management, all projects, and buildscripts.
-      # Auth using creds from maven settings.xml.
-      # nb: see HACK note above.
-      $gradleInitDir = if ($env:GRADLE_HOME_DIR) { $env:GRADLE_HOME_DIR } else { "~/.gradle" }
-      if (!(Test-Path -Path "${gradleInitDir}/init.d")) {
-        New-Item -ItemType Directory -Path "${gradleInitDir}/init.d"
-      }
-      Set-Content -Path "${gradleInitDir}/init.d/1es-feed-inject.init.gradle" -Value @"
-      // Use official 1ES feed. Network isolation prevents us from reaching out directly to other feeds.
-
-      def mavenSettingsServers = {
-        File mavenSettings = new File(System.getProperty("user.home"), ".m2/settings.xml")
-        return new XmlSlurper().parse(mavenSettings)."servers"."server"
-      }
-
-      def oneEsFeedCredentials = {
-        for (x in mavenSettingsServers()) {
-          if (x."id".text() == "${env:central_maven_feed_name}") {
-            return [username: x.username.text(), password: x.password.text()]
-          }
-        }
-      }
-
-      settingsEvaluated { settings ->
-        settings.pluginManagement {
-          repositories {
-            clear()
-            maven {
-              name "1ES Feed"
-              url uri("https://aiinfra.pkgs.visualstudio.com/_packaging/${env:central_maven_feed_name}/maven/v1")
-              credentials(PasswordCredentials) {
-                username oneEsFeedCredentials().username
-                password oneEsFeedCredentials().password
-              }
-            }
-          }
-        }
-      }
-
-      allprojects {
-        buildscript {
-          repositories {
-            maven {
-              name "1ES Feed"
-              url uri("https://aiinfra.pkgs.visualstudio.com/_packaging/${env:central_maven_feed_name}/maven/v1")
-              credentials(PasswordCredentials) {
-                username oneEsFeedCredentials().username
-                password oneEsFeedCredentials().password
-              }
-            }
-          }
-        }
-
-        repositories {
-          maven {
-            name "1ES Feed"
-            url uri("https://aiinfra.pkgs.visualstudio.com/_packaging/${env:central_maven_feed_name}/maven/v1")
-            credentials(PasswordCredentials) {
-              username oneEsFeedCredentials().username
-              password oneEsFeedCredentials().password
-            }
-          }
-        }
-      }
-      "@

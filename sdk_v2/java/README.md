@@ -35,13 +35,13 @@ The build produces:
 pipeline compiles a clean Maven consumer against the staged POM and JAR.
 
 All five platform build/test jobs and the Maven bundle job share
-`.pipelines/templates/steps-bootstrap-maven.yml`. It downloads Maven 3.9.9
-through the `AIFoundryLocal_PublicPackages` Maven Central upstream using the
-job's `System.AccessToken` and verifies the pinned SHA-512 checksum. The
-pipeline's Build Service identity needs feed Reader permission for cached
-packages, or Feed and Upstream Reader (Collaborator) to save packages from
-upstream. The bootstrap also creates a job-local Maven settings file that
-mirrors all dependency and plugin repositories through the same feed.
+`.pipelines/templates/steps-bootstrap-maven.yml`. It downloads the pinned
+`maven-zip` 3.9.9 Universal Package from `Lotus` and verifies the Maven archive's
+SHA-512 checksum. The bootstrap also creates a job-local Maven settings file
+that mirrors all dependency and plugin repositories through the org-scoped
+`Lotus` Maven feed. The pipeline's Build Service identity needs feed Reader
+permission for cached packages, or Feed and Upstream Reader (Collaborator) to
+save packages from upstream.
 All build/test, packaging, and packaged-consumer Maven invocations use this
 settings file and receive the job token through their environment; the
 settings file references the token without storing it.
