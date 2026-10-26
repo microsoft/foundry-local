@@ -26,7 +26,7 @@ bool IsWhisperLanguageSupported(const std::string& language);
 }  // namespace AudioInternal
 
 /// ORT GenAI implementation of the AudioGenerator interface.
-/// Creates an OgaGenerator from a loaded Whisper model, processes audio input
+/// Creates an OgaGenerator from a loaded Whisper or Parakeet model, processes audio input
 /// through the multimodal processor, then drives token-by-token transcription
 /// through the pull-based IsDone/GenerateNextToken/Decode loop.
 ///
