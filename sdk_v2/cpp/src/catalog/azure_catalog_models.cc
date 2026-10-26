@@ -14,6 +14,7 @@
 #include <chrono>
 #include <ctime>
 #include <iomanip>
+#include <limits>
 #include <regex>
 #include <sstream>
 
@@ -94,6 +95,37 @@ void UseLegacyBooleanTag(const nlohmann::json& tags, const char* key,
     value = true;
   } else if (normalized == "false") {
     value = false;
+  }
+}
+
+void UseLegacyContextLengthTag(const nlohmann::json& tags, std::optional<int64_t>& value) {
+  if (value.value_or(0) > 0 || !tags.contains("contextLength")) {
+    return;
+  }
+
+  const auto& context_length = tags["contextLength"];
+  int64_t parsed = 0;
+  if (context_length.is_number_unsigned()) {
+    const auto number = context_length.get<uint64_t>();
+    if (number > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+      return;
+    }
+
+    parsed = static_cast<int64_t>(number);
+  } else if (context_length.is_number_integer()) {
+    parsed = context_length.get<int64_t>();
+  } else if (context_length.is_string()) {
+    const auto& text = context_length.get_ref<const std::string&>();
+    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), parsed);
+    if (error != std::errc{} || end != text.data() + text.size()) {
+      return;
+    }
+  } else {
+    return;
+  }
+
+  if (parsed > 0) {
+    value = parsed;
   }
 }
 
@@ -244,6 +276,7 @@ void from_json(const nlohmann::json& j, CatalogLocalModel& m) {
     TextLimits direct_text_limits = direct_limits.text_limits.value_or(TextLimits{});
     opt_int64(system_data, "textContextWindow", direct_text_limits.input_context_window);
     opt_int64(system_data, "maxOutputTokens", direct_text_limits.max_output_tokens);
+    UseLegacyContextLengthTag(tags, direct_text_limits.input_context_window);
     if (direct_text_limits.input_context_window || direct_text_limits.max_output_tokens) {
       direct_limits.text_limits = std::move(direct_text_limits);
     }

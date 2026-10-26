@@ -13,6 +13,7 @@
 #include <nlohmann/json.hpp>
 
 #include <chrono>
+#include <limits>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -312,6 +313,89 @@ TEST(AzureCatalogClientTest, ParsesFullServiceMetadataWithoutPromptOrDelimiterFi
   EXPECT_EQ(public_info.InputModalities(), "text,image");
   EXPECT_EQ(public_info.OutputModalities(), "text");
   EXPECT_TRUE(public_info.IsTestModel());
+}
+
+TEST(AzureCatalogClientTest, ContextLengthTagFallbackPreservesValidCatalogLimits) {
+  struct ContextLengthCase {
+    const char* name;
+    nlohmann::json tag_value;
+    std::optional<int64_t> structured_limit;
+    std::optional<int64_t> direct_limit;
+    std::optional<int64_t> expected;
+  };
+
+  const std::vector<ContextLengthCase> cases = {
+      {"integer", 262144, {}, {}, 262144},
+      {"string", "262144", {}, {}, 262144},
+      {"minimum", 1, {}, {}, 1},
+      {"maximum integer", std::numeric_limits<int64_t>::max(), {}, {}, std::numeric_limits<int64_t>::max()},
+      {"maximum string", "9223372036854775807", {}, {}, std::numeric_limits<int64_t>::max()},
+      {"zero", 0, {}, {}, {}},
+      {"negative", -1, {}, {}, {}},
+      {"fraction", 262144.5, {}, {}, {}},
+      {"integral float", 262144.0, {}, {}, {}},
+      {"boolean", true, {}, {}, {}},
+      {"null", nullptr, {}, {}, {}},
+      {"object", nlohmann::json::object(), {}, {}, {}},
+      {"array", nlohmann::json::array(), {}, {}, {}},
+      {"empty string", "", {}, {}, {}},
+      {"nonnumeric string", "unknown", {}, {}, {}},
+      {"trailing characters", "262144tokens", {}, {}, {}},
+      {"leading plus", "+262144", {}, {}, {}},
+      {"leading whitespace", " 262144", {}, {}, {}},
+      {"negative string", "-262144", {}, {}, {}},
+      {"zero string", "0", {}, {}, {}},
+      {"fractional string", "262144.0", {}, {}, {}},
+      {"overflow string", "9223372036854775808", {}, {}, {}},
+      {"overflow integer", std::numeric_limits<uint64_t>::max(), {}, {}, {}},
+      {"structured limit", 262144, 4096, {}, 4096},
+      {"direct limit", 262144, {}, 8192, 8192},
+      {"zero structured limit", 262144, 0, {}, 262144},
+      {"negative structured limit", 262144, -1, {}, 262144},
+      {"zero direct limit", 262144, {}, 0, 262144},
+      {"invalid tag with structured limit", false, 4096, {}, 4096},
+  };
+  const auto base_response = nlohmann::json::parse(R"({
+    "value": [{
+      "assetId": "azureml://registries/azureml/models/qwen3.5-2b-text-generic-cpu/versions/1",
+      "annotations": {
+        "tags": {},
+        "systemCatalogData": {
+          "alias": "qwen3.5-2b-text",
+          "maxOutputTokens": 2048,
+          "deploymentOptions": ["Foundry Local on Devices"]
+        }
+      },
+      "properties": {
+        "name": "qwen3.5-2b-text-generic-cpu", "version": 1,
+        "variantInfo": {"variantMetadata": {"modelType": "ONNX", "device": "cpu"}}
+      }
+    }]
+  })");
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  for (const auto& test_case : cases) {
+    SCOPED_TRACE(test_case.name);
+    auto response = base_response;
+    auto& annotations = response["value"][0]["annotations"];
+    annotations["tags"]["contextLength"] = test_case.tag_value;
+    auto& system_data = annotations["systemCatalogData"];
+    if (test_case.structured_limit) {
+      system_data["modelLimits"]["textLimits"]["inputContextWindow"] = *test_case.structured_limit;
+    }
+
+    if (test_case.direct_limit) {
+      system_data["textContextWindow"] = *test_case.direct_limit;
+    }
+
+    AzureCatalogClient client("https://test.com", "", ep, logger,
+                              [&](const std::string&, const std::string&) { return MakeOkResponse(response.dump()); });
+    const auto models = client.FetchAllModelInfos();
+    ASSERT_EQ(models.size(), 1u);
+    const foundry_local::ModelInfo public_info(*AsHandle<flModelInfo>(&models.front()));
+    EXPECT_EQ(public_info.ContextLength(), test_case.expected);
+    EXPECT_EQ(public_info.MaxOutputTokens(), 2048);
+  }
 }
 
 TEST(AzureCatalogClientTest, ParsesToolCallingCapabilityFromHistoricalTag) {
