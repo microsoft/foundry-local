@@ -715,7 +715,7 @@ bool InsideToolOutput(const RawEnvelopeDetector* raw_detector,
          structured_accumulator.InsideToolCall();
 }
 
-bool ResolveToolCallingSupport(std::optional<int> catalog_support,
+bool ResolveToolCallingSupport(std::optional<int64_t> catalog_support,
                                bool inferred_support) noexcept {
   if (!catalog_support.has_value() || *catalog_support == -1) {
     return inferred_support;
@@ -1091,7 +1091,7 @@ ToolCallContext BuildToolCallContextForRequest(const Request& request,
   // Check if the model supports tool calling
   const auto* tool_calling_val = info.GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT);
   tool_ctx.supports_tool_calling = chat_session_internal::ResolveToolCallingSupport(
-      tool_calling_val ? std::optional<int>{*tool_calling_val} : std::nullopt,
+      tool_calling_val ? std::optional<int64_t>{*tool_calling_val} : std::nullopt,
       model.SupportsToolCalling());
 
   if (tool_ctx.tool_call_start.empty()) {
