@@ -955,7 +955,7 @@ struct ToolDefinition {
 
   /// Convert to the C struct for passing across the ABI boundary.
   flToolDefinition ToC() const {
-    static_assert(FOUNDRY_LOCAL_API_VERSION == 2,
+    static_assert(FOUNDRY_LOCAL_API_VERSION == 3,
                   "flToolDefinition may have new fields; initialize them here before updating this assertion");
     if (name.find('\0') != std::string::npos || description.find('\0') != std::string::npos ||
         json_schema.find('\0') != std::string::npos) {
@@ -1157,6 +1157,13 @@ class ChatSession : public Session {
   flRequestPreflightResult PreflightRequest(const Request& request) const;
 };
 
+/// Supported audio input workflows, independent of streaming output callbacks.
+enum class AudioModes {
+  Live = FOUNDRY_LOCAL_AUDIO_MODES_LIVE,
+  Offline = FOUNDRY_LOCAL_AUDIO_MODES_OFFLINE,
+  Both = FOUNDRY_LOCAL_AUDIO_MODES_BOTH,
+};
+
 /// Session for automatic-speech-recognition (transcription) models.
 ///
 /// Each request produces a SpeechResultItem with the full transcript and per-segment detail;
@@ -1164,6 +1171,7 @@ class ChatSession : public Session {
 class AudioSession : public Session {
  public:
   explicit AudioSession(IModel& model);
+  AudioModes SupportedAudioModes() const;
 };
 
 class EmbeddingsSession : public Session {

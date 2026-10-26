@@ -5,6 +5,7 @@
 // they throw before the generator is created, so any GenAIModelInstance works.
 
 #include "inferencing/generative/audio/audio_session.h"
+#include "c_api_types.h"
 
 #include "ep_detection/ep_detector.h"
 #include "exception.h"
@@ -1018,6 +1019,13 @@ TEST_F(AudioSessionInferenceTest, TranscribeViaOpenAIJson) {
 }
 
 static void ExpectBatchPcmNotImplemented(AudioSession& session) {
+  EXPECT_EQ(session.SupportedAudioModes(), FOUNDRY_LOCAL_AUDIO_MODES_OFFLINE);
+  const auto* api = FoundryLocalGetApi(FOUNDRY_LOCAL_API_VERSION);
+  flAudioModes modes = FOUNDRY_LOCAL_AUDIO_MODES_LIVE;
+  auto* status = api->GetInferenceApi()->Session_GetSupportedAudioModes(AsHandle<flSession>(&session), &modes);
+  EXPECT_EQ(status, nullptr);
+  api->Status_Release(status);
+  EXPECT_EQ(modes, FOUNDRY_LOCAL_AUDIO_MODES_OFFLINE);
   AudioItem audio(nullptr, 0, "pcm");
   ItemQueue queue;
   queue.MarkFinished();
@@ -1078,6 +1086,19 @@ TEST_F(AudioSessionParakeetInferenceTest, TranscribeFromFileAndOpenAIJson) {
   const auto json = nlohmann::json::parse(static_cast<const TextItem&>(*json_response.items[0]).text);
   EXPECT_EQ(json.at("text").get<std::string>(), expected);
   EXPECT_EQ(json_response.usage.total_tokens, file_response.usage.total_tokens);
+}
+
+TEST_F(AudioSessionTest, AudioModesRejectsUnsupportedArchitecture) {
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  EXPECT_THROW(session.SupportedAudioModes(), fl::Exception);
+}
+
+TEST_F(AudioSessionNemotronInferenceTest, SupportedAudioModesAreLiveWithoutStartingARequest) {
+  if (!model_) {
+    GTEST_SKIP() << "Nemotron model not loaded";
+  }
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  EXPECT_EQ(session.SupportedAudioModes(), FOUNDRY_LOCAL_AUDIO_MODES_LIVE);
 }
 
 TEST_F(AudioSessionNemotronInferenceTest, OpenAIJsonNemotronFileTranscriptionMultiChunkNotTruncated) {

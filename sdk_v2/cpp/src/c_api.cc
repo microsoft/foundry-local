@@ -1928,13 +1928,12 @@ FL_API_STATUS_IMPL(RequestPreflight_ExecuteImpl, flRequestPreflight* preflight,
   if (!preflight || !out_result) {
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
-  if (out_result->version != FOUNDRY_LOCAL_API_VERSION) {
+  if (out_result->version < 2 || out_result->version > FOUNDRY_LOCAL_API_VERSION) {
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "out_result->version is not supported");
   }
 
   auto* operation = reinterpret_cast<fl::Session::RequestPreflightOperation*>(preflight);
   const auto result = operation->Execute();
-  out_result->version = FOUNDRY_LOCAL_API_VERSION;
   out_result->prompt_tokens = result.prompt_tokens;
   out_result->output_reserve_tokens = result.output_reserve_tokens;
   out_result->required_tokens = result.required_tokens;
@@ -1947,6 +1946,16 @@ FL_API_STATUS_IMPL(RequestPreflight_ExecuteImpl, flRequestPreflight* preflight,
 
 static void FL_API_CALL RequestPreflight_ReleaseImpl(flRequestPreflight* preflight) FL_NO_EXCEPTION {
   delete reinterpret_cast<fl::Session::RequestPreflightOperation*>(preflight);
+}
+
+FL_API_STATUS_IMPL(Session_GetSupportedAudioModesImpl, const flSession* session, flAudioModes* out_modes) {
+  API_IMPL_BEGIN
+  if (!session || !out_modes) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
+  }
+  *out_modes = AsImpl(session)->SupportedAudioModes();
+  return nullptr;
+  API_IMPL_END
 }
 
 static const flInferenceApi g_inference_api = {
@@ -1975,15 +1984,17 @@ static const flInferenceApi g_inference_api = {
     Session_CreateRequestPreflightImpl,
     RequestPreflight_ExecuteImpl,
     RequestPreflight_ReleaseImpl,
+    Session_GetSupportedAudioModesImpl,
 };
 
 static_assert(offsetof(flInferenceApi, Session_UndoTurns) / sizeof(void*) == 21,
               "Version 1 Inference API prefix cannot change");
 static_assert(offsetof(flInferenceApi, Session_CreateRequestPreflight) / sizeof(void*) == 22,
               "Version 2 Inference API must append after the version 1 prefix");
-static_assert(sizeof(flInferenceApi) ==
-                  offsetof(flInferenceApi, Session_CreateRequestPreflight) + 3 * sizeof(void*),
-              "Version 2 Inference API must append exactly three preflight functions");
+static_assert(offsetof(flInferenceApi, Session_GetSupportedAudioModes) / sizeof(void*) == 25,
+              "Version 3 Inference API must append after the version 2 prefix");
+static_assert(sizeof(flInferenceApi) == 26 * sizeof(void*),
+              "Version 3 Inference API appends one audio capability query");
 
 // ========================================================================
 // Sub-API accessors

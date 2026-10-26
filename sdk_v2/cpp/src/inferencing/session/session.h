@@ -68,6 +68,8 @@ class Session {
   /// Returns the concrete session type (no RTTI needed).
   virtual SessionType Type() const = 0;
 
+  virtual flAudioModes SupportedAudioModes() const;
+
   /// Process a request: overlays session parameters, delegates to the derived
   /// class, then waits for all async streaming callbacks to complete.
   /// Waiting here keeps the Request reference valid for the lifetime of any

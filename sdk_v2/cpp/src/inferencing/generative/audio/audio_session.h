@@ -52,6 +52,8 @@ class AudioSession : public Session {
 
   SessionType Type() const override;
 
+  flAudioModes SupportedAudioModes() const override;
+
  private:
   void SetSessionOptionsImpl(const KeyValuePairs& options) override;
   void ProcessRequestImpl(const Request& request, Response& response) override;

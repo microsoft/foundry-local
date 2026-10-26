@@ -166,6 +166,18 @@ SessionType AudioSession::Type() const {
   return SessionType::kAudio;
 }
 
+flAudioModes AudioSession::SupportedAudioModes() const {
+  const auto& type = Model().ModelType();
+  if (type == "whisper" || type == "parakeet_tdt") {
+    return FOUNDRY_LOCAL_AUDIO_MODES_OFFLINE;
+  }
+  if (type == "nemotron_speech" || type == "streaming_enc_dec_asr") {
+    return FOUNDRY_LOCAL_AUDIO_MODES_LIVE;
+  }
+  FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED,
+                   fmt::format("Audio modes are not defined for model type '{}'", type));
+}
+
 std::string AudioSession::ExecutionProvider() const {
   return std::string(EPUtils::EPtoTelemetryName(model_.EP(), model_.GetGenAIConfig().DefaultProviderView()));
 }
@@ -343,11 +355,10 @@ void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue
                                  format_item.channels));
   }
 
-  const auto& model_type = Model().ModelType();
-  if (model_type == "whisper" || model_type == "parakeet_tdt") {
+  if (SupportedAudioModes() == FOUNDRY_LOCAL_AUDIO_MODES_OFFLINE) {
     FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED,
                      fmt::format("Model '{}' does not support live PCM streaming. Submit a complete audio file.",
-                                 model_type));
+                                 Model().ModelType()));
   }
 
   logger_.Log(LogLevel::Debug, "Starting streaming audio transcription");

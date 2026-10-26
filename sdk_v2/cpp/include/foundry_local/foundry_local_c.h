@@ -60,7 +60,7 @@
  * Incremented with each release.
  * Used to request the API function table via FoundryLocalGetApi.
  * ----------------------------------------------------------------------- */
-#define FOUNDRY_LOCAL_API_VERSION 2
+#define FOUNDRY_LOCAL_API_VERSION 3
 
 /* -----------------------------------------------------------------------
  * Platform export macros (C version)
@@ -136,6 +136,13 @@ FL_TYPE(Response);
 FL_TYPE(Session);
 
 FL_TYPE(Status);
+
+/// Supported audio input workflows. Independent of streaming output callbacks.
+typedef enum flAudioModes {
+  FOUNDRY_LOCAL_AUDIO_MODES_LIVE = 1,
+  FOUNDRY_LOCAL_AUDIO_MODES_OFFLINE = 2,
+  FOUNDRY_LOCAL_AUDIO_MODES_BOTH = 3,
+} flAudioModes;
 
 #define FL_TYPE_RELEASE(X) void(FL_API_CALL * X##_Release)(_Frees_ptr_opt_ fl##X * instance) FL_NO_EXCEPTION
 
@@ -985,6 +992,11 @@ struct flInferenceApi {
   FL_TYPE_RELEASE(RequestPreflight);
 
   // End V2
+  /// Query supported audio input modes without starting a request or streaming processor.
+  /// Non-audio sessions and unsupported architectures return NOT_IMPLEMENTED.
+  FL_API_STATUS(Session_GetSupportedAudioModes, _In_ const flSession* session, _Out_ flAudioModes* out_modes);
+
+  // End V3
 };
 
 /* --- Configuration API ------------------------------------------------- */

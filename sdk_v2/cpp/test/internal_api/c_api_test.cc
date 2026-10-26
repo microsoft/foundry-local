@@ -45,17 +45,45 @@ TEST(CApiTest, SupportedVersionsReturnSameExpandedApiTables) {
   const flApi* v1 = FoundryLocalGetApi(1);
   const flApi* v2 = FoundryLocalGetApi(2);
   const flApi* v3 = FoundryLocalGetApi(3);
+  const flApi* v4 = FoundryLocalGetApi(4);
   ASSERT_NE(v0, nullptr);
   ASSERT_NE(v1, nullptr);
   ASSERT_NE(v2, nullptr);
-  ASSERT_EQ(v3, nullptr);
+  ASSERT_NE(v3, nullptr);
+  ASSERT_EQ(v4, nullptr);
 
   EXPECT_EQ(v0, v2);
   EXPECT_EQ(v1, v2);
+  EXPECT_EQ(v2, v3);
+  EXPECT_NE(v3->GetInferenceApi()->Session_GetSupportedAudioModes, nullptr);
   EXPECT_EQ(v1->GetCatalogApi(), v2->GetCatalogApi());
   EXPECT_EQ(v1->GetModelApi(), v2->GetModelApi());
   EXPECT_NE(v1->GetCatalogApi()->RegisterModel, nullptr);
   EXPECT_NE(v1->GetModelApi()->CreateModelInfo, nullptr);
+}
+
+TEST(CApiTest, AudioModesRejectsNullArguments) {
+  const auto* api = GetApi();
+  flAudioModes modes = FOUNDRY_LOCAL_AUDIO_MODES_LIVE;
+  auto* status = api->GetInferenceApi()->Session_GetSupportedAudioModes(nullptr, &modes);
+  ASSERT_NE(status, nullptr);
+  EXPECT_EQ(api->Status_GetErrorCode(status), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  api->Status_Release(status);
+}
+
+TEST(CApiTest, VersionTwoPreflightResultsRemainSupported) {
+  struct Operation : fl::Session::RequestPreflightOperation {
+    fl::RequestBudget Execute() override { return {}; }
+  } operation;
+  const auto* api = GetApi();
+  flRequestPreflightResult result{};
+  result.version = 2;
+  auto* handle = reinterpret_cast<flRequestPreflight*>(
+      static_cast<fl::Session::RequestPreflightOperation*>(&operation));
+  auto* status = api->GetInferenceApi()->RequestPreflight_Execute(handle, &result);
+  EXPECT_EQ(status, nullptr);
+  api->Status_Release(status);
+  EXPECT_EQ(result.version, 2u);
 }
 
 TEST(CApiTest, VersionReturnsNonNull) {
