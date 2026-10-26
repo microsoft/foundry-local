@@ -1018,7 +1018,7 @@ TEST_F(AudioSessionInferenceTest, TranscribeViaOpenAIJson) {
   EXPECT_GT(response.usage.total_tokens, 0) << "Expected non-zero total_tokens";
 }
 
-static void ExpectBatchPcmNotImplemented(AudioSession& session) {
+static void ExpectOfflineAudioModes(AudioSession& session) {
   EXPECT_EQ(session.SupportedAudioModes(), FOUNDRY_LOCAL_AUDIO_MODES_OFFLINE);
   const auto* api = FoundryLocalGetApi(FOUNDRY_LOCAL_API_VERSION);
   flAudioModes modes = FOUNDRY_LOCAL_AUDIO_MODES_LIVE;
@@ -1026,33 +1026,19 @@ static void ExpectBatchPcmNotImplemented(AudioSession& session) {
   EXPECT_EQ(status, nullptr);
   api->Status_Release(status);
   EXPECT_EQ(modes, FOUNDRY_LOCAL_AUDIO_MODES_OFFLINE);
-  AudioItem audio(nullptr, 0, "pcm");
-  ItemQueue queue;
-  queue.MarkFinished();
-  Request request;
-  request.AddBorrowedItem(&audio);
-  request.AddBorrowedItem(&queue);
-  Response response;
-  try {
-    session.ProcessRequest(request, response);
-    FAIL() << "Expected unsupported live PCM";
-  } catch (const fl::Exception& e) {
-    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED);
-    EXPECT_NE(std::string(e.what()).find("file"), std::string::npos);
-  }
 }
 
-TEST_F(AudioSessionInferenceTest, StreamingPcmReturnsNotImplemented) {
+TEST_F(AudioSessionInferenceTest, SupportedAudioModesAreOfflineWithoutStartingARequest) {
   if (!model_) {
     GTEST_SKIP() << "Audio model not loaded";
   }
   AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
-  ExpectBatchPcmNotImplemented(session);
+  ExpectOfflineAudioModes(session);
 }
 
-TEST_F(AudioSessionParakeetInferenceTest, StreamingPcmReturnsNotImplemented) {
+TEST_F(AudioSessionParakeetInferenceTest, SupportedAudioModesAreOfflineWithoutStartingARequest) {
   AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
-  ExpectBatchPcmNotImplemented(session);
+  ExpectOfflineAudioModes(session);
 }
 
 TEST_F(AudioSessionParakeetInferenceTest, TranscribeFromFileAndOpenAIJson) {

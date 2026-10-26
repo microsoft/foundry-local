@@ -355,12 +355,6 @@ void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue
                                  format_item.channels));
   }
 
-  if (SupportedAudioModes() == FOUNDRY_LOCAL_AUDIO_MODES_OFFLINE) {
-    FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED,
-                     fmt::format("Model '{}' does not support live PCM streaming. Submit a complete audio file.",
-                                 Model().ModelType()));
-  }
-
   logger_.Log(LogLevel::Debug, "Starting streaming audio transcription");
 
   // 2. Create ORT GenAI streaming pipeline

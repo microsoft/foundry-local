@@ -171,12 +171,11 @@ multimodal audio processor, not the streaming processor used by Nemotron.
 File requests, including OpenAI audio-transcription JSON requests, preprocess the
 complete recording without Whisper task tokens.
 
-Whisper and Parakeet TDT do not support live PCM queue requests (`AudioItem`
-with `format="pcm"` plus an `ItemQueue`). These requests return
-`FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED`, allowing callers to select a file-based
-recording workflow instead of treating unsupported streaming as an internal
-runtime failure. Microphone clients should record a complete utterance and
-submit the resulting audio file through the existing file-transcription API.
+Whisper and Parakeet TDT report `Offline`. Clients should query
+`SupportedAudioModes` before choosing an input workflow rather than probing
+by creating a live PCM queue request. Microphone clients should record a
+complete utterance and submit the resulting audio file through the existing
+file-transcription API.
 The SDK does not add another recording buffer. Nemotron's incremental
 processing is unchanged.
 
