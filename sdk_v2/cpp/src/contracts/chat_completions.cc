@@ -380,6 +380,18 @@ void from_json(const nlohmann::json& j, ChatCompletionRequest& r) {
 // Request serialization (to_json) - for getting tools JSON to pass to GenAI
 // ========================================================================
 
+void from_json(const nlohmann::ordered_json& j, ChatCompletionRequest& r) {
+  from_json(nlohmann::json(j), r);
+  if (r.tools) {
+    for (size_t i = 0; i < r.tools->size(); ++i) {
+      auto& tool = r.tools->at(i);
+      if (!tool.IsCustom() && tool.function.parameters) {
+        tool.function.parameters = j.at("tools").at(i).at("function").at("parameters");
+      }
+    }
+  }
+}
+
 void to_json(nlohmann::json& j, const ChatCompletionFunctionDef& f) {
   j = nlohmann::json{
       {"name", f.name},

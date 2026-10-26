@@ -1,5 +1,6 @@
 <script>
-	import { navItems, siteConfig } from '$lib/config';
+	import { siteConfig } from '$lib/config';
+	import { manageCookies } from '$lib/cookie-consent';
 	import SocialMedia from '../social-media.svelte';
 	import { animate } from '$lib/utils/animations';
 	import LogoTransition from '$lib/components/logo-transition.svelte';
@@ -119,6 +120,14 @@
 				>
 					Privacy Statement
 				</a>
+				<button
+					id="manage-cookies"
+					type="button"
+					onclick={manageCookies}
+					class="text-muted-foreground hover:text-foreground rounded-sm text-sm underline-offset-4 transition-colors hover:underline"
+				>
+					Manage Cookies
+				</button>
 			</div>
 		</div>
 	</div>

@@ -4,6 +4,7 @@
 
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
+#include "items/item.h"
 #include "utils/temp_path.h"
 
 #include <foundry_local/foundry_local_c.h>
@@ -224,6 +225,7 @@ TEST_F(LocalModelCatalogTest, RegistrationDerivesModalitiesForEveryTask) {
   };
   const std::vector<ExpectedModalities> expectations = {
       {"chat-completion", "text", "text"},
+      {"coding", "text", "text"},
       {"vision-language-chat", "text,image", "text"},
       {"automatic-speech-recognition", "audio", "text"},
       {"embeddings", "text", "embeddings"},
@@ -234,11 +236,32 @@ TEST_F(LocalModelCatalogTest, RegistrationDerivesModalitiesForEveryTask) {
                                          MakeMetadata(expected.task));
 
     ASSERT_NE(model, nullptr);
+    EXPECT_EQ(model->Info().task, expected.task);
     EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, std::string{}),
               expected.input);
     EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, std::string{}),
               expected.output);
   }
+
+  auto restored = MakeCatalog();
+  auto* coding_model = restored.GetModelVariant("coding:1");
+  ASSERT_NE(coding_model, nullptr);
+  EXPECT_EQ(coding_model->Info().task, "coding");
+  EXPECT_EQ(coding_model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, std::string{}), "coding");
+}
+
+TEST_F(LocalModelCatalogTest, CodingModalityOverridesDoNotChangeInputCapabilities) {
+  auto metadata = MakeMetadata("coding");
+  metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, "text,image,audio");
+  auto* model = catalog_.RegisterModel(model_dir_.string(), "coding:1", metadata);
+
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, std::string{}),
+            "text,image,audio");
+  const auto io = model->GetInputOutputInfo();
+  ASSERT_EQ(io.num_inputs, 2u);
+  EXPECT_EQ(io.inputs[0]->type, FOUNDRY_LOCAL_ITEM_MESSAGE);
+  EXPECT_EQ(io.inputs[1]->type, FOUNDRY_LOCAL_ITEM_TEXT);
 }
 
 TEST_F(LocalModelCatalogTest, RegistrationOverwritesSdkOwnedMetadata) {

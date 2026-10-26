@@ -92,6 +92,7 @@ include(cmake/Sanitizers.cmake)
 # Dependencies via vcpkg (manifest mode)
 # --------------------------------------------------------------------------
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(jsoncons CONFIG REQUIRED)
 find_package(azure-storage-blobs-cpp CONFIG REQUIRED)
 find_package(semver CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
@@ -183,11 +184,12 @@ if(WinMLEpCatalog_FOUND)
     )
 endif()
 
-string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" FOUNDRY_LOCAL_SYSTEM_PROCESSOR)
+# CUDA/WebGPU EP bootstrappers are compiled on every non-Android platform.
+# Per-platform IsSupportedPlatform() gates runtime instantiation, so on
+# platforms without a published bundle (e.g. exotic Linux archs) the code is
+# present but inert.
 set(FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS ON)
-if(ANDROID OR
-   (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
-    NOT FOUNDRY_LOCAL_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$"))
+if(ANDROID)
     set(FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS OFF)
 endif()
 
@@ -262,6 +264,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/contracts/reasoning_options.cc
     src/inferencing/generative/toolcalling/qwen_xml_tool_call_decoder.cc
     src/inferencing/generative/toolcalling/tool_call_utils.cc
+    src/inferencing/generative/toolcalling/tool_call_plan.cc
     src/inferencing/generative/toolcalling/grammar.cc
     src/inferencing/generative/chat/search_options.cc
     src/inferencing/generative/chat/stop_strings.cc
@@ -335,6 +338,7 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
     target_link_libraries(${TARGET}
         ${LINK_SCOPE}
             nlohmann_json::nlohmann_json
+            jsoncons::jsoncons
             Azure::azure-core
             Azure::azure-storage-blobs
             semver::semver

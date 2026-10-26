@@ -430,7 +430,7 @@ impl Deref for ChatSession { type Target = Session; }
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `new` | `async fn new(model: &Model) -> Result<ChatSession, FoundryLocalError>` | Open a chat session on a loaded model. Returns `Validation` if the model's task is not `chat-completion` or `vision-language-chat`. |
+| `new` | `async fn new(model: &Model) -> Result<ChatSession, FoundryLocalError>` | Open a chat session on a loaded model. Returns `Validation` if the model's task is not `chat-completion`, `coding`, or `vision-language-chat`. |
 | `add_tool_definition` | `async fn add_tool_definition(&self, definition: ToolDefinition) -> Result<(), FoundryLocalError>` | Register a tool for the lifetime of the session. |
 | `add_custom_tool_definition` | `async fn add_custom_tool_definition(&self, definition: CustomToolDefinition) -> Result<(), FoundryLocalError>` | Register a custom text tool for the lifetime of the session. |
 | `remove_tool_definition` | `async fn remove_tool_definition(&self, name: impl Into<String>) -> Result<bool, FoundryLocalError>` | Remove a tool by name; returns whether one was removed. |

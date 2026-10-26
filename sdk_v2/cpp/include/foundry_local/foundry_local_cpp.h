@@ -1124,6 +1124,7 @@ class Session {
   std::unique_ptr<detail::StreamingCallbackHelper> streaming_callback_helper_;
 };
 
+/// Session for chat-completion, coding (text-only), and vision-language-chat models.
 class ChatSession : public Session {
  public:
   explicit ChatSession(IModel& model);

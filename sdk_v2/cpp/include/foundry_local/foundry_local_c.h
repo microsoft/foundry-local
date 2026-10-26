@@ -256,7 +256,7 @@ typedef enum flTensorDataType {
 #define FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR "publisher"                      ///< optional
 #define FOUNDRY_LOCAL_MODEL_PROP_LICENSE_STR "license"                          ///< optional
 #define FOUNDRY_LOCAL_MODEL_PROP_LICENSE_DESCRIPTION_STR "license_description"  ///< optional
-#define FOUNDRY_LOCAL_MODEL_PROP_TASK_STR "task"                                ///< e.g. "chat-completion", "text-generation"
+#define FOUNDRY_LOCAL_MODEL_PROP_TASK_STR "task"                                ///< e.g. "chat-completion", "coding"
 #define FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR "model_provider"            ///< e.g. "FoundryLocal"
 #define FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR "min_fl_version"            ///< minimum Foundry Local version required
 #define FOUNDRY_LOCAL_MODEL_PROP_PARENT_URI_STR "parent_uri"                    ///< optional
@@ -1148,7 +1148,7 @@ struct flModelApi {
   flDeviceType FL_API_T(Info_GetDeviceType, _In_ const flModelInfo* info);
   /// Returns nullptr if not set.
   const char* FL_API_T(Info_GetExecutionProvider, _In_ const flModelInfo* info);
-  /// Task the model performs. "chat-completion", "automatic-speech-recognition", "vision-language-chat"
+  /// Model task: "chat-completion", "coding", "vision-language-chat", "embeddings", or "automatic-speech-recognition".
   const char* FL_API_T(Info_GetTask, _In_ const flModelInfo* info);
 
   /// Get prompt templates as key/value pairs. Returns nullptr if none.

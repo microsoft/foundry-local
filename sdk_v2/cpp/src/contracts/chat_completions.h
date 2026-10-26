@@ -89,7 +89,7 @@ struct ChatCompletionMessage {
 struct ChatCompletionFunctionDef {
   std::string name;
   std::optional<std::string> description;
-  std::optional<nlohmann::json> parameters;  // JSON Schema object
+  std::optional<nlohmann::ordered_json> parameters;  // JSON Schema object; generation preserves property order.
   std::optional<bool> strict;
 };
 
@@ -265,6 +265,7 @@ void from_json(const nlohmann::json& j, ChatCompletionTool& t);
 void from_json(const nlohmann::json& j, ChatCompletionToolChoice& tc);
 void from_json(const nlohmann::json& j, ChatStreamOptions& s);
 void from_json(const nlohmann::json& j, ChatCompletionRequest& r);
+void from_json(const nlohmann::ordered_json& j, ChatCompletionRequest& r);
 
 // --- Request serialization (round-trips the tool declarations tests and clients compare against) ---
 void to_json(nlohmann::json& j, const ChatCompletionFunctionDef& f);

@@ -22,13 +22,16 @@ and streaming across languages, see [Inference with the Foundry Local SDK](../IN
 
 - **Model catalog** -- discover model aliases, variants, cached models, and loaded models
 - **Model lifecycle** -- download, load, unload, remove, and register local model assets
-- **Chat** -- stateful chat sessions with streaming callbacks and per-request settings
+- **Chat** -- stateful chat sessions, including text-only `coding` models, with streaming and per-request settings
 - **Tool calling** -- session-scoped and request-scoped tool definitions, plus typed tool call/result items
 - **Embeddings** -- single and batch `std::vector<float>` helpers
 - **Audio** -- offline and real-time streaming audio transcription
 - **Execution providers** -- discover, download, and register hardware acceleration on demand
 - **Embedded web service** -- optionally expose an OpenAI-compatible local endpoint
 - **C API** -- a stable ABI for other language bindings and low-level integrations
+
+Models with task `coding` use `ChatSession`. See [coding models](../INFERENCING.md#coding-models) for
+capabilities, registration, and compatibility considerations.
 
 ## Install From NuGet
 
@@ -213,6 +216,17 @@ Events traverse normal decoration, queuing, storage, and encoding; only the HTTP
 transport is replaced with an in-process responder. The `upload-after-ci` case
 holds encoding until process exit after a CI-suppressed first Manager.
 
+Windows also runs five DLL lifecycle cases for the Manager owner and standalone
+telemetry. A mock provider avoids the real SDK workers' DLL pinning so the
+fixture can exercise actual `FreeLibrary` teardown. Process-termination cases
+retain a pending mock uploader callback; they do not access private locks or
+reproduce lock ownership by terminated threads. Normal destruction and explicit
+`FreeLibrary` must each flush, tear down, and release the uploader exactly once. Only Windows
+process termination abandons cleanup; pending telemetry is not flushed there.
+The standalone bridge covers teardown inside `FreeLibrary`; active Manager
+runtime resources can retain the DLL, so Manager coverage explicitly destroys
+the instance before unloading.
+
 ```pwsh
 python tools/run_dependency_tests.py --build build/Windows/RelWithDebInfo --config RelWithDebInfo
 ```
@@ -245,53 +259,113 @@ bundles to prevent external collector transmission. These are warm-file-cache,
 local-host observations, not cold-boot, inference, telemetry-enabled, mobile, or
 release-signed-package measurements. Network variability is not itself evidence
 of a dependency performance regression.
-### Qwen XML region guidance
+### Structured coding tools
 
-With ONNX Runtime GenAI 0.18.0 or later, Foundry Local automatically constrains
-the body of eligible Qwen XML function calls. No caller setting is required.
+Structured tool turns on both Engine and Generator use one immutable `ToolCallPlan` for declaration
+admission, call-name selection, original-schema validation, and batch acceptance.
+The model emits a nonempty canonical JSON array inside its published tool
+markers, for example:
 
-Eligibility requires native Qwen XML automatic text-and-tools on Engine, distinct
-tool marker token IDs published by GenAI's tokenizer whose decoded strings match
-the effective model markers, no caller guidance or forced/raw tool,
-and a **fully representable** offered set of ordinary function tools. The planner
-accepts at most 64 declared fields per tool and emits required fields before optional fields
-in a canonical order, keeping grammar size linear in the field count. The strict
-decoder still accepts any valid field order. Bounded supported schemas include
-scalar, array, and nested object types, nullable types, enums, local `#/$defs/name`
-references, and selected unions; unsupported or malformed definitions leave the
-entire turn unguided with a warning. Explicitly open root parameter objects are
-ineligible, and the full request is subject to normalization and compiled-grammar
-size budgets. This is not unrestricted JSON Schema support.
-An unused unsupported but well-formed tool does not block recovery of a valid
-call to another tool; malformed declarations still block recovery, and a call
-to the unsupported tool remains invalid.
-The region grammar constrains function and parameter names, required fields, and
-reserved XML framing, while preserving multiline code and literal `<`. Structured
-values that are not constrained by the grammar are checked by the strict decoder,
-so guidance is not a guarantee that every generated value is valid.
-Ambiguous interrupted calls remain
-subject to strict rejection/finalization rules. As in the existing
-native `auto` path, an interrupted, structurally plausible *incomplete* call
-can be surfaced as text; schema-invalid or unsupported-only function calls cannot
-dispatch, and unrecognizable function declarations cannot leak their XML.
-Admission errors from the local GenAI API are reported, not retried as
-unguided success.
-
-To exercise the guided path with a Qwen model, run from the repository root:
-
-```powershell
-python sdk_v2\cpp\test\manual\qwen_region_guidance_smoke.py --model ..\models\qwen_3.8_27b_int4_int8kv_dflash2_int4
+```json
+[{"name":"edit","parameters":{"path":"main.py","new_str":"print(\"hello\")\n"}}]
 ```
 
-This optional Windows ARM64 smoke test requires a built Python SDK binding
-(`--binding <package-directory>` if it is not installed) and CUDA EP. It checks
-that the native Engine installed region guidance on each request, then verifies
-required, optional, parameterless, and multiline tool calls, strict decoding,
-and tool-result continuation; it does not download a model in CI.
-Run the same command with `--no-reasoning` to check two unconstrained text
-turns followed by a tool call without relying on reasoning-driven invalidation.
-Region guidance alone does not discard retained Engine state after an ordinary
-non-reasoning text turn; generated tool calls still invalidate it.
+This replaces the model's native XML argument protocol; callers continue using
+the ordinary Chat Completions, Responses, or SDK tool APIs. Arguments are never
+coerced, repaired, default-filled, or guessed from XML text.
+
+**Generation and validation have different responsibilities.** Structural Lark
+guidance restricts JSON syntax, the canonical envelope, declared/forced tool names,
+and serial versus parallel calls. It preserves arbitrary argument property order,
+JSON structural whitespace, and standard string escapes, including printable Unicode escapes. It does
+not use the runtime's JSON Schema-to-grammar projection: a mask must not turn a
+valid argument spelling into a different value to satisfy a compiler limitation.
+The unchanged original parameter schema is validated with jsoncons before any
+call in the batch is published. Structural guidance alone does not guarantee
+schema compliance or that the model chose the user's intended argument value.
+
+Automatic tool turns select their response mode explicitly: ordinary assistant
+text starts with an internal `MESSAGE` line, while executable calls start with
+the model's dedicated tool boundary. The runtime removes the text framing line
+incrementally; callers still receive normal content and tool-call events.
+Unframed tool-shaped text is rejected instead of silently returned as an answer.
+Historical assistant text uses the same framing when projected back to the model.
+
+The admitted schema profile supports Draft 2020-12 and supported Draft 7
+declarations, local JSON Pointer references, composition, string/numeric/array
+bounds, and open objects when the original schema permits them. Remote references,
+recursive references, anchors, custom vocabularies, reserved control keywords, and
+unsupported content features are rejected explicitly, not silently dropped.
+Unknown non-reserved keywords and `format` are treated as annotations; their original
+values remain in the schema for prompting and validation. Format assertions are not enabled.
+Schema input is limited to 1 MiB, individual argument JSON to 4 MiB, a canonical batch
+to 16 MiB, and nesting to 64. Duplicate JSON members are rejected before DOM parsing can erase them.
+
+Only model-published token identities delimit reasoning and executable tool
+regions. Marker spellings quoted in reasoning or in argument strings remain
+data, even when the tokenizer marks the published added tokens `special:false`.
+Transcript text, tool results, schemas, and historical argument bodies use a
+separate literal tokenizer; template-owned structure and runtime-owned protocol
+boundary exemplars use their actual token identities. This separation preserves
+multiline code, backslashes, Unicode, bracket-prefixed strings, and literal
+tool/reasoning marker text.
+
+Automatic structured tool turns use whole-turn guidance rather than region guidance, so a
+marker mentioned in scratchpad text cannot prematurely activate argument decoding.
+Whole-turn guidance disables speculative drafts; qualify its performance as well
+as correctness with the intended model. Region-only masks cannot enforce the
+initial text-versus-tool response mode and are not an automatic tool fallback.
+Required tools, forced names, and `parallel_tool_calls=false` remain authoritative.
+
+Concurrent Engine requests wait while resident turns make progress, including
+background coding-agent compaction. The capacity watchdog bounds stalled capacity,
+not total queue time; queued requests remain cancelable and do not expire merely
+because another healthy local generation lasts more than 30 seconds.
+
+An invalid uncommitted call gets at most one guided retry with a bounded schema
+diagnostic and the remaining output-token budget. Already streamed text/reasoning
+retains its exact token prefix and is not published twice. No retry is allowed
+after a tool call was published, cancellation, truncation, stop-sequence
+interruption, or incompatible explicit/raw guidance. Rejected and interrupted
+argument payloads never become assistant text. Exhaustion is an explicit error,
+not an empty successful response.
+
+Recovery also shares implicit classic Generator output limits; it cannot acquire a
+fresh default allowance or use the retained conversation's full context as an output
+budget. Engine text turns remain uncapped when the caller leaves their limit unset.
+
+Qualification requires both protocol fidelity and the **real Copilot CLI** coding
+workflow, not just an offline harness self-test. With the server already running:
+
+```powershell
+python sdk_v2\cpp\test\manual\tool_call_gate.py `
+  --endpoint http://127.0.0.1:5273/catalogs/local/v1 --model qwen-3.8-27b-dflash2:1 `
+  --output-dir sdk_v2\cpp\build\tool-call-gate
+python sdk_v2\cpp\test\manual\coding_agent_gate.py `
+  --endpoint http://127.0.0.1:5273/catalogs/local/v1 --model qwen-3.8-27b-dflash2:1 `
+  --schema-profile native --timeout-seconds 600 --max-output-tokens 8192 `
+  --output-dir sdk_v2\cpp\build\coding-agent-gate
+```
+
+Use fresh output directories and run the Copilot gate separately for `native`,
+`minlength`, and `oneof`. The isolated CLI must read/search files, encounter a real
+tool error and failing tests, repair the adversarial fixture through real editing
+tools, and finish with passing tests and exact file bytes. Private HTTP/SSE
+artifacts must show the intended local provider/model, no provider errors, and no
+invalid calls. These opt-in gates require the supplied model and installed CLI;
+they do not download models in CI or certify an unchanged release package.
+An `edit` qualifies only with a successful correlated CLI completion and exact
+full-file original and replacement arguments, including terminal LF; a failed edit
+followed by shell repair is insufficient. Protocol checks require a successful
+terminal choice, with `[DONE]` following it for streaming Chat Completions.
+The protocol gate also checks optional-property ordering through nonstreaming
+`/responses`, requiring a completed response and completed function calls.
+It checks ordinary function calls with a raw patch descriptor enabled in both
+streaming and nonstreaming Chat Completions.
+Qualification applies to the model, backend, platform, and exact native binaries
+recorded for the run. Scripted Generator regressions do not substitute for a
+trained Generator model gate, and these text-only workflows do not qualify
+multimodal input. Rebuilt release artifacts must pass the same gates independently.
 
 ## Quick Start
 

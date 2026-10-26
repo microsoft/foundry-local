@@ -34,6 +34,18 @@ The build produces:
 `verify` also runs SpotBugs and fails on actionable findings. The packaging
 pipeline compiles a clean Maven consumer against the staged POM and JAR.
 
+All five platform build/test jobs and the Maven bundle job share
+`.pipelines/templates/steps-bootstrap-maven.yml`. It downloads Maven 3.9.9
+through the `AIFoundryLocal_PublicPackages` Maven Central upstream using the
+job's `System.AccessToken` and verifies the pinned SHA-512 checksum. The
+pipeline's Build Service identity needs feed Reader permission for cached
+packages, or Feed and Upstream Reader (Collaborator) to save packages from
+upstream. The bootstrap also creates a job-local Maven settings file that
+mirrors all dependency and plugin repositories through the same feed.
+All build/test, packaging, and packaged-consumer Maven invocations use this
+settings file and receive the job token through their environment; the
+settings file references the token without storing it.
+
 Override `revision` when producing an immutable release:
 
 ```powershell

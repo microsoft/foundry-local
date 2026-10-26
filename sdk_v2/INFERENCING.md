@@ -66,6 +66,25 @@ Choose a session and input items that the model supports:
 | `EmbeddingsSession` | Text items, one per input | Tensor items containing embedding vectors, one per input | Use the complete response, not token streaming |
 | `AudioSession` | An audio item, or an audio format descriptor followed by an input queue to provide streamed audio chunks. | A speech-result item with the transcript and segment details | Speech-segment items |
 
+### Coding models
+
+Models with task `coding` use the same `ChatSession` APIs as `chat-completion` models:
+text input/output, conversation history, streaming, request preflight, and existing tool APIs.
+They also work through the existing HTTP chat-completions and Responses endpoints. The task remains
+`coding` in model metadata; it does not select a different backend or add a fill-in-the-middle API.
+Model assets must still be compatible with the runtime and supply the appropriate chat template.
+Tool calling depends on the model's capabilities, not the task label.
+
+Local registration accepts `task: "coding"` and defaults input/output modalities to text.
+Explicit modality properties are preserved as metadata, but do not enable image/audio input for
+this text-only task. Published catalog records use the first `inferenceTasks` entry as the runtime task;
+publishing-system schema acceptance and deployment filters must be checked separately.
+
+Use a native runtime and language bindings that support `coding`; older releases may reject it.
+An older runtime reading a shared cache with a persisted coding registration can fail to load the
+entire local registration index, affecting other registrations as well. Before downgrading, unregister
+coding entries using a supporting runtime or use a separate model-cache directory.
+
 ### Current item types
 
 These are the [native item type names](cpp/include/foundry_local/foundry_local_c.h);

@@ -5,7 +5,9 @@
 #include "inferencing/generative/chat/chat_template.h"
 #include "inferencing/generative/chat/onnx_chat_engine.h"
 #include "inferencing/generative/chat/onnx_engine_chat_stream.h"
+#include "inferencing/generative/toolcalling/grammar.h"
 #include "inferencing/generative/toolcalling/qwen_xml_tool_call_decoder.h"
+#include "inferencing/generative/toolcalling/tool_call_plan.h"
 #include "inferencing/model_load_manager.h"
 #include "c_api_types.h"
 #include "internal_api/test_helpers.h"
@@ -36,6 +38,13 @@ namespace fl {
 namespace {
 
 constexpr const char* kDynamicEngineModelId = "tiny-paged-attention";
+
+std::string WithoutOptionalJsonWhitespace(std::string grammar) {
+  // The untrained fixture otherwise prefers whitespace indefinitely. The separate whitespace test forces that branch.
+  const std::string rule = "tool_json_ws: TOOL_JSON_WS?";
+  grammar.replace(grammar.find(rule), rule.size(), "tool_json_ws:");
+  return grammar;
+}
 
 TEST(OnnxEngineChatStreamDecisionTest, PreservesEveryOgaFinishCauseForRawFinalization) {
   using onnx_engine_chat_stream_internal::MapTerminationCause;
@@ -233,8 +242,8 @@ TEST_F(DynamicEngineChatTest, QwenRegionGuidanceConstrainsNativeBodyAndRestoresF
   context.tools_json =
       R"([{"type":"function","function":{"name":"grep","parameters":{"type":"object","properties":{}}}}])";
   context.tool_kinds = {{"grep", ToolKind::kFunction}};
-  context.qwen_xml_tool_body_grammar = BuildQwenXmlToolBodyGrammar(context.tools_json, context.tool_kinds);
-  ASSERT_TRUE(context.qwen_xml_tool_body_grammar.has_value());
+  context.tool_body_grammar = BuildQwenXmlToolBodyGrammar(context.tools_json, context.tool_kinds);
+  ASSERT_TRUE(context.tool_body_grammar.has_value());
   context.tool_call_start_token_id = opening.front();
   context.tool_call_end_token_id = closing.front();
 
@@ -288,8 +297,8 @@ TEST_F(DynamicEngineChatTest, QwenRegionGuidanceConstrainsRequiredParameterName)
       R"([{"type":"function","function":{"name":"grep","parameters":{"type":"object",)"
       R"("properties":{"paths":{"type":"string"}},"required":["paths"]}}}])";
   context.tool_kinds = {{"grep", ToolKind::kFunction}};
-  context.qwen_xml_tool_body_grammar = BuildQwenXmlToolBodyGrammar(context.tools_json, context.tool_kinds);
-  ASSERT_TRUE(context.qwen_xml_tool_body_grammar.has_value());
+  context.tool_body_grammar = BuildQwenXmlToolBodyGrammar(context.tools_json, context.tool_kinds);
+  ASSERT_TRUE(context.tool_body_grammar.has_value());
   context.tool_call_start_token_id = opening.front();
   context.tool_call_end_token_id = closing.front();
 
@@ -313,6 +322,230 @@ TEST_F(DynamicEngineChatTest, QwenRegionGuidanceConstrainsRequiredParameterName)
   EXPECT_TRUE(std::equal(output.begin(), output.begin() + free_count + 1, baseline.begin()));
   EXPECT_TRUE(std::equal(header.begin(), header.end(), output.begin() + free_count + 1));
   EXPECT_NE(output[free_count + header.size()], closing.front());
+  engine.Close(conversation);
+}
+
+TEST_F(DynamicEngineChatTest, CanonicalToolRegionPreservesFreeTextAndConstrainsTheEnvelope) {
+  const auto opening = EncodeLiteral("~", ModelInstance());
+  const auto closing = EncodeLiteral("!", ModelInstance());
+  ASSERT_EQ(opening.size(), 1u);
+  ASSERT_EQ(closing.size(), 1u);
+
+  ToolCallContext context;
+  context.tools_json = R"([{"type":"function","function":{"name":"echo","parameters":{"type":"object"}}}])";
+  context.tool_plan = ToolCallPlan::Create(context.tools_json, false);
+  context.tool_body_grammar = WithoutOptionalJsonWhitespace(context.tool_plan->Grammar());
+  context.tool_call_start_token_id = opening.front();
+  context.tool_call_end_token_id = closing.front();
+
+  const auto prompt = EncodeUserPrompt("Try it.", ModelInstance());
+  const auto baseline = ReferenceTokens(prompt, 256);
+  const auto first_open = std::ranges::find(baseline, opening.front());
+  ASSERT_NE(first_open, baseline.end());
+  const auto free_count = static_cast<size_t>(first_open - baseline.begin());
+
+  SearchOptions options;
+  options.max_output_tokens = 256;
+  options.do_sample = false;
+  OnnxChatEngine engine(ModelInstance());
+  auto conversation = engine.CreateConversation(options, context, static_cast<int>(prompt.size()));
+  engine.BeginTurn(conversation, prompt, options, context, false);
+  const auto output = FinishConversation(engine, conversation);
+  ASSERT_GT(output.size(), free_count + 2);
+  EXPECT_TRUE(std::equal(output.begin(), output.begin() + free_count + 1, baseline.begin()));
+
+  const auto body_begin = output.begin() + free_count + 1;
+  auto decoder = ModelInstance().GetPreprocessor().CreateTokenizerStream();
+  std::string body;
+  for (auto token = body_begin; token != output.end(); ++token) {
+    body += decoder->Decode(*token);
+  }
+
+  // This untrained decoder need not finish its argument object. Semantic fidelity uses the real-model gate.
+  EXPECT_TRUE(body.starts_with(R"([{"name":"echo","parameters":{)")) << body;
+  engine.Close(conversation);
+}
+
+TEST_F(DynamicEngineChatTest, CanonicalToolGrammarAcceptsWhitespaceAtStructuralBoundaries) {
+  const auto plan = ToolCallPlan::Create(
+      R"([{"type":"function","function":{"name":"echo","parameters":{"type":"object"}}}])", false);
+  ToolCallContext context;
+  context.guidance_type = "lark_grammar";
+  context.guidance_data = plan->Grammar();
+  const auto replace_rule = [&](const std::string& name, const std::string& expression) {
+    const auto begin = context.guidance_data.find("\n" + name + ":");
+    if (begin == std::string::npos) {
+      return false;
+    }
+
+    const auto end = context.guidance_data.find('\n', begin + 1);
+    context.guidance_data.replace(begin + 1, end - begin - 1, name + ": " + expression);
+    return true;
+  };
+
+  // Narrow legal alternatives so this untrained decoder exercises whitespace rather than extending strings forever.
+  const std::string whitespace_rule = R"(" \n")";
+  const std::string string_rule = R"("\"x\"")";
+  const std::string object_rule = R"("{" tool_json_ws tool_json_member tool_json_comma )"
+                                  R"("\"other\"" tool_json_colon TOOL_JSON_STRING tool_json_ws "}")";
+  ASSERT_TRUE(replace_rule("tool_json_ws", whitespace_rule));
+  ASSERT_TRUE(replace_rule("tool_json_value", "TOOL_JSON_STRING"));
+  ASSERT_TRUE(replace_rule("TOOL_JSON_STRING", string_rule));
+  ASSERT_TRUE(replace_rule("tool_json_object", object_rule));
+  const auto prompt = EncodeUserPrompt("Try it.", ModelInstance());
+  SearchOptions options;
+  options.max_output_tokens = 256;
+  options.do_sample = false;
+  OnnxChatEngine engine(ModelInstance());
+  auto conversation = engine.CreateConversation(options, context, static_cast<int>(prompt.size()));
+  engine.BeginTurn(conversation, prompt, options, context, false);
+  const auto output = FinishConversation(engine, conversation);
+  auto decoder = ModelInstance().GetPreprocessor().CreateTokenizerStream();
+  std::string body;
+  for (const auto token : output) {
+    body += decoder->Decode(token);
+  }
+
+  EXPECT_TRUE(body.starts_with(" \n[ \n{ \n\"name\" \n: \n\"echo\" \n, \n\"parameters\" \n: \n{")) << body;
+  EXPECT_NE(body.find("\"x\" \n, \n\"other\" \n: \n\"x\" \n}"), std::string::npos) << body;
+  const auto calls = plan->ParseCalls(body);
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(nlohmann::json::parse(calls.front().arguments), (nlohmann::json{{"x", "x"}, {"other", "x"}}));
+  engine.Close(conversation);
+}
+
+TEST_F(DynamicEngineChatTest, InvalidRegionGuidanceDoesNotCommitPromptOrDestroyResidentHistory) {
+  OnnxChatEngine engine(ModelInstance());
+  SearchOptions options;
+  options.max_output_tokens = 5;
+  options.do_sample = false;
+  ToolCallContext context;
+  const auto prompt = EncodeUserPrompt("Keep this history.", ModelInstance());
+  auto conversation = engine.CreateConversation(options, context, static_cast<int>(prompt.size()));
+  engine.BeginTurn(conversation, prompt, options, context, false);
+  (void)FinishConversation(engine, conversation);
+  const auto resident = engine.ResidentTokens(conversation);
+
+  auto invalid_context = context;
+  invalid_context.tool_call_start_token_id = EncodeLiteral("~", ModelInstance()).front();
+  invalid_context.tool_call_end_token_id = EncodeLiteral("!", ModelInstance()).front();
+  invalid_context.tool_body_grammar = "this is not a Lark grammar";
+  const auto next_prompt = EncodeUserPrompt("Continue.", ModelInstance());
+  EXPECT_THROW(engine.BeginTurn(conversation, next_prompt, options, invalid_context, false), std::runtime_error);
+  EXPECT_EQ(engine.ResidentTokens(conversation), resident);
+
+  engine.BeginTurn(conversation, next_prompt, options, context, false);
+  auto expected = resident;
+  expected.insert(expected.end(), next_prompt.begin(), next_prompt.end());
+  EXPECT_EQ(FinishConversation(engine, conversation), ReferenceTokens(expected, 5));
+  engine.Close(conversation);
+}
+
+TEST_F(DynamicEngineChatTest, CanonicalWholeTurnSeparatesNonSpecialControlTokensFromReasoningAndEnvelope) {
+  ToolCallContext context;
+  context.tools_json = R"([{"type":"function","function":{"name":"echo","parameters":{"type":"object"}}}])";
+  context.tool_plan = ToolCallPlan::Create(context.tools_json, false);
+  context.text_output = false;
+  context.tool_output = true;
+  context.supports_reasoning = true;
+  context.tool_call_start = "~";
+  context.tool_call_end = "!";
+  context.reasoning_start = "(";
+  context.reasoning_end = "O";
+  context.tool_call_start_token_id = EncodeLiteral("~", ModelInstance()).front();
+  context.tool_call_end_token_id = EncodeLiteral("!", ModelInstance()).front();
+  context.reasoning_start_token_id = EncodeLiteral("(", ModelInstance()).front();
+  context.reasoning_end_token_id = EncodeLiteral("O", ModelInstance()).front();
+  context.eos_token_ids = ModelInstance().GetPreprocessor().GetEosTokenIds();
+  context.guidance_type = "lark_grammar";
+  context.guidance_data = WithoutOptionalJsonWhitespace(BuildLarkGrammar(context));
+  const auto prompt = EncodeUserPrompt("Try it.", ModelInstance());
+  SearchOptions options;
+  options.max_output_tokens = 256;
+  options.do_sample = false;
+  OnnxChatEngine engine(ModelInstance());
+  auto conversation = engine.CreateConversation(options, context, static_cast<int>(prompt.size()));
+  engine.BeginTurn(conversation, prompt, options, context, false);
+  const auto output = FinishConversation(engine, conversation);
+
+  ASSERT_FALSE(output.empty());
+  EXPECT_EQ(output.front(), *context.reasoning_start_token_id);
+  const auto reasoning_end = std::ranges::find(output, *context.reasoning_end_token_id);
+  const auto opening = std::ranges::find(output, *context.tool_call_start_token_id);
+  ASSERT_NE(reasoning_end, output.end()) << ::testing::PrintToString(output);
+  ASSERT_NE(opening, output.end());
+  EXPECT_LT(reasoning_end, opening);
+  const auto angle_bracket = EncodeLiteral("<", ModelInstance()).front();
+  EXPECT_NE(std::find(output.begin(), reasoning_end, angle_bracket), reasoning_end);
+  auto decoder = ModelInstance().GetPreprocessor().CreateTokenizerStream();
+  std::string body;
+  for (auto token = opening + 1; token != output.end(); ++token) {
+    body += decoder->Decode(*token);
+  }
+  EXPECT_TRUE(body.starts_with(R"([{"name":"echo","parameters":{)")) << body;
+  engine.Close(conversation);
+}
+
+TEST_F(DynamicEngineChatTest, CanonicalAutomaticWholeTurnCannotTreatAnOpeningIdAsOrdinaryText) {
+  const auto prompt = EncodeUserPrompt("Try it.", ModelInstance());
+  const auto baseline = ReferenceTokens(prompt, 4);
+  ASSERT_FALSE(baseline.empty());
+  auto decoder = ModelInstance().GetPreprocessor().CreateTokenizerStream();
+  ToolCallContext context;
+  context.tools_json = R"([{"type":"function","function":{"name":"echo","parameters":{"type":"object"}}}])";
+  context.tool_plan = ToolCallPlan::Create(context.tools_json, false);
+  context.tool_output = true;
+  context.tool_call_start_token_id = baseline.front();
+  context.tool_call_start = decoder->Decode(baseline.front());
+  context.tool_call_end = context.tool_call_start == "!" ? "~" : "!";
+  context.tool_call_end_token_id = EncodeLiteral(context.tool_call_end, ModelInstance()).front();
+  context.eos_token_ids = ModelInstance().GetPreprocessor().GetEosTokenIds();
+  context.guidance_type = "lark_grammar";
+  context.guidance_data = WithoutOptionalJsonWhitespace(BuildLarkGrammar(context));
+  SearchOptions options;
+  options.max_output_tokens = 256;
+  options.do_sample = false;
+  OnnxChatEngine engine(ModelInstance());
+  auto conversation = engine.CreateConversation(options, context, static_cast<int>(prompt.size()));
+  engine.BeginTurn(conversation, prompt, options, context, false);
+  const auto output = FinishConversation(engine, conversation);
+  ASSERT_GT(output.size(), 2u);
+  EXPECT_EQ(output.front(), *context.tool_call_start_token_id);
+  decoder = ModelInstance().GetPreprocessor().CreateTokenizerStream();
+  std::string body;
+  for (auto token = output.begin() + 1; token != output.end(); ++token) {
+    body += decoder->Decode(*token);
+  }
+  EXPECT_TRUE(body.starts_with(R"([{"name":"echo","parameters":{)")) << body;
+  engine.Close(conversation);
+}
+
+TEST_F(DynamicEngineChatTest, AutomaticWholeTurnRequiresAnExplicitTextOrToolModeBeforeAnyBody) {
+  const auto prompt = EncodeUserPrompt("Choose a response.", ModelInstance());
+  const auto baseline = ReferenceTokens(prompt, 1);
+  ASSERT_EQ(baseline.size(), 1u);
+  ToolCallContext context;
+  context.tools_json = R"([{"type":"function","function":{"name":"echo","parameters":{"type":"object"}}}])";
+  context.tool_plan = ToolCallPlan::Create(context.tools_json, false);
+  context.tool_output = true;
+  context.tool_call_start = "~";
+  context.tool_call_end = "!";
+  context.tool_call_start_token_id = EncodeLiteral("~", ModelInstance()).front();
+  context.tool_call_end_token_id = EncodeLiteral("!", ModelInstance()).front();
+  context.eos_token_ids = ModelInstance().GetPreprocessor().GetEosTokenIds();
+  const auto message_prefix = EncodeLiteral("M", ModelInstance());
+  ASSERT_EQ(message_prefix.size(), 1u);
+  ASSERT_NE(baseline.front(), message_prefix.front());
+  ASSERT_NE(baseline.front(), *context.tool_call_start_token_id);
+  SearchOptions options;
+  options.max_output_tokens = 1;
+  options.do_sample = false;
+  OnnxChatEngine engine(ModelInstance());
+  auto conversation = engine.CreateConversation(options, context, static_cast<int>(prompt.size()));
+  engine.BeginTurn(conversation, prompt, options, context, false);
+  const auto output = FinishConversation(engine, conversation);
+  ASSERT_FALSE(output.empty());
+  EXPECT_TRUE(output.front() == message_prefix.front() || output.front() == *context.tool_call_start_token_id);
   engine.Close(conversation);
 }
 
@@ -526,7 +759,7 @@ TEST_F(DynamicEngineChatTest, RunsTwoConcurrentSessions) {
   EXPECT_EQ(second.get(), second_expected);
 }
 
-TEST_F(DynamicEngineChatTest, CapacityTimeoutFailsOnlyNewestWaitingConversation) {
+TEST_F(DynamicEngineChatTest, CapacityWaitSurvivesProgressBeyondItsStallTimeout) {
   OnnxChatEngine engine(ModelInstance(), 1ms);
   SearchOptions options;
   options.max_output_tokens = 512;
@@ -539,25 +772,45 @@ TEST_F(DynamicEngineChatTest, CapacityTimeoutFailsOnlyNewestWaitingConversation)
   auto waiting = engine.CreateConversation(options, tool_context, static_cast<int>(tokens.size()));
   engine.BeginTurn(first, tokens, options, tool_context, false);
   engine.BeginTurn(second, tokens, options, tool_context, false);
+  const auto queued_at = std::chrono::steady_clock::now();
   engine.BeginTurn(waiting, tokens, options, tool_context, false);
 
   auto wait_result = std::async(std::launch::async, [&]() {
-    try {
-      (void)engine.WaitForToken(waiting);
-      return std::string{};
-    } catch (const std::exception& error) {
-      return std::string(error.what());
-    }
+    return FinishConversation(engine, waiting);
   });
 
   ASSERT_EQ(wait_result.wait_for(5s), std::future_status::ready)
-      << "The capacity-blocked request exceeded its bounded wait";
-  EXPECT_NE(wait_result.get().find("capacity remained unavailable"), std::string::npos);
+      << "A queued request must run after healthy resident turns complete";
+  EXPECT_EQ(wait_result.get(), ReferenceTokens(tokens, 512));
+  EXPECT_GT(std::chrono::steady_clock::now() - queued_at, 1ms);
+  EXPECT_EQ(FinishConversation(engine, first), ReferenceTokens(tokens, 512));
+  EXPECT_EQ(FinishConversation(engine, second), ReferenceTokens(tokens, 512));
 
-  EXPECT_TRUE(engine.WaitForToken(first).has_value());
-  EXPECT_TRUE(engine.WaitForToken(second).has_value());
-  engine.Cancel(first);
-  engine.Cancel(second);
+  engine.Close(first);
+  engine.Close(second);
+  engine.Close(waiting);
+}
+
+TEST_F(DynamicEngineChatTest, CancelsCapacityWaitingConversationWithoutInterruptingResidents) {
+  OnnxChatEngine engine(ModelInstance());
+  SearchOptions options;
+  options.max_output_tokens = 512;
+  options.temperature = 0.0f;
+  ToolCallContext tool_context;
+  const auto tokens = EncodeUserPrompt("Keep generating while another request waits.", ModelInstance());
+
+  auto first = engine.CreateConversation(options, tool_context, static_cast<int>(tokens.size()));
+  auto second = engine.CreateConversation(options, tool_context, static_cast<int>(tokens.size()));
+  auto waiting = engine.CreateConversation(options, tool_context, static_cast<int>(tokens.size()));
+  engine.BeginTurn(first, tokens, options, tool_context, false);
+  engine.BeginTurn(second, tokens, options, tool_context, false);
+  engine.BeginTurn(waiting, tokens, options, tool_context, false);
+  engine.Cancel(waiting);
+
+  EXPECT_FALSE(engine.WaitForToken(waiting).has_value());
+  EXPECT_EQ(engine.GetTurnResult(waiting).finish_reason, OgaFinishReason_Cancelled);
+  EXPECT_EQ(FinishConversation(engine, first), ReferenceTokens(tokens, 512));
+  EXPECT_EQ(FinishConversation(engine, second), ReferenceTokens(tokens, 512));
   engine.Close(first);
   engine.Close(second);
   engine.Close(waiting);

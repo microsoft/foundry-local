@@ -37,6 +37,7 @@ std::mutex kLocalCatalogMutationMutex;
 const std::unordered_set<std::string> kSupportedTasks = {
     "automatic-speech-recognition",
     "chat-completion",
+    "coding",
     "embeddings",
     "vision-language-chat",
 };
@@ -51,7 +52,7 @@ struct ParsedModelId {
 };
 
 void ApplyTaskDefaults(ModelInfo& info) {
-  if (info.task == "chat-completion") {
+  if (info.task == "chat-completion" || info.task == "coding") {
     if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR)) {
       info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, "text");
     }

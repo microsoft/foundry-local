@@ -143,6 +143,9 @@ add_executable(foundry_local_tests
     internal_api/toolcalling/tool_call_stream_accumulator_test.cc
     internal_api/toolcalling/raw_envelope_detector_test.cc
     internal_api/toolcalling/tool_call_utils_test.cc
+    internal_api/toolcalling/tool_call_plan_test.cc
+    internal_api/toolcalling/json_tool_call_payload_parser_test.cc
+    internal_api/toolcalling/tool_call_recovery_checkpoint_test.cc
     internal_api/toolcalling/custom_tools_chat_test.cc
     internal_api/toolcalling/custom_tools_responses_test.cc
     internal_api/toolcalling/tool_definition_abi_test.cc
@@ -226,6 +229,31 @@ else()
 endif()
 
 include(GoogleTest)
+if(WIN32)
+    # Real DLL imports exercise Windows' dependency search and handle lifetime without CUDA or a GPU.
+    add_library(loader-test-dependency SHARED windows_loader/dependency.cc)
+    set_target_properties(loader-test-dependency PROPERTIES
+        OUTPUT_NAME foundry_loader_test_dependency
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/loader-fixtures/dependency")
+    add_library(loader-test-library SHARED windows_loader/library.cc)
+    target_link_libraries(loader-test-library PRIVATE loader-test-dependency)
+    set_target_properties(loader-test-library PROPERTIES
+        OUTPUT_NAME foundry_loader_test_library
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/loader-fixtures/library")
+
+    add_executable(windows-dynlib-loader-tests
+        internal_api/windows_dynlib_loader_test.cc
+        ../src/platform/windows/dynlib_loader.cc)
+    target_include_directories(windows-dynlib-loader-tests PRIVATE ../src .)
+    target_compile_options(windows-dynlib-loader-tests PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+    target_link_libraries(windows-dynlib-loader-tests PRIVATE GTest::gtest_main fmt::fmt)
+    target_compile_definitions(windows-dynlib-loader-tests PRIVATE
+        FOUNDRY_TEST_LOADER_LIBRARY="$<TARGET_FILE:loader-test-library>"
+        FOUNDRY_TEST_LOADER_DEPENDENCY="$<TARGET_FILE:loader-test-dependency>")
+    add_dependencies(windows-dynlib-loader-tests loader-test-library)
+    gtest_discover_tests(windows-dynlib-loader-tests DISCOVERY_MODE PRE_TEST)
+endif()
+
 # DISCOVERY_TIMEOUT defaults to 5s, which is not enough for the Windows build:
 # foundry_local.dll links against Microsoft.Windows.AI.MachineLearning.dll
 # (delay-loaded) plus standalone ORT, and process startup + gtest enumeration

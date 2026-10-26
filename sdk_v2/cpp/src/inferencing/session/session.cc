@@ -106,7 +106,7 @@ std::unique_ptr<Session> Session::Create(const fl::Model& model) {
     tracker.SetModelId(model.Id());
 
     const auto& info = model.Info();
-    if (info.task == "chat-completion" || info.task == "vision-language-chat") {
+    if (info.task == "chat-completion" || info.task == "coding" || info.task == "vision-language-chat") {
       auto session = std::make_unique<ChatSession>(model, *loaded, logger, telemetry);
       tracker.SetStatus(ActionStatus::kSuccess);
       return session;
@@ -174,7 +174,7 @@ void Session::ValidateRequestItems(const Request& request) const {
   // Only chat tasks are validated: other tasks either have no IO descriptor (embeddings) or accept
   // transport items that the descriptor does not advertise (the ASR streaming QUEUE item).
   const auto& task = catalog_model_.Info().task;
-  if (task != "chat-completion" && task != "vision-language-chat") {
+  if (task != "chat-completion" && task != "coding" && task != "vision-language-chat") {
     return;
   }
 

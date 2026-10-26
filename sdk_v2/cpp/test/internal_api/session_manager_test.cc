@@ -613,6 +613,48 @@ bool WaitUntil(Pred pred, std::chrono::milliseconds timeout) {
 
 }  // namespace
 
+TEST(SessionTaskValidationTest, CodingRejectsImageAndAudioDespiteModalityMetadata) {
+  fl::test::FakeServiceBindings svc;
+  ModelInfo info;
+  info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "coding");
+  info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, "text,image,audio");
+  auto model = Model::FromModelInfo(std::move(info), "", svc.download_manager, svc.model_load_manager);
+  TelemetryLogger telemetry{"test", fl::test::NullLog()};
+  CompletingSession session(model, fl::test::NullLog(), telemetry);
+
+  for (const auto type : {FOUNDRY_LOCAL_ITEM_IMAGE, FOUNDRY_LOCAL_ITEM_AUDIO}) {
+    for (const bool nested : {false, true}) {
+      SCOPED_TRACE(Item::TypeName(type));
+      SCOPED_TRACE(nested);
+      Request request;
+      auto item = Item::Create(type);
+      if (nested) {
+        std::vector<std::unique_ptr<Item>> parts;
+        parts.push_back(std::move(item));
+        request.AddOwnedItem(std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_USER, std::move(parts)));
+      } else {
+        request.AddOwnedItem(std::move(item));
+      }
+
+      Response response;
+      try {
+        session.ProcessRequest(request, response);
+        FAIL() << "Expected coding model to reject non-text input";
+      } catch (const fl::Exception& e) {
+        EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+        EXPECT_NE(std::string(e.what()).find("input is not supported by model task 'coding'"), std::string::npos);
+      }
+    }
+  }
+
+  EXPECT_EQ(session.ProcessCount(), 0u);
+  Request request;
+  request.AddOwnedItem(std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_USER, "Write a function."));
+  Response response;
+  EXPECT_NO_THROW(session.ProcessRequest(request, response));
+  EXPECT_EQ(session.ProcessCount(), 1u);
+}
+
 TEST(SessionManagerCancelTest, CancelAllCancelsInFlightRequestsOnEverySession) {
   fl::test::FakeServiceBindings svc;
   Model catalog_model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);

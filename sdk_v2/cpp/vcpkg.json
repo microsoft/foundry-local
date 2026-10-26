@@ -26,6 +26,7 @@
       "default-features": false
     },
     "nlohmann-json",
+    "jsoncons",
     "spdlog",
     "z4kn4fein-semver",
     "zlib"

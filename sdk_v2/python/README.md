@@ -172,7 +172,10 @@ loaded = catalog.get_loaded_models()
 Use the local catalog to register an existing ONNX Runtime GenAI model directory. Registration does not copy,
 download, or take ownership of the model assets. The directory must contain `genai_config.json`, and the model ID
 must use the canonical `<name>:<version>` format. The `task` metadata property is required and must be one of
-`chat-completion`, `vision-language-chat`, `embeddings`, or `automatic-speech-recognition`.
+`chat-completion`, `coding`, `vision-language-chat`, `embeddings`, or `automatic-speech-recognition`.
+
+`coding` models use the existing text-only `ChatSession` interface. See
+[coding models](../INFERENCING.md#coding-models) for capability and compatibility details.
 
 ```python
 from foundry_local_sdk import CatalogType, ModelInfoBuilder
@@ -458,7 +461,7 @@ All sessions wrap a native `flSession*` and are context managers. Closing a sess
 | Class | Description |
 |---|---|
 | `Session` | Abstract base class. Provides `process_request`, `process_streaming_request`, `set_options`, `set_streaming`, and the context-manager / `_close` lifecycle. |
-| `ChatSession` | For `chat-completion` and `vision-language-chat` models. Adds function/custom tool registration, removal, `turn_count`, and `undo_turns`. |
+| `ChatSession` | For `chat-completion`, `coding`, and `vision-language-chat` models. Adds function/custom tool registration, removal, `turn_count`, and `undo_turns`. |
 | `EmbeddingsSession` | For `embeddings` models. Stateless — accepts `TextItem` inputs, returns one `TensorItem` per input. |
 | `AudioSession` | For `automatic-speech-recognition` models. Accepts `AudioItem` input (and `ItemQueue` for live streaming), returns `TextItem`. |
 

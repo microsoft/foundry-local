@@ -52,6 +52,7 @@ using json = nlohmann::json;
 namespace {
 
 constexpr const char* kResponseStoreTestModelAlias = "response-store-test-model";
+constexpr const char* kCodingTestModelAlias = "coding-test-model";
 
 TEST(HttpUserAgentTest, KeepsOnlyKnownProductAndNumericReleaseVersion) {
   EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/1.2.3"), "foundry-local-cpp/1.2.3");
@@ -298,6 +299,12 @@ class WebServiceTest : public ::testing::Test {
         response_store_model_path,
         svc_.download_manager,
         *model_load_manager_));
+    public_catalog_->AddModel(Model::FromModelInfo(
+        test::MakeTestModelInfo(kCodingTestModelAlias, "microsoft", "coding"),
+        response_store_model_path, svc_.download_manager, *model_load_manager_));
+    local_catalog_->AddModel(Model::FromModelInfo(
+        test::MakeTestModelInfo(kCodingTestModelAlias, "local-owner", "coding"),
+        response_store_model_path, svc_.download_manager, *model_load_manager_));
 
     local_catalog_->AddModel(Model::FromModelInfo(
         test::MakeTestModelInfo("alpha-model", "local-owner"),
@@ -481,7 +488,7 @@ TEST_F(WebServiceTest, OpenAIListModelsReturnsAllModels) {
 
   EXPECT_EQ(j["object"], "list") << "Response: " << j.dump(2);
   ASSERT_TRUE(j["data"].is_array()) << "Response: " << j.dump(2);
-  EXPECT_EQ(j["data"].size(), 4u) << "Expected 4 models. Response: " << j.dump(2);
+  EXPECT_EQ(j["data"].size(), 5u) << "Expected 5 models. Response: " << j.dump(2);
 }
 
 TEST_F(WebServiceTest, OpenAIListModelsContainsExpectedFields) {
@@ -1076,6 +1083,114 @@ std::string ErrorMessageOf(const json& body) {
 }
 
 }  // namespace
+
+TEST_F(WebServiceTest, CodingSupportsChatAndResponsesIncludingStreaming) {
+  for (const std::string prefix : {"", "/catalogs/local"}) {
+    SCOPED_TRACE(prefix);
+    const auto listed = Get(prefix + "/v1/models/" + kCodingTestModelAlias + ":1");
+    EXPECT_EQ(listed["id"], std::string(kCodingTestModelAlias) + ":1");
+    const auto loaded = Get(prefix + "/models/load/" + kCodingTestModelAlias);
+    ASSERT_EQ(loaded["status"], "loaded") << loaded.dump(2);
+
+    for (const bool responses : {false, true}) {
+      SCOPED_TRACE(responses);
+      const auto endpoint = prefix + (responses ? "/v1/responses" : "/v1/chat/completions");
+      json body = {{"model", std::string(kCodingTestModelAlias) + ":1"}, {"temperature", 0}};
+      if (responses) {
+        body["input"] = "Write a function.";
+        body["max_output_tokens"] = 4;
+        body["store"] = false;
+      } else {
+        body["messages"] = json::array({{{"role", "user"}, {"content", "Write a function."}}});
+        body["max_tokens"] = 4;
+      }
+
+      const auto result = PostJson(base_url_ + endpoint, body);
+      ASSERT_EQ(result.status, 200) << result.body.dump(2);
+      if (responses) {
+        EXPECT_FALSE(result.body.at("output").empty()) << result.body.dump(2);
+      } else {
+        EXPECT_FALSE(result.body.at("choices").at(0).at("message").at("content").get<std::string>().empty());
+      }
+
+      body["stream"] = true;
+      httplib::Client client(base_url_);
+      const auto streamed = client.Post(endpoint, body.dump(), "application/json");
+      ASSERT_TRUE(streamed) << httplib::to_string(streamed.error());
+      ASSERT_EQ(streamed->status, 200) << streamed->body;
+      if (responses) {
+        EXPECT_NE(streamed->body.find("event: response.output_text.delta"), std::string::npos);
+        EXPECT_TRUE(streamed->body.find("event: response.completed") != std::string::npos ||
+                    streamed->body.find("event: response.incomplete") != std::string::npos)
+            << streamed->body;
+      } else {
+        EXPECT_NE(streamed->body.find("chat.completion.chunk"), std::string::npos);
+        EXPECT_NE(streamed->body.find("data: [DONE]"), std::string::npos);
+      }
+    }
+
+    const auto unloaded = Get(prefix + "/models/unload/" + kCodingTestModelAlias);
+    EXPECT_EQ(unloaded["status"], "unloaded") << unloaded.dump(2);
+  }
+}
+
+TEST_F(WebServiceTest, CodingResponsesRejectImageInput) {
+  const auto loaded = Get(std::string("/models/load/") + kCodingTestModelAlias);
+  ASSERT_EQ(loaded["status"], "loaded") << loaded.dump(2);
+  const auto result = PostJson(
+      base_url_ + "/v1/responses",
+      {{"model", std::string(kCodingTestModelAlias) + ":1"},
+       {"input", json::array({{{"role", "user"},
+                               {"content", json::array({{{"type", "input_image"},
+                                                         {"image_url", "data:image/png;base64,AA=="}}})}}})},
+       {"max_output_tokens", 4}});
+
+  EXPECT_EQ(result.status, 400) << result.body.dump(2);
+  EXPECT_NE(ErrorMessageOf(result.body).find("IMAGE input is not supported by model task 'coding'"),
+            std::string::npos)
+      << result.body.dump(2);
+  const auto unloaded = Get(std::string("/models/unload/") + kCodingTestModelAlias);
+  EXPECT_EQ(unloaded["status"], "unloaded") << unloaded.dump(2);
+}
+
+TEST_F(WebServiceTest, CodingChatCompletionsRejectImageAndAudioInput) {
+  const auto loaded = Get(std::string("/models/load/") + kCodingTestModelAlias);
+  ASSERT_EQ(loaded["status"], "loaded") << loaded.dump(2);
+  const json media_parts = {
+      {{"type", "image_url"}, {"image_url", {{"url", "data:image/png;base64,AA=="}}}},
+      {{"type", "input_audio"}, {"input_audio", {{"data", "AA=="}, {"format", "wav"}}}},
+  };
+  for (const std::string prefix : {"", "/catalogs/local"}) {
+    for (const auto& media : media_parts) {
+      const auto expected = std::string(media.at("type") == "image_url" ? "IMAGE" : "AUDIO") +
+                            " input is not supported by model task 'coding'";
+      for (const bool stream : {false, true}) {
+        SCOPED_TRACE(prefix + media.dump() + (stream ? " streaming" : " non-streaming"));
+        const json body = {
+            {"model", std::string(kCodingTestModelAlias) + ":1"},
+            {"messages", {{{"role", "user"}, {"content", {{{"type", "text"}, {"text", "Write a function."}}, media}}}}},
+            {"max_tokens", 4},
+            {"stream", stream},
+        };
+        httplib::Client client(base_url_);
+        const auto result = client.Post(prefix + "/v1/chat/completions", body.dump(), "application/json");
+        ASSERT_TRUE(result) << httplib::to_string(result.error());
+        if (stream) {
+          EXPECT_EQ(result->status, 200) << result->body;
+          EXPECT_NE(result->body.find("invalid_request_error"), std::string::npos) << result->body;
+          EXPECT_NE(result->body.find(expected), std::string::npos) << result->body;
+          EXPECT_EQ(result->body.find("chat.completion.chunk"), std::string::npos) << result->body;
+        } else {
+          EXPECT_EQ(result->status, 400) << result->body;
+          EXPECT_NE(ErrorMessageOf(json::parse(result->body)).find(expected), std::string::npos) << result->body;
+        }
+      }
+    }
+  }
+
+  const auto unloaded = Get(std::string("/models/unload/") + kCodingTestModelAlias);
+  EXPECT_EQ(unloaded["status"], "unloaded") << unloaded.dump(2);
+}
 
 TEST_F(WebServiceTest, LocalInferenceRoutesResolveOnlyLocalModels) {
   const auto audio_path = fl::test::GetTestDataPath("Recording.mp3");

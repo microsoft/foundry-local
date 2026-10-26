@@ -172,7 +172,8 @@ int main() {
       for (const auto& variant : variants) {
         ModelInfo variant_info = variant->GetInfo();
         if (variant_info.DeviceType() == FOUNDRY_LOCAL_DEVICE_CPU &&
-            (variant_info.Task() == "chat-completion" || variant_info.Task() == "vision-language-chat")) {
+            (variant_info.Task() == "chat-completion" || variant_info.Task() == "coding" ||
+             variant_info.Task() == "vision-language-chat")) {
           candidate->SelectVariant(*variant);
           model = std::move(candidate);
           break;

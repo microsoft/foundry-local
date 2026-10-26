@@ -104,7 +104,10 @@ steps:
   inputs:
     mavenPOMFile: 'sdk_v2/java/pom.xml'
     goals: 'clean verify'
-    options: "--batch-mode --no-transfer-progress -Drevision=$(javaSdkVersion)-preview -Dfoundry.test.native.required=true -Dfoundry.test.legacy.required=${{ eq(parameters.rid, 'win-x64') }}"
+    options: >-
+      --batch-mode --no-transfer-progress --settings "$(foundryMavenSettings)"
+      -Drevision=$(javaSdkVersion)-preview -Dfoundry.test.native.required=true
+      -Dfoundry.test.legacy.required=${{ eq(parameters.rid, 'win-x64') }}
     publishJUnitResults: true
     testResultsFiles: 'sdk_v2/java/target/surefire-reports/TEST-*.xml'
     testRunTitle: 'Java SDK ${{ parameters.rid }}'
@@ -113,6 +116,7 @@ steps:
     mavenVersionOption: Path
     mavenDirectory: '$(foundryMavenHome)'
   env:
+    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
     FOUNDRY_LOCAL_NATIVE_BIN_DIR: $(flNativeDir)
     FOUNDRY_TEST_DATA_DIR: '${{ parameters.testDataSharedDir }}'
     FOUNDRY_TEST_WAV: '$(Build.SourcesDirectory)/sdk_v2/testdata/Recording.wav'

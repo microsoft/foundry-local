@@ -27,7 +27,7 @@ steps:
 
     ls $tools
 
-    if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) {
+    if (-not (Test-Path -LiteralPath $maven -PathType Leaf)) {
       throw "Unable to find Maven zip"
     }
 
@@ -38,10 +38,6 @@ steps:
     }
 
     Expand-Archive -LiteralPath $archive -DestinationPath $tools -Force
-
-    if (-not (Test-Path -LiteralPath $maven -PathType Leaf)) {
-      throw "Unable to find Maven executable"
-    }
 
     if (-not $IsWindows) {
       & chmod u+x $maven

@@ -1,6 +1,7 @@
 use foundry_local_sdk::{
-    CatalogType, FoundryLocalConfig, FoundryLocalError, FoundryLocalManager, LogLevel,
-    NativeErrorCode,
+    AudioSession, CatalogType, ChatSession, EmbeddingsSession, FoundryLocalConfig,
+    FoundryLocalError, FoundryLocalManager, Item, LogLevel, NativeErrorCode, Request,
+    RequestOptions, SearchOptions,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -63,7 +64,7 @@ fn native_errors_expose_stable_and_unknown_codes() {
 }
 
 #[tokio::test]
-async fn byom_registration_round_trips_and_preserves_assets() {
+async fn byom_registration_round_trips_and_runs_coding() {
     let temp = TempTestDir::new("foundry-local-rust-byom");
     let model_path = temp.path.join("model");
     let config_path = model_path.join("genai_config.json");
@@ -169,6 +170,69 @@ async fn byom_registration_round_trips_and_preserves_assets() {
         .is_err());
 
     drop(recreated);
+    let coding_path = fs::canonicalize(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../cpp/test/testdata/tiny-paged-attention"),
+    )
+    .expect("resolve bundled coding test model");
+    let mut coding_metadata = recreated_catalog
+        .create_model_info()
+        .expect("create coding metadata");
+    coding_metadata
+        .set_string_property("task", "coding")
+        .expect("set coding task");
+    let coding_model = recreated_catalog
+        .register_model(
+            &coding_path.to_string_lossy(),
+            "rust-coding:1",
+            coding_metadata,
+        )
+        .await
+        .expect("register coding model");
+    assert_eq!(
+        coding_model
+            .info()
+            .expect("read coding metadata")
+            .task
+            .as_deref(),
+        Some("coding")
+    );
+    coding_model.load().await.expect("load coding model");
+    assert!(matches!(
+        AudioSession::new(&coding_model).await,
+        Err(FoundryLocalError::Validation { .. })
+    ));
+    assert!(matches!(
+        EmbeddingsSession::new(&coding_model).await,
+        Err(FoundryLocalError::Validation { .. })
+    ));
+    let session = ChatSession::new(&coding_model)
+        .await
+        .expect("create coding chat session");
+    let request = Request::from_items(vec![Item::user_message(vec![Item::text(
+        "Write a function.",
+    )])])
+    .with_options(RequestOptions {
+        search: SearchOptions {
+            max_output_tokens: Some(4),
+            temperature: Some(0.0),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let response = session
+        .process_request(request)
+        .await
+        .expect("run coding inference");
+    assert!(!response.items.is_empty());
+    assert!(response.usage.completion_tokens > 0);
+    assert_eq!(session.turn_count(), 1);
+    drop(session);
+    coding_model.unload().await.expect("unload coding model");
+    recreated_catalog
+        .unregister_model("rust-coding:1")
+        .await
+        .expect("unregister coding model");
+    drop(coding_model);
     drop(recreated_catalog);
     recreated_manager.shutdown().expect("shut down manager");
 }

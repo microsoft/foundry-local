@@ -196,6 +196,9 @@ await localCatalog.UnregisterModelAsync(model.Id);
 
 Calling `GetCatalogAsync()` without a `CatalogType` remains equivalent to requesting `CatalogType.Public`.
 
+Models registered with task `coding` use the existing text-only `ChatSession` interface. See
+[coding models](../INFERENCING.md#coding-models) for capability and compatibility details.
+
 ### Model Lifecycle
 
 Each model may have multiple variants (different quantizations, hardware targets). The SDK auto-selects the best variant, or you can pick one. All models implement the `IModel` interface.

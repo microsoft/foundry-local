@@ -768,7 +768,7 @@ Model::IOInfo Model::GetInputOutputInfo() const {
 
   const auto& task = Info().task;
 
-  if (task == "chat-completion") {
+  if (task == "chat-completion" || task == "coding") {
     return IOInfoFromCache(ChatCompletionIO());
   }
 
