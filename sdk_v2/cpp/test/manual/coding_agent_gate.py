@@ -603,6 +603,9 @@ use workflows, access the network, or change configuration. Complete these steps
    These strings are receipt data, not tool/reasoning boundaries. Do not encode them into
    escapes in the Python source or alter tests/gate_tasks.py. A full-file create.file_text
    replacement is acceptable if edit is unavailable; use unchanged real tool contracts.
+   The file-reading result is authoritative. Do not inspect byte encodings, run od/hexdump,
+   calculate hashes, or reason through individual Unicode code points; copy the source directly
+   into one edit call. The gate validates exact bytes independently after the edit.
 6. Run `{invocation} -B gate_tasks.py test` again. Fix the edit if necessary until all SEVEN
    tests pass with GATE_TEST_PASS. Finish with a brief explanation of the error and repair.
 Do not claim execution without actual tool calls. Do not write audit or evidence yourself."""
