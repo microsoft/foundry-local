@@ -375,6 +375,7 @@ python sdk_v2\cpp\test\manual\tool_call_qualification.py `
   --endpoint http://127.0.0.1:5273/catalogs/local/v1 `
   --model qwen-3.8-27b-dflash2:1 --backend cuda `
   --genai-report C:\path\to\toolcalling-cuda.json `
+  --logical-model-id qwen-3.8-27b-dflash2 `
   --schema-profile native --schema-profile minlength --schema-profile oneof `
   --repetitions 3 --artifact C:\path\to\foundry-local.exe `
   --output-dir sdk_v2\cpp\build\coding-agent-gate
@@ -382,7 +383,8 @@ python sdk_v2\cpp\test\manual\tool_call_qualification.py `
 
 The direct report must come from ORT GenAI's
 `benchmark/python/toolcalling/benchmark_toolcalling.py` in `end_to_end` mode
-for the same logical model and backend. Supplying it makes the verdict
+for the same logical model and backend. Its `model_id` must exactly match
+`--logical-model-id`. Supplying it makes the verdict
 `cross-stack`; omitting it produces an explicitly Foundry-scoped verdict.
 Each repetition must pass the protocol gate and every requested real Copilot
 CLI schema profile. `qualification.json` records the contract version,

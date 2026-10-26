@@ -78,9 +78,10 @@ def environment_fingerprint(backend: str, artifacts: list[Path]) -> dict:
     }
 
 
-def assess_genai_report(report: dict, backend: str, minimum_percent: float) -> dict:
+def assess_genai_report(report: dict, model_id: str, backend: str, minimum_percent: float) -> dict:
     checks = {
         "end_to_end_mode": report.get("mode") == "end_to_end",
+        "expected_model": report.get("model_id") == model_id,
         "expected_backend": report.get("execution_provider") == backend,
         "cases_present": type(report.get("cases")) is int and report["cases"] > 0,
         "all_case_results_present": (
@@ -98,6 +99,7 @@ def assess_genai_report(report: dict, backend: str, minimum_percent: float) -> d
         "cases": report.get("cases"),
         "end_to_end_correct_percent": report.get("end_to_end_correct_percent"),
         "minimum_percent": minimum_percent,
+        "model_id": report.get("model_id"),
     }
 
 
@@ -192,19 +194,25 @@ def run_coding_gate(args: argparse.Namespace, run: Path, repetition: int, profil
 def self_test() -> int:
     good = {
         "mode": "end_to_end",
+        "model_id": "qwen-test",
         "execution_provider": "cuda",
         "cases": 2,
         "end_to_end_correct_percent": 100.0,
         "results": [{}, {}],
     }
     checks = {
-        "accept_complete_report": assess_genai_report(good, "cuda", 100)["qualified"],
-        "reject_wrong_backend": not assess_genai_report(dict(good, execution_provider="cpu"), "cuda", 100)[
+        "accept_complete_report": assess_genai_report(good, "qwen-test", "cuda", 100)["qualified"],
+        "reject_wrong_model": not assess_genai_report(good, "other-model", "cuda", 100)["qualified"],
+        "reject_wrong_backend": not assess_genai_report(
+            dict(good, execution_provider="cpu"), "qwen-test", "cuda", 100
+        )[
             "qualified"
         ],
-        "reject_missing_result": not assess_genai_report(dict(good, results=[{}]), "cuda", 100)["qualified"],
+        "reject_missing_result": not assess_genai_report(
+            dict(good, results=[{}]), "qwen-test", "cuda", 100
+        )["qualified"],
         "reject_below_threshold": not assess_genai_report(
-            dict(good, end_to_end_correct_percent=99.9), "cuda", 100
+            dict(good, end_to_end_correct_percent=99.9), "qwen-test", "cuda", 100
         )["qualified"],
     }
     passed = all(checks.values())
@@ -219,6 +227,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--backend", default="cuda", choices=["cuda", "cpu", "webgpu"])
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--genai-report", type=Path)
+    parser.add_argument("--logical-model-id", help="identity that must match the direct GenAI report")
     parser.add_argument("--genai-min-percent", type=float, default=100.0)
     parser.add_argument("--repetitions", type=int, default=1)
     parser.add_argument(
@@ -282,6 +291,10 @@ def parse_args() -> argparse.Namespace:
         parser.error("--artifact values must be files")
     if args.genai_report:
         args.genai_report = args.genai_report.expanduser().resolve(strict=True)
+        if not args.logical_model_id or not args.logical_model_id.strip():
+            parser.error("--logical-model-id is required with --genai-report")
+    elif args.logical_model_id:
+        parser.error("--logical-model-id requires --genai-report")
     if args.copilot:
         args.copilot = args.copilot.expanduser().resolve(strict=True)
     return args
@@ -299,6 +312,7 @@ def main() -> int:
         "qualified": False,
         "scope": "cross-stack" if args.genai_report else "foundry",
         "model": args.model,
+        "logical_model_id": args.logical_model_id,
         "environment": environment_fingerprint(args.backend, args.artifact),
         "requirements": {
             "repetitions": args.repetitions,
@@ -312,7 +326,7 @@ def main() -> int:
     try:
         if args.genai_report:
             result["genai"] = assess_genai_report(
-                read_json(args.genai_report), args.backend, args.genai_min_percent
+                read_json(args.genai_report), args.logical_model_id, args.backend, args.genai_min_percent
             )
         for repetition in range(1, args.repetitions + 1):
             entry = {
