@@ -62,7 +62,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .find_map(Item::as_tool_call)
         .ok_or("The model did not produce a tool call")?;
     println!("Tool call: {}({})", call.name, call.arguments);
-    let result = json!({"temperature": 22, "unit": "celsius", "condition": "sunny"});
+    // This small model is sensitive to field order, so match the other samples' mock response.
+    let result = r#"{"temperature":22,"unit":"celsius","condition":"sunny"}"#;
 
     let follow_up = Request::from_items(vec![Item::tool_result(
         call.call_id.clone(),
