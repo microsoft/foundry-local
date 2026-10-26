@@ -276,6 +276,11 @@ void from_json(const nlohmann::json& j, CatalogLocalModel& m) {
     TextLimits direct_text_limits = direct_limits.text_limits.value_or(TextLimits{});
     opt_int64(system_data, "textContextWindow", direct_text_limits.input_context_window);
     opt_int64(system_data, "maxOutputTokens", direct_text_limits.max_output_tokens);
+    if (direct_text_limits.input_context_window.value_or(0) <= 0 && m.model_limits && m.model_limits->text_limits &&
+        m.model_limits->text_limits->input_context_window.value_or(0) > 0) {
+      direct_text_limits.input_context_window = m.model_limits->text_limits->input_context_window;
+    }
+
     UseLegacyContextLengthTag(tags, direct_text_limits.input_context_window);
     if (direct_text_limits.input_context_window || direct_text_limits.max_output_tokens) {
       direct_limits.text_limits = std::move(direct_text_limits);
