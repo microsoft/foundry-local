@@ -717,7 +717,10 @@ bool InsideToolOutput(const RawEnvelopeDetector* raw_detector,
 
 bool ResolveToolCallingSupport(std::optional<int> catalog_support,
                                bool inferred_support) noexcept {
-  return catalog_support.has_value() ? *catalog_support == 1 : inferred_support;
+  if (!catalog_support.has_value() || *catalog_support == -1) {
+    return inferred_support;
+  }
+  return *catalog_support == 1;
 }
 
 bool IsNaturalToolOutputEnd(bool canceled,
@@ -1208,7 +1211,6 @@ ToolCallContext BuildToolCallContextForRequest(const Request& request,
       if (!request.raw_envelope_descriptor && !tool_ctx.forced_tool) {
         tool_ctx.raw_envelope.reset();
       }
-
     }
   }
 
@@ -1842,7 +1844,8 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
     if (chat_session_internal::PushDecodedFragment(
             token, token_id, active_stop_filter, splitter, emit_segments,
-            cached_tool_ctx_.tool_plan && inside_payload) || stop_sequence_matched) {
+            cached_tool_ctx_.tool_plan && inside_payload) ||
+        stop_sequence_matched) {
       stop_sequence_matched = true;
       break;
     }
@@ -2240,7 +2243,8 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
 
     if (chat_session_internal::PushDecodedFragment(
             token, token_id, active_stop_filter, splitter, process_segments,
-            tool_ctx.tool_plan && inside_payload) || stop_sequence_matched) {
+            tool_ctx.tool_plan && inside_payload) ||
+        stop_sequence_matched) {
       stop_sequence_matched = true;
       break;
     }

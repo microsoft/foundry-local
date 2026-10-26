@@ -58,12 +58,12 @@ constexpr std::string_view kQwenToolResultProjection =
     "<tool_response>\n"
     "probe-result-second\n"
     "</tool_response><|im_end|>\n";
-  constexpr std::string_view kQwenReasoningProjection =
+constexpr std::string_view kQwenReasoningProjection =
     "<|im_start|>assistant\n<think>\nreasoning-probe-private-a\n</think>\n\n"
     "reasoning-probe-visible-a<|im_end|>\n"
     "<|im_start|>assistant\n<think>\nreasoning-probe-private-b\n</think>\n\n"
     "reasoning-probe-visible-b<|im_end|>\n";
-  constexpr std::string_view kQwenNoPreserveReasoningProjection =
+constexpr std::string_view kQwenNoPreserveReasoningProjection =
     "<|im_start|>assistant\nreasoning-probe-visible-a<|im_end|>\n"
     "<|im_start|>assistant\nreasoning-probe-visible-b<|im_end|>\n";
 
@@ -133,6 +133,16 @@ TEST(ModelCapabilitiesTest, ResultProjectionMismatchDisablesOnlyPositionalToolRe
   EXPECT_FALSE(capabilities.positional_tool_results);
 }
 
+TEST(ModelCapabilitiesTest, MissingResultProjectionPreservesToolCallSupport) {
+  const auto capabilities = fl::model_capabilities_internal::ResolveRenderedProbes(
+      "qwen3_5_text", kQwenToolCallProjection, {},
+      "<tool_call>", "</tool_call>");
+
+  EXPECT_TRUE(capabilities.supports_tool_calling);
+  EXPECT_TRUE(capabilities.native_qwen_xml_tool_calls);
+  EXPECT_FALSE(capabilities.positional_tool_results);
+}
+
 TEST(ModelCapabilitiesTest, GenericTaggedJsonProtocolIsOnboarded) {
   constexpr std::string_view kToolCallProjection =
       "<|tool_start|>{\"name\":\"probe_function\",\"arguments\":"
@@ -163,6 +173,29 @@ TEST(ModelCapabilitiesTest, MissingOrAmbiguousBoundariesFailClosed) {
   EXPECT_FALSE(missing_end.positional_tool_results);
   EXPECT_FALSE(identical_boundaries.supports_tool_calling);
   EXPECT_FALSE(identical_boundaries.positional_tool_results);
+}
+
+TEST(ModelCapabilitiesTest, SplitOrOutOfBlockPayloadFailsClosed) {
+  constexpr std::string_view kSplitPayload =
+      "<tool_call>probe_function</tool_call>"
+      "<tool_call>probe_parameter probe_value</tool_call>";
+  constexpr std::string_view kOutOfBlockPayload =
+      "<tool_call>probe_function</tool_call>"
+      "probe_parameter probe_value"
+      "<tool_call>unrelated</tool_call>";
+  constexpr std::string_view kNestedPayload =
+      "<tool_call><tool_call>probe_function probe_parameter probe_value</tool_call></tool_call>";
+
+  const auto split = fl::model_capabilities_internal::ResolveRenderedProbes(
+      "custom", kSplitPayload, {}, "<tool_call>", "</tool_call>");
+  const auto outside = fl::model_capabilities_internal::ResolveRenderedProbes(
+      "custom", kOutOfBlockPayload, {}, "<tool_call>", "</tool_call>");
+  const auto nested = fl::model_capabilities_internal::ResolveRenderedProbes(
+      "custom", kNestedPayload, {}, "<tool_call>", "</tool_call>");
+
+  EXPECT_FALSE(split.supports_tool_calling);
+  EXPECT_FALSE(outside.supports_tool_calling);
+  EXPECT_FALSE(nested.supports_tool_calling);
 }
 
 TEST(ModelCapabilitiesTest, IdCorrelatedResultsDoNotEnablePositionalProjection) {

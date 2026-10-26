@@ -11,6 +11,8 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
+
 namespace fl {
 namespace {
 
@@ -83,6 +85,43 @@ bool ContainsInOrder(std::string_view text, std::initializer_list<std::string_vi
   return true;
 }
 
+struct DelimitedRegion {
+  size_t end = 0;
+  std::string_view body;
+};
+
+std::vector<DelimitedRegion> FindDelimitedRegions(std::string_view text,
+                                                  std::string_view opening,
+                                                  std::string_view closing) {
+  std::vector<DelimitedRegion> regions;
+  if (opening.empty() || closing.empty() || opening == closing) {
+    return regions;
+  }
+
+  size_t offset = 0;
+  while (true) {
+    const size_t begin = text.find(opening, offset);
+    if (begin == std::string_view::npos) {
+      break;
+    }
+
+    const size_t body_begin = begin + opening.size();
+    const size_t end = text.find(closing, body_begin);
+    if (end == std::string_view::npos) {
+      return {};
+    }
+
+    const size_t nested = text.find(opening, body_begin);
+    if (nested != std::string_view::npos && nested < end) {
+      return {};
+    }
+
+    regions.push_back({end + closing.size(), text.substr(body_begin, end - body_begin)});
+    offset = end + closing.size();
+  }
+  return regions;
+}
+
 ModelCapabilities ResolveModelCapabilities(std::string_view model_type, Preprocessor& preprocessor,
                                            std::string_view tool_call_start,
                                            std::string_view tool_call_end,
@@ -95,28 +134,36 @@ ModelCapabilities ResolveModelCapabilities(std::string_view model_type, Preproce
 
   ModelCapabilities capabilities;
   if (!tool_call_start.empty() && !tool_call_end.empty() && tool_call_start != tool_call_end) {
+    std::string tool_call_projection;
     try {
-      const auto tool_call_projection = preprocessor.ApplyChatTemplate(
+      tool_call_projection = preprocessor.ApplyChatTemplate(
           kToolCallProbeMessages, kToolProbeDefinitions, /*add_generation_prompt=*/false);
-      const auto tool_result_projection = preprocessor.ApplyChatTemplate(
-          kToolResultProbeMessages, kToolProbeDefinitions, /*add_generation_prompt=*/false);
-      capabilities = model_capabilities_internal::ResolveRenderedProbes(
-          model_type, tool_call_projection, tool_result_projection, tool_call_start, tool_call_end);
     } catch (...) {
-      // Tool projection failed closed without disabling independent reasoning probing.
+      // Tool-call projection failed closed without disabling independent reasoning probing.
     }
+
+    std::string tool_result_projection;
+    try {
+      tool_result_projection = preprocessor.ApplyChatTemplate(
+          kToolResultProbeMessages, kToolProbeDefinitions, /*add_generation_prompt=*/false);
+    } catch (...) {
+      // Tool-result projection is optional; a single-call-capable template may reject parallel history.
+    }
+
+    capabilities = model_capabilities_internal::ResolveRenderedProbes(
+        model_type, tool_call_projection, tool_result_projection, tool_call_start, tool_call_end);
   }
 
   try {
     const auto reasoning_projection = preprocessor.ApplyChatTemplateWithOptions(
-      kReasoningProbeMessages, /*tools_json=*/nullptr, /*template_kwargs_json=*/nullptr,
-      /*add_generation_prompt=*/false);
+        kReasoningProbeMessages, /*tools_json=*/nullptr, /*template_kwargs_json=*/nullptr,
+        /*add_generation_prompt=*/false);
     const auto no_preserve_reasoning_projection = preprocessor.ApplyChatTemplateWithOptions(
-      kReasoningProbeMessages, /*tools_json=*/nullptr, kDisableReasoningPreservation,
-      /*add_generation_prompt=*/false);
+        kReasoningProbeMessages, /*tools_json=*/nullptr, kDisableReasoningPreservation,
+        /*add_generation_prompt=*/false);
     const auto reasoning_capabilities = model_capabilities_internal::ResolveRenderedProbes(
-      model_type, {}, {}, {}, {}, reasoning_projection, no_preserve_reasoning_projection,
-      reasoning_start, reasoning_end);
+        model_type, {}, {}, {}, {}, reasoning_projection, no_preserve_reasoning_projection,
+        reasoning_start, reasoning_end);
     capabilities.supports_reasoning_history = reasoning_capabilities.supports_reasoning_history;
     capabilities.supports_preserve_thinking = reasoning_capabilities.supports_preserve_thinking;
     capabilities.supports_reasoning_controls = true;
@@ -141,32 +188,44 @@ ModelCapabilities model_capabilities_internal::ResolveRenderedProbes(
     std::string_view no_preserve_reasoning_projection,
     std::string_view reasoning_start,
     std::string_view reasoning_end) noexcept {
+  const auto tool_call_regions = FindDelimitedRegions(
+      tool_call_projection, tool_call_start, tool_call_end);
   const bool supports_tool_calling = !tool_call_start.empty() && !tool_call_end.empty() &&
                                      tool_call_start != tool_call_end &&
-                                     ContainsInOrder(tool_call_projection,
-                                                     {tool_call_start, "probe_function", "probe_parameter", "probe_value",
-                                                      tool_call_end});
+                                     std::ranges::any_of(tool_call_regions, [](const auto& region) {
+                                       return ContainsInOrder(
+                                           region.body, {"probe_function", "probe_parameter", "probe_value"});
+                                     });
   const bool is_qwen35_text = model_type == kQwen35TextModelType;
   const bool native_qwen_xml_tool_calls = supports_tool_calling && is_qwen35_text &&
                                           tool_call_projection.find(kExpectedToolCallBlock) != std::string_view::npos;
+  const auto tool_result_regions = FindDelimitedRegions(
+      tool_result_projection, tool_call_start, tool_call_end);
+  const auto first_call = std::ranges::find_if(tool_result_regions, [](const auto& region) {
+    return region.body.find("probe_first") != std::string_view::npos;
+  });
+  const auto second_call = first_call == tool_result_regions.end()
+                               ? tool_result_regions.end()
+                               : std::ranges::find_if(first_call + 1, tool_result_regions.end(), [](const auto& region) {
+                                   return region.body.find("probe_second") != std::string_view::npos;
+                                 });
   const bool positional_tool_results = supports_tool_calling &&
-                                       ContainsInOrder(tool_result_projection,
-                                                       {tool_call_start, "probe_first", tool_call_end,
-                                                        tool_call_start, "probe_second", tool_call_end,
-                                                        "probe-result-first", "probe-result-second"}) &&
+                                       second_call != tool_result_regions.end() &&
+                                       ContainsInOrder(tool_result_projection.substr(second_call->end),
+                                                       {"probe-result-first", "probe-result-second"}) &&
                                        tool_result_projection.find("probe-call-a") == std::string_view::npos &&
                                        tool_result_projection.find("probe-call-b") == std::string_view::npos;
 
   const bool supports_reasoning_history = !reasoning_start.empty() && !reasoning_end.empty() &&
-      ContainsInOrder(reasoning_projection,
-                      {reasoning_start, "reasoning-probe-private-a", reasoning_end,
-                       "reasoning-probe-visible-a", reasoning_start, "reasoning-probe-private-b",
-                       reasoning_end, "reasoning-probe-visible-b"});
+                                          ContainsInOrder(reasoning_projection,
+                                                          {reasoning_start, "reasoning-probe-private-a", reasoning_end,
+                                                           "reasoning-probe-visible-a", reasoning_start, "reasoning-probe-private-b",
+                                                           reasoning_end, "reasoning-probe-visible-b"});
   const bool supports_preserve_thinking = supports_reasoning_history &&
-      no_preserve_reasoning_projection.find("reasoning-probe-private-a") == std::string_view::npos &&
-      no_preserve_reasoning_projection.find("reasoning-probe-private-b") == std::string_view::npos &&
-      ContainsInOrder(no_preserve_reasoning_projection,
-                      {"reasoning-probe-visible-a", "reasoning-probe-visible-b"});
+                                          no_preserve_reasoning_projection.find("reasoning-probe-private-a") == std::string_view::npos &&
+                                          no_preserve_reasoning_projection.find("reasoning-probe-private-b") == std::string_view::npos &&
+                                          ContainsInOrder(no_preserve_reasoning_projection,
+                                                          {"reasoning-probe-visible-a", "reasoning-probe-visible-b"});
 
   return {supports_tool_calling, native_qwen_xml_tool_calls, positional_tool_results,
           supports_reasoning_history, supports_preserve_thinking,
