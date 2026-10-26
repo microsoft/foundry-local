@@ -50,6 +50,16 @@ public abstract class Session : IDisposable
     }
 
     /// <summary>
+    /// Query audio input capabilities while preserving session and manager lifetimes.
+    /// </summary>
+    protected AudioModes GetSupportedAudioModes()
+    {
+        using var operation = _operationGate.Acquire(this);
+        using var managerLease = _managerLifetime.Acquire(this, trackReentrancy: true);
+        return _session.GetSupportedAudioModes();
+    }
+
+    /// <summary>
     /// Set session-level inference options. These apply to all subsequent
     /// <see cref="ProcessRequestAsync"/> calls unless overridden per-request.
     /// </summary>

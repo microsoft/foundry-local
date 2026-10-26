@@ -5,6 +5,7 @@
 // they throw before the generator is created, so any GenAIModelInstance works.
 
 #include "inferencing/generative/audio/audio_session.h"
+#include "c_api_types.h"
 
 #include "ep_detection/ep_detector.h"
 #include "exception.h"
@@ -1017,34 +1018,27 @@ TEST_F(AudioSessionInferenceTest, TranscribeViaOpenAIJson) {
   EXPECT_GT(response.usage.total_tokens, 0) << "Expected non-zero total_tokens";
 }
 
-static void ExpectBatchPcmNotImplemented(AudioSession& session) {
-  AudioItem audio(nullptr, 0, "pcm");
-  ItemQueue queue;
-  queue.MarkFinished();
-  Request request;
-  request.AddBorrowedItem(&audio);
-  request.AddBorrowedItem(&queue);
-  Response response;
-  try {
-    session.ProcessRequest(request, response);
-    FAIL() << "Expected unsupported live PCM";
-  } catch (const fl::Exception& e) {
-    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED);
-    EXPECT_NE(std::string(e.what()).find("file"), std::string::npos);
-  }
+static void ExpectOfflineAudioModes(AudioSession& session) {
+  EXPECT_EQ(session.SupportedAudioModes(), FOUNDRY_LOCAL_AUDIO_MODES_OFFLINE);
+  const auto* api = FoundryLocalGetApi(FOUNDRY_LOCAL_API_VERSION);
+  flAudioModes modes = FOUNDRY_LOCAL_AUDIO_MODES_LIVE;
+  auto* status = api->GetInferenceApi()->Session_GetSupportedAudioModes(AsHandle<flSession>(&session), &modes);
+  EXPECT_EQ(status, nullptr);
+  api->Status_Release(status);
+  EXPECT_EQ(modes, FOUNDRY_LOCAL_AUDIO_MODES_OFFLINE);
 }
 
-TEST_F(AudioSessionInferenceTest, StreamingPcmReturnsNotImplemented) {
+TEST_F(AudioSessionInferenceTest, SupportedAudioModesAreOfflineWithoutStartingARequest) {
   if (!model_) {
     GTEST_SKIP() << "Audio model not loaded";
   }
   AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
-  ExpectBatchPcmNotImplemented(session);
+  ExpectOfflineAudioModes(session);
 }
 
-TEST_F(AudioSessionParakeetInferenceTest, StreamingPcmReturnsNotImplemented) {
+TEST_F(AudioSessionParakeetInferenceTest, SupportedAudioModesAreOfflineWithoutStartingARequest) {
   AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
-  ExpectBatchPcmNotImplemented(session);
+  ExpectOfflineAudioModes(session);
 }
 
 TEST_F(AudioSessionParakeetInferenceTest, TranscribeFromFileAndOpenAIJson) {
@@ -1078,6 +1072,19 @@ TEST_F(AudioSessionParakeetInferenceTest, TranscribeFromFileAndOpenAIJson) {
   const auto json = nlohmann::json::parse(static_cast<const TextItem&>(*json_response.items[0]).text);
   EXPECT_EQ(json.at("text").get<std::string>(), expected);
   EXPECT_EQ(json_response.usage.total_tokens, file_response.usage.total_tokens);
+}
+
+TEST_F(AudioSessionTest, AudioModesRejectsUnsupportedArchitecture) {
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  EXPECT_THROW(session.SupportedAudioModes(), fl::Exception);
+}
+
+TEST_F(AudioSessionNemotronInferenceTest, SupportedAudioModesAreLiveWithoutStartingARequest) {
+  if (!model_) {
+    GTEST_SKIP() << "Nemotron model not loaded";
+  }
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  EXPECT_EQ(session.SupportedAudioModes(), FOUNDRY_LOCAL_AUDIO_MODES_LIVE);
 }
 
 TEST_F(AudioSessionNemotronInferenceTest, OpenAIJsonNemotronFileTranscriptionMultiChunkNotTruncated) {

@@ -18,7 +18,7 @@ internal sealed class RequestPreflightAbiTests
     [Test]
     public async Task ResultLayout_MatchesNativeNaturalAlignment()
     {
-        await Assert.That(NativeMethods.ApiVersion).IsEqualTo(2u);
+        await Assert.That(NativeMethods.ApiVersion).IsEqualTo(3u);
         await Assert.That(Marshal.OffsetOf<FlRequestPreflightResult>(
             nameof(FlRequestPreflightResult.Version)).ToInt64()).IsEqualTo(0L);
         await Assert.That(Marshal.OffsetOf<FlRequestPreflightResult>(
@@ -50,7 +50,10 @@ internal sealed class RequestPreflightAbiTests
         await Assert.That(Marshal.OffsetOf<FlInferenceApi>(
             nameof(FlInferenceApi.RequestPreflightRelease)).ToInt64())
             .IsEqualTo(24L * pointerSize);
-        await Assert.That(Marshal.SizeOf<FlInferenceApi>()).IsEqualTo(25 * pointerSize);
+        await Assert.That(Marshal.OffsetOf<FlInferenceApi>(
+            nameof(FlInferenceApi.SessionGetSupportedAudioModes)).ToInt64())
+            .IsEqualTo(25L * pointerSize);
+        await Assert.That(Marshal.SizeOf<FlInferenceApi>()).IsEqualTo(26 * pointerSize);
     }
 
 }

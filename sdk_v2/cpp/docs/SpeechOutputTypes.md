@@ -145,6 +145,25 @@ Attempting to create one returns `FOUNDRY_LOCAL_ERROR_INVALID_USAGE`.
 
 ## V1 scope
 
+### Audio input modes
+
+The SDK exposes `AudioModes` with `Live = 1`, `Offline = 2`, and `Both = 3`.
+`AudioSession::SupportedAudioModes()` in C++ and `AudioSession.SupportedAudioModes`
+in C# query the loaded model without starting inference or creating a streaming
+processor. C callers use `flInferenceApi.Session_GetSupportedAudioModes`, appended
+in API version 3. The version 1 and 2 API prefixes remain compatible.
+
+The query describes the typed audio-input workflows implemented by this SDK:
+Whisper and Parakeet TDT return `Offline`; Nemotron and Moonshine return `Live`.
+`Both` permits file input and incremental PCM input. The existing Nemotron
+OpenAI JSON WAV adapter is separate from typed file input. Unknown architectures
+and non-audio sessions return `NOT_IMPLEMENTED`, never an assumed default.
+
+Clients should select file recording for `Offline`, prefer live microphone input
+for `Live` or `Both`, and accept explicit file requests for `Offline` or `Both`.
+This capability is independent of streaming output callbacks. A batch model may
+emit transcript tokens incrementally after the complete recording is submitted.
+
 ### Parakeet TDT input handling
 
 Parakeet TDT (`parakeet_tdt`, including the 0.6B v2 and v3 models) uses the
@@ -152,12 +171,11 @@ multimodal audio processor, not the streaming processor used by Nemotron.
 File requests, including OpenAI audio-transcription JSON requests, preprocess the
 complete recording without Whisper task tokens.
 
-Whisper and Parakeet TDT do not support live PCM queue requests (`AudioItem`
-with `format="pcm"` plus an `ItemQueue`). These requests return
-`FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED`, allowing callers to select a file-based
-recording workflow instead of treating unsupported streaming as an internal
-runtime failure. Microphone clients should record a complete utterance and
-submit the resulting audio file through the existing file-transcription API.
+Whisper and Parakeet TDT report `Offline`. Clients should query
+`SupportedAudioModes` before choosing an input workflow rather than probing
+by creating a live PCM queue request. Microphone clients should record a
+complete utterance and submit the resulting audio file through the existing
+file-transcription API.
 The SDK does not add another recording buffer. Nemotron's incremental
 processing is unchanged.
 

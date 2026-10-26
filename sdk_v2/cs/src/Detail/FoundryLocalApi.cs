@@ -814,6 +814,14 @@ public sealed class Session : IDisposable
         Ptr = ptr;
     }
 
+    internal AudioModes GetSupportedAudioModes()
+    {
+        Api.CheckStatus(Api.Inference.SessionGetSupportedAudioModes(Ptr, out var modes));
+        return modes is AudioModes.Live or AudioModes.Offline or AudioModes.Both
+                   ? modes
+                   : throw new InvalidOperationException($"Native SDK returned unknown audio modes: {modes}.");
+    }
+
     /// <summary>
     /// Add a tool definition to the session. The session copies the data, so the marshalled buffers
     /// are freed as soon as the call returns.

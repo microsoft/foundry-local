@@ -6,6 +6,14 @@
 
 namespace Microsoft.AI.Foundry.Local;
 
+/// <summary>Supported audio input workflows, independent of streaming transcript output.</summary>
+public enum AudioModes
+{
+    Live = 1,
+    Offline = 2,
+    Both = 3,
+}
+
 /// <summary>
 /// An audio session for automatic-speech-recognition models.
 /// Validates the model task at construction time.
@@ -22,6 +30,9 @@ public sealed class AudioSession : Session
     public AudioSession(IModel model) : base(ValidateTask(model))
     {
     }
+
+    /// <summary>Query supported file and incremental PCM workflows without starting inference.</summary>
+    public AudioModes SupportedAudioModes => GetSupportedAudioModes();
 
     // Validate the model's task BEFORE the base Session constructor runs. The base
     // constructor calls into native to create the session; checking first surfaces a

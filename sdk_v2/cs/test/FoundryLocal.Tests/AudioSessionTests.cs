@@ -69,6 +69,19 @@ internal sealed class AudioSessionTests
     }
 
     [Test]
+    public async Task SupportedAudioModes_WhisperIsOfflineBeforeInference()
+    {
+        if (model == null)
+        {
+            throw new SkipTestException("Whisper model not available");
+        }
+        using var session = new AudioSession(model);
+        await Assert.That(session.SupportedAudioModes).IsEqualTo(AudioModes.Offline);
+        session.SetStreaming(true);
+        await Assert.That(session.SupportedAudioModes).IsEqualTo(AudioModes.Offline);
+    }
+
+    [Test]
     public async Task Transcribe_NoStreaming_Succeeds()
     {
         if (model == null)

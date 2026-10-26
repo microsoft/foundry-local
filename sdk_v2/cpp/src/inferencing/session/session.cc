@@ -131,6 +131,10 @@ std::unique_ptr<Session> Session::Create(const fl::Model& model) {
   }
 }
 
+flAudioModes Session::SupportedAudioModes() const {
+  FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED, "Audio modes are only available for audio sessions");
+}
+
 void Session::UndoTurns(size_t /*count*/) {
   FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "UndoTurns is not supported for this session type");
 }
