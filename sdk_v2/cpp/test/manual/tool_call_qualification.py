@@ -28,7 +28,7 @@ import uuid
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-CPP_ROOT = SCRIPT_DIR.parents[2]
+CPP_ROOT = SCRIPT_DIR.parents[1]
 QUALIFICATION_ROOT = CPP_ROOT / "build" / "coding-agent-gate"
 PROTOCOL_GATE = SCRIPT_DIR / "tool_call_gate.py"
 CODING_GATE = SCRIPT_DIR / "coding_agent_gate.py"
