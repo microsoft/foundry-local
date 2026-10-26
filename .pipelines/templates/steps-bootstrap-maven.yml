@@ -27,7 +27,7 @@ steps:
 
     ls $tools
 
-    if (-not (Test-Path -LiteralPath $maven -PathType Leaf)) {
+    if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) {
       throw "Unable to find Maven zip"
     }
 
