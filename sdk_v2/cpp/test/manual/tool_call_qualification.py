@@ -22,6 +22,7 @@ from pathlib import Path
 import platform
 import subprocess
 import sys
+import tempfile
 import time
 from urllib.parse import urlsplit
 import uuid
@@ -100,6 +101,16 @@ def assess_genai_report(report: dict, model_id: str, backend: str, minimum_perce
         "end_to_end_correct_percent": report.get("end_to_end_correct_percent"),
         "minimum_percent": minimum_percent,
         "model_id": report.get("model_id"),
+    }
+
+
+def retain_genai_report(source: Path, run: Path) -> tuple[dict, dict]:
+    retained = run / "genai-report.json"
+    retained.write_bytes(source.read_bytes())
+    return read_json(retained), {
+        "artifact": relative(retained, run),
+        "size_bytes": retained.stat().st_size,
+        "sha256": sha256(retained),
     }
 
 
@@ -200,8 +211,23 @@ def self_test() -> int:
         "end_to_end_correct_percent": 100.0,
         "results": [{}, {}],
     }
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        source = root / "source.json"
+        payload = json.dumps(good).encode()
+        source.write_bytes(payload)
+        run = root / "run"
+        run.mkdir()
+        retained, evidence = retain_genai_report(source, run)
+        evidence_retained = (
+            retained == good
+            and (run / evidence["artifact"]).read_bytes() == payload
+            and evidence["size_bytes"] == len(payload)
+            and evidence["sha256"] == hashlib.sha256(payload).hexdigest()
+        )
     checks = {
         "accept_complete_report": assess_genai_report(good, "qwen-test", "cuda", 100)["qualified"],
+        "retain_exact_report": evidence_retained,
         "reject_wrong_model": not assess_genai_report(good, "other-model", "cuda", 100)["qualified"],
         "reject_wrong_backend": not assess_genai_report(
             dict(good, execution_provider="cpu"), "qwen-test", "cuda", 100
@@ -325,9 +351,11 @@ def main() -> int:
     }
     try:
         if args.genai_report:
+            report, evidence = retain_genai_report(args.genai_report, run)
             result["genai"] = assess_genai_report(
-                read_json(args.genai_report), args.logical_model_id, args.backend, args.genai_min_percent
+                report, args.logical_model_id, args.backend, args.genai_min_percent
             )
+            result["genai"]["evidence"] = evidence
         for repetition in range(1, args.repetitions + 1):
             entry = {
                 "repetition": repetition,

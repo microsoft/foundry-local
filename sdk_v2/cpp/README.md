@@ -389,7 +389,9 @@ for the same logical model and backend. Its `model_id` must exactly match
 Each repetition must pass the protocol gate and every requested real Copilot
 CLI schema profile. `qualification.json` records the contract version,
 thresholds, repository commit, GPU inventory, artifact hashes, child artifact
-locations, and the final verdict without copying private prompts or tool payloads.
+locations, and the final verdict. Cross-stack runs also retain and fingerprint
+the exact direct GenAI report in the private qualification directory. Private
+prompts and tool payloads remain only in their child run directories.
 
 ## Quick Start
 
