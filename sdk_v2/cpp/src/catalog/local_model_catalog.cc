@@ -261,6 +261,7 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
   const auto model_path = std::filesystem::absolute(supplied_path).lexically_normal();
   const auto config_path = model_path / "genai_config.json";
   auto resolved_input_metadata = metadata;
+  std::string package_alias;
   GenAIConfig genai_config;
   try {
     const auto package = ReadNonGenerativePackage(model_path);
@@ -274,7 +275,7 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
         FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
                  "registration task must match inference_model.json Task");
       }
-      resolved_input_metadata.alias = package->alias;
+      package_alias = package->alias;
       resolved_input_metadata.execution_provider = package->execution_provider;
       resolved_input_metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR,
                                              package->execution_provider);
@@ -311,7 +312,8 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
     }
 
     registration = {
-        ResolveMetadata(resolved_input_metadata, model_id, parsed_id.name, parsed_id.version, genai_config),
+        ResolveMetadata(resolved_input_metadata, model_id, parsed_id.name, parsed_id.version, genai_config,
+                        package_alias),
         model_path.string()};
 
     registrations.push_back(registration);
@@ -397,12 +399,13 @@ void LocalModelCatalog::UnregisterModel(const std::string& alias_or_model_id) {
 
 ModelInfo LocalModelCatalog::ResolveMetadata(const ModelInfo& metadata, const std::string& model_id,
                                              const std::string& name, int version,
-                                             const GenAIConfig& genai_config) const {
+                                             const GenAIConfig& genai_config,
+                                             std::string_view alias_override) const {
   auto resolved = metadata;
   RemoveLegacyRegistrationProperties(resolved);
   RemoveCallerContextLength(resolved);
 
-  resolved.alias = metadata.alias.empty() ? DeriveAlias(name) : metadata.alias;
+  resolved.alias = alias_override.empty() ? DeriveAlias(name) : std::string(alias_override);
   resolved.name = name;
   resolved.version = version;
   resolved.model_id = model_id;
@@ -499,7 +502,7 @@ std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistration
       model_path = std::filesystem::absolute(model_path).lexically_normal();
 
       RemoveLegacyRegistrationProperties(info);
-      if (info.alias.empty()) info.alias = DeriveAlias(parsed_id.name);
+      info.alias = DeriveAlias(parsed_id.name);
       info.name = parsed_id.name;
       info.version = parsed_id.version;
       info.model_id = model_id;

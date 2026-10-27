@@ -256,8 +256,8 @@ struct WebService::Impl {
   Impl(ICatalog& public_catalog, ICatalog& local_catalog, ILogger& logger, std::string model_cache_dir,
        ModelLoadManager& model_load_manager, SessionManager& session_manager,
        ITelemetry& telemetry, std::function<void()> shutdown_callback,
-       uint64_t non_generative_memory_budget_bytes,
-       size_t non_generative_readiness_concurrency)
+       [[maybe_unused]] uint64_t non_generative_memory_budget_bytes,
+       [[maybe_unused]] size_t non_generative_readiness_concurrency)
       : session_cache(session_manager),
         public_response_store(ResponseStore::kDefaultCapacity, &session_cache),
         local_response_store(ResponseStore::kDefaultCapacity, &session_cache),
