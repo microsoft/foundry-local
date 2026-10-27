@@ -11,26 +11,22 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-/** Opt-in language qualification against a caller-prepared multilingual model and speech fixture. */
+/** Opt-in French regression against a caller-prepared multilingual model. */
 class NativeAudioLanguageTest {
+    private static final Path WAV = Path.of("..", "testdata", "AudioLanguage.fr-FR.wav");
+    private static final String LANGUAGE = "fr-FR";
+    private static final String EXPECTED = "dans le parc";
     @TempDir Path temporary;
 
     @Test void languageHintsReachPcmAndWavRequests() throws Exception {
-        String language = setting("foundry.test.language", "FOUNDRY_TEST_LANGUAGE");
-        if (Boolean.getBoolean("foundry.test.language.required")) {
-            assertNotNull(language, "Missing required native test language");
-        } else {
-            assumeTrue(language != null, "Configure a fixed language and matching speech fixture");
-        }
-        assertNotEquals("auto", language, "Use a fixed language; auto is tested separately");
-        String expected = required("foundry.test.language.expected", "FOUNDRY_TEST_LANGUAGE_EXPECTED");
-        Path wav = Path.of(required("foundry.test.wav", "FOUNDRY_TEST_WAV"));
+        assumeTrue(Boolean.getBoolean("foundry.test.language.required"),
+                "Enable the French regression with -Dfoundry.test.language.required=true");
         Configuration config = Configuration.builder("java-audio-language-test")
                 .runtimeDirectory(Path.of(required("foundry.test.runtime", "FOUNDRY_LOCAL_NATIVE_BIN_DIR")))
                 .modelCacheDirectory(Path.of(required("foundry.test.cache", "FOUNDRY_TEST_DATA_DIR")))
                 .appDataDirectory(temporary)
                 .build();
-        byte[] pcm = WavAudio.read(wav).pcm();
+        byte[] pcm = WavAudio.read(WAV).pcm();
         assertTrue(pcm.length > 0, "Provide a nonempty speech fixture");
         try (FoundryLocalManager manager = new FoundryLocalManager(config)) {
             Model model = manager.catalog().getModelVariant(required("foundry.test.model", "FOUNDRY_TEST_MODEL"));
@@ -46,29 +42,29 @@ class NativeAudioLanguageTest {
                 }
 
                 Transcript defaultPcm = pcm(session, pcm, null, true);
-                Transcript defaultWav = wav(session, wav, null, true);
-                if (Boolean.getBoolean("foundry.test.language.distinguishesDefault")) {
-                    assertFalse(contains(defaultPcm.text(), expected), "PCM fixture must distinguish omission");
-                    assertFalse(contains(defaultWav.text(), expected), "WAV fixture must distinguish omission");
+                Transcript defaultWav = wav(session, WAV, null, true);
+                for (Transcript omitted : new Transcript[] {defaultPcm, defaultWav}) {
+                    assertFalse(contains(omitted.streamed(), EXPECTED), "Streaming fixture must distinguish omission");
+                    assertFalse(contains(omitted.text(), EXPECTED), "Final fixture must distinguish omission");
                 }
-                for (String hint : new String[] {language, "auto"}) {
-                    assertTranscript(pcm(session, pcm, hint, false), expected);
-                    assertTranscript(wav(session, wav, hint, false), expected);
+                for (String hint : new String[] {LANGUAGE, "auto"}) {
+                    assertTranscript(pcm(session, pcm, hint, false), EXPECTED);
+                    assertTranscript(wav(session, WAV, hint, false), EXPECTED);
                     assertEquals(defaultPcm, pcm(session, pcm, null, false), "PCM hint leaked to the next request");
-                    assertEquals(defaultWav, wav(session, wav, null, false), "WAV hint leaked to the next request");
+                    assertEquals(defaultWav, wav(session, WAV, null, false), "WAV hint leaked to the next request");
                 }
                 assertEquals(defaultPcm, pcm(session, pcm, null, true), "Legacy PCM overload changed");
-                assertEquals(defaultWav, wav(session, wav, null, true), "Legacy WAV overload changed");
+                assertEquals(defaultWav, wav(session, WAV, null, true), "Legacy WAV overload changed");
 
                 AtomicInteger callbacks = new AtomicInteger();
                 Transcription cancelled;
                 try (Transcription run = session.streamPcm(
-                        PcmFormat.SPEECH, language, event -> callbacks.incrementAndGet())) {
+                        PcmFormat.SPEECH, LANGUAGE, event -> callbacks.incrementAndGet())) {
                     cancelled = run;
                     assertThrows(IllegalStateException.class,
                             () -> session.streamPcm(PcmFormat.SPEECH, "auto", event -> {}));
                     assertThrows(IllegalStateException.class,
-                            () -> session.transcribeWav(wav, "auto", event -> {}));
+                            () -> session.transcribeWav(WAV, "auto", event -> {}));
                     run.writePcm(Arrays.copyOf(pcm, Math.min(3200, pcm.length)));
                     run.cancel();
                     assertTrue(run.await(Duration.ofSeconds(30)).cancelled());
@@ -77,14 +73,14 @@ class NativeAudioLanguageTest {
                 int count = callbacks.get();
                 Thread.sleep(100);
                 assertEquals(count, callbacks.get(), "Callbacks must not outlive close");
-                assertTranscript(wav(session, wav, language, false), expected);
+                assertTranscript(wav(session, WAV, LANGUAGE, false), EXPECTED);
                 Transcription closedRun = session.streamPcm(PcmFormat.SPEECH, "auto", event -> {});
                 session.close();
                 assertTrue(closedRun.isClosed());
                 assertThrows(IllegalStateException.class,
-                        () -> session.streamPcm(PcmFormat.SPEECH, language, event -> {}));
+                        () -> session.streamPcm(PcmFormat.SPEECH, LANGUAGE, event -> {}));
                 assertThrows(IllegalStateException.class,
-                        () -> session.transcribeWav(wav, language, event -> {}));
+                        () -> session.transcribeWav(WAV, LANGUAGE, event -> {}));
             } finally {
                 model.unload();
             }

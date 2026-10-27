@@ -262,16 +262,16 @@ stream neither blocks nor crashes process exit. The Windows x64 CI lane
 separately probes a checksum-pinned released legacy runtime in a fresh JVM to
 verify rejection before accessing incompatible native function tables.
 
-`NativeAudioLanguageTest` separately qualifies language hints against a prepared
-multilingual streaming model and a PCM WAV fixture in the chosen language.
+`NativeAudioLanguageTest` owns a fixed French regression scenario against a
+prepared multilingual streaming model.
 The Windows x64 CI lane explicitly downloads the pinned multilingual model
 through `PrepareAudioLanguageModel`, then requires this test with the checked-in
 `sdk_v2/testdata/AudioLanguage.fr-FR.wav` fixture, `fr-FR`, and the expected phrase
-`dans le parc`. It also requires `distinguishesDefault=true`: both fixed language
-and `auto` must recognize a phrase that is absent when language is omitted.
+`dans le parc`. The test always requires both fixed language and `auto` to
+recognize that phrase in streaming and final text, while omission must not.
 Fixture provenance and attribution are in the adjacent `.txt` file.
 
-To qualify another recording locally:
+To run this regression locally after preparing the model:
 
 ```powershell
 mvn -f sdk_v2/java/pom.xml test `
@@ -279,22 +279,17 @@ mvn -f sdk_v2/java/pom.xml test `
   -Dfoundry.test.runtime=<absolute-matching-v2-native-runtime-dir> `
   -Dfoundry.test.cache=<absolute-model-cache> `
   -Dfoundry.test.model=nemotron-3.5-asr-streaming-0.6b-generic-cpu:3 `
-  -Dfoundry.test.wav=<absolute-English-wav-file> `
-  -Dfoundry.test.language=en-US `
-  "-Dfoundry.test.language.expected=<phrase-in-the-recording>"
+  -Dfoundry.test.language.required=true
 ```
 
-Repeat with `"zh-CN"` and a Mandarin fixture (and a corresponding expected
-phrase), or another language supported by the model. The test checks the fixed
-language and explicit `"auto"` in **both streaming and final text**, through
-both PCM and WAV entry points. It also checks omitted/null compatibility,
-request isolation, invalid strings, cancellation and closed sessions.
-For a fixture whose expected phrase is absent without a hint, add
-`-Dfoundry.test.language.distinguishesDefault=true`. This asserts that native
-recognition actually changes, rather than merely testing Java field storage.
-No model or fixture is downloaded by this test. It is skipped unless
-`foundry.test.language` (or `FOUNDRY_TEST_LANGUAGE`) is set; once enabled,
-missing inputs fail. The expected phrase can also be supplied through
-`FOUNDRY_TEST_LANGUAGE_EXPECTED`. CI sets
-`-Dfoundry.test.language.required=true` so a missing language also fails rather
-than silently skipping the test.
+The test checks `"fr-FR"` and explicit `"auto"` through both PCM and WAV entry
+points. It also checks omitted/null compatibility, request isolation, invalid
+strings, cancellation and closed sessions. The fixture, language, expected
+phrase and distinguishing assertions are defined together in the Java test,
+not configured independently by CI.
+
+No model or fixture is downloaded by the recognition test. It is skipped unless
+`-Dfoundry.test.language.required=true` is set; once enabled, missing
+runtime/cache/model inputs or a missing fixture fail. YAML retains platform
+selection, a single multilingual model pin shared by preparation and execution,
+runtime/cache paths, this enable flag, and result publication.
