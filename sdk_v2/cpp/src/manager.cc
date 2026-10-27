@@ -7,6 +7,7 @@
 #include <ort_genai_c.h>
 
 #include <atomic>
+#include <condition_variable>
 #include <string_view>
 
 #include "catalog.h"
@@ -348,6 +349,27 @@ Manager::Manager(const Configuration& config) : config_(config) {
         return CreateLocalModel(std::move(info), std::move(local_path));
       },
       *logger_);
+
+  const auto idle_timeout = config_.GpuIdleTimeout();
+  if (idle_timeout > std::chrono::seconds::zero()) {
+    gpu_idle_monitor_ = std::jthread([this, idle_timeout](std::stop_token stop) {
+      std::mutex mutex;
+      std::condition_variable_any wake;
+      std::unique_lock lock(mutex);
+      while (!stop.stop_requested()) {
+        wake.wait_for(lock, stop, std::chrono::seconds(1), [] { return false; });
+        if (stop.stop_requested()) {
+          break;
+        }
+
+        try {
+          model_load_manager_->UnloadIdleModels(idle_timeout, *session_manager_);
+        } catch (const std::exception& ex) {
+          logger_->Log(LogLevel::Error, fmt::format("GPU idle-unload failed: {}", ex.what()));
+        }
+      }
+    });
+  }
 }
 
 Manager::~Manager() {
@@ -558,6 +580,11 @@ void Manager::Shutdown() {
   }
 
   logger_->Log(LogLevel::Information, "Shutdown requested");
+
+  if (gpu_idle_monitor_.joinable()) {
+    gpu_idle_monitor_.request_stop();
+    gpu_idle_monitor_.join();
+  }
 
   // Order matters:
   //   1. Reject new loads so callers gated on IsShutdownRequested can stop early.

@@ -36,7 +36,7 @@ class AudioTranscriptionsHandler : public HttpRequestHandler {
 
   /// Look up model in catalog and verify it's loaded and supports audio.
   std::shared_ptr<OutgoingResponse> ResolveModel(const std::string& model_name,
-                                                 Model*& model, GenAIModelInstance*& loaded);
+                                                 Model*& model, std::shared_ptr<GenAIModelInstance>& loaded);
 
   /// Build a Request with an OPENAI_JSON-tagged TEXT item from the original body string.
   void BuildOpenAIJsonRequest(const std::string& body, Request& session_request);

@@ -25,7 +25,7 @@ namespace fl {
 
 EmbeddingsSession::EmbeddingsSession(const fl::Model& catalog_model, GenAIModelInstance& model,
                                      ILogger& logger, ITelemetry& telemetry)
-    : Session(catalog_model, logger, telemetry, /*allow_concurrent_requests=*/true),
+    : Session(catalog_model, logger, telemetry, /*allow_concurrent_requests=*/true, &model),
       logger_(logger),
       model_(model) {
   logger_.Log(LogLevel::Debug, fmt::format("Creating EmbeddingsSession for model: {}", model.ModelId()));

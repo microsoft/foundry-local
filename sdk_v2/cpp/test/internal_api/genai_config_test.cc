@@ -15,6 +15,37 @@
 
 using namespace fl;
 
+TEST(GenAIConfigModelTest, GpuDetectionHonorsExplicitCpuOverride) {
+  GenAIConfig config;
+  config.model.emplace().decoder.emplace().session_options.emplace().provider_options = {{{"cuda", "{}"}}};
+  EXPECT_TRUE(config.UsesGpu(ExecutionProvider::kDefault));
+  EXPECT_FALSE(config.UsesGpu(ExecutionProvider::kCPU));
+}
+
+TEST(GenAIConfigModelTest, GpuDetectionRecognizesProvidersWithoutTreatingNpusAsGpus) {
+  for (const auto* provider : {"cuda", "CUDAExecutionProvider", "WebGPU", "WebGpuExecutionProvider",
+                               "dml", "DmlExecutionProvider", "NvTensorRtRtx", "MIGraphXExecutionProvider"}) {
+    GenAIConfig config;
+    config.model.emplace().decoder.emplace().session_options.emplace().provider_options = {{{provider, "{}"}}};
+    EXPECT_TRUE(config.UsesGpu(ExecutionProvider::kDefault)) << provider;
+  }
+
+  for (const auto* provider : {"", "cpu", "QNN", "VitisAI", "RyzenAI", "OpenVINO"}) {
+    GenAIConfig config;
+    config.model.emplace().decoder.emplace().session_options.emplace().provider_options = {{{provider, "{}"}}};
+    EXPECT_FALSE(config.UsesGpu(ExecutionProvider::kDefault)) << provider;
+  }
+}
+
+TEST(GenAIConfigModelTest, GpuDetectionRecognizesOpenVinoGpuDevice) {
+  GenAIConfig config;
+  config.model.emplace().decoder.emplace().session_options.emplace().provider_options =
+      {{{"OpenVINO", R"({"device_type":"GPU"})"}}};
+  EXPECT_TRUE(config.UsesGpu(ExecutionProvider::kDefault));
+  EXPECT_FALSE(config.UsesGpu(ExecutionProvider::kCPU));
+  EXPECT_FALSE(config.UsesGpu(ExecutionProvider::kOpenVINO));
+}
+
 namespace {
 
 /// Create a temporary directory for test files.

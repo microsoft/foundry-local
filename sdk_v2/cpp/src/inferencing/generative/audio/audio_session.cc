@@ -140,7 +140,7 @@ std::string AudioInternal::SanitizeLanguageForTelemetry(const std::string& langu
 
 AudioSession::AudioSession(const fl::Model& catalog_model, GenAIModelInstance& model,
                            ILogger& logger, ITelemetry& telemetry)
-    : Session(catalog_model, logger, telemetry), logger_(logger), model_(model) {
+    : Session(catalog_model, logger, telemetry, false, &model), logger_(logger), model_(model) {
   logger_.Log(LogLevel::Debug, fmt::format("Creating AudioSession for model: {}", model.ModelId()));
   // Last so a throw above does not leak a refcount; nothing below can throw.
   model_.AcquireSession();

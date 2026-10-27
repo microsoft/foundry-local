@@ -94,14 +94,14 @@ ModelCapabilities ResolveModelCapabilities(std::string_view model_type, Preproce
 
   try {
     const auto reasoning_projection = preprocessor.ApplyChatTemplateWithOptions(
-      kReasoningProbeMessages, /*tools_json=*/nullptr, /*template_kwargs_json=*/nullptr,
-      /*add_generation_prompt=*/false);
+        kReasoningProbeMessages, /*tools_json=*/nullptr, /*template_kwargs_json=*/nullptr,
+        /*add_generation_prompt=*/false);
     const auto no_preserve_reasoning_projection = preprocessor.ApplyChatTemplateWithOptions(
-      kReasoningProbeMessages, /*tools_json=*/nullptr, kDisableReasoningPreservation,
-      /*add_generation_prompt=*/false);
+        kReasoningProbeMessages, /*tools_json=*/nullptr, kDisableReasoningPreservation,
+        /*add_generation_prompt=*/false);
     const auto reasoning_capabilities = model_capabilities_internal::ResolveRenderedProbes(
-      model_type, {}, {}, reasoning_projection, no_preserve_reasoning_projection,
-      reasoning_start, reasoning_end);
+        model_type, {}, {}, reasoning_projection, no_preserve_reasoning_projection,
+        reasoning_start, reasoning_end);
     capabilities.supports_reasoning_history = reasoning_capabilities.supports_reasoning_history;
     capabilities.supports_preserve_thinking = reasoning_capabilities.supports_preserve_thinking;
     capabilities.supports_reasoning_controls = true;
@@ -126,24 +126,24 @@ ModelCapabilities model_capabilities_internal::ResolveRenderedProbes(
     std::string_view reasoning_end) noexcept {
   const bool is_qwen35_text = model_type == kQwen35TextModelType;
   const bool native_qwen_xml_tool_calls = is_qwen35_text &&
-      tool_call_projection.find(kExpectedToolCallBlock) != std::string_view::npos;
+                                          tool_call_projection.find(kExpectedToolCallBlock) != std::string_view::npos;
   const bool positional_tool_results = is_qwen35_text &&
-      ContainsInOrder(tool_result_projection,
-                      {kFirstToolCallBlock, kSecondToolCallBlock, kFirstToolResultBlock,
-                       kSecondToolResultBlock}) &&
-      tool_result_projection.find("probe-call-a") == std::string_view::npos &&
-      tool_result_projection.find("probe-call-b") == std::string_view::npos;
+                                       ContainsInOrder(tool_result_projection,
+                                                       {kFirstToolCallBlock, kSecondToolCallBlock, kFirstToolResultBlock,
+                                                        kSecondToolResultBlock}) &&
+                                       tool_result_projection.find("probe-call-a") == std::string_view::npos &&
+                                       tool_result_projection.find("probe-call-b") == std::string_view::npos;
 
   const bool supports_reasoning_history = !reasoning_start.empty() && !reasoning_end.empty() &&
-      ContainsInOrder(reasoning_projection,
-                      {reasoning_start, "reasoning-probe-private-a", reasoning_end,
-                       "reasoning-probe-visible-a", reasoning_start, "reasoning-probe-private-b",
-                       reasoning_end, "reasoning-probe-visible-b"});
+                                          ContainsInOrder(reasoning_projection,
+                                                          {reasoning_start, "reasoning-probe-private-a", reasoning_end,
+                                                           "reasoning-probe-visible-a", reasoning_start, "reasoning-probe-private-b",
+                                                           reasoning_end, "reasoning-probe-visible-b"});
   const bool supports_preserve_thinking = supports_reasoning_history &&
-      no_preserve_reasoning_projection.find("reasoning-probe-private-a") == std::string_view::npos &&
-      no_preserve_reasoning_projection.find("reasoning-probe-private-b") == std::string_view::npos &&
-      ContainsInOrder(no_preserve_reasoning_projection,
-                      {"reasoning-probe-visible-a", "reasoning-probe-visible-b"});
+                                          no_preserve_reasoning_projection.find("reasoning-probe-private-a") == std::string_view::npos &&
+                                          no_preserve_reasoning_projection.find("reasoning-probe-private-b") == std::string_view::npos &&
+                                          ContainsInOrder(no_preserve_reasoning_projection,
+                                                          {"reasoning-probe-visible-a", "reasoning-probe-visible-b"});
 
   return {native_qwen_xml_tool_calls, positional_tool_results,
           supports_reasoning_history, supports_preserve_thinking,
@@ -163,7 +163,7 @@ GenAIModelInstance::GenAIModelInstance(std::string model_id,
       model_path_(std::move(effective_model_path)),
       genai_config_(std::move(genai_config)),
       ep_(resolved_ep),
-      last_activity_(std::chrono::steady_clock::now()) {
+      last_activity_(std::chrono::steady_clock::now().time_since_epoch().count()) {
   // Create OGA Config from the effective model directory
   std::unique_ptr<OgaConfig> oga_config;
   try {

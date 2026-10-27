@@ -5,6 +5,7 @@
 #include "utils.h"
 
 #include <functional>
+#include <charconv>
 #include <string_view>
 
 namespace fl {
@@ -14,8 +15,8 @@ namespace {
 constexpr std::string_view kLegacyAzureCatalogPrefix = "https://ai.azure.com/";
 constexpr std::string_view kLegacyAzureCatalogPath = "/ux/v1.0";
 constexpr const char* kCatalogUrlMigrationMessage =
-  "Configuration: legacy Azure /ux/v1.0 catalog URLs are unsupported; migrate to "
-  "'https://api.catalog.azureml.ms/asset-gallery/v1.0/models'";
+    "Configuration: legacy Azure /ux/v1.0 catalog URLs are unsupported; migrate to "
+    "'https://api.catalog.azureml.ms/asset-gallery/v1.0/models'";
 
 /// Replace all occurrences of `placeholder` with `value` in `str`.
 void ReplacePlaceholder(std::string& str, const std::string& placeholder, const std::string& value) {
@@ -43,6 +44,23 @@ std::string ExpandPlaceholders(const std::string& path,
 
 }  // namespace
 
+std::chrono::seconds Configuration::GpuIdleTimeout() const {
+  const auto it = additional_options.find("GpuIdleTimeoutSeconds");
+  if (it == additional_options.end()) {
+    return std::chrono::seconds::zero();
+  }
+
+  int seconds = 0;
+  const auto& value = it->second;
+  const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), seconds);
+  if (error != std::errc{} || end != value.data() + value.size() || seconds < 0) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "Configuration: GpuIdleTimeoutSeconds must be an integer from 0 to 2147483647");
+  }
+
+  return std::chrono::seconds(seconds);
+}
+
 void ValidateCatalogUrl(const std::string& url) {
   if (url.empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Configuration: catalog URL must not be empty");
@@ -64,6 +82,8 @@ void Configuration::Validate() {
   if (app_name.empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Configuration: app_name must not be empty");
   }
+
+  (void)GpuIdleTimeout();
 
   for (const auto& [url, filter] : catalog_urls) {
     ValidateCatalogUrl(url);

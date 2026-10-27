@@ -57,16 +57,9 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
 }
 
 std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler::ResolveModel(
-    const std::string& model_name, Model*& model, GenAIModelInstance*& loaded) {
-  model = ctx_.catalog.GetModelVariant(model_name);
-  if (!model) {
-    return ErrorResponse(Status::CODE_404, "Model not found", "No model matching '" + model_name + "'");
-  }
-
-  loaded = ctx_.model_load_manager.GetLoadedModel(model->Id(), model->GetPath());
-  if (!loaded) {
-    return ErrorResponse(Status::CODE_400, "Model not loaded",
-                         "Model '" + model_name + "' must be loaded before inference");
+    const std::string& model_name, Model*& model, std::shared_ptr<GenAIModelInstance>& loaded) {
+  if (auto error = ResolveModelForInference(ctx_, model_name, model, loaded)) {
+    return error;
   }
 
   if (model->Info().task != "automatic-speech-recognition") {
@@ -122,9 +115,9 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
   // 3. Resolve model
   std::string model_name = req.model;
   Model* model = nullptr;
-  GenAIModelInstance* loaded = nullptr;
+  std::shared_ptr<GenAIModelInstance> loaded;
   if (auto err = ResolveModel(model_name, model, loaded)) {
-    tracker->SetStatus(ActionStatus::kClientError);
+    tracker->SetStatus(ResponseToActionStatus(err));
     return err;
   }
 

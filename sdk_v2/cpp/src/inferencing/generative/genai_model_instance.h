@@ -46,7 +46,7 @@ ModelCapabilities ResolveRenderedProbes(std::string_view model_type,
 
 /// A model that has been loaded into the ORT GenAI runtime.
 /// Owns the OgaModel and its preprocessing resources.
-/// Non-copyable, non-movable. Owned by ModelLoadManager via std::unique_ptr.
+/// Non-copyable, non-movable. ModelLoadManager owns the instance; admission leases briefly share ownership.
 class GenAIModelInstance {
  public:
   ~GenAIModelInstance();
@@ -92,7 +92,16 @@ class GenAIModelInstance {
   OnnxChatEngine* GetChatEngine() { return chat_engine_.get(); }
 
   /// Get the last-activity timestamp.
-  std::chrono::steady_clock::time_point LastActivity() const { return last_activity_; }
+  std::chrono::steady_clock::time_point LastActivity() const {
+    return std::chrono::steady_clock::time_point(std::chrono::steady_clock::duration(last_activity_.load()));
+  }
+  void RecordActivity() {
+    const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+    auto previous = last_activity_.load();
+    while (previous < now && !last_activity_.compare_exchange_weak(previous, now)) {
+    }
+  }
+  bool UsesGpu() const { return genai_config_.UsesGpu(ep_); }
 
   /// Live-session reference counting. Sessions call AcquireSession() on construction and
   /// ReleaseSession() on destruction; ModelLoadManager::UnloadModel refuses to unload
@@ -121,7 +130,7 @@ class GenAIModelInstance {
   std::unique_ptr<OnnxChatEngine> chat_engine_;
   TagInfo tag_info_;
   std::once_flag tag_info_init_flag_;
-  std::chrono::steady_clock::time_point last_activity_;
+  std::atomic<std::chrono::steady_clock::rep> last_activity_;
   mutable std::atomic<int> session_ref_count_{0};
 };
 

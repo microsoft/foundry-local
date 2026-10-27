@@ -59,6 +59,15 @@ TEST(HandlerErrorMappingTest, InternalFailuresRemainServerErrors) {
   EXPECT_STREQ(ErrorTypeForStatus(status), "server_error");
 }
 
+TEST(HandlerErrorMappingTest, ModelAcquisitionErrorsPreserveServerFailureStatus) {
+  EXPECT_EQ(ResponseToActionStatus(ErrorResponse(Status::CODE_500, "Model acquisition failed")),
+            ActionStatus::kFailure);
+  EXPECT_EQ(ResponseToActionStatus(ErrorResponse(Status::CODE_400, "Model not loaded")),
+            ActionStatus::kClientError);
+  EXPECT_EQ(ResponseToActionStatus(ErrorResponse(Status::CODE_404, "Model not found")),
+            ActionStatus::kClientError);
+}
+
 TEST(HandlerErrorMappingTest, InvalidCatalogDefaultMapsToServerError) {
   ChatCompletionRequest req;
   KeyValuePairs settings;

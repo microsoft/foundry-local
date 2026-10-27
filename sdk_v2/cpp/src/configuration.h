@@ -4,6 +4,7 @@
 
 #include "log_level.h"
 
+#include <chrono>
 #include <map>
 #include <optional>
 #include <string>
@@ -54,6 +55,9 @@ struct Configuration {
 
   /// Additional/undocumented options passed through to the core.
   std::map<std::string, std::string> additional_options;
+
+  /// Opt-in GPU idle-unload timeout from GpuIdleTimeoutSeconds. Zero disables automatic unloading.
+  std::chrono::seconds GpuIdleTimeout() const;
 
   /// Validates the configuration and resolves defaults.
   /// Expands `{home}` placeholders and sets default cache directory.

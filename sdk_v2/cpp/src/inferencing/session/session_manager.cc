@@ -209,4 +209,22 @@ void SessionManager::ClearCache() {
   // Destroy outside lock
 }
 
+void SessionManager::EvictCachedForModel(const GenAIModelInstance& model) {
+  std::vector<std::unique_ptr<ChatSession>> evicted;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    evicted.reserve(cache_.size());
+    for (auto it = cache_.begin(); it != cache_.end();) {
+      if (it->second.session->LoadedModel() != &model) {
+        ++it;
+        continue;
+      }
+
+      evicted.push_back(std::move(it->second.session));
+      lru_order_.erase(it->second.lru_iter);
+      it = cache_.erase(it);
+    }
+  }
+}
+
 }  // namespace fl

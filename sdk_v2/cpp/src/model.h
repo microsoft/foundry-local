@@ -17,6 +17,7 @@ namespace fl {
 class DownloadManager;
 struct Item;
 class ModelLoadManager;
+class GenAIModelInstance;
 
 // -----------------------------------------------------------------------
 // Model — a single model entry or a multi-variant container.
@@ -124,6 +125,7 @@ class Model {
 
   bool IsCached() const;
   bool IsLoaded() const;
+  std::shared_ptr<GenAIModelInstance> AcquireForSession() const;
 
   /// Get the supported input and output item types for this model, based on its task.
   /// Returns arrays of Item pointers (type-tag-only descriptors) from static storage.

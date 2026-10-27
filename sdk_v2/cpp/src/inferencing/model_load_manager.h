@@ -18,14 +18,13 @@
 
 namespace fl {
 
+class SessionManager;
+
 /// Manages the lifecycle of loaded ORT GenAI models.
 /// Thread-safe. Owns all GenAIModelInstance instances.
 ///
-/// Returned GenAIModelInstance pointers are non-owning and valid only while the
-/// model remains loaded. The caller must ensure the model is not unloaded (via
-/// UnloadModel) while the pointer is in use. In practice, the Manager serializes
-/// load/unload operations through the web service, so concurrent unload during
-/// active inference does not occur.
+/// Raw pointers are only for immediate queries or callers that already own a live session.
+/// AcquireForSession pins an instance across construction so manual or automatic unloading cannot race admission.
 class ModelLoadManager {
  public:
   enum class LoadStatus {
@@ -68,11 +67,18 @@ class ModelLoadManager {
   bool UnloadModel(std::string_view model_id, std::string_view model_path);
 
   /// Get a loaded model by ID. Returns nullptr if not loaded.
-  /// The returned pointer is valid until UnloadModel is called for this model_id.
+  /// Use AcquireForSession rather than a raw lookup when constructing a session.
   GenAIModelInstance* GetLoadedModel(std::string_view model_id);
 
   /// Get a loaded model for an immediate query only when its normalized path matches `model_path`.
   GenAIModelInstance* GetLoadedModel(std::string_view model_id, std::string_view model_path);
+
+  /// Pin an instance while constructing a session. Only idle-evicted models are automatically reloaded.
+  std::shared_ptr<GenAIModelInstance> AcquireForSession(std::string_view model_id, std::string_view model_path);
+
+  /// Evict idle GPU session caches and models without interrupting requests or live SDK sessions.
+  size_t UnloadIdleModels(std::chrono::seconds timeout, SessionManager& sessions,
+                          std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
 
   /// Reject all future LoadModel calls. Called by Manager::Shutdown().
   /// Idempotent and thread-safe.
@@ -90,6 +96,7 @@ class ModelLoadManager {
   void UnloadAll(std::chrono::milliseconds timeout = std::chrono::seconds(10));
 
  private:
+  LoadResult LoadModelLocked(const std::string& model_path, const std::string& model_id, ExecutionProvider ep_override);
   bool HasEP(const std::string& ep_name) const;
   bool UnloadModel(std::string_view model_id, const std::string* normalized_model_path);
   GenAIModelInstance* GetLoadedModel(std::string_view model_id, const std::string* normalized_model_path);
@@ -98,7 +105,12 @@ class ModelLoadManager {
   ILogger& logger_;
   std::atomic<bool> shutdown_{false};
   mutable std::mutex mutex_;
-  std::map<std::string, std::unique_ptr<GenAIModelInstance>> loaded_models_;
+  std::map<std::string, std::shared_ptr<GenAIModelInstance>> loaded_models_;
+  struct IdleModel {
+    std::string path;
+    ExecutionProvider ep;
+  };
+  std::map<std::string, IdleModel> idle_models_;
 };
 
 }  // namespace fl

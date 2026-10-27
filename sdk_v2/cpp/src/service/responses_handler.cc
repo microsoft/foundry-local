@@ -169,19 +169,8 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::ParseAnd
 }
 
 std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::ResolveModel(
-    const std::string& model_name, Model*& model, GenAIModelInstance*& loaded) {
-  model = ctx_.catalog.GetModelVariant(model_name);
-  if (!model) {
-    return ErrorResponse(Status::CODE_404, "Model not found", "No model matching '" + model_name + "'");
-  }
-
-  loaded = ctx_.model_load_manager.GetLoadedModel(model->Id(), model->GetPath());
-  if (!loaded) {
-    return ErrorResponse(Status::CODE_400, "Model not loaded",
-                         "Model '" + model_name + "' must be loaded before inference");
-  }
-
-  return nullptr;
+    const std::string& model_name, Model*& model, std::shared_ptr<GenAIModelInstance>& loaded) {
+  return ResolveModelForInference(ctx_, model_name, model, loaded);
 }
 
 std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::BeginResponse(
@@ -295,9 +284,9 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::handle(
   // 2. Resolve model
   std::string model_name = params.model;
   Model* model = nullptr;
-  GenAIModelInstance* loaded = nullptr;
+  std::shared_ptr<GenAIModelInstance> loaded;
   if (auto err = ResolveModel(model_name, model, loaded)) {
-    tracker->SetStatus(ActionStatus::kClientError);
+    tracker->SetStatus(ResponseToActionStatus(err));
     return err;
   }
 

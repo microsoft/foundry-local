@@ -5,6 +5,7 @@
 #include "exception.h"
 #include "inferencing/generative/genai_config.h"
 #include "inferencing/generative/genai_model_instance.h"
+#include "inferencing/session/session_manager.h"
 #include "platform/path.h"
 #include "utils.h"
 
@@ -139,14 +140,18 @@ bool ModelLoadManager::HasEP(const std::string& ep_name) const {
 ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_path,
                                                          std::string_view model_id,
                                                          ExecutionProvider ep_override) {
+  const auto path_str = NormalizeModelPath(model_path);
+  std::lock_guard<std::mutex> lock(mutex_);
+  return LoadModelLocked(path_str, std::string(model_id), ep_override);
+}
+
+ModelLoadManager::LoadResult ModelLoadManager::LoadModelLocked(const std::string& path_str,
+                                                               const std::string& id_str,
+                                                               ExecutionProvider ep_override) {
   if (shutdown_.load()) {
     FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
                      "cannot load model during shutdown");
   }
-
-  const auto path_str = NormalizeModelPath(model_path);
-  std::string id_str(model_id);
-  std::lock_guard<std::mutex> lock(mutex_);
 
   auto it = loaded_models_.find(id_str);
   if (it != loaded_models_.end()) {
@@ -222,15 +227,17 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
                      "failed to prepare ", required_ep, " for model loading");
   }
 
-  // std::make_unique cannot access the private constructor; using new directly is intentional.
-  auto loaded = std::unique_ptr<GenAIModelInstance>(new GenAIModelInstance(id_str,
+  // make_shared cannot access the private constructor.
+  auto loaded = std::shared_ptr<GenAIModelInstance>(new GenAIModelInstance(id_str,
                                                                            path_str,
                                                                            std::move(genai_config),
                                                                            resolved_ep,
                                                                            logger_));
 
   auto* raw_ptr = loaded.get();
+  loaded->RecordActivity();
   loaded_models_[id_str] = std::move(loaded);
+  idle_models_.erase(id_str);
 
   logger_.Log(LogLevel::Information, fmt::format("model loaded successfully: {}", id_str));
   return {LoadStatus::kSuccess, raw_ptr};
@@ -253,6 +260,12 @@ bool ModelLoadManager::UnloadModel(std::string_view model_id, const std::string*
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::string id_str(model_id);
+  auto idle = idle_models_.find(id_str);
+  if (idle != idle_models_.end() &&
+      (!normalized_model_path || ModelPathsEqual(*normalized_model_path, idle->second.path))) {
+    idle_models_.erase(idle);
+  }
+
   auto it = loaded_models_.find(id_str);
   if (it == loaded_models_.end()) {
     logger_.Log(LogLevel::Information, fmt::format("model was not loaded: {}", id_str));
@@ -274,12 +287,79 @@ bool ModelLoadManager::UnloadModel(std::string_view model_id, const std::string*
                      "cannot unload model '", id_str, "': ", live_sessions,
                      " session(s) still using it");
   }
+  if (it->second.use_count() > 1) {
+    FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                     "cannot unload model '", id_str, "': inference admission is still using it");
+  }
 
   logger_.Log(LogLevel::Information, fmt::format("unloading model: {}", id_str));
 
   // Erasing destroys the GenAIModelInstance, which destroys OGA objects in reverse order.
   loaded_models_.erase(it);
   return true;
+}
+
+std::shared_ptr<GenAIModelInstance> ModelLoadManager::AcquireForSession(std::string_view model_id,
+                                                                        std::string_view model_path) {
+  const auto path = NormalizeModelPath(model_path);
+  const std::string id(model_id);
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (shutdown_.load()) {
+    FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot create session during shutdown");
+  }
+
+  auto loaded = loaded_models_.find(id);
+  if (loaded == loaded_models_.end()) {
+    const auto idle = idle_models_.find(id);
+    if (idle == idle_models_.end() || !ModelPathsEqual(path, idle->second.path)) {
+      return nullptr;
+    }
+
+    const auto ep = idle->second.ep;
+    if (LoadModelLocked(path, id, ep).status == LoadStatus::kModelNotFound) {
+      FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INTERNAL, "idle model no longer exists at path: ", path);
+    }
+    loaded = loaded_models_.find(id);
+  }
+
+  if (!ModelPathsEqual(path, loaded->second->ModelPath())) {
+    return nullptr;
+  }
+
+  loaded->second->RecordActivity();
+  return loaded->second;
+}
+
+size_t ModelLoadManager::UnloadIdleModels(std::chrono::seconds timeout, SessionManager& sessions,
+                                          std::chrono::steady_clock::time_point now) {
+  if (timeout <= std::chrono::seconds::zero()) {
+    return 0;
+  }
+
+  std::lock_guard<std::mutex> lock(mutex_);
+  size_t unloaded = 0;
+  for (auto it = loaded_models_.begin(); it != loaded_models_.end();) {
+    const auto& model = it->second;
+    if (!model->UsesGpu() || model.use_count() > 1 || now - model->LastActivity() < timeout) {
+      ++it;
+      continue;
+    }
+
+    // Checkout takes ownership of a session before releasing the cache lock; its session reference then pins the
+    // instance. Admission takes this model lock, so neither path can race the final reference check and erase.
+    sessions.EvictCachedForModel(*model);
+    if (model->SessionRefCount() > 0 || now - model->LastActivity() < timeout) {
+      ++it;
+      continue;
+    }
+
+    logger_.Log(LogLevel::Information, fmt::format("GPU idle timeout: unloading model '{}'", it->first));
+    idle_models_.insert_or_assign(it->first, IdleModel{model->ModelPath(), model->EP()});
+    it = loaded_models_.erase(it);
+    ++unloaded;
+  }
+
+  return unloaded;
 }
 
 void ModelLoadManager::RejectNewLoads() {

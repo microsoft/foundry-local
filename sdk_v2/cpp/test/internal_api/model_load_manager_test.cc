@@ -5,14 +5,18 @@
 #include "ep_detection/ep_detector.h"
 #include "exception.h"
 #include "inferencing/generative/genai_model_instance.h"
+#include "inferencing/generative/chat/chat_session.h"
+#include "inferencing/session/session_manager.h"
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
 #include "logger.h"
+#include "model.h"
 #include "utils/temp_path.h"
 
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <future>
 #include <fstream>
 #include <string>
 #include <utility>
@@ -392,4 +396,81 @@ TEST_F(ModelLoadManagerUnloadTest, SameIdRequiresSameCanonicalPathForLoadLookupA
 
   EXPECT_TRUE(mgr_->UnloadModel(fl::test::kTestChatModelAlias, equivalent_path.string()));
   EXPECT_EQ(mgr_->GetLoadedModel(fl::test::kTestChatModelAlias), nullptr);
+}
+
+class ModelIdleUnloadTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    path_ = fl::test::GetTestDataPath("tiny-random-gpt2-fp32-1").string();
+    ASSERT_EQ(models_.LoadModel(path_, "tiny").status, fl::ModelLoadManager::LoadStatus::kSuccess);
+  }
+
+  fl::test::CpuOnlyEpDetector ep_;
+  fl::StderrLogger logger_;
+  fl::ModelLoadManager models_{ep_, logger_};
+  fl::SessionManager sessions_{logger_};
+  std::string path_;
+};
+
+TEST_F(ModelIdleUnloadTest, AcquisitionPinsModelUntilSessionConstructionCompletes) {
+  auto lease = models_.AcquireForSession("tiny", path_);
+  ASSERT_NE(lease, nullptr);
+  EXPECT_THROW(models_.UnloadModel("tiny"), fl::Exception);
+  lease.reset();
+  EXPECT_TRUE(models_.UnloadModel("tiny"));
+}
+
+TEST_F(ModelIdleUnloadTest, AcquisitionRejectsDifferentPathAndNeverLoadedModels) {
+  EXPECT_EQ(models_.AcquireForSession("tiny", std::filesystem::path(path_).parent_path().string()), nullptr);
+  EXPECT_EQ(models_.AcquireForSession("missing", path_), nullptr);
+}
+
+TEST_F(ModelIdleUnloadTest, ExplicitUnloadDoesNotAutomaticallyReload) {
+  ASSERT_TRUE(models_.UnloadModel("tiny"));
+  EXPECT_EQ(models_.AcquireForSession("tiny", path_), nullptr);
+}
+
+TEST_F(ModelIdleUnloadTest, IdleSweepLeavesCpuModelsLoaded) {
+  const auto later = std::chrono::steady_clock::now() + std::chrono::hours(3);
+  EXPECT_EQ(models_.UnloadIdleModels(std::chrono::seconds(1), sessions_, later), 0u);
+  EXPECT_NE(models_.AcquireForSession("tiny", path_), nullptr);
+}
+
+TEST_F(ModelIdleUnloadTest, SessionAcquisitionIsSafeDuringConcurrentIdleSweeps) {
+  auto acquire = std::async(std::launch::async, [&] {
+    for (int i = 0; i < 100; ++i) {
+      auto lease = models_.AcquireForSession("tiny", path_);
+      EXPECT_NE(lease, nullptr);
+    }
+  });
+  for (int i = 0; i < 100; ++i) {
+    EXPECT_EQ(models_.UnloadIdleModels(std::chrono::seconds(1), sessions_), 0u);
+  }
+  acquire.get();
+}
+
+TEST_F(ModelIdleUnloadTest, CacheEvictionOnlyDropsSessionsForTheTargetModel) {
+  fl::test::FakeServiceBindings bindings;
+  fl::TelemetryLogger telemetry("test", logger_);
+  fl::ModelInfo info;
+  info.model_id = "tiny";
+  info.alias = "tiny";
+  info.task = "chat-completion";
+  auto catalog_model = fl::Model::FromModelInfo(std::move(info), path_, bindings.download_manager, models_);
+  auto target = models_.AcquireForSession("tiny", path_);
+  ASSERT_EQ(models_.LoadModel(path_, "other").status, fl::ModelLoadManager::LoadStatus::kSuccess);
+  auto other = models_.AcquireForSession("other", path_);
+
+  sessions_.CheckIn("target", std::make_unique<fl::ChatSession>(catalog_model, *target, logger_, telemetry));
+  sessions_.CheckIn("other", std::make_unique<fl::ChatSession>(catalog_model, *other, logger_, telemetry));
+  sessions_.CheckIn("checked-out", std::make_unique<fl::ChatSession>(catalog_model, *target, logger_, telemetry));
+  auto checked_out = sessions_.CheckOut("checked-out");
+
+  sessions_.EvictCachedForModel(*target);
+  EXPECT_EQ(sessions_.CacheSize(), 1u);
+  EXPECT_EQ(target->SessionRefCount(), 1);
+  EXPECT_EQ(sessions_.CheckOut("target"), nullptr);
+  EXPECT_NE(sessions_.CheckOut("other"), nullptr);
+  checked_out.reset();
+  EXPECT_EQ(target->SessionRefCount(), 0);
 }

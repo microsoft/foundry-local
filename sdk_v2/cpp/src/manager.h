@@ -12,6 +12,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 struct OrtApi;
@@ -146,6 +147,7 @@ class Manager {
   std::unique_ptr<DownloadManager> download_manager_;
   std::unique_ptr<ModelLoadManager> model_load_manager_;
   std::unique_ptr<SessionManager> session_manager_;
+  std::jthread gpu_idle_monitor_;
   std::atomic<bool> shutdown_requested_{false};
   std::atomic<bool> web_service_running_{false};
   std::vector<std::string> bound_urls_;

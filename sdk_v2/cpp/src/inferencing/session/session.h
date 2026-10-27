@@ -28,6 +28,7 @@ namespace fl {
 class ILogger;     // forward declaration
 class ITelemetry;  // forward declaration
 class Model;       // forward declaration
+class GenAIModelInstance;
 struct ModelUsageInfo;
 
 /// Base class for model inference sessions.
@@ -64,6 +65,7 @@ class Session {
 
   /// Factory: creates the correct derived Session for the model's task type.
   static std::unique_ptr<Session> Create(const Model& model);
+  const GenAIModelInstance* LoadedModel() const { return loaded_model_; }
 
   /// Returns the concrete session type (no RTTI needed).
   virtual SessionType Type() const = 0;
@@ -140,7 +142,7 @@ class Session {
 
  protected:
   Session(const fl::Model& catalog_model, ILogger& logger, ITelemetry& telemetry,
-          bool allow_concurrent_requests = false);
+          bool allow_concurrent_requests = false, GenAIModelInstance* loaded_model = nullptr);
 
   const fl::Model& CatalogModel() const { return catalog_model_; }
 
@@ -196,6 +198,7 @@ class Session {
                    const InvocationContext& context, int64_t total_time_ms);
 
   const fl::Model& catalog_model_;
+  GenAIModelInstance* loaded_model_;
   ILogger& logger_;
   ITelemetry& telemetry_;
   ToolRegistry tool_registry_;

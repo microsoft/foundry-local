@@ -20,6 +20,52 @@ This guide focuses on inference, not model discovery or downloading. Examples as
 you have initialized the SDK and have an appropriate **already loaded** model. Keep its
 manager alive throughout inference. See your language's README for setup.
 
+## Automatic GPU idle unloading
+
+Set the additional configuration option `GpuIdleTimeoutSeconds` before creating the manager to release idle GPU
+models without stopping the HTTP service. For example, in C#:
+
+```csharp
+var configuration = new Configuration
+{
+    AppName = "my-app",
+    AdditionalSettings = new Dictionary<string, string> { ["GpuIdleTimeoutSeconds"] = "7200" },
+};
+```
+
+The same option is available through Python's `additional_settings`, C++'s `SetAdditionalOptions`, and the C
+configuration API. It accepts an integer from `0` to `2147483647`; omitted or `0` disables automatic unloading.
+The manager checks approximately once per second. The timeout starts after loading completes and is reset by
+inference admission and request completion, including failed or cancelled requests. CPU and NPU models are left loaded.
+
+In-flight inference, session construction, and live SDK sessions prevent unloading. Dispose SDK sessions when they
+are no longer needed; an idle but undisposed session deliberately keeps its model loaded. Idle Responses API sessions
+and their GPU KV caches are evicted, but stored response history is preserved so continuations can rebuild it.
+The next inference automatically reloads an idle-evicted model with its original provider selection. Models explicitly
+unloaded by the application are not automatically reloaded.
+
+Unloading destroys the native model and its dependent resources. This is not a guarantee that every driver-level CUDA
+context or allocation disappears while the process remains alive. Measure the actual runtime on the target hardware
+with `cpp/scripts/gpu_idle_probe.py`; it reports GPU memory, power, performance state, and the test process's CUDA
+primary-context active flag before loading, after inference, after idle unloading, and after automatic reloading.
+Device metrics are also sampled before and after process execution. Run only when other GPU workloads are idle:
+memory and power readings are device-wide. The context query uses CUDA device ordinal zero, so select that same
+physical GPU for the probe's `--gpu` argument. Context state is queried directly through the CUDA driver, not inferred
+from the model's loaded flag or from memory readings.
+
+Build the native tests, then run the probe against a previously downloaded CUDA chat model:
+
+```powershell
+python sdk_v2\cpp\scripts\gpu_idle_probe.py `
+    --test-binary sdk_v2\cpp\build\Windows\RelWithDebInfo\bin\RelWithDebInfo\foundry_local_tests.exe `
+    --model-path C:\models\my-cuda-model
+```
+
+On Windows, add `--cuda-runtime-dir` when the CUDA bridge needs an application-added DLL search directory.
+For the other opt-in GPU regressions, set `FOUNDRY_TEST_GPU_MODEL_PATH` (and, if necessary,
+`FOUNDRY_TEST_CUDA_RUNTIME_DIR`) and run the native test binary with `--gtest_filter=GpuIdleUnloadTest.*`.
+These tests use a five-second timeout; the production example above uses two hours.
+
 ## The building blocks
 
 | Component | What it does | When to use it |

@@ -429,6 +429,19 @@ bool Model::IsLoaded() const {
   return model_load_manager_->GetLoadedModel(Info().model_id, local_path_) != nullptr;
 }
 
+std::shared_ptr<GenAIModelInstance> Model::AcquireForSession() const {
+  if (Model* sv = selected_variant_.load(std::memory_order_acquire)) {
+    return sv->AcquireForSession();
+  }
+
+  std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+  if (!active_ || unregistering_) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
+  }
+
+  return model_load_manager_->AcquireForSession(Info().model_id, local_path_);
+}
+
 // ---------------------------------------------------------------------------
 // Mutation (delegate to selected_variant_ when container)
 // ---------------------------------------------------------------------------

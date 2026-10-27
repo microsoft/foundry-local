@@ -866,7 +866,7 @@ ChatSession::ChatSession(const fl::Model& catalog_model, GenAIModelInstance& mod
                          ITelemetry& telemetry, ChatTranscript::CommitFaultInjector transcript_fault_injector,
                          TextChatGeneratorFactory text_generator_factory,
                          ChatMessagePreparer message_preparer)
-    : Session(catalog_model, logger, telemetry),
+    : Session(catalog_model, logger, telemetry, false, &model),
       logger_(logger),
       model_(model),
       transcript_(std::move(transcript_fault_injector)),

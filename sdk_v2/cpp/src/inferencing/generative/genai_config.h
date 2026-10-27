@@ -11,6 +11,8 @@
 
 namespace fl {
 
+enum class ExecutionProvider;
+
 enum class ChatBackendKind {
   kGenerator,
   kEngine,
@@ -63,6 +65,9 @@ struct GenAIConfig {
 
   /// Borrowed until the config is modified or destroyed; avoids owning copies during telemetry name mapping.
   std::string_view DefaultProviderView() const;
+
+  /// Whether the effective provider uses a GPU. Explicit overrides replace the artifact's provider options.
+  bool UsesGpu(ExecutionProvider ep_override) const;
 
   /// Selects the chat inference backend declared by the model artifact.
   ChatBackendKind GetChatBackendKind() const;

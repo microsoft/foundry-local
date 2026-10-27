@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 #include "inferencing/generative/genai_config.h"
 #include "exception.h"
+#include "inferencing/execution_provider.h"
 
 #include <fstream>
 #include <limits>
@@ -78,6 +79,41 @@ std::string_view GenAIConfig::DefaultProviderView() const {
   }
 
   return first.begin()->first;
+}
+
+bool GenAIConfig::UsesGpu(ExecutionProvider ep_override) const {
+  const auto gpu_ep = [](ExecutionProvider ep) {
+    return ep == ExecutionProvider::kCUDA || ep == ExecutionProvider::kWebGPU ||
+           ep == ExecutionProvider::kTensorRT_RTX;
+  };
+  if (ep_override != ExecutionProvider::kDefault) {
+    return gpu_ep(ep_override);
+  }
+
+  if (!model || !model->decoder || !model->decoder->session_options) {
+    return false;
+  }
+
+  for (const auto& entry : model->decoder->session_options->provider_options) {
+    for (const auto& [provider, options] : entry) {
+      const auto ep = EPUtils::StringtoEP(provider);
+      if (gpu_ep(ep) || provider == "WebGpuExecutionProvider" || provider == "dml" || provider == "DML" ||
+          provider == "DmlExecutionProvider" || provider == "DMLExecutionProvider" ||
+          provider == "MIGraphXExecutionProvider" || provider == "MIGraphX") {
+        return true;
+      }
+
+      if (ep == ExecutionProvider::kOpenVINO) {
+        const auto settings = nlohmann::json::parse(options);
+        if (settings.is_object() && settings.contains("device_type") && settings["device_type"].is_string() &&
+            settings["device_type"].get<std::string>().find("GPU") != std::string::npos) {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
 }
 
 ChatBackendKind GenAIConfig::GetChatBackendKind() const {

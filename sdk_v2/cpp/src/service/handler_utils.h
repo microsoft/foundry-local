@@ -4,6 +4,7 @@
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
 
+#include "catalog.h"
 #include "exception.h"
 #include "inferencing/session/request.h"
 
@@ -63,6 +64,27 @@ inline std::shared_ptr<HttpRequestHandler::OutgoingResponse> ErrorResponse(const
 
   nlohmann::json body = {{"error", error_obj}};
   return JsonResponse(status, body);
+}
+
+inline std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResolveModelForInference(
+    ServiceContext& ctx, const std::string& name, Model*& model, std::shared_ptr<GenAIModelInstance>& loaded) {
+  model = ctx.catalog.GetModelVariant(name);
+  if (!model) {
+    return ErrorResponse(Status::CODE_404, "Model not found", "No model matching '" + name + "'");
+  }
+
+  try {
+    loaded = model->AcquireForSession();
+  } catch (const std::exception& ex) {
+    ctx.logger.Log(LogLevel::Error, "Unable to acquire inference model '" + name + "': " + ex.what());
+    return ErrorResponse(Status::CODE_500, "Model acquisition failed", ex.what());
+  }
+
+  if (!loaded) {
+    return ErrorResponse(Status::CODE_400, "Model not loaded", "Model '" + name + "' must be loaded before inference");
+  }
+
+  return nullptr;
 }
 
 inline ActionStatus ResponseToActionStatus(const std::shared_ptr<HttpRequestHandler::OutgoingResponse>& response) {

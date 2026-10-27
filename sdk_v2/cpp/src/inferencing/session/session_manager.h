@@ -18,6 +18,7 @@ namespace fl {
 
 class ChatSession;
 class Session;
+class GenAIModelInstance;
 
 /// Interface for session lifecycle tracking.
 /// Session depends on this — not the concrete SessionManager.
@@ -87,6 +88,7 @@ class SessionManager : public ISessionManager {
   /// the cached session must also go — otherwise it pins the model loaded and a
   /// subsequent client-side unload fails with "session(s) still using it".
   bool EvictCached(const std::string& key) noexcept;
+  void EvictCachedForModel(const GenAIModelInstance& model);
 
   /// Number of sessions currently in the cache.
   size_t CacheSize() const;

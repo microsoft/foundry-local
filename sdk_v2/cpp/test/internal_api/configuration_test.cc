@@ -28,6 +28,26 @@ TEST(ConfigurationTest, DefaultValues) {
   EXPECT_FALSE(config.model_cache_dir.has_value());
   EXPECT_FALSE(config.logs_dir.has_value());
   EXPECT_FALSE(config.disable_nonessential_telemetry);
+  EXPECT_EQ(config.GpuIdleTimeout(), std::chrono::seconds(0));
+}
+
+TEST(ConfigurationTest, ValidateRejectsInvalidGpuIdleTimeout) {
+  for (const auto* value : {"", "-1", "1.5", " 60", "60s", "2147483648"}) {
+    Configuration config;
+    config.app_name = "test_app";
+    config.additional_options["GpuIdleTimeoutSeconds"] = value;
+    EXPECT_THROW(config.Validate(), fl::Exception) << value;
+  }
+}
+
+TEST(ConfigurationTest, ValidateAcceptsGpuIdleTimeout) {
+  for (const auto* value : {"0", "1", "7200", "2147483647"}) {
+    Configuration config;
+    config.app_name = "test_app";
+    config.additional_options["GpuIdleTimeoutSeconds"] = value;
+    EXPECT_NO_THROW(config.Validate()) << value;
+    EXPECT_EQ(config.GpuIdleTimeout(), std::chrono::seconds(std::stoi(value)));
+  }
 }
 
 TEST(ConfigurationTest, ValidateRejectsEmptyCatalogUrl) {

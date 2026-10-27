@@ -62,16 +62,11 @@ class EmbeddingsHandler : public HttpRequestHandler {
 
     // 3. Resolve model
     std::string model_name = req.model;
-    auto* model = ctx_.catalog.GetModelVariant(model_name);
-    if (!model) {
-      tracker.SetStatus(ActionStatus::kClientError);
-      return ErrorResponse(Status::CODE_404, "Model not found", model_name);
-    }
-
-    auto* loaded = ctx_.model_load_manager.GetLoadedModel(model->Id(), model->GetPath());
-    if (!loaded) {
-      tracker.SetStatus(ActionStatus::kClientError);
-      return ErrorResponse(Status::CODE_400, "Model not loaded", model_name);
+    Model* model = nullptr;
+    std::shared_ptr<GenAIModelInstance> loaded;
+    if (auto error = ResolveModelForInference(ctx_, model_name, model, loaded)) {
+      tracker.SetStatus(ResponseToActionStatus(error));
+      return error;
     }
 
     tracker.SetModelId(model_name);

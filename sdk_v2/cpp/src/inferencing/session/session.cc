@@ -72,8 +72,9 @@ uint64_t CountTypedRequestMessages(const Request& request) {
 }  // namespace
 
 Session::Session(const fl::Model& catalog_model, ILogger& logger, ITelemetry& telemetry,
-                 bool allow_concurrent_requests)
+                 bool allow_concurrent_requests, GenAIModelInstance* loaded_model)
     : catalog_model_(catalog_model),
+      loaded_model_(loaded_model),
       logger_(logger),
       telemetry_(telemetry),
       allow_concurrent_requests_(allow_concurrent_requests) {
@@ -94,13 +95,9 @@ std::unique_ptr<Session> Session::Create(const fl::Model& model) {
                        "cannot create session during shutdown");
     }
 
-    if (!model.IsLoaded()) {
-      FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model must be loaded before creating a session");
-    }
-
-    auto* loaded = mgr.GetModelLoadManager().GetLoadedModel(model.Id(), model.GetPath());
+    auto loaded = model.AcquireForSession();
     if (!loaded) {
-      FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL, "loaded model not found in load manager");
+      FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model must be loaded before creating a session");
     }
 
     tracker.SetModelId(model.Id());
@@ -246,6 +243,9 @@ void Session::ProcessRequest(const Request& request, Response& response) {
       registered = false;
     }
 
+    if (loaded_model_) {
+      loaded_model_->RecordActivity();
+    }
     request.PublishCompletion();
     admitted = false;
   };
