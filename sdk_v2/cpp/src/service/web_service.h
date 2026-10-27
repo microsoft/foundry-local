@@ -104,7 +104,7 @@ class WebService {
              ModelLoadManager& model_load_manager, SessionManager& session_manager,
              ITelemetry& telemetry, std::function<void()> shutdown_callback,
              uint64_t non_generative_memory_budget_bytes =
-                 std::numeric_limits<uint64_t>::max(),
+                 (std::numeric_limits<uint64_t>::max)(),
              size_t non_generative_readiness_concurrency = 1);
   ~WebService();
 
