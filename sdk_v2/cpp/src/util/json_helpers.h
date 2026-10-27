@@ -7,8 +7,28 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <unordered_set>
+#include <vector>
 
 namespace fl {
+
+/// Preserve declaration order and reject ambiguous objects before DOM parsing can overwrite their duplicate keys.
+inline nlohmann::ordered_json ParseJsonStrict(std::string_view source) {
+  using Json = nlohmann::ordered_json;
+  std::vector<std::unordered_set<std::string>> objects;
+  return Json::parse(source, [&](int, Json::parse_event_t event, Json& value) {
+    if (event == Json::parse_event_t::object_start) {
+      objects.emplace_back();
+    } else if (event == Json::parse_event_t::object_end) {
+      objects.pop_back();
+    } else if (event == Json::parse_event_t::key &&
+               !objects.back().insert(value.get<std::string>()).second) {
+      throw Json::parse_error::create(101, 0, "Duplicate JSON object member: " + value.dump(), &value);
+    }
+    return true;
+  });
+}
 
 /// Generic optional field extraction from JSON.
 /// Extracts the value at `key` if present and non-null.

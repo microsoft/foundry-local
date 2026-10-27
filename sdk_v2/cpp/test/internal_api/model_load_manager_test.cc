@@ -37,6 +37,23 @@ class GpuEpDetector : public fl::IEpDetector {
   std::string prepared_ep;
 };
 
+class WebGpuEpDetector : public fl::IEpDetector {
+ public:
+  std::map<std::string, std::vector<std::string>> GetAvailableDevicesToEPs() const override {
+    return {
+        {"CPU", {"CPUExecutionProvider"}},
+        {"GPU", {"WebGpuExecutionProvider"}},
+    };
+  }
+
+  bool PrepareForModelLoad(std::string_view ep_name) override {
+    prepared_ep = ep_name;
+    return true;
+  }
+
+  std::string prepared_ep;
+};
+
 /// EP detector that reports CPU only.
 class CpuOnlyDetector : public fl::IEpDetector {
  public:
@@ -282,6 +299,21 @@ TEST(ModelLoadManagerTest, LoadGenericGpuModel_CudaAvailable_AutoSelectsCuda) {
   }
 
   EXPECT_EQ(ep.prepared_ep, "CUDAExecutionProvider");
+}
+
+TEST(ModelLoadManagerTest, LoadGenericGpuModel_WebGpuAvailable_AutoSelectsWebGpu) {
+  WebGpuEpDetector ep;
+  fl::StderrLogger logger;
+  TempModelDir dir("phi-4-mini-generic-gpu");
+  fl::ModelLoadManager mgr(ep, logger);
+
+  try {
+    mgr.LoadModel(dir.path(), "phi-4-mini-generic-gpu");
+  } catch (const fl::Exception& e) {
+    EXPECT_NE(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+  }
+
+  EXPECT_EQ(ep.prepared_ep, "WebGpuExecutionProvider");
 }
 
 // ---------------------------------------------------------------------------

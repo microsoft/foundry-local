@@ -7,8 +7,7 @@
 #include <ort_genai_c.h>
 
 #include <atomic>
-#include <set>
-#include <sstream>
+#include <DebugEvents.hpp>
 #include <string_view>
 
 #include "catalog.h"
@@ -32,6 +31,7 @@
 #include "telemetry/one_ds_telemetry.h"
 #include "telemetry/telemetry_environment.h"
 #include "telemetry/telemetry_metadata.h"
+#include "util/process_shutdown.h"
 #include "util/string_utils.h"
 #include "utils.h"
 
@@ -71,38 +71,6 @@ bool IsGenAIVerboseLoggingEnabled() {
 bool IsAdditionalOptionEnabled(const Configuration& config, const std::string& option_name) {
   const auto it = config.additional_options.find(option_name);
   return it != config.additional_options.cend() && IsTruthyConfigValue(it->second);
-}
-
-std::string JoinTelemetryValues(const std::set<std::string>& values) {
-  std::ostringstream joined;
-  bool first = true;
-  for (const auto& value : values) {
-    if (!first) {
-      joined << ",";
-    }
-    first = false;
-    joined << value;
-  }
-  return joined.str();
-}
-
-HardwareInfo BuildHardwareInfo(const std::map<std::string, std::vector<std::string>>& devices_to_eps) {
-  HardwareInfo info;
-  std::set<std::string> device_types;
-  std::set<std::string> execution_providers;
-  for (const auto& [device_type, providers] : devices_to_eps) {
-    device_types.insert(device_type);
-    info.has_cpu |= device_type == "CPU";
-    info.has_gpu |= device_type == "GPU";
-    info.has_npu |= device_type == "NPU";
-    execution_providers.insert(providers.begin(), providers.end());
-  }
-
-  info.device_type_count = static_cast<int32_t>(device_types.size());
-  info.execution_provider_count = static_cast<int32_t>(execution_providers.size());
-  info.device_types = JoinTelemetryValues(device_types);
-  info.execution_providers = JoinTelemetryValues(execution_providers);
-  return info;
 }
 
 OrtLoggingLevel GetDefaultOrtLoggingLevel(bool genai_verbose_logging_enabled) {
@@ -214,12 +182,39 @@ void SetOgaLogCallback(ILogger* logger) {
 }  // namespace
 
 std::mutex Manager::s_mutex_;
-std::unique_ptr<Manager> Manager::s_instance_;
+Manager::InstanceOwner* Manager::s_owner_ = nullptr;
+bool Manager::s_destroyed_ = false;
+
+struct Manager::InstanceOwner {
+  explicit InstanceOwner(std::unique_ptr<Manager> initial_instance) : instance(std::move(initial_instance)) {
+    // Prime the mutex even when the first Manager suppresses telemetry and a later Create enables it.
+    // An empty diagnostic source starts no uploader and emits no collector event.
+    ::Microsoft::Applications::Events::DebugEventSource source;
+    source.DispatchEvent({});
+  }
+
+  ~InstanceOwner() {
+    // DLL process detach runs after Windows terminates other threads, which may still own our locks.
+    // Leave the Manager and its workers to process reclamation; ordinary Destroy/FreeLibrary still clean up.
+    if (IsDllShutdownInProgress()) {
+      (void)instance.release();
+      return;
+    }
+
+    std::lock_guard<std::mutex> lock(s_mutex_);
+    s_destroyed_ = true;
+    instance.reset();
+    s_owner_ = nullptr;
+  }
+
+  std::unique_ptr<Manager> instance;
+};
 
 Manager::Manager(const Configuration& config) : config_(config) {
   config_.Validate();
   const auto user_agent = config_.additional_options.find("UserAgent");
-  SetDefaultUserAgent(user_agent == config_.additional_options.end() ? std::string{} : user_agent->second);
+  SetDefaultUserAgent(user_agent == config_.additional_options.end() ? std::string_view{}
+                                                                     : std::string_view(user_agent->second));
 
   const bool genai_verbose_logging = IsGenAIVerboseLoggingEnabled();
   const auto logger_level = genai_verbose_logging ? LogLevel::Verbose : config_.log_level;
@@ -321,17 +316,18 @@ Manager::Manager(const Configuration& config) : config_(config) {
       config_.disable_nonessential_telemetry || IsAdditionalOptionEnabled(config_, "DisableNonessentialTelemetry") ||
       TelemetryEnvironment::IsTelemetryDisabledByEnvVar();
   const bool telemetry_hard_disabled = TelemetryEnvironment::IsCiEnvironment();
-  telemetry_ = std::make_unique<OneDsTelemetry>(config_.app_name, *logger_, disable_nonessential_telemetry);
+  auto telemetry = std::make_unique<OneDsTelemetry>(config_.app_name, *logger_, disable_nonessential_telemetry);
   try {
-    telemetry_->RecordProcessInfo(BuildProcessInfo(BuildTelemetryMetadata(config_.app_name),
-                                                   !disable_nonessential_telemetry && !telemetry_hard_disabled));
+    telemetry->RecordProcessInfo(config_);
   } catch (const std::exception& ex) {
     logger_->Log(LogLevel::Warning,
-                 fmt::format("telemetry ProcessInfo failed during Manager initialization: {}", ex.what()));
+                 fmt::format("telemetry ProcessInfo failed during Manager initialization: {}",
+                             TelemetryInternal::SanitizeTelemetryValue(BoundedTelemetryCString(ex.what()))));
   } catch (...) {
     logger_->Log(LogLevel::Warning, "telemetry ProcessInfo failed during Manager initialization.");
   }
 
+  telemetry_ = std::move(telemetry);
   ep_detector_ =
       std::make_unique<EpDetector>(*ort_api_, *ort_env_, std::move(bootstrappers), *logger_, *telemetry_);
   if (!disable_nonessential_telemetry && !telemetry_hard_disabled) {
@@ -339,7 +335,8 @@ Manager::Manager(const Configuration& config) : config_(config) {
       telemetry_->RecordHardwareInfo(BuildHardwareInfo(ep_detector_->GetAvailableDevicesToEPs()));
     } catch (const std::exception& ex) {
       logger_->Log(LogLevel::Warning,
-                   fmt::format("telemetry HardwareInfo failed during initialization: {}", ex.what()));
+                   fmt::format("telemetry HardwareInfo failed during initialization: {}",
+                               TelemetryInternal::SanitizeTelemetryValue(BoundedTelemetryCString(ex.what()))));
     } catch (...) {
       logger_->Log(LogLevel::Warning, "telemetry HardwareInfo failed during initialization.");
     }
@@ -372,8 +369,7 @@ Manager::Manager(const Configuration& config) : config_(config) {
   public_catalog_ = std::make_unique<AzureModelCatalog>(
       config_.catalog_urls, download_manager_->GetCacheDirectory(),
       [this](ModelInfo info, std::string local_path) { return CreateModel(std::move(info), std::move(local_path)); },
-      *ep_detector_, *logger_, config_.external_service_url.has_value(), config_.catalog_region.value_or("auto"),
-      disable_region_fallback, *telemetry_);
+      *ep_detector_, *logger_, config_.external_service_url.has_value(), *telemetry_);
   local_catalog_ = std::make_unique<LocalModelCatalog>(
       download_manager_->GetCacheDirectory(),
       [this](ModelInfo info, std::string local_path) {
@@ -447,8 +443,12 @@ Manager::~Manager() {
 Manager& Manager::Create(const Configuration& config) {
   std::lock_guard<std::mutex> lock(s_mutex_);
 
-  if (s_instance_ != nullptr) {
-    FL_LOG_AND_THROW(s_instance_->GetLogger(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+  if (s_destroyed_) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Manager cannot be created during process shutdown.");
+  }
+
+  if (s_owner_ != nullptr && s_owner_->instance != nullptr) {
+    FL_LOG_AND_THROW(s_owner_->instance->GetLogger(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
                      "Manager already created. Call Destroy() first.");
   }
 
@@ -464,29 +464,39 @@ Manager& Manager::Create(const Configuration& config) {
     created->telemetry_->RecordAction(Action::kCoreInitialize, ActionStatus::kSuccess, "", false, 0);
   } catch (const std::exception& ex) {
     created->GetLogger().Log(LogLevel::Error,
-                             fmt::format("telemetry RecordAction failed during Create: {}", ex.what()));
+                             fmt::format("telemetry RecordAction failed during Create: {}",
+                                         TelemetryInternal::SanitizeTelemetryValue(
+                                             BoundedTelemetryCString(ex.what()))));
   }
 
   created->GetLogger().Log(LogLevel::Information, "Manager initialized successfully.");
 
-  s_instance_ = std::move(created);
-  return *s_instance_;
+  if (s_owner_ == nullptr) {
+    // Register the actual owner after Manager's construction has initialized its static dependencies.
+    static InstanceOwner owner(std::move(created));
+    s_owner_ = &owner;
+  } else {
+    s_owner_->instance = std::move(created);
+  }
+  return *s_owner_->instance;
 }
 
 Manager& Manager::Instance() {
   std::lock_guard<std::mutex> lock(s_mutex_);
-  if (s_instance_ == nullptr) {
+  if (s_owner_ == nullptr || s_owner_->instance == nullptr) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
              "Manager not created. Call Create() first. "
              "Manager must remain valid until all Model and Session instances are destroyed.");
   }
 
-  return *s_instance_;
+  return *s_owner_->instance;
 }
 
 void Manager::Destroy() {
   std::lock_guard<std::mutex> lock(s_mutex_);
-  s_instance_.reset();
+  if (s_owner_ != nullptr) {
+    s_owner_->instance.reset();
+  }
 }
 
 ICatalog& Manager::GetCatalog() {
@@ -532,7 +542,8 @@ void Manager::StartWebService() {
   try {
     telemetry_->StartSession();
   } catch (const std::exception& ex) {
-    logger_->Log(LogLevel::Warning, std::string("telemetry StartSession failed: ") + ex.what());
+    logger_->Log(LogLevel::Warning, "telemetry StartSession failed: " +
+                                        TelemetryInternal::SanitizeTelemetryValue(BoundedTelemetryCString(ex.what())));
   } catch (...) {
     logger_->Log(LogLevel::Warning, "telemetry StartSession failed with unknown error");
   }
@@ -565,7 +576,8 @@ void Manager::StopWebService() {
   try {
     telemetry_->EndSession();
   } catch (const std::exception& ex) {
-    logger_->Log(LogLevel::Warning, std::string("telemetry EndSession failed: ") + ex.what());
+    logger_->Log(LogLevel::Warning, "telemetry EndSession failed: " +
+                                        TelemetryInternal::SanitizeTelemetryValue(BoundedTelemetryCString(ex.what())));
   } catch (...) {
     logger_->Log(LogLevel::Warning, "telemetry EndSession failed with unknown error");
   }

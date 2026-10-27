@@ -260,17 +260,16 @@ steps:
       set -euo pipefail
       case '${{ parameters.rid }}' in
         linux-x64)
-          manylinux_arch='x86_64'
+          platform_tag='manylinux_2_28_x86_64'
           image='quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb'
           ;;
         linux-arm64)
-          manylinux_arch='aarch64'
-          image='quay.io/pypa/manylinux_2_28_aarch64@sha256:29a6ceb78de5b00494e6e7456a72782a4cb54238de102e7491d15fe47789b4d1'
+          platform_tag='manylinux_2_34_aarch64'
+          image='quay.io/pypa/manylinux_2_34_aarch64@sha256:c6a53d1238a6610d465f415a2a81ccc862eec0bff60fe44dd907fa015168e703'
           ;;
         *) echo "Unsupported Linux RID: ${{ parameters.rid }}" >&2; exit 1 ;;
       esac
 
-      platform_tag="manylinux_2_28_${manylinux_arch}"
       raw_dir="$(Agent.TempDirectory)/python-sdk-raw"
       out_dir="${{ parameters.outputDir }}"
       home_dir="$(Agent.TempDirectory)/manylinux-python-home"
@@ -308,7 +307,7 @@ steps:
             --exclude "libonnxruntime.so*" \
             --exclude "libonnxruntime-genai.so*"
         '
-    displayName: 'Build and repair manylinux 2.28 wheel'
+    displayName: 'Build and repair architecture-specific manylinux wheel'
 
   - task: PowerShell@2
     displayName: 'Audit Linux ABI compatibility'
@@ -354,8 +353,9 @@ steps:
         }
 
         $requiredPolicy = [version]"$($Matches[1]).$($Matches[2])"
-        if ($requiredPolicy -gt [version]'2.28') {
-            throw "Wheel requires $($report.sym_tag), which exceeds the manylinux_2_28 target"
+        $targetPolicy = if ('${{ parameters.rid }}' -eq 'linux-arm64') { [version]'2.34' } else { [version]'2.28' }
+        if ($requiredPolicy -gt $targetPolicy) {
+            throw "Wheel requires $($report.sym_tag), which exceeds the glibc $targetPolicy target"
         }
 
         # libfoundry_local is already bundled in the RID directory. ORT and GenAI
@@ -394,7 +394,7 @@ steps:
             'win-x64'     { $tags = @('win_amd64');                 $lib = 'foundry_local.dll' }
             'win-arm64'   { $tags = @('win_arm64');                 $lib = 'foundry_local.dll' }
             'linux-x64'   { $tags = @('manylinux_2_28_x86_64');     $lib = 'libfoundry_local.so' }
-            'linux-arm64' { $tags = @('manylinux_2_28_aarch64');    $lib = 'libfoundry_local.so' }
+            'linux-arm64' { $tags = @('manylinux_2_34_aarch64');    $lib = 'libfoundry_local.so' }
             'osx-arm64'   { $tags = @('macosx', 'arm64');           $lib = 'libfoundry_local.dylib' }
             default       { throw "Unknown rid: ${{ parameters.rid }}" }
         }

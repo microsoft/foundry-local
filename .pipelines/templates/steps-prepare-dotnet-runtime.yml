@@ -1,0 +1,12 @@
+# .NET 10.0.13 and the corresponding .NET 8/9 security updates use TMPDIR
+# for user-scoped named mutexes on macOS. Prepare it before any dotnet process,
+# including those launched indirectly by npm's native-package installer.
+steps:
+- bash: |
+    set -euo pipefail
+    runtime_dir="$(mktemp -d "$(Agent.TempDirectory)/dotnet-runtime.XXXXXX")"
+    runtime_dir="$(cd "$runtime_dir" && pwd -P)"
+    chmod 700 "$runtime_dir"
+    echo "##vso[task.setvariable variable=TMPDIR]$runtime_dir/"
+  displayName: 'Prepare private macOS .NET runtime directory'
+  condition: and(succeeded(), eq(variables['Agent.OS'], 'Darwin'))

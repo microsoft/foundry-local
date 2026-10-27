@@ -17,7 +17,9 @@
 
 </div>
 
-Foundry Local is an **end-to-end local AI solution** for building applications that run entirely on the user's device. It provides native SDKs (C#, JavaScript, Python, and Rust), a curated catalog of optimized models, and automatic hardware acceleration — all in a lightweight package (~20 MB). The compact size makes it easy to integrate into your application and distribute to end users.
+Foundry Local is an **end-to-end local AI solution** for building applications that run entirely on the user's device. It provides native SDKs (C, C++, C#, JavaScript, Python, and Rust), a curated catalog of optimized models, and automatic hardware acceleration — all in a lightweight package (~20 MB). The compact size makes it easy to integrate into your application and distribute to end users.
+
+The runtime is implemented in C++ and exposes a stable C ABI that underpins the other language bindings. C and C++ applications can use it directly: the [C API](sdk_v2/cpp/README.md#c-api) provides versioned function tables and opaque handles, while the [C++ SDK](sdk_v2/cpp/README.md) provides a header-only C++17 wrapper with RAII resource management.
 
 Conversations never leave the device, responses start immediately with zero network latency, and your app works offline. No per-token costs, no API keys, no backend infrastructure to maintain, and no Azure subscription required.
 
@@ -41,7 +43,7 @@ Foundry Local may collect usage data and send it to Microsoft to help improve ou
 ## 🚀 Quickstart
 
 > [!TIP]
-> The following shows a quickstart for Python and JavaScript. C# and Rust language bindings are also available. Take a look at the [samples](/samples/) for more details.
+> The following shows a quickstart for Python and JavaScript. C, C++, C#, and Rust are also supported. For C/C++, install the published [Runtime NuGet package](https://www.nuget.org/packages/Microsoft.AI.Foundry.Local.Runtime) and follow the [native SDK package integration guide](sdk_v2/cpp/README.md#install-from-nuget) and [C++ quickstart](sdk_v2/cpp/README.md#quick-start) — no source build is required. Take a look at the [samples](/samples/) for more details.
 
 
 <details open>
@@ -123,7 +125,7 @@ Foundry Local may collect usage data and send it to Microsoft to help improve ou
 
 ### 💬 Audio Transcription (Speech-to-Text)
 
-The SDK also supports audio transcription via Whisper models (available in JavaScript, C#, Python and Rust):
+The SDK also supports audio transcription via Whisper models (available in C, C++, JavaScript, C#, Python, and Rust):
 
 ```javascript
 import { FoundryLocalManager } from 'foundry-local-sdk';
@@ -158,10 +160,13 @@ Explore complete working examples in the [`samples/`](samples/) folder:
 
 | Language | Samples | Highlights |
 |----------|---------|------------|
+| [**C++**](samples/cpp/) | 1 | Live audio transcription; additional chat, tool calling, embeddings, and audio examples in the [native SDK](sdk_v2/cpp/examples/) |
 | [**C#**](samples/cs/) | 12 | Native chat, audio transcription, tool calling, model management, web server, tutorials |
 | [**JavaScript**](samples/js/) | 12 | Native chat, audio, Electron app, Copilot SDK, LangChain, tool calling, tutorials |
 | [**Python**](samples/python/) | 9 | Chat completions, audio transcription, LangChain, tool calling, tutorials |
 | [**Rust**](samples/rust/) | 8 | Native chat, audio transcription, tool calling, web server, tutorials |
+
+C developers can use the [C API guide](sdk_v2/cpp/README.md#c-api) and [public C header](sdk_v2/cpp/include/foundry_local/foundry_local_c.h) to integrate the same runtime directly.
 
 ## 🖥️ CLI
 
@@ -169,7 +174,7 @@ The Foundry Local CLI lets you explore models and experiment interactively.
 
 **Install (public preview):**
 
-Download the asset for your platform from the [`cli-preview-0.10.0`](https://github.com/microsoft/Foundry-Local/releases/tag/cli-preview-0.10.0) GitHub release.
+Download the asset for your platform from the [`cli-preview-0.11.0`](https://github.com/microsoft/Foundry-Local/releases/tag/cli-preview-0.11.0) GitHub release.
 
 **Run a model:**
 

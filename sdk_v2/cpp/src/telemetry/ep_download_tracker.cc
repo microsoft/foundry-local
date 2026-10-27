@@ -18,14 +18,14 @@ int64_t ElapsedMs(std::chrono::steady_clock::time_point start) {
 
 }  // namespace
 
-EpDownloadTracker::EpDownloadTracker(std::string provider_name,
-                                     std::string user_agent,
-                                     std::string correlation_id,
+EpDownloadTracker::EpDownloadTracker(std::string_view provider_name,
+                                     std::string_view user_agent,
+                                     std::string_view correlation_id,
                                      ITelemetry& telemetry)
     : telemetry_(telemetry),
-      provider_name_(std::move(provider_name)),
-      user_agent_(user_agent.empty() ? DefaultUserAgent() : std::move(user_agent)),
-      correlation_id_(std::move(correlation_id)),
+      provider_name_(TelemetryInternal::SanitizeTelemetryIdentifier(provider_name)),
+      user_agent_(user_agent.empty() ? DefaultUserAgent() : TelemetryInternal::SanitizeTelemetryValue(user_agent)),
+      correlation_id_(TelemetryInternal::SanitizeTelemetryIdentifier(correlation_id)),
       stage_start_(std::chrono::steady_clock::now()) {
 }
 

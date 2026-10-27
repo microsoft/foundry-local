@@ -514,19 +514,19 @@ class Session(abc.ABC):
 
 
 class ChatSession(Session):
-    """Inference session for chat-completion and vision-language-chat models.
+    """Inference session for chat-completion, coding, and vision-language-chat models.
 
     Validates the model task at construction time. Supports tool definitions,
     turn count inspection, and turn undo.
     """
 
-    _SUPPORTED_TASKS = frozenset({"chat-completion", "vision-language-chat"})
+    _SUPPORTED_TASKS = frozenset({"chat-completion", "coding", "vision-language-chat"})
 
     def __init__(self, model: "IModel") -> None:
         task = model.info.task
         if task not in self._SUPPORTED_TASKS:
             raise ValueError(
-                f"ChatSession requires a model with task 'chat-completion' or "
+                f"ChatSession requires a model with task 'chat-completion', 'coding', or "
                 f"'vision-language-chat', but got {task!r}."
             )
         super().__init__(model)

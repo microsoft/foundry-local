@@ -449,6 +449,7 @@ void from_json(const nlohmann::json& j, AllowedToolsChoice& c);
 void from_json(const nlohmann::json& j, ResponseTextConfig& c);
 void from_json(const nlohmann::json& j, ReasoningConfig& c);
 void from_json(const nlohmann::json& j, ResponseCreateParams& p);
+void from_json(const nlohmann::ordered_json& j, ResponseCreateParams& p);
 
 // --- Config types to_json (for echoing in response) ---
 void to_json(nlohmann::json& j, const ResponseTextConfig& c);

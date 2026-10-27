@@ -249,6 +249,7 @@ FL_API_STATUS_IMPL(AddCatalogUrlImpl, flConfiguration* config, const char* url,
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
 
+  fl::ValidateCatalogUrl(url);
   AsImpl(config)->catalog_urls.emplace_back(
       url,
       filter_override ? std::optional<std::string>{filter_override} : std::nullopt);

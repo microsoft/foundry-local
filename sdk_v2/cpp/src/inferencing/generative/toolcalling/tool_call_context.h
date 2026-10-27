@@ -5,16 +5,23 @@
 #include "inferencing/session/types.h"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
+#include <vector>
 
 namespace fl {
+
+class ToolCallPlan;
 
 /// Request-scoped context for tool calling behavior.
 /// Built from catalog metadata + request fields (tool_choice, response_format).
 /// Flows through ChatSession → OnnxChatGenerator to control guidance and detection.
 struct ToolCallContext {
+  static constexpr std::string_view kAssistantTextPrefix = "MESSAGE\n";
+
   /// Whether the model supports tool calling (controlled by catalog metadata and/or request option)
   bool supports_tool_calling = false;
 
@@ -31,8 +38,10 @@ struct ToolCallContext {
   /// Whether the model may produce tool call output (controlled by tool_choice + tools presence).
   bool tool_output = false;
 
+  bool parallel_tool_calls = true;
+
   /// Whether the model supports chain-of-thought reasoning (e.g., DeepSeek R1 Distilled).
-  /// When true, grammar guidance is applied for text-only output to produce correct <think> tags.
+  /// Structured tool guidance preserves the model's published reasoning boundaries.
   bool supports_reasoning = false;
 
   /// The special token that marks the start of reasoning/thinking output.
@@ -51,6 +60,7 @@ struct ToolCallContext {
   /// llguidance renders these as numeric `<[ID]>` terminals. Unresolved or multi-token markers remain literals.
   std::optional<int32_t> reasoning_start_token_id;
   std::optional<int32_t> reasoning_end_token_id;
+  std::vector<int32_t> eos_token_ids;
 
   /// The raw tools JSON string for the chat template (passed to ApplyChatTemplate).
   std::string tools_json;
@@ -70,6 +80,14 @@ struct ToolCallContext {
   std::optional<ForcedToolChoice> forced_tool;
   std::optional<RawEnvelopeDescriptor> raw_envelope;
   bool guidance_disabled = false;
+  std::shared_ptr<const ToolCallPlan> tool_plan;
+  std::optional<std::string> tool_body_grammar;
+
+  void ConfigureForGuidedToolRetry() {
+    text_output = false;
+    tool_output = true;
+    tool_body_grammar.reset();
+  }
 
   const RawEnvelopeDescriptor* ActiveRawEnvelope() const {
     if (!tool_output || !raw_envelope.has_value() || !IsCustomTool(raw_envelope->tool_name)) {
@@ -121,6 +139,10 @@ struct ToolCallContext {
     return !guidance_type.empty() || !guidance_data.empty();
   }
 
+  bool UsesAssistantTextFraming() const {
+    return tool_plan && text_output && tool_output && !HasAnyExplicitGuidance() && !ActiveRawEnvelope();
+  }
+
   /// Whether any tools were provided in the request.
   bool HasTools() const { return !tools_json.empty(); }
 
@@ -132,7 +154,8 @@ struct ToolCallContext {
   bool HasSameTools(const ToolCallContext& other) const {
     return tools_json == other.tools_json && tool_kinds == other.tool_kinds &&
            custom_lark_grammars == other.custom_lark_grammars && raw_envelope == other.raw_envelope &&
-           guidance_disabled == other.guidance_disabled;
+           guidance_disabled == other.guidance_disabled &&
+           tool_body_grammar == other.tool_body_grammar;
   }
 
   /// Whether the model has known tool call marker tokens.

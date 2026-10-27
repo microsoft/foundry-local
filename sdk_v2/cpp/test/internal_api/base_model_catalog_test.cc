@@ -10,6 +10,7 @@
 //
 #include "catalog/base_model_catalog.h"
 #include "internal_api/test_helpers.h"
+#include "internal_api/test_model_cache.h"
 #include "logger.h"
 #include "model.h"
 #include "model_info.h"
@@ -69,7 +70,8 @@ class QueryingTestCatalog : public BaseModelCatalog {
   }
 
   std::vector<Model> FetchModelVersions(const std::string& model_alias,
-                                        const std::string& model_name = "") const override {
+                                        const std::string& model_name,
+                                        int) const override {
     std::vector<Model> result;
     for (const auto& model : version_fetch_results_) {
       const auto& info = model.Info();
@@ -138,6 +140,55 @@ class BaseModelCatalogTest : public ::testing::Test {
 TEST_F(BaseModelCatalogTest, GetName_ReturnsNameFromConstruction) {
   TestCatalog catalog(logger_);
   EXPECT_EQ(catalog.GetName(), "test-catalog");
+}
+
+TEST_F(BaseModelCatalogTest, GetLoadedModelsReturnsNonSelectedLeafVariants) {
+  fl::test::FakeServiceBindings bindings;
+  TestCatalog catalog(logger_);
+  const auto path = fl::test::GetTestDataPath("tiny-random-gpt2-fp32-1").string();
+  for (const int version : {2, 1}) {
+    ModelInfo info;
+    info.model_id = "loaded-family:" + std::to_string(version);
+    info.name = "loaded-family";
+    info.version = version;
+    info.alias = "loaded-family";
+    catalog.AddModel(Model::FromModelInfo(std::move(info), path, bindings.download_manager,
+                                          bindings.model_load_manager));
+  }
+
+  auto* group = catalog.GetModel("loaded-family");
+  auto* loaded = catalog.GetModelVariant("loaded-family:1");
+  ASSERT_NE(group, nullptr);
+  ASSERT_NE(loaded, nullptr);
+  ASSERT_EQ(group->Info().model_id, "loaded-family:2");
+  EXPECT_TRUE(catalog.GetLoadedModels().empty());
+
+  loaded->Load(ExecutionProvider::kCPU);
+  ASSERT_TRUE(loaded->IsLoaded());
+  ASSERT_FALSE(group->IsLoaded());
+
+  auto listed = catalog.GetLoadedModels();
+  ASSERT_EQ(listed.size(), 1u);
+  EXPECT_EQ(listed.front(), loaded);
+  EXPECT_EQ(listed.front()->Variants().size(), 1u);
+  EXPECT_EQ(group->Info().model_id, "loaded-family:2");
+
+  auto* selected = catalog.GetModelVariant("loaded-family:2");
+  ASSERT_NE(selected, nullptr);
+  selected->Load(ExecutionProvider::kCPU);
+  listed = catalog.GetLoadedModels();
+  ASSERT_EQ(listed.size(), 2u);
+  EXPECT_EQ(listed[0], selected);
+  EXPECT_EQ(listed[1], loaded);
+  selected->Unload();
+
+  group->SelectVariant(*loaded);
+  listed = catalog.GetLoadedModels();
+  ASSERT_EQ(listed.size(), 1u);
+  EXPECT_EQ(listed.front(), loaded);
+
+  loaded->Unload();
+  EXPECT_TRUE(catalog.GetLoadedModels().empty());
 }
 
 // ========================================================================

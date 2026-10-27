@@ -5,6 +5,9 @@ API. Streaming ASR is the first supported inference scenario. The SDK uses JNA,
 keeps the native runtime and model weights outside the JAR, and exposes
 deterministic `AutoCloseable` lifetimes.
 
+For the shared inference concepts and examples, including this preview's specialized
+audio API, see [Inference with the Foundry Local SDK](../INFERENCING.md).
+
 This package is a preview and is not published to Maven Central yet.
 Its first phase intentionally covers streaming ASR rather than the full
 cross-language SDK surface. Generic Session/Request/Response/Item APIs, Chat,
@@ -30,6 +33,18 @@ The build produces:
 
 `verify` also runs SpotBugs and fails on actionable findings. The packaging
 pipeline compiles a clean Maven consumer against the staged POM and JAR.
+
+All five platform build/test jobs and the Maven bundle job share
+`.pipelines/templates/steps-bootstrap-maven.yml`. It downloads Maven 3.9.9
+through the `AIFoundryLocal_PublicPackages` Maven Central upstream using the
+job's `System.AccessToken` and verifies the pinned SHA-512 checksum. The
+pipeline's Build Service identity needs feed Reader permission for cached
+packages, or Feed and Upstream Reader (Collaborator) to save packages from
+upstream. The bootstrap also creates a job-local Maven settings file that
+mirrors all dependency and plugin repositories through the same feed.
+All build/test, packaging, and packaged-consumer Maven invocations use this
+settings file and receive the job token through their environment; the
+settings file references the token without storing it.
 
 Override `revision` when producing an immutable release:
 

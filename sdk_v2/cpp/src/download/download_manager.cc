@@ -4,6 +4,7 @@
 #include "platform/cross_process_file_lock.h"
 #include "download/inference_model_writer.h"
 #include "exception.h"
+#include "inferencing/model_load_manager.h"
 #include "log_level.h"
 #include "logger.h"
 #include "telemetry/download_tracker.h"
@@ -13,6 +14,7 @@
 #include "utils.h"
 
 #include <foundry_local/foundry_local_c.h>
+#include <nlohmann/json.hpp>
 
 #include <cctype>
 #include <chrono>
@@ -31,6 +33,84 @@ const char* kDownloadSignalFileName = "download.tmp";
 const char* kGenAIConfigFileName = "genai_config.json";
 const char* kInferenceModelFileName = "inference_model.json";
 const char* kDefaultRegistryRegion = "centralus";
+
+bool IsRevisionName(const std::filesystem::path& name) {
+  const auto value = name.string();
+  if (value.size() < 2 || value.front() != 'v') {
+    return false;
+  }
+
+  for (size_t i = 1; i < value.size(); ++i) {
+    if (value[i] < '0' || value[i] > '9') {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+std::string ReadModelIdForRemoval(const std::filesystem::path& metadata_path) {
+  std::ifstream metadata(metadata_path);
+  if (!metadata.is_open()) {
+    return {};
+  }
+
+  const auto json = nlohmann::json::parse(metadata, nullptr, false);
+  if (!json.is_object() || !json.contains("Name") || !json["Name"].is_string()) {
+    return {};
+  }
+
+  auto model_id = json["Name"].get<std::string>();
+  if (!model_id.empty() && model_id.find(':') == std::string::npos) {
+    model_id += ":0";
+  }
+
+  return model_id;
+}
+
+void ValidateRemovalOwnership(const std::filesystem::path& root, const std::string& model_id) {
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(root)) {
+    if (!entry.is_regular_file() || entry.path().filename() != kInferenceModelFileName) {
+      continue;
+    }
+
+    const auto metadata_id = ReadModelIdForRemoval(entry.path());
+    if (!metadata_id.empty() && metadata_id != model_id) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+               "cannot remove model cache containing another model: " + metadata_id + " at " + entry.path().string());
+    }
+  }
+}
+
+// The caller must hold the parent's download lock throughout inspection and removal.
+bool CanRemoveNonstandardParent(const std::filesystem::path& parent, const std::string& model_id) {
+  bool has_ownership_evidence = false;
+  for (const auto& entry : std::filesystem::directory_iterator(parent)) {
+    const auto name = entry.path().filename();
+    if (entry.is_regular_file() && (name == kDownloadSignalFileName || name == ".download.progress")) {
+      has_ownership_evidence = true;
+    } else if (entry.is_regular_file() && name == ".download.lock") {
+      continue;
+    } else if (entry.is_regular_file() && name == kInferenceModelFileName) {
+      const auto metadata_id = ReadModelIdForRemoval(entry.path());
+      if (!metadata_id.empty() && metadata_id != model_id) {
+        return false;
+      }
+
+      has_ownership_evidence = has_ownership_evidence || metadata_id == model_id;
+    } else if (entry.is_directory() && !entry.is_symlink() && IsRevisionName(name)) {
+      const auto metadata_id = ReadModelIdForRemoval(entry.path() / kInferenceModelFileName);
+      // Corrupt metadata must not prevent cleanup, but a known different model must never be removed.
+      if (!metadata_id.empty() && metadata_id != model_id) {
+        return false;
+      }
+    } else {
+      return false;
+    }
+  }
+
+  return has_ownership_evidence;
+}
 
 /// Check whether inference_model.json exists at the root or in any immediate
 /// subdirectory.  This is the definitive proof that a download completed
@@ -447,6 +527,75 @@ std::string DownloadManager::GetModelCachePath(const ModelInfo& info) const {
   }
 
   return {};
+}
+
+void DownloadManager::RemoveModelFromCache(const ModelInfo& info, const std::string& local_path,
+                                           ModelLoadManager& model_load_manager) {
+  // The download lock coordinates cache mutations, not model use. Both Model::Download's cached-state shortcut and
+  // DownloadModel's on-disk cache-hit path bypass it, so another instance can report download success while removal
+  // deletes the files it considers cached. Its cached flag/path can then remain stale, and a later load can fail.
+  // Loaded models in other processes do not hold this lock either. Applications sharing a cache must coordinate
+  // removal with other instances using that model.
+  auto model_path = std::filesystem::path(ComputeModelPath(info));
+  // Downloads can return a revision subdirectory. Remove their computed root, but preserve support for models
+  // discovered by the scanner at a different location within the configured cache.
+  const bool nonstandard_path = !local_path.empty() && !IsPathWithinDirectory(local_path, model_path);
+  if (nonstandard_path) {
+    model_path = local_path;
+  }
+
+  const auto cache_root = std::filesystem::path(cache_directory_);
+  const auto validate_path = [&]() {
+    if (!IsPathWithinDirectory(model_path, cache_root) || IsPathWithinDirectory(cache_root, model_path)) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model removal path is not inside the cache: " + model_path.string());
+    }
+  };
+
+  validate_path();
+  std::unique_ptr<CrossProcessFileLock> parent_lock;
+  const auto parent = model_path.parent_path();
+  if (nonstandard_path && IsRevisionName(model_path.filename()) && IsPathWithinDirectory(parent, cache_root) &&
+      !IsPathWithinDirectory(cache_root, parent) && std::filesystem::is_directory(parent)) {
+    parent_lock = CrossProcessFileLock::TryAcquireForDirectory(parent, logger_);
+    if (!parent_lock) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot remove model cache while a download is in progress");
+    }
+
+    if (CanRemoveNonstandardParent(parent, info.model_id)) {
+      model_path = parent;
+    }
+  }
+
+  if (!std::filesystem::exists(model_path)) {
+    if (local_path.empty()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is not cached locally");
+    }
+    return;
+  }
+
+  // Keep the parent lock even when ownership checks restrict deletion to the inference directory.
+  std::unique_ptr<CrossProcessFileLock> lock;
+  if (parent_lock && model_path == parent) {
+    lock = std::move(parent_lock);
+  } else {
+    lock = CrossProcessFileLock::TryAcquireForDirectory(model_path, logger_);
+  }
+
+  if (!lock) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot remove model cache while a download is in progress");
+  }
+
+  validate_path();
+  ValidateRemovalOwnership(model_path, info.model_id);
+  // Keep the root and its live lock intact: unlinking the lock during protected work would let another downloader
+  // acquire a different lock file. The lock removes itself on release; an empty root is not a cache hit.
+  model_load_manager.RunWithUnloadedModelsInDirectory(model_path.string(), [&]() {
+    for (const auto& entry : std::filesystem::directory_iterator(model_path)) {
+      if (entry.path() != lock->path()) {
+        std::filesystem::remove_all(entry.path());
+      }
+    }
+  });
 }
 
 }  // namespace fl

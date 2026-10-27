@@ -21,6 +21,39 @@ _DURATION_UNSET: int = -(2**63)
 # C float to. cffi cdef does not process #define.
 _CONFIDENCE_UNSET: float = -struct.unpack("<f", b"\xff\xff\x7f\x7f")[0]
 
+_native_buffers: dict[int, object] = {}
+_buffer_deleters: dict[object, object] = {}
+
+
+def _release_native_buffer(_data, user_data) -> None:
+    from foundry_local_sdk._native import ffi
+
+    del _native_buffers[int(ffi.cast("size_t", user_data))]
+
+
+def _set_owned_buffer(item_ptr, native_data, raw: bytes, setter) -> None:
+    from foundry_local_sdk._native import ffi
+    from foundry_local_sdk._native.api import api
+
+    # SetBytes/SetImage/SetAudio borrow data. Native ownership can outlive the Python wrapper after a queue/request transfer.
+    buffer = ffi.new("unsigned char[]", raw)
+    key = int(ffi.cast("size_t", buffer))
+    callback_type = ffi.typeof(native_data.deleter)
+    if callback_type not in _buffer_deleters:
+        _buffer_deleters[callback_type] = ffi.callback(callback_type, _release_native_buffer)
+
+    _native_buffers[key] = buffer
+    native_data.data = buffer
+    native_data.mutable_data = buffer
+    native_data.data_size = len(raw)
+    native_data.deleter = _buffer_deleters[callback_type]
+    native_data.deleter_user_data = buffer
+    try:
+        api.check_status(setter(item_ptr, native_data))
+    except BaseException:
+        del _native_buffers[key]
+        raise
+
 
 def _validate_native_string(value: str, argument_name: str) -> None:
     if not isinstance(value, str):
@@ -389,15 +422,10 @@ class BytesItem(Item):
         raw = bytes(data)
         self.data = raw
 
-        # Keep both raw and buf alive until after SetBytes returns — the native
-        # call reads the buffer pointer synchronously so no heap copy is needed.
-        buf = ffi.from_buffer(raw)
         bytes_data = ffi.new("flBytesData*")
         bytes_data.version = _API_VERSION
         bytes_data.item_type = int(ItemType.BYTES)
-        bytes_data.data = ffi.cast("void *", buf)
-        bytes_data.data_size = len(raw)
-        api.check_status(api.item.SetBytes(self._ptr, bytes_data))
+        _set_owned_buffer(self._ptr, bytes_data, raw, api.item.SetBytes)
 
     @classmethod
     def _from_native(cls, ptr, owns: bool) -> "BytesItem":
@@ -444,16 +472,12 @@ class ImageItem(Item):
         raw = bytes(data)
         self.data = raw
 
-        # Keep all cffi temporaries alive until after SetImage returns.
-        buf = ffi.from_buffer(raw)
         c_fmt = ffi.new("char[]", format.encode("utf-8") + b"\x00")
         image_data = ffi.new("flImageData*")
         image_data.version = _API_VERSION
-        image_data.data = ffi.cast("void *", buf)
-        image_data.data_size = len(raw)
         image_data.format = c_fmt
         image_data.uri = ffi.NULL
-        api.check_status(api.item.SetImage(self._ptr, image_data))
+        _set_owned_buffer(self._ptr, image_data, raw, api.item.SetImage)
 
     @classmethod
     def from_uri(cls, uri: str, format: str | None = None) -> "ImageItem":
@@ -542,18 +566,14 @@ class AudioItem(Item):
         self.sample_rate = sample_rate
         self.channels = channels
 
-        # Keep all cffi temporaries alive until after SetAudio returns.
-        buf = ffi.from_buffer(raw)
         c_fmt = ffi.new("char[]", format.encode("utf-8") + b"\x00")
         audio_data = ffi.new("flAudioData*")
         audio_data.version = _API_VERSION
-        audio_data.data = ffi.cast("void *", buf)
-        audio_data.data_size = len(raw)
         audio_data.format = c_fmt
         audio_data.uri = ffi.NULL
         audio_data.sample_rate = sample_rate
         audio_data.channels = channels
-        api.check_status(api.item.SetAudio(self._ptr, audio_data))
+        _set_owned_buffer(self._ptr, audio_data, raw, api.item.SetAudio)
 
     @classmethod
     def create_format_descriptor(cls, format: str, sample_rate: int, channels: int) -> "AudioItem":

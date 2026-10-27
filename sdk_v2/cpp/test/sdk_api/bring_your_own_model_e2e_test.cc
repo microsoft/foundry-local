@@ -139,6 +139,104 @@ class LocalRegistrationGuard {
 
 }  // namespace
 
+TEST(ByomE2eTest, CodingModelUsesTextChatSession) {
+  using namespace foundry_local;
+
+  auto root = fl::test::TempPath::CreateTempDir("fl_coding_e2e_");
+  Configuration config("foundry_local_coding_test");
+  config.SetAppDataDir((root.path() / "appdata").string())
+      .SetModelCacheDir((root.path() / "cache").string());
+  Manager manager(std::move(config));
+  auto& catalog = manager.GetCatalog(FOUNDRY_LOCAL_CATALOG_LOCAL);
+  ModelInfo metadata;
+  metadata.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "coding");
+  LocalRegistrationGuard registered(
+      catalog, catalog.RegisterModel(fl::test::GetTestDataPath("tiny-paged-attention").string(), "coding:1", metadata),
+      "coding:1");
+  auto& model = registered.model();
+  EXPECT_EQ(model.GetInfo().Task(), "coding");
+  model.Load();
+
+  ChatSession session(model);
+  session.AddToolDefinition(ToolDefinition::Custom("edit", "Edit a file."));
+  EXPECT_TRUE(session.RemoveToolDefinition("edit"));
+  EXPECT_THROW(AudioSession{model}, std::invalid_argument);
+  EXPECT_THROW(EmbeddingsSession{model}, std::invalid_argument);
+
+  Request request{UserMessage("Write a function.")};
+  RequestOptions options;
+  options.search.max_output_tokens = 4;
+  options.search.temperature = 0.0f;
+  request.SetOptions(options);
+  const auto preflight = session.PreflightRequest(request);
+  EXPECT_TRUE(preflight.fits);
+  EXPECT_GT(preflight.prompt_tokens, 0u);
+
+  const auto response = session.ProcessRequest(request);
+  EXPECT_FALSE(CollectResponseText(response).empty());
+  EXPECT_EQ(session.TurnCount(), 1u);
+}
+
+TEST(ByomE2eTest, CodingOpenAIJsonRejectsImageAndAudioContent) {
+  using namespace foundry_local;
+  using json = nlohmann::json;
+
+  auto root = fl::test::TempPath::CreateTempDir("fl_coding_json_e2e_");
+  Configuration config("foundry_local_coding_json_test");
+  config.SetAppDataDir((root.path() / "appdata").string())
+      .SetModelCacheDir((root.path() / "cache").string());
+  Manager manager(std::move(config));
+  auto& catalog = manager.GetCatalog(FOUNDRY_LOCAL_CATALOG_LOCAL);
+  ModelInfo metadata;
+  metadata.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "coding");
+  metadata.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, "text,image,audio");
+  LocalRegistrationGuard registered(
+      catalog, catalog.RegisterModel(fl::test::GetTestDataPath("tiny-paged-attention").string(), "coding:1", metadata),
+      "coding:1");
+  auto& model = registered.model();
+  model.Load();
+  ChatSession session(model);
+
+  const json media_parts = {
+      {{"type", "image_url"}, {"image_url", {{"url", "data:image/png;base64,AA=="}}}},
+      {{"type", "input_audio"}, {"input_audio", {{"data", "AA=="}, {"format", "wav"}}}},
+  };
+  for (const auto& media : media_parts) {
+    SCOPED_TRACE(media.dump());
+    const json body = {
+        {"model", "coding:1"},
+        {"messages", {{{"role", "user"}, {"content", {{{"type", "text"}, {"text", "Write a function."}}, media}}}}},
+        {"max_tokens", 4},
+    };
+    Request request{Item::Text(body.dump(), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON)};
+    const auto expected = std::string(media.at("type") == "image_url" ? "IMAGE" : "AUDIO") +
+                          " input is not supported by model task 'coding'";
+    for (const bool preflight : {true, false}) {
+      SCOPED_TRACE(preflight);
+      try {
+        if (preflight) {
+          (void)session.PreflightRequest(request);
+        } else {
+          (void)session.ProcessRequest(request);
+        }
+
+        FAIL() << "Expected media content to be rejected";
+      } catch (const Error& error) {
+        EXPECT_EQ(error.Code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+        EXPECT_NE(std::string(error.what()).find(expected), std::string::npos);
+      }
+    }
+  }
+
+  EXPECT_EQ(session.TurnCount(), 0u);
+  Request text_request{Item::Text(
+      R"({"model":"coding:1","messages":[{"role":"user","content":[{"type":"text","text":"Write a function."}]}],)"
+      R"("max_tokens":4})",
+      FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON)};
+  EXPECT_TRUE(session.PreflightRequest(text_request).fits);
+  EXPECT_GT(session.ProcessRequest(text_request).GetUsage().completion_tokens, 0u);
+}
+
 TEST(ByomE2eTest, RegisterModelPreservesAssetsAndRunsChatInference) {
   using namespace foundry_local;
 

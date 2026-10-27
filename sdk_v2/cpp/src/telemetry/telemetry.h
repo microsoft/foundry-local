@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "log_level.h"
 #include "telemetry/invocation_context.h"
 
 #include <cstdint>
@@ -179,15 +180,14 @@ struct HardwareInfo {
   bool has_cpu = false;
   bool has_gpu = false;
   bool has_npu = false;
-  int32_t device_type_count = 0;
-  int32_t execution_provider_count = 0;
-  std::string device_types;         // comma-separated coarse device classes, e.g. "CPU,GPU"
-  std::string execution_providers;  // comma-separated provider names, e.g. "CPUExecutionProvider,CUDAExecutionProvider"
+  int32_t device_type_count = 0;         // -1 when the diagnostic inventory is incomplete.
+  int32_t execution_provider_count = 0;  // -1 when the diagnostic inventory is incomplete.
+  std::string device_types;              // comma-separated coarse device classes, e.g. "CPU,GPU"
+  std::string execution_providers;       // comma-separated provider names, e.g. "CPUExecutionProvider,CUDAExecutionProvider"
 };
 
 /// Payload for the ProcessInfo event — emitted once during process startup when telemetry is not CI-suppressed.
 struct ProcessInfo {
-  std::string app_name;
   std::string app_version;
   std::string os_name;
   std::string os_version;
@@ -204,6 +204,12 @@ struct ProcessInfo {
   std::string device_id_scope = "installation";
   int32_t cpu_count = 0;
   int64_t total_memory_mb = -1;
+  std::string app_data_dir;
+  std::string model_cache_dir;
+  std::string logs_dir;
+  LogLevel log_level = LogLevel::Warning;
+  int64_t web_service_url_count = 0;
+  int64_t external_url_count = 0;
 };
 
 /// Abstract telemetry interface.
@@ -254,10 +260,6 @@ class ITelemetry {
 
   /// Record one access to a model catalog source (CatalogFetch event).
   virtual void RecordCatalogFetch(const CatalogFetchInfo& info) = 0;
-
-  /// Record one process/system metadata snapshot. Default no-op for test fakes
-  /// and embedders that do not care about startup telemetry.
-  virtual void RecordProcessInfo(const ProcessInfo& /*info*/) {}
 
   /// Record coarse hardware/accelerator availability. Default no-op for test fakes
   /// and embedders that do not care about startup telemetry.

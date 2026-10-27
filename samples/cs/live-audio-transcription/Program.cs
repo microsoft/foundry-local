@@ -171,5 +171,6 @@ else
 
 await session.StopAsync();
 await readTask;
+await session.DisposeAsync();
 
 await model.UnloadAsync();

@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace fl {
@@ -33,7 +34,7 @@ struct GenAIConfig {
     };
     std::optional<Decoder> decoder;
 
-    /// Returns true if the model type is multimodal (phi3v, whisper, phi4mm, fara,
+    /// Returns true if the model type is multimodal (phi3v, whisper, parakeet_tdt, phi4mm, fara,
     /// qwen2_5_vl, qwen3_vl, qwen3_5, gemma4, mistral3).
     bool IsMultiModal() const;
   };
@@ -59,6 +60,9 @@ struct GenAIConfig {
   /// Returns the first provider key from decoder.session_options.provider_options,
   /// or empty string if not found.
   std::string DefaultProvider() const;
+
+  /// Borrowed until the config is modified or destroyed; avoids owning copies during telemetry name mapping.
+  std::string_view DefaultProviderView() const;
 
   /// Selects the chat inference backend declared by the model artifact.
   ChatBackendKind GetChatBackendKind() const;

@@ -188,6 +188,8 @@ class Model {
         bool external_registration);
   Model(ContainerTag, Model first_variant);
 
+  std::string LocalPathSnapshot() const;
+
   // Leaf data (empty for containers). Construction guarantees this is non-null for every leaf.
   // cached_ is atomic — flipped concurrently by the download path.
   // Loaded state is NOT stored here; it is queried from ModelLoadManager so the load
@@ -221,8 +223,9 @@ class Model {
   // while another thread enumerates via Variants()).
   mutable std::mutex state_mutex_;
 
-  // Leaf lifecycle state. A Model must not be moved while an unregister operation holds this lock.
+  // Leaf lifecycle state. A Model must not be moved while a download or unregister operation is active.
   mutable std::mutex lifecycle_mutex_;
+  std::atomic<size_t> active_downloads_{0};
   bool unregistering_ = false;
   std::vector<Model*> unregistering_variants_;  // exact container snapshot locked by BeginUnregister
 };

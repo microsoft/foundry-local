@@ -163,6 +163,7 @@ GenAIModelInstance::GenAIModelInstance(std::string model_id,
       model_path_(std::move(effective_model_path)),
       genai_config_(std::move(genai_config)),
       ep_(resolved_ep),
+      logger_(logger),
       last_activity_(std::chrono::steady_clock::now()) {
   // Create OGA Config from the effective model directory
   std::unique_ptr<OgaConfig> oga_config;

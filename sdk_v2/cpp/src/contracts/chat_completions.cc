@@ -339,7 +339,7 @@ void from_json(const nlohmann::json& j, ChatCompletionRequest& r) {
   opt_int(j, "seed", r.seed);
   opt_bool(j, "logprobs", r.logprobs);
   opt_int(j, "top_logprobs", r.top_logprobs);
-  opt_bool(j, "parallel_tool_calls", r.parallel_tool_calls);
+  opt(j, "parallel_tool_calls", r.parallel_tool_calls);
   opt_str(j, "user", r.user);
   opt_str(j, "reasoning_effort", r.reasoning_effort);
 
@@ -379,6 +379,18 @@ void from_json(const nlohmann::json& j, ChatCompletionRequest& r) {
 // ========================================================================
 // Request serialization (to_json) - for getting tools JSON to pass to GenAI
 // ========================================================================
+
+void from_json(const nlohmann::ordered_json& j, ChatCompletionRequest& r) {
+  from_json(nlohmann::json(j), r);
+  if (r.tools) {
+    for (size_t i = 0; i < r.tools->size(); ++i) {
+      auto& tool = r.tools->at(i);
+      if (!tool.IsCustom() && tool.function.parameters) {
+        tool.function.parameters = j.at("tools").at(i).at("function").at("parameters");
+      }
+    }
+  }
+}
 
 void to_json(nlohmann::json& j, const ChatCompletionFunctionDef& f) {
   j = nlohmann::json{

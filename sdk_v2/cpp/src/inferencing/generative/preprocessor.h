@@ -37,6 +37,7 @@ class Preprocessor {
   Preprocessor& operator=(Preprocessor&&) = delete;
 
   std::unique_ptr<OgaSequences> Encode(const char* text);
+  std::unique_ptr<OgaSequences> EncodeLiteral(const char* text);
   std::string ApplyChatTemplate(const char* messages_json, const char* tools_json, bool add_generation_prompt);
   std::string ApplyChatTemplateWithOptions(const char* messages_json, const char* tools_json,
                                            const char* template_kwargs_json, bool add_generation_prompt);
@@ -53,13 +54,15 @@ class Preprocessor {
                                                  const OgaAudios* audios);
 
  private:
-  Preprocessor(std::unique_ptr<OgaTokenizer> tokenizer,
+  Preprocessor(OgaModel& model, std::unique_ptr<OgaTokenizer> tokenizer,
                std::unique_ptr<OgaTokenizer> tokenizer_with_special,
                std::unique_ptr<OgaMultiModalProcessor> multimodal_processor);
 
   std::mutex mutex_;
+  OgaModel& model_;
   std::unique_ptr<OgaTokenizer> tokenizer_;
   std::unique_ptr<OgaTokenizer> tokenizer_with_special_;
+  std::unique_ptr<OgaTokenizer> literal_tokenizer_;
   std::unique_ptr<OgaMultiModalProcessor> multimodal_processor_;
   std::vector<int32_t> eos_token_ids_;
   std::once_flag eos_token_ids_init_flag_;

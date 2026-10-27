@@ -27,7 +27,7 @@ class TelemetryLogger : public ITelemetry {
   void RecordEpDownloadAndRegister(const EpDownloadAndRegisterInfo& info) override;
   void RecordDownload(const DownloadInfo& info) override;
   void RecordCatalogFetch(const CatalogFetchInfo& info) override;
-  void RecordProcessInfo(const ProcessInfo& info) override;
+  void RecordProcessInfo(const ProcessInfo& info);
   void RecordHardwareInfo(const HardwareInfo& info) override;
   void StartSession() override;
   void EndSession() override;

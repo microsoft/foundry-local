@@ -1281,7 +1281,7 @@ inline flSession* detail::CreateSession(IModel& model) {
 
 inline ChatSession::ChatSession(IModel& model) : Session(model) {
   auto task = model.GetInfo().Task();
-  if (task != "chat-completion" && task != "vision-language-chat") {
+  if (task != "chat-completion" && task != "coding" && task != "vision-language-chat") {
     throw std::invalid_argument("Model is not designed for chat tasks");
   }
 }

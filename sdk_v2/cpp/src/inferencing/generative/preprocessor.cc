@@ -51,14 +51,15 @@ std::unique_ptr<Preprocessor> Preprocessor::Create(OgaModel& model, bool create_
     }
   }
 
-  return std::unique_ptr<Preprocessor>(
-      new Preprocessor(std::move(tokenizer), std::move(tokenizer_with_special), std::move(multimodal_processor)));
+  return std::unique_ptr<Preprocessor>(new Preprocessor(
+      model, std::move(tokenizer), std::move(tokenizer_with_special), std::move(multimodal_processor)));
 }
 
-Preprocessor::Preprocessor(std::unique_ptr<OgaTokenizer> tokenizer,
+Preprocessor::Preprocessor(OgaModel& model, std::unique_ptr<OgaTokenizer> tokenizer,
                            std::unique_ptr<OgaTokenizer> tokenizer_with_special,
                            std::unique_ptr<OgaMultiModalProcessor> multimodal_processor)
-    : tokenizer_(std::move(tokenizer)),
+    : model_(model),
+      tokenizer_(std::move(tokenizer)),
       tokenizer_with_special_(std::move(tokenizer_with_special)),
       multimodal_processor_(std::move(multimodal_processor)) {
   if (!tokenizer_) {
@@ -75,6 +76,21 @@ std::unique_ptr<OgaSequences> Preprocessor::Encode(const char* text) {
   auto sequences = OgaSequences::Create();
   std::lock_guard<std::mutex> lock(mutex_);
   tokenizer_->Encode(text, *sequences);
+  return sequences;
+}
+
+std::unique_ptr<OgaSequences> Preprocessor::EncodeLiteral(const char* text) {
+  auto sequences = OgaSequences::Create();
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!literal_tokenizer_) {
+    auto tokenizer = OgaTokenizer::Create(model_);
+    KeyValuePairs options;
+    options.Add("literal", "true");
+    tokenizer->UpdateOptions(options.Keys().data(), options.Values().data(), options.size());
+    literal_tokenizer_ = std::move(tokenizer);
+  }
+
+  literal_tokenizer_->Encode(text, *sequences);
   return sequences;
 }
 

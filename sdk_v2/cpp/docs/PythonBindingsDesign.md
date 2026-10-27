@@ -687,7 +687,7 @@ The existing `sdk_v2/python/build_backend.py` is extended to:
 2. Run `cffi`'s out-of-line build to emit `_cffi.*.pyd` / `.so` from `_native/build_cffi.py`.
 3. Bundle binaries into the wheel under `foundry_local/_native/<platform>/`.
 
-Wheel tags: `win_amd64`, `manylinux_2_28_x86_64`, `macosx_11_0_arm64`. No pure-Python wheel — the package is platform-specific.
+Wheel tags: `win_amd64`, `manylinux_2_28_x86_64`, `manylinux_2_34_aarch64`, `macosx_11_0_arm64`. No pure-Python wheel — the package is platform-specific.
 
 ### 6.3 Type stubs
 

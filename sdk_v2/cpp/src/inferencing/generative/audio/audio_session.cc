@@ -17,6 +17,7 @@
 #include "items/text_item.h"
 #include "model.h"
 #include "telemetry/telemetry.h"
+#include "telemetry/telemetry_request_metrics.h"
 #include "util/file_uri.h"
 #include "utils.h"
 
@@ -127,6 +128,11 @@ bool IsLanguageToken(const std::string& token) {
 }  // namespace
 
 std::string AudioInternal::SanitizeLanguageForTelemetry(const std::string& language) {
+  // Supported language tags are much shorter; reject oversized diagnostic input before normalization.
+  if (language.size() > 32) {
+    return {};
+  }
+
   const auto normalized = ToLowerAscii(language);
   return NemotronLanguageIdMap().contains(normalized) || IsWhisperLanguageSupported(normalized) ? normalized
                                                                                                 : std::string{};
@@ -161,7 +167,7 @@ SessionType AudioSession::Type() const {
 }
 
 std::string AudioSession::ExecutionProvider() const {
-  return std::string(EPUtils::EPtoTelemetryName(model_.EP(), model_.GetGenAIConfig().DefaultProvider()));
+  return std::string(EPUtils::EPtoTelemetryName(model_.EP(), model_.GetGenAIConfig().DefaultProviderView()));
 }
 
 void AudioSession::SetSessionOptionsImpl(const KeyValuePairs& options) {
@@ -337,6 +343,13 @@ void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue
                                  format_item.channels));
   }
 
+  const auto& model_type = Model().ModelType();
+  if (model_type == "whisper" || model_type == "parakeet_tdt") {
+    FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED,
+                     fmt::format("Model '{}' does not support live PCM streaming. Submit a complete audio file.",
+                                 model_type));
+  }
+
   logger_.Log(LogLevel::Debug, "Starting streaming audio transcription");
 
   // 2. Create ORT GenAI streaming pipeline
@@ -497,6 +510,7 @@ void AudioSession::ProcessAudioTranscriptionJson(const std::string& request_json
   // Parse the OpenAI audio transcription request
   auto req_json = nlohmann::json::parse(request_json);
   auto req = req_json.get<AudioTranscriptionRequest>();
+  response.openai_json_message_count = TelemetryInternal::CountParsedJsonMessages(req_json);
 
   // Validate required fields
   if (req.filename.empty()) {

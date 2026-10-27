@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 #include "telemetry/telemetry_environment.h"
 
+#include "logger.h"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -9,7 +11,6 @@
 
 #ifdef _WIN32
 #include <windows.h>
-#include <vector>
 #endif
 
 namespace fl {
@@ -58,29 +59,57 @@ std::string_view Trim(std::string_view s) {
   return s;
 }
 
-}  // namespace
-
-std::string TelemetryEnvironment::GetEnv(const char* name) {
+std::optional<std::string> ReadEnvironmentValue(const char* name) {
 #ifdef _WIN32
   // Env-var values are ASCII for the CI flags we care about; use the Win32 A API
   // to avoid depending on CRT getenv behavior.
-  DWORD needed = ::GetEnvironmentVariableA(name, nullptr, 0);
-  if (needed == 0) {
-    return {};
-  }
-  std::vector<char> buf(needed);
-  DWORD written = ::GetEnvironmentVariableA(name, buf.data(), needed);
-  if (written == 0 || written >= needed) {
-    return {};
-  }
-  return std::string(buf.data(), written);
+  return TelemetryInternal::ReadWindowsEnvironment(
+      name, [](const char* variable, char* buffer, uint32_t size) -> std::optional<uint32_t> {
+        ::SetLastError(ERROR_SUCCESS);
+        const DWORD written = ::GetEnvironmentVariableA(variable, buffer, size);
+        if (written == 0) {
+          const DWORD error = ::GetLastError();
+          if (error != ERROR_SUCCESS && error != ERROR_ENVVAR_NOT_FOUND) {
+            return std::nullopt;
+          }
+        }
+        return written;
+      });
 #else
   const char* value = std::getenv(name);
-  return value ? std::string(value) : std::string{};
+  const auto bounded = BoundedTelemetryCString(value, kMaxTelemetryEnvironmentLength + 1);
+  if (bounded.size() > kMaxTelemetryEnvironmentLength) {
+    return std::nullopt;
+  }
+  return std::string(bounded);
 #endif
 }
 
+bool IsTruthyEnvironmentValue(const char* name) {
+  const auto result = TelemetryEnvironment::TryGetEnv(name);
+  return !result || TelemetryEnvironment::IsTruthyValue(*result);
+}
+
+}  // namespace
+
+std::string TelemetryEnvironment::GetEnv(const char* name) {
+  return TryGetEnv(name).value_or(std::string{});
+}
+
+std::optional<std::string> TelemetryEnvironment::TryGetEnv(const char* name) {
+  auto result = ReadEnvironmentValue(name);
+  if (!result) {
+    StderrLogger{}.Log(LogLevel::Warning,
+                       "[Telemetry] Environment value rejected (32 KiB limit or inconsistent/unreadable value)");
+  }
+  return result;
+}
+
 bool TelemetryEnvironment::IsTruthyValue(std::string_view value) {
+  if (value.size() > kMaxTelemetryEnvironmentLength) {
+    return true;
+  }
+
   auto trimmed = Trim(value);
   if (trimmed.empty()) {
     return false;
@@ -93,7 +122,7 @@ bool TelemetryEnvironment::IsTruthyValue(std::string_view value) {
 
 bool TelemetryEnvironment::IsCiEnvironment() {
   for (const char* name : kCiEnvironmentVariableNames) {
-    if (IsTruthyValue(GetEnv(name))) {
+    if (IsTruthyEnvironmentValue(name)) {
       return true;
     }
   }
@@ -101,7 +130,7 @@ bool TelemetryEnvironment::IsCiEnvironment() {
 }
 
 bool TelemetryEnvironment::IsTelemetryDisabledByEnvVar() {
-  return IsTruthyValue(GetEnv("ORT_TELEMETRY_DISABLED"));
+  return IsTruthyEnvironmentValue("ORT_TELEMETRY_DISABLED");
 }
 
 }  // namespace fl

@@ -8,12 +8,12 @@
 
 namespace fl {
 
-DownloadTracker::DownloadTracker(std::string model_id,
-                                 std::string user_agent,
+DownloadTracker::DownloadTracker(std::string_view model_id,
+                                 std::string_view user_agent,
                                  ITelemetry& telemetry)
     : telemetry_(telemetry) {
-  info_.model_id = std::move(model_id);
-  info_.user_agent = user_agent.empty() ? DefaultUserAgent() : std::move(user_agent);
+  info_.model_id = TelemetryInternal::SanitizeTelemetryIdentifier(model_id);
+  info_.user_agent = user_agent.empty() ? DefaultUserAgent() : TelemetryInternal::SanitizeTelemetryValue(user_agent);
   info_.correlation_id = GenerateGuidV4();
   info_.status = ActionStatus::kFailure;
   download_phase_start_ = std::chrono::steady_clock::now();

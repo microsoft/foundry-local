@@ -2,6 +2,7 @@
 	import { page } from '$app/stores';
 	import { Home, ArrowLeft, Brain, Zap, RotateCcw } from 'lucide-svelte';
 	import { Button } from '$lib/components/ui/button';
+	import Footer from '$lib/components/home/footer.svelte';
 
 	const errorMessages = [
 		"Even our AI models can't find this page...",
@@ -115,6 +116,8 @@
 		</div>
 	</div>
 </main>
+
+<Footer />
 
 <style>
 	@keyframes glitch {

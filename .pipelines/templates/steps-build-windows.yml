@@ -55,6 +55,8 @@ steps:
     echo @exit /b 0 > $(Build.BinariesDirectory)\tools\pkg-config.bat
   displayName: 'Bootstrap vcpkg'
 
+- template: steps-prefetch-vcpkg.yml
+
 - template: steps-prefetch-nuget.yml
   parameters:
     ortVersion: ${{ parameters.ortVersion }}
@@ -71,11 +73,14 @@ steps:
     pwsh: true
     script: |
       $version = (Get-Content "$(Pipeline.Workspace)/version-info/sdkVersion.txt" -Raw).Trim()
-      $defines = '$(cmakeFetchDefines)' + " `"FOUNDRY_LOCAL_VERSION_STRING=$version`""
+      $defines = '$(cmakeFetchDefines)' + " `"FOUNDRY_LOCAL_PACKAGE_VERSION=$version`""
       Write-Host "##vso[task.setvariable variable=cmakeFetchDefines]$defines"
       Write-Host "cmakeFetchDefines = $defines"
 
 # Tests need shared model files.
+- ${{ if eq(parameters.arch, 'x64') }}:
+  - template: steps-prepare-telemetry-tests.yml
+
 - ${{ if eq(parameters.runTests, true) }}:
   - template: fetch-models-from-artifacts-feed.yml
     parameters:
@@ -94,6 +99,7 @@ steps:
     workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
     env:
       VCPKG_ROOT: $(Build.BinariesDirectory)\vcpkg
+      VCPKG_DOWNLOADS: $(Build.BinariesDirectory)\vcpkg-downloads
       PKG_CONFIG: $(Build.BinariesDirectory)\tools\pkg-config.bat
 
 - ${{ if eq(parameters.arch, 'arm64') }}:
@@ -108,7 +114,25 @@ steps:
     workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
     env:
       VCPKG_ROOT: $(Build.BinariesDirectory)\vcpkg
+      VCPKG_DOWNLOADS: $(Build.BinariesDirectory)\vcpkg-downloads
       PKG_CONFIG: $(Build.BinariesDirectory)\tools\pkg-config.bat
+
+- ${{ if eq(parameters.arch, 'x64') }}:
+  - script: >-
+      python tools/run_dependency_tests.py
+      --build build/Windows/${{ parameters.buildConfig }} --config ${{ parameters.buildConfig }}
+    displayName: 'Run shutdown and installed nanoarrow regressions'
+    workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
+
+  - task: PublishTestResults@2
+    displayName: 'Publish dependency regressions'
+    condition: succeededOrFailed()
+    inputs:
+      testResultsFormat: JUnit
+      testResultsFiles: '$(Build.SourcesDirectory)/sdk_v2/cpp/build/Windows/${{ parameters.buildConfig }}/TestResults/dependency-regressions.xml'
+      testRunTitle: 'C++ dependency regressions (Windows x64)'
+      failTaskOnFailedTests: true
+      failTaskOnMissingResultsFile: true
 
 - ${{ if eq(parameters.runTests, true) }}:
   - script: python build.py --test --config ${{ parameters.buildConfig }}
@@ -155,6 +179,26 @@ steps:
         Copy-Item -Path $providersShared -Destination $dst -Force
         Write-Host "  staged onnxruntime_providers_shared.dll"
       }
+
+- task: SFP.build-tasks.custom-build-task-1.EsrpCodeSigning@5
+  displayName: 'Sign staged foundry_local.dll'
+  condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+  inputs:
+    ConnectedServiceName: 'OnnxrunTimeCodeSign_20240611'
+    UseMSIAuthentication: true
+    AppRegistrationClientId: '$(esrpClientId)'
+    AppRegistrationTenantId: '$(esrpTenantId)'
+    EsrpClientId: '$(esrpClientId)'
+    AuthAKVName: '$(esrpAkvName)'
+    AuthSignCertName: '$(esrpSignCertName)'
+    FolderPath: '$(Build.ArtifactStagingDirectory)/native'
+    Pattern: 'foundry_local.dll'
+    SessionTimeout: 90
+    ServiceEndpointUrl: 'https://api.esrp.microsoft.com/api/v2'
+    MaxConcurrency: 25
+    signConfigType: inlineSignParams
+    inlineOperation: |
+      [{"keyCode":"CP-230012","operationSetCode":"SigntoolSign","parameters":[{"parameterName":"OpusName","parameterValue":"Microsoft"},{"parameterName":"OpusInfo","parameterValue":"http://www.microsoft.com"},{"parameterName":"PageHash","parameterValue":"/NPH"},{"parameterName":"FileDigest","parameterValue":"/fd sha256"},{"parameterName":"TimeStamp","parameterValue":"/tr \"http://rfc3161.gtm.corp.microsoft.com/TSS/HttpTspServer\" /td sha256"}],"toolName":"signtool.exe","toolVersion":"6.2.9304.0"}]
 
 - ${{ if eq(parameters.stageHeaders, true) }}:
   - task: CopyFiles@2

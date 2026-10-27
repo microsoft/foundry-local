@@ -4,6 +4,7 @@
 
 #include "inferencing/generative/toolcalling/markdown_fence_tracker.h"
 #include "inferencing/generative/toolcalling/tool_call_payload_parser.h"
+#include "inferencing/generative/toolcalling/tool_call_plan.h"
 
 #include <algorithm>
 #include <string>
@@ -45,17 +46,20 @@ class ToolCallStreamAccumulator {
   struct Output {
     std::vector<Event> events;
     bool malformed = false;
+    std::string error;
   };
 
   ToolCallStreamAccumulator(std::string start_marker, std::string end_marker,
                             std::string tools_json = {},
                             std::string reasoning_end_marker = {},
-                            ToolCallPayloadParser payload_parser = {})
+                            ToolCallPayloadParser payload_parser = {},
+                            bool canonical_json_payload = false)
       : start_marker_(std::move(start_marker)),
         end_marker_(std::move(end_marker)),
         tools_json_(std::move(tools_json)),
         reasoning_end_marker_(std::move(reasoning_end_marker)),
-        payload_parser_(std::move(payload_parser)) {}
+        payload_parser_(std::move(payload_parser)),
+        canonical_json_payload_(canonical_json_payload) {}
 
   /// Feed a chunk into the accumulator. Returns ordered visible-text and completed-tool-call events.
   Output Push(const std::string& chunk) {
@@ -71,13 +75,20 @@ class ToolCallStreamAccumulator {
       return out;
     }
 
+    if (selected_payload_malformed_) {
+      return out;
+    }
+
     if (payload_parser_) {
       size_t offset = 0;
       while (offset < chunk.size()) {
-        const auto count = std::min(kSelectedPayloadBufferLimit, chunk.size() - offset);
+        const auto count = std::min(SelectedPayloadBufferLimit(), chunk.size() - offset);
         buffer_.append(chunk, offset, count);
         offset += count;
         DrainSelectedPayload(out, /*flushing=*/false);
+        if (selected_payload_malformed_) {
+          break;
+        }
       }
     } else {
       buffer_ += chunk;
@@ -95,6 +106,10 @@ class ToolCallStreamAccumulator {
       return out;
     }
 
+    if (selected_payload_malformed_) {
+      return out;
+    }
+
     if (payload_parser_) {
       DrainSelectedPayload(out, /*flushing=*/true);
     } else {
@@ -104,11 +119,34 @@ class ToolCallStreamAccumulator {
     return out;
   }
 
-  /// Reject a pending request-selected payload without parsing it. This is intentionally separate from `Flush()`:
-  /// default JSON recovery keeps its established terminal semantics, while an interrupted selected batch is ambiguous.
+  /// Preserve ambiguous interrupted selected calls as text, but never expose a known schema-invalid call.
+  /// This is separate from `Flush()`: interrupted valid batches remain ambiguous and are not admitted as calls.
   Output RejectPendingSelectedPayload() {
     Output out;
     if (!payload_parser_) {
+      return out;
+    }
+
+    if (selected_payload_malformed_) {
+      return out;
+    }
+
+    if (canonical_json_payload_ && inside_tool_call_) {
+      RejectMalformedSelectedPayload(out, "Tool-call output was interrupted before the batch could be committed");
+      return out;
+    }
+
+    if (inside_tool_call_ &&
+        payload_parser_(tool_call_buffer_, /*end_of_stream=*/false).disposition ==
+            ToolCallPayloadDisposition::kMalformed) {
+      RejectMalformedSelectedPayload(out);
+      return out;
+    }
+
+    if (inside_tool_call_ && tool_call_buffer_.find(end_marker_) != std::string::npos &&
+        payload_parser_(tool_call_buffer_, /*end_of_stream=*/true).disposition ==
+            ToolCallPayloadDisposition::kMalformed) {
+      RejectMalformedSelectedPayload(out);
       return out;
     }
 
@@ -117,7 +155,6 @@ class ToolCallStreamAccumulator {
     tool_call_buffer_.clear();
     buffer_.clear();
     inside_tool_call_ = false;
-    rejected_batch_state_ = RejectedBatchState::kNone;
     ResetPayloadScan();
     ResetSelectedPayloadBoundaryScan();
     return out;
@@ -128,18 +165,86 @@ class ToolCallStreamAccumulator {
   /// Whether the accumulator is currently inside a `<tool_call>...</tool_call>` block (between start and end markers).
   bool InsideToolCall() const noexcept { return inside_tool_call_; }
 
+  bool HasCompleteTokenOwnedEnvelope() const noexcept { return owned_after_payload_; }
+
+  /// Check published boundary identity before byte buffering can erase token provenance.
+  Output ObserveTokenBoundaries(std::string_view chunk, bool owns_start, bool owns_end) {
+    Output out;
+    if (selected_payload_malformed_) {
+      return out;
+    }
+
+    if (!owned_inside_payload_ && owns_start) {
+      owned_inside_payload_ = true;
+      owned_after_payload_ = false;
+      owned_boundary_prefix_.clear();
+      return out;
+    }
+
+    if (owned_inside_payload_ && !owned_inside_string_ && owns_end) {
+      owned_inside_payload_ = false;
+      owned_after_payload_ = true;
+      owned_boundary_prefix_.clear();
+      return out;
+    }
+
+    for (const auto byte : chunk) {
+      if (owned_inside_payload_) {
+        if (owned_inside_string_) {
+          if (owned_escaped_) {
+            owned_escaped_ = false;
+          } else if (byte == '\\') {
+            owned_escaped_ = true;
+          } else if (byte == '"') {
+            owned_inside_string_ = false;
+          }
+          continue;
+        }
+
+        if (byte == '"') {
+          owned_inside_string_ = true;
+          owned_boundary_prefix_.clear();
+          continue;
+        }
+      } else if (!owned_after_payload_) {
+        break;
+      } else if (owned_boundary_prefix_.empty() && std::string_view(" \t\r\n").find(byte) != std::string_view::npos) {
+        continue;
+      }
+
+      const auto& marker = owned_inside_payload_ ? end_marker_ : start_marker_;
+      owned_boundary_prefix_ += byte;
+      while (!marker.starts_with(owned_boundary_prefix_)) {
+        owned_boundary_prefix_.erase(0, 1);
+      }
+
+      if (owned_boundary_prefix_ == marker) {
+        RejectMalformedSelectedPayload(out, "Tool-call boundary was emitted as literal text, not its published token");
+        return out;
+      }
+
+      if (owned_after_payload_ && owned_boundary_prefix_.empty()) {
+        owned_after_payload_ = false;
+      }
+    }
+    return out;
+  }
+
  private:
   static constexpr size_t kSelectedPayloadBufferLimit = 64 * 1024;
+  bool owned_inside_payload_ = false;
+  bool owned_after_payload_ = false;
+  bool owned_inside_string_ = false;
+  bool owned_escaped_ = false;
+  std::string owned_boundary_prefix_;
+
+  size_t SelectedPayloadBufferLimit() const noexcept {
+    return canonical_json_payload_ ? ToolCallPlan::kMaxBatchBytes : kSelectedPayloadBufferLimit;
+  }
 
   enum class MarkerKind { kNone,
                           kNestedStart,
                           kEnd };
-
-  enum class RejectedBatchState {
-    kNone,
-    kCandidate,
-    kBetweenCandidates,
-  };
 
   enum class SelectedPayloadBoundaryState {
     kSearchingForEnd,
@@ -183,87 +288,10 @@ class ToolCallStreamAccumulator {
     }
   }
 
-  void DrainRejectedCandidate(Output& out, bool flushing) {
-    const auto found = buffer_.find(end_marker_);
-    if (found != std::string::npos) {
-      const auto end = found + end_marker_.size();
-      EmitVisible(out, buffer_.substr(0, end));
-      buffer_.erase(0, end);
-      rejected_batch_state_ = RejectedBatchState::kBetweenCandidates;
-      inside_tool_call_ = false;
-      return;
-    }
-
-    if (flushing) {
-      EmitVisible(out, std::move(buffer_));
-      buffer_.clear();
-      rejected_batch_state_ = RejectedBatchState::kNone;
-      inside_tool_call_ = false;
-      return;
-    }
-
-    const auto hold = LongestSuffixThatIsPrefixOf(buffer_, end_marker_);
-    const auto safe = buffer_.size() - hold;
-    if (safe > 0) {
-      EmitVisible(out, buffer_.substr(0, safe));
-      buffer_.erase(0, safe);
-    }
-  }
-
-  void DrainBetweenRejectedCandidates(Output& out, bool flushing) {
-    const auto boundary = buffer_.find_first_not_of(" \t\r\n");
-    if (boundary == std::string::npos) {
-      EmitVisible(out, std::move(buffer_));
-      buffer_.clear();
-      if (flushing) {
-        rejected_batch_state_ = RejectedBatchState::kNone;
-      }
-
-      return;
-    }
-
-    if (boundary > 0) {
-      EmitVisible(out, buffer_.substr(0, boundary));
-      buffer_.erase(0, boundary);
-    }
-
-    if (buffer_.starts_with(start_marker_)) {
-      EmitVisible(out, buffer_.substr(0, start_marker_.size()));
-      buffer_.erase(0, start_marker_.size());
-      rejected_batch_state_ = RejectedBatchState::kCandidate;
-      inside_tool_call_ = true;
-      return;
-    }
-
-    if (!flushing && start_marker_.starts_with(buffer_)) {
-      return;
-    }
-
-    rejected_batch_state_ = RejectedBatchState::kNone;
-  }
-
   void DrainSelectedPayload(Output& out, bool flushing) {
     while (true) {
-      if (rejected_batch_state_ == RejectedBatchState::kCandidate) {
-        DrainRejectedCandidate(out, flushing);
-        if (rejected_batch_state_ == RejectedBatchState::kCandidate || buffer_.empty()) {
-          return;
-        }
-
-        continue;
-      }
-
-      if (rejected_batch_state_ == RejectedBatchState::kBetweenCandidates) {
-        DrainBetweenRejectedCandidates(out, flushing);
-        if (rejected_batch_state_ == RejectedBatchState::kBetweenCandidates || buffer_.empty()) {
-          return;
-        }
-
-        continue;
-      }
-
       if (inside_tool_call_) {
-        const auto available = kSelectedPayloadBufferLimit - tool_call_buffer_.size();
+        const auto available = SelectedPayloadBufferLimit() - tool_call_buffer_.size();
         const auto appended = std::min(available, buffer_.size());
         tool_call_buffer_.append(buffer_, 0, appended);
         buffer_.erase(0, appended);
@@ -271,7 +299,7 @@ class ToolCallStreamAccumulator {
         bool has_decision_point = AdvanceSelectedPayloadBoundaryScan();
         bool finalize_exact_limit = false;
         if (!has_decision_point &&
-            tool_call_buffer_.size() == kSelectedPayloadBufferLimit &&
+            tool_call_buffer_.size() == SelectedPayloadBufferLimit() &&
             (selected_payload_boundary_state_ == SelectedPayloadBoundaryState::kAfterEnd ||
              selected_payload_boundary_state_ == SelectedPayloadBoundaryState::kMatchingAdjacentStart)) {
           switch (ResolveExactLimitLookahead(flushing)) {
@@ -282,30 +310,28 @@ class ToolCallStreamAccumulator {
               finalize_exact_limit = true;
               break;
             case ExactLimitLookahead::kOversized:
-              RejectOversizedSelectedPayload(out, flushing);
-              if (rejected_batch_state_ == RejectedBatchState::kCandidate || buffer_.empty()) {
-                return;
-              }
-              continue;
+              RejectMalformedSelectedPayload(out);
+              return;
           }
         }
 
         if (!flushing && !has_decision_point) {
-          if (tool_call_buffer_.size() < kSelectedPayloadBufferLimit) {
+          if (tool_call_buffer_.size() < SelectedPayloadBufferLimit()) {
             return;
           }
 
-          RejectOversizedSelectedPayload(out, flushing);
-          if (rejected_batch_state_ == RejectedBatchState::kCandidate || buffer_.empty()) {
-            return;
-          }
-
-          continue;
+          RejectMalformedSelectedPayload(out);
+          return;
         }
 
         auto result = payload_parser_(tool_call_buffer_, flushing || finalize_exact_limit);
         if (result.disposition == ToolCallPayloadDisposition::kNeedMore) {
           if (flushing) {
+            if (canonical_json_payload_) {
+              RejectMalformedSelectedPayload(out, "Incomplete tool-call JSON at the end of generation");
+              return;
+            }
+
             EmitVisible(out, std::move(tool_call_buffer_));
             tool_call_buffer_.clear();
             inside_tool_call_ = false;
@@ -317,10 +343,20 @@ class ToolCallStreamAccumulator {
         }
 
         if (result.consumed_size == 0 || result.consumed_size > tool_call_buffer_.size()) {
+          if (result.disposition == ToolCallPayloadDisposition::kMalformed || canonical_json_payload_) {
+            RejectMalformedSelectedPayload(out, std::move(result.error));
+            return;
+          }
+
           EmitVisible(out, std::move(tool_call_buffer_));
           tool_call_buffer_.clear();
           inside_tool_call_ = false;
           ResetSelectedPayloadBoundaryScan();
+          return;
+        }
+
+        if (result.disposition == ToolCallPayloadDisposition::kMalformed) {
+          RejectMalformedSelectedPayload(out, std::move(result.error));
           return;
         }
 
@@ -331,8 +367,6 @@ class ToolCallStreamAccumulator {
         ResetSelectedPayloadBoundaryScan();
         if (result.disposition == ToolCallPayloadDisposition::kParsed) {
           EmitParsedCalls(out, std::move(result.calls));
-        } else if (result.disposition == ToolCallPayloadDisposition::kMalformed) {
-          out.malformed = true;
         } else {
           EmitVisible(out, std::move(consumed));
         }
@@ -378,8 +412,21 @@ class ToolCallStreamAccumulator {
   }
 
   bool AdvanceSelectedPayloadBoundaryScan() {
+    if (selected_payload_boundary_state_ == SelectedPayloadBoundaryState::kResolved) {
+      return true;
+    }
+
     while (selected_payload_scan_position_ < tool_call_buffer_.size()) {
       if (selected_payload_boundary_state_ == SelectedPayloadBoundaryState::kSearchingForEnd) {
+        if (canonical_json_payload_) {
+          if (!AdvanceJsonPayloadBoundaryScan()) {
+            return false;
+          }
+
+          selected_payload_boundary_state_ = SelectedPayloadBoundaryState::kAfterEnd;
+          continue;
+        }
+
         const auto found = tool_call_buffer_.find(end_marker_, selected_payload_scan_position_);
         if (found == std::string::npos) {
           selected_payload_scan_position_ =
@@ -421,6 +468,36 @@ class ToolCallStreamAccumulator {
     return selected_payload_boundary_state_ == SelectedPayloadBoundaryState::kResolved;
   }
 
+  bool AdvanceJsonPayloadBoundaryScan() {
+    while (selected_payload_scan_position_ < tool_call_buffer_.size()) {
+      const auto byte = tool_call_buffer_[selected_payload_scan_position_];
+      if (selected_json_inside_string_) {
+        if (selected_json_escaped_) {
+          selected_json_escaped_ = false;
+        } else if (byte == '\\') {
+          selected_json_escaped_ = true;
+        } else if (byte == '"') {
+          selected_json_inside_string_ = false;
+        }
+      } else if (byte == '"') {
+        selected_json_inside_string_ = true;
+      } else if (byte == end_marker_.front()) {
+        const auto tail = std::string_view(tool_call_buffer_).substr(selected_payload_scan_position_);
+        if (tail.starts_with(end_marker_)) {
+          selected_payload_scan_position_ += end_marker_.size();
+          return true;
+        }
+        if (end_marker_.starts_with(tail)) {
+          return false;
+        }
+      }
+
+      ++selected_payload_scan_position_;
+    }
+
+    return false;
+  }
+
   ExactLimitLookahead ResolveExactLimitLookahead(bool flushing) {
     if (selected_payload_boundary_state_ == SelectedPayloadBoundaryState::kMatchingAdjacentStart) {
       const auto remaining_marker = start_marker_.substr(selected_payload_start_match_size_);
@@ -446,7 +523,7 @@ class ToolCallStreamAccumulator {
         return ExactLimitLookahead::kFinalize;
       }
 
-      return buffer_.size() <= kSelectedPayloadBufferLimit
+      return buffer_.size() <= SelectedPayloadBufferLimit()
                  ? ExactLimitLookahead::kNeedMore
                  : ExactLimitLookahead::kOversized;
     }
@@ -462,15 +539,14 @@ class ToolCallStreamAccumulator {
     return ExactLimitLookahead::kFinalize;
   }
 
-  void RejectOversizedSelectedPayload(Output& out, bool flushing) {
-    const auto hold = LongestSuffixThatIsPrefixOf(tool_call_buffer_, end_marker_);
-    const auto safe = tool_call_buffer_.size() - hold;
-    EmitVisible(out, tool_call_buffer_.substr(0, safe));
-    buffer_.insert(0, tool_call_buffer_.substr(safe));
+  void RejectMalformedSelectedPayload(Output& out, std::string error = {}) {
+    out.malformed = true;
+    out.error = error.empty() ? "Tool-call batch exceeds the payload limit or is malformed" : std::move(error);
+    selected_payload_malformed_ = true;
     tool_call_buffer_.clear();
-    rejected_batch_state_ = RejectedBatchState::kCandidate;
+    buffer_.clear();
+    inside_tool_call_ = false;
     ResetSelectedPayloadBoundaryScan();
-    DrainRejectedCandidate(out, flushing);
   }
 
   void ResetSelectedPayloadBoundaryScan() {
@@ -478,6 +554,8 @@ class ToolCallStreamAccumulator {
     selected_payload_scan_position_ = start_marker_.size();
     selected_payload_start_match_size_ = 0;
     selected_payload_lookahead_position_ = 0;
+    selected_json_inside_string_ = false;
+    selected_json_escaped_ = false;
   }
 
   bool EmitParsedBlock(Output& out, const std::string& block) const {
@@ -722,10 +800,13 @@ class ToolCallStreamAccumulator {
   std::string tools_json_;
   std::string reasoning_end_marker_;
   ToolCallPayloadParser payload_parser_;
+  bool canonical_json_payload_ = false;
+  bool selected_json_inside_string_ = false;
+  bool selected_json_escaped_ = false;
   std::string buffer_;            // pending bytes from Push() that haven't yet been routed
   std::string tool_call_buffer_;  // accumulated bytes of the in-progress tool-call block (incl. start marker)
   bool inside_tool_call_ = false;
-  RejectedBatchState rejected_batch_state_ = RejectedBatchState::kNone;
+  bool selected_payload_malformed_ = false;
   MarkdownFenceTracker markdown_fence_tracker_;
   size_t scan_position_ = 0;
   size_t prefix_probe_position_ = 0;

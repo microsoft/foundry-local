@@ -225,10 +225,14 @@ std::filesystem::path GetStorageDirectory() {
              ? std::filesystem::path{}
              : home / "Library" / "Application Support" / "Microsoft" / "DeveloperTools" / ".onnxruntime";
 #else
-  auto cache_base = TelemetryEnvironment::GetEnv("XDG_CACHE_HOME");
+  const auto cache_base = TelemetryEnvironment::TryGetEnv("XDG_CACHE_HOME");
+  if (!cache_base) {
+    return {};
+  }
+
   std::filesystem::path base;
-  if (!cache_base.empty()) {
-    base = cache_base;
+  if (!cache_base->empty()) {
+    base = *cache_base;
   } else {
     const auto home = HomeDirectory();
     if (home.empty()) {

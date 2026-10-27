@@ -7,6 +7,7 @@
 #include "inferencing/model_load_manager.h"
 #include "items/item.h"
 #include "items/text_item.h"
+#include "util/scope_guard.h"
 #include "util/string_utils.h"
 #include "utils.h"
 
@@ -426,7 +427,7 @@ bool Model::IsLoaded() const {
   // ModelLoadManager owns the authoritative loaded-instance map. The pointer is set at
   // construction and never reassigned, so querying it here stays in sync with paths that
   // bypass Model::Load/Unload (e.g., Manager::Shutdown -> ModelLoadManager::UnloadAll).
-  return model_load_manager_->GetLoadedModel(Info().model_id, local_path_) != nullptr;
+  return model_load_manager_->GetLoadedModel(Info().model_id, LocalPathSnapshot()) != nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -439,9 +440,18 @@ void Model::Download(std::function<int(float)> progress_cb) {
     return;
   }
 
-  if (!active_) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
+  {
+    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+    if (!active_) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
+    }
+
+    active_downloads_.fetch_add(1);
   }
+
+  // Do not hold the lifecycle mutex across progress callbacks. Removal must still reject this entire operation,
+  // including cache-hit callbacks and the gap between releasing the file lock and publishing the cached path.
+  ScopeGuard download_guard([this]() noexcept { active_downloads_.fetch_sub(1); });
 
   if (external_registration_) {
     if (progress_cb) {
@@ -485,6 +495,11 @@ const std::string& Model::GetPath() const {
   return local_path_;
 }
 
+std::string Model::LocalPathSnapshot() const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  return local_path_;
+}
+
 void Model::Load(ExecutionProvider ep) {
   if (Model* sv = selected_variant_.load(std::memory_order_acquire)) {
     sv->Load(ep);
@@ -508,10 +523,11 @@ void Model::Load(ExecutionProvider ep) {
 
   // LoadModel is idempotent — it returns kModelAlreadyLoaded if the id is already
   // in the load manager's map, so no need for a local short-circuit.
-  auto result = model_load_manager_->LoadModel(local_path_, Info().model_id, ep);
+  const auto path = LocalPathSnapshot();
+  auto result = model_load_manager_->LoadModel(path, Info().model_id, ep);
 
   if (result.status == ModelLoadManager::LoadStatus::kModelNotFound) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model not found at path: " + local_path_);
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model not found at path: " + path);
   }
 }
 
@@ -525,7 +541,7 @@ void Model::Unload() {
 
   // Path qualification lets a retired handle clean up its own instance without unloading a later registration that
   // reused the same model ID at a different path. UnloadModel is idempotent when no matching instance is loaded.
-  model_load_manager_->UnloadModel(Info().model_id, local_path_);
+  model_load_manager_->UnloadModel(Info().model_id, LocalPathSnapshot());
 }
 
 void Model::RemoveFromCache() {
@@ -539,22 +555,22 @@ void Model::RemoveFromCache() {
              "local registrations are not cache entries; call Catalog::UnregisterModel instead");
   }
 
-  std::string path;
-  {
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    if (!cached_ || local_path_.empty()) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is not cached locally");
-    }
-    path = local_path_;
+  std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+  if (!active_) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
   }
+
+  if (active_downloads_.load() != 0) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot remove model cache while a download is in progress");
+  }
+
+  const auto path = LocalPathSnapshot();
 
   if (IsLoaded()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot remove a loaded model from cache; unload it first");
   }
 
-  if (!Utils::RemoveDirectoryRecursive(path)) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "failed to remove model cache directory: " + path);
-  }
+  download_manager_->RemoveModelFromCache(Info(), path, *model_load_manager_);
 
   // Turn off the published state before tearing down the backing string (mirror of Download's ordering).
   cached_.store(false);
@@ -752,7 +768,7 @@ Model::IOInfo Model::GetInputOutputInfo() const {
 
   const auto& task = Info().task;
 
-  if (task == "chat-completion") {
+  if (task == "chat-completion" || task == "coding") {
     return IOInfoFromCache(ChatCompletionIO());
   }
 

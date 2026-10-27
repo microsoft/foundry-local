@@ -509,9 +509,19 @@ TEST(AssistantTurnGuardTest, AnEmptyTextEventNeverEndsTheTurn) {
 TEST(AssistantTurnGuardTest, ParallelCallsWithNoTextAreUnaffected) {
   AssistantTurnGuard guard;
 
-  guard.RecordToolCall();
-  guard.RecordToolCall();
+  EXPECT_TRUE(guard.RecordToolCall());
+  EXPECT_TRUE(guard.RecordToolCall());
   EXPECT_FALSE(guard.TurnEnded());
+}
+
+TEST(AssistantTurnGuardTest, SerialTurnEndsOnFirstCallEvenInOneFragment) {
+  AssistantTurnGuard guard(/*parallel_tool_calls=*/false);
+
+  EXPECT_EQ(guard.OfferVisibleText("Let me check."), TextDisposition::kEmit);
+  EXPECT_TRUE(guard.RecordToolCall());
+  EXPECT_TRUE(guard.TurnEnded());
+  EXPECT_FALSE(guard.RecordToolCall());
+  EXPECT_EQ(guard.OfferVisibleText(" further text"), TextDisposition::kDropped);
 }
 
 TEST(AssistantTurnGuardTest, WhatTheGuardAllowsIsExactlyWhatTheTranscriptAccepts) {
@@ -1198,10 +1208,10 @@ TEST(ChatTranscriptTest, FailedGenerationCommitsNoOutstandingCall) {
 // Generation has already been streamed to the caller by the time a turn is committed, so unusable model arguments
 // must never fail the request. Each shape the model can get wrong is checked end to end: the turn commits, the raw
 // bytes survive, and the conversation still projects on every later turn.
-class GeneratedArgumentsTest : public ::testing::TestWithParam<std::string> {};
+class GeneratedArgumentsTest : public ::testing::TestWithParam<const char*> {};
 
 TEST_P(GeneratedArgumentsTest, UnusableGeneratedArgumentsCommitAndStayRenderable) {
-  const std::string& raw = GetParam();
+  const std::string raw = GetParam();
 
   auto generated = MakeGeneratedToolCall("call_1", "get_weather", raw);
   EXPECT_FALSE(generated.arguments_usable) << "raw: " << raw;
@@ -1232,11 +1242,7 @@ TEST_P(GeneratedArgumentsTest, UnusableGeneratedArgumentsCommitAndStayRenderable
 }
 
 INSTANTIATE_TEST_SUITE_P(UnusableShapes, GeneratedArgumentsTest,
-                         ::testing::Values(std::string("null"),
-                                           std::string(R"("Seattle")"),
-                                           std::string("[1,2]"),
-                                           std::string("42"),
-                                           std::string(R"({"city":)")));
+                         ::testing::Values("null", R"("Seattle")", "[1,2]", "42", R"({"city":)"));
 
 TEST(ChatTranscriptTest, UsableGeneratedArgumentsKeepRawAndNormalizedInSync) {
   auto generated = MakeGeneratedToolCall("call_1", "get_weather", R"({"city":"Seattle"})");

@@ -20,7 +20,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "WindowsStore" OR VCPKG_TARGET_TRIPLET MATCHES "uw
 endif()
 list(APPEND VCPKG_MANIFEST_FEATURES "telemetry")
 
-project(foundry_local VERSION 0.1.0 LANGUAGES CXX C)
+project(foundry_local VERSION 2.0.1 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -92,7 +92,9 @@ include(cmake/Sanitizers.cmake)
 # Dependencies via vcpkg (manifest mode)
 # --------------------------------------------------------------------------
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(jsoncons CONFIG REQUIRED)
 find_package(azure-storage-blobs-cpp CONFIG REQUIRED)
+find_package(semver CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 find_package(LibArchive REQUIRED)
 
@@ -182,11 +184,12 @@ if(WinMLEpCatalog_FOUND)
     )
 endif()
 
-string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" FOUNDRY_LOCAL_SYSTEM_PROCESSOR)
+# CUDA/WebGPU EP bootstrappers are compiled on every non-Android platform.
+# Per-platform IsSupportedPlatform() gates runtime instantiation, so on
+# platforms without a published bundle (e.g. exotic Linux archs) the code is
+# present but inert.
 set(FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS ON)
-if(ANDROID OR
-   (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
-    NOT FOUNDRY_LOCAL_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$"))
+if(ANDROID)
     set(FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS OFF)
 endif()
 
@@ -261,6 +264,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/contracts/reasoning_options.cc
     src/inferencing/generative/toolcalling/qwen_xml_tool_call_decoder.cc
     src/inferencing/generative/toolcalling/tool_call_utils.cc
+    src/inferencing/generative/toolcalling/tool_call_plan.cc
     src/inferencing/generative/toolcalling/grammar.cc
     src/inferencing/generative/chat/search_options.cc
     src/inferencing/generative/chat/stop_strings.cc
@@ -334,8 +338,10 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
     target_link_libraries(${TARGET}
         ${LINK_SCOPE}
             nlohmann_json::nlohmann_json
+            jsoncons::jsoncons
             Azure::azure-core
             Azure::azure-storage-blobs
+            semver::semver
             spdlog::spdlog
             LibArchive::LibArchive
             ${CMAKE_DL_LIBS}
@@ -400,12 +406,7 @@ endfunction()
 # --------------------------------------------------------------------------
 # Generate version header from CMake project version (single source of truth)
 # --------------------------------------------------------------------------
-# CI overrides via -DFOUNDRY_LOCAL_VERSION_STRING=<full-version-string> so the
-# binary's FoundryLocalGetVersionString() matches the .nupkg version (which
-# typically includes a dev/timestamp suffix). Defaults to PROJECT_VERSION for
-# local developer builds.
-set(FOUNDRY_LOCAL_VERSION_STRING "${PROJECT_VERSION}"
-    CACHE STRING "Version string returned by FoundryLocalGetVersionString()")
+include(cmake/FoundryLocalVersion.cmake)
 
 set(FOUNDRY_LOCAL_ORT_GENAI_VERSION "${ORT_GENAI_VERSION}")
 if(NOT FOUNDRY_LOCAL_ORT_GENAI_VERSION)
@@ -445,6 +446,17 @@ target_compile_definitions(foundry_local_objects PRIVATE FL_STATIC_LIBRARY=1)
 add_library(foundry_local SHARED)
 target_link_libraries(foundry_local PRIVATE foundry_local_objects)
 
+# Keep bundled libcurl (used by 1DS and Azure) and other static dependencies out of
+# the process-wide symbol namespace. Otherwise a host's libcurl can interpose
+# our curl_easy_init/curl_easy_perform calls with an incompatible CURL handle layout.
+include(cmake/shared-library-exports.cmake)
+foundry_local_configure_shared_library_exports(foundry_local)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
+    # Bundled OpenSSL registers pthread-local destructors on caller-owned threads.
+    # Keep their code mapped after dlclose until those threads have exited.
+    target_link_options(foundry_local PRIVATE "LINKER:-z,nodelete")
+endif()
+
 # --------------------------------------------------------------------------
 # RPATH — bake "look beside me" into the shared library so it works in every
 # deployment shape without per-consumer patching.
@@ -481,6 +493,9 @@ endif()
 
 if(WIN32)
     target_sources(foundry_local PRIVATE src/exports.def)
+    if(MSVC)
+        target_link_options(foundry_local PRIVATE /guard:cf /DYNAMICBASE)
+    endif()
 
     # Delay-load the WinML EP Catalog DLL — it may not be present on older Windows.
     # The bootstrapper handles the delay-load failure gracefully at runtime.

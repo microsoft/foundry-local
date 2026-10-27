@@ -2,7 +2,7 @@
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License.
 # --------------------------------------------------------------------------
-"""BYOM binding tests that do not download, load, or run model inference."""
+"""BYOM binding tests, including coding inference with a bundled tiny model."""
 from __future__ import annotations
 
 import json
@@ -12,7 +12,19 @@ from pathlib import Path
 
 import pytest
 
-from foundry_local_sdk import CatalogType, FoundryLocalException, IModel, ModelInfoBuilder
+from foundry_local_sdk import (
+    AudioSession,
+    CatalogType,
+    ChatSession,
+    EmbeddingsSession,
+    FoundryLocalException,
+    IModel,
+    MessageItem,
+    ModelInfoBuilder,
+    Request,
+    RequestOptions,
+    SearchOptions,
+)
 
 
 def test_manager_get_catalog_selects_public_and_local(manager) -> None:
@@ -51,7 +63,7 @@ def test_local_catalog_registers_and_unregisters_without_deleting_assets(manager
     model_path = tmp_path / "model"
     model_path.mkdir()
     config_path = model_path / "genai_config.json"
-    config_path.write_text(json.dumps({"model": {"type": "phi3"}}), encoding="utf-8")
+    config_path.write_text(json.dumps({"model": {"type": "phi3", "context_length": 2048}}), encoding="utf-8")
 
     model_id = f"python-byom-{uuid.uuid4().hex}:1"
     local_catalog = manager.get_catalog(CatalogType.LOCAL)
@@ -61,7 +73,7 @@ def test_local_catalog_registers_and_unregisters_without_deleting_assets(manager
             metadata.set_string_property("task", "chat-completion")
             metadata.set_string_property("display_name", "Python BYOM")
             metadata.set_string_property("custom_marker", "python-binding")
-            metadata.set_int_property("context_length", 2048)
+            metadata.set_int_property("context_length", 1024)
             metadata.set_int_property("custom_count", 42)
             registered = local_catalog.register_model(model_path, model_id, metadata)
 
@@ -105,6 +117,35 @@ def test_public_catalog_rejects_registration_before_native_call(manager, tmp_pat
         metadata.set_string_property("task", "chat-completion")
         with pytest.raises(FoundryLocalException, match="local catalog"):
             manager.catalog.register_model(tmp_path, "not-local:1", metadata)
+
+
+def test_coding_model_uses_chat_session(manager) -> None:
+    model_path = Path(__file__).resolve().parents[3] / "cpp" / "test" / "testdata" / "tiny-paged-attention"
+    catalog = manager.get_catalog(CatalogType.LOCAL)
+    model_id = f"python-coding-{uuid.uuid4().hex}:1"
+    with ModelInfoBuilder() as metadata:
+        metadata.set_string_property("task", "coding")
+        model = catalog.register_model(model_path, model_id, metadata)
+
+    try:
+        assert model.info.task == "coding"
+        model.load()
+        with pytest.raises(ValueError, match="AudioSession requires"):
+            AudioSession(model)
+        with pytest.raises(ValueError, match="EmbeddingsSession requires"):
+            EmbeddingsSession(model)
+        with ChatSession(model) as session:
+            with Request() as request:
+                request.add_item(MessageItem.user("Write a function."))
+                request.set_options(RequestOptions(search=SearchOptions(max_output_tokens=4, temperature=0)))
+                with session.process_request(request) as response:
+                    assert response.item_count > 0
+                    assert response.get_usage().completion_tokens > 0
+            assert session.turn_count == 1
+    finally:
+        if model.is_loaded:
+            model.unload()
+        catalog.unregister_model(model_id)
 
 
 def test_byom_strings_reject_embedded_nul_before_native_call(manager) -> None:

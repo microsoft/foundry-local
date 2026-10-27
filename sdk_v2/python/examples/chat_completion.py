@@ -24,6 +24,7 @@ from foundry_local_sdk import (
     RequestOptions,
     SearchOptions,
     TextItem,
+    TextItemType,
 )
 
 
@@ -34,7 +35,7 @@ SKIP_EP_REGISTRATION_ENV = "FOUNDRY_LOCAL_SKIP_EP_REGISTRATION"
 def _is_cpu_chat_model(model: IModel) -> bool:
     info = model.info
     return (
-        info.task in ("chat-completion", "vision-language-chat")
+        info.task in ("chat-completion", "coding", "vision-language-chat")
         and info.runtime is not None
         and info.runtime.device_type == DeviceType.CPU
     )
@@ -81,7 +82,7 @@ def _select_downloadable_preferred_model(manager: FoundryLocalManager) -> IModel
 
 
 def _print_response_text(response) -> None:
-    """Print the text content of a chat response.
+    """Print only DEFAULT text from a chat response, skipping reasoning.
 
     Non-streaming chat responses yield ``MessageItem`` (the assistant turn)
     whose ``.parts`` hold the ``TextItem``\\ s; loose ``TextItem``\\ s may
@@ -90,9 +91,9 @@ def _print_response_text(response) -> None:
     for item in response:
         if isinstance(item, MessageItem):
             for part in item.parts:
-                if isinstance(part, TextItem):
+                if isinstance(part, TextItem) and part.type == TextItemType.DEFAULT:
                     print(part.text, end="")
-        elif isinstance(item, TextItem):
+        elif isinstance(item, TextItem) and item.type == TextItemType.DEFAULT:
             print(item.text, end="")
     print()
 
@@ -191,7 +192,7 @@ def main() -> None:
                 print("User: Tell me a short joke.")
                 print("Assistant: ", end="", flush=True)
                 for item in session.process_streaming_request(req):
-                    if isinstance(item, TextItem):
+                    if isinstance(item, TextItem) and item.type == TextItemType.DEFAULT:
                         print(item.text, end="", flush=True)
             print()  # newline after streaming
     finally:

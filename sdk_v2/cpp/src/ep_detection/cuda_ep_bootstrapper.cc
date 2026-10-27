@@ -32,7 +32,9 @@ fl::CudaEpPlatform HostCudaEpPlatform() {
   return fl::CudaEpPlatform::WindowsArm64;
 #elif defined(_WIN32) && defined(_M_X64)
   return fl::CudaEpPlatform::WindowsX64;
-#elif defined(__linux__)
+#elif defined(__linux__) && defined(__aarch64__)
+  return fl::CudaEpPlatform::LinuxArm64;
+#elif defined(__linux__) && defined(__x86_64__)
   return fl::CudaEpPlatform::LinuxX64;
 #else
   return fl::CudaEpPlatform::Unsupported;
@@ -43,7 +45,7 @@ fl::CudaEpPlatform HostCudaEpPlatform() {
 bool LoadGenAiCudaLibrary(
     const std::filesystem::path& path,
     const std::vector<std::pair<std::filesystem::path, std::shared_ptr<void>>>& loaded_libraries,
-    const fl::GenAiCudaLibraryLoader& loader,
+    const fl::CudaLibraryLoader& loader,
     std::pair<std::filesystem::path, std::shared_ptr<void>>& provisional_library, fl::ILogger& logger) {
   const auto absolute_path = std::filesystem::absolute(path).lexically_normal();
   const auto already_loaded =
@@ -62,13 +64,21 @@ bool LoadGenAiCudaLibrary(
   return true;
 }
 #elif defined(_WIN32)
-bool LoadGenAiCudaLibrary(const std::filesystem::path& path, const fl::GenAiCudaLibraryLoader& loader,
-                          std::shared_ptr<void>& loaded_library, fl::ILogger& logger) {
-  // Keep the library resident so NvTensorRTRTX can resolve it by name during model load.
-  if (!loaded_library) {
-    loaded_library = loader(path, logger);
+bool LoadCudaLibraries(const std::filesystem::path& provider_path, const fl::CudaLibraryLoader& loader,
+                       std::shared_ptr<void>& genai_library, std::shared_ptr<void>& provider_library,
+                       fl::ILogger& logger) {
+  if (!genai_library) {
+    genai_library = loader(provider_path.parent_path() / kGenAiCudaLibrary, logger);
   }
-  return loaded_library != nullptr;
+
+  if (!genai_library) return false;
+
+  // ORT's registration load reuses this module instead of resolving its imports with different search flags.
+  if (!provider_library) {
+    provider_library = loader(provider_path, logger);
+  }
+
+  return provider_library != nullptr;
 }
 #endif
 
@@ -80,7 +90,7 @@ CudaEpBootstrapper::CudaEpBootstrapper(std::string root_dir, EpRegistrationCallb
                                        EpBundleManifestFactory manifest_factory, EpArtifactDownloadFn download_fn
 #if defined(__linux__) || defined(_WIN32)
                                        ,
-                                       GenAiCudaLibraryLoader genai_cuda_library_loader
+                                       CudaLibraryLoader cuda_library_loader
 #endif
                                        )
     : register_ep_(std::move(register_ep)),
@@ -89,8 +99,12 @@ CudaEpBootstrapper::CudaEpBootstrapper(std::string root_dir, EpRegistrationCallb
       installer_(std::filesystem::path(root_dir), kLockFileName, "CUDA EP", std::move(download_fn))
 #if defined(__linux__) || defined(_WIN32)
       ,
-      genai_cuda_library_loader_(genai_cuda_library_loader ? std::move(genai_cuda_library_loader)
-                                                           : platform::LoadSharedLibrary)
+      cuda_library_loader_(cuda_library_loader ? std::move(cuda_library_loader)
+#if defined(_WIN32)
+                                               : platform::LoadSharedLibraryWithPathFallback)
+#else
+                                               : platform::LoadSharedLibrary)
+#endif
 #endif
 {
 }
@@ -124,7 +138,7 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallback&
   try {
     auto override_path = Utils::GetEnv(kCudaProviderOverrideEnv);
     if (override_path.has_value() && !override_path->empty()) {
-      std::filesystem::path provider_path = std::filesystem::absolute(*override_path);
+      const auto provider_path = std::filesystem::absolute(*override_path).lexically_normal();
 
       if (!std::filesystem::exists(provider_path)) {
         logger.Log(LogLevel::Warning, fmt::format("CUDA EP: {} set but file does not exist ({})",
@@ -140,12 +154,14 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallback&
 #if defined(__linux__)
       std::pair<std::filesystem::path, std::shared_ptr<void>> provisional_genai_cuda_library;
       if (!LoadGenAiCudaLibrary(provider_path.parent_path() / kGenAiCudaLibrary, genai_cuda_libraries_,
-                                genai_cuda_library_loader_, provisional_genai_cuda_library, logger)) {
+                                cuda_library_loader_, provisional_genai_cuda_library, logger)) {
         return false;
       }
 #elif defined(_WIN32)
-      if (!LoadGenAiCudaLibrary(bundle_dir_ / kGenAiCudaLibrary, genai_cuda_library_loader_,
-                                genai_cuda_library_, logger)) {
+      auto provisional_genai_cuda_library = genai_cuda_library_;
+      auto provisional_cuda_ep_library = cuda_ep_library_;
+      if (!LoadCudaLibraries(provider_path, cuda_library_loader_, provisional_genai_cuda_library,
+                             provisional_cuda_ep_library, logger)) {
         return false;
       }
 #endif
@@ -160,6 +176,9 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallback&
       if (provisional_genai_cuda_library.second) {
         genai_cuda_libraries_.push_back(std::move(provisional_genai_cuda_library));
       }
+#elif defined(_WIN32)
+      genai_cuda_library_ = std::move(provisional_genai_cuda_library);
+      cuda_ep_library_ = std::move(provisional_cuda_ep_library);
 #endif
 
       registered_ = true;
@@ -190,18 +209,20 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallback&
       return false;
     }
 
-    const auto provider_path = txn->provider_path();
+    const auto provider_path = std::filesystem::absolute(txn->provider_path()).lexically_normal();
     bundle_dir_ = txn->bin_dir();
 #if defined(__linux__)
     std::pair<std::filesystem::path, std::shared_ptr<void>> provisional_genai_cuda_library;
     if (!LoadGenAiCudaLibrary(txn->bin_dir() / kGenAiCudaLibrary, genai_cuda_libraries_,
-                              genai_cuda_library_loader_, provisional_genai_cuda_library, logger)) {
+                              cuda_library_loader_, provisional_genai_cuda_library, logger)) {
       txn->Rollback();
       return false;
     }
 #elif defined(_WIN32)
-    if (!LoadGenAiCudaLibrary(bundle_dir_ / kGenAiCudaLibrary, genai_cuda_library_loader_,
-                              genai_cuda_library_, logger)) {
+    auto provisional_genai_cuda_library = genai_cuda_library_;
+    auto provisional_cuda_ep_library = cuda_ep_library_;
+    if (!LoadCudaLibraries(provider_path, cuda_library_loader_, provisional_genai_cuda_library,
+                           provisional_cuda_ep_library, logger)) {
       txn->Rollback();
       return false;
     }
@@ -217,6 +238,9 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallback&
     if (provisional_genai_cuda_library.second) {
       genai_cuda_libraries_.push_back(std::move(provisional_genai_cuda_library));
     }
+#elif defined(_WIN32)
+    genai_cuda_library_ = std::move(provisional_genai_cuda_library);
+    cuda_ep_library_ = std::move(provisional_cuda_ep_library);
 #endif
 
     registered_ = true;
@@ -248,11 +272,7 @@ bool CudaEpBootstrapper::PrepareForModelLoad([[maybe_unused]] ILogger& logger) {
 bool CudaEpBootstrapper::HasNvidiaGpu(ILogger& logger) { return NvmlGpuDetector::HasNvidiaGpu(logger); }
 
 bool CudaEpBootstrapper::IsSupportedPlatform() {
-#if (defined(_WIN32) && (defined(_M_ARM64) || defined(_M_X64))) || defined(__linux__)
-  return true;
-#else
-  return false;
-#endif
+  return HostCudaEpPlatform() != CudaEpPlatform::Unsupported;
 }
 
 }  // namespace fl

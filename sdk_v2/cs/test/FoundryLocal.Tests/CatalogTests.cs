@@ -97,6 +97,39 @@ internal sealed class CatalogTests
     }
 
     [Test]
+    public async Task CodingModel_UsesChatSession()
+    {
+        var catalog = await FoundryLocalManager.Instance.GetCatalogAsync(CatalogType.Local);
+        var source = Path.Combine(Utils.GetRepoRoot(), "sdk_v2", "cpp", "test", "testdata", "tiny-paged-attention");
+        var modelId = $"cs-coding-{Guid.NewGuid():N}:1";
+        var metadata = new ModelInfoBuilder().SetStringProperty(ModelInfoPropertyKeys.Task, "coding");
+        var model = await catalog.RegisterModelAsync(source, modelId, metadata);
+        try
+        {
+            await Assert.That(model.Info.Task).IsEqualTo("coding");
+            await model.LoadAsync();
+            await Assert.That(() => new AudioSession(model)).Throws<ArgumentException>();
+            await Assert.That(() => new EmbeddingsSession(model)).Throws<ArgumentException>();
+            using var session = new ChatSession(model);
+            using var request = new Request();
+            request.AddItem(MessageItem.User("Write a function."));
+            request.SetOptions(new RequestOptions { Search = new SearchOptions { MaxOutputTokens = 4, Temperature = 0 } });
+            using var response = await session.ProcessRequestAsync(request);
+            await Assert.That(response.ItemCount).IsGreaterThan(0);
+            await Assert.That(session.TurnCount).IsEqualTo(1UL);
+        }
+        finally
+        {
+            if (await model.IsLoadedAsync())
+            {
+                await model.UnloadAsync();
+            }
+
+            await catalog.UnregisterModelAsync(modelId);
+        }
+    }
+
+    [Test]
     public async Task ByomStrings_RejectEmbeddedNulBeforeNativeDispatch()
     {
         var metadata = new ModelInfoBuilder();

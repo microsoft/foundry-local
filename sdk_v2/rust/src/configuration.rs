@@ -162,7 +162,9 @@ impl FoundryLocalConfig {
     /// Add a catalog URL with a per-catalog filter override.
     ///
     /// Behaves like [`catalog_url`](Self::catalog_url) but also records a filter
-    /// override that is applied to this catalog only.
+    /// override that is applied to this catalog only. Prefix catalog-v2
+    /// deployment-option values with `deploymentOptions=`. Unqualified values
+    /// retain the legacy `foundryLocal` tag semantics.
     pub fn catalog_url_with_filter(
         mut self,
         url: impl Into<String>,

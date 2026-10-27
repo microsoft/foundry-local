@@ -4,6 +4,9 @@ Native bindings around the Foundry Local **C++ SDK**, surfaced as an ESM npm pac
 (`foundry-local-sdk`). This README is the orientation guide for a developer who has just
 cloned the repo and wants to build, test, and debug the JS SDK.
 
+For a user-facing introduction to the inference API and cross-language examples, see
+[Inference with the Foundry Local SDK](../INFERENCING.md).
+
 > The architectural plan lives in [docs/PortJsToSdkV2.md](docs/PortJsToSdkV2.md). The
 > implementation conventions live in
 > [.github/instructions/js-sdk-v2.instructions.md](../../.github/instructions/js-sdk-v2.instructions.md)
@@ -191,6 +194,11 @@ them into `prebuilds/<platform>-<arch>/`. Three modes are supported:
 Set `FOUNDRY_LOCAL_SKIP_INSTALL=1` to skip the step entirely (e.g. when building from source
 and copying binaries via `copy-native:dev` instead).
 
+By default, HTTP mode tries NuGet.org first, then the Microsoft package feed proxy
+(`https://packagefeedproxy.microsoft.io/nuget/v3/index.json`), then the public ORT-Nightly Azure Artifacts feed.
+The proxy provides a fallback for networks that block direct NuGet.org access. Explicit feed overrides replace
+this list; `dotnet` and `nuget` modes receive the same default sources but control their own source selection.
+
 | Variable                          | Applies to          | Purpose                                                                                             |
 |------------------------------------|--------------------|-------------------------------------------------------------------------------------------------------|
 | `FOUNDRY_LOCAL_NUGET_MODE`         | all                | `http` (default), `dotnet`, or `nuget`. Any other value is rejected.                                  |
@@ -307,6 +315,9 @@ await localCatalog.unregisterModel(model.info.id);
 
 Model IDs use `<name>:<version>`. `registerModel()` and `unregisterModel()` dispatch file work off the event loop.
 Explicit `registerModelSync()` and `unregisterModelSync()` variants are available for legacy synchronous workflows.
+
+Models registered with task `coding` use the existing text-only `ChatSession` interface. See
+[coding models](../INFERENCING.md#coding-models) for capability and compatibility details.
 
 ---
 

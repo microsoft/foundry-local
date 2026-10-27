@@ -256,7 +256,7 @@ typedef enum flTensorDataType {
 #define FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR "publisher"                      ///< optional
 #define FOUNDRY_LOCAL_MODEL_PROP_LICENSE_STR "license"                          ///< optional
 #define FOUNDRY_LOCAL_MODEL_PROP_LICENSE_DESCRIPTION_STR "license_description"  ///< optional
-#define FOUNDRY_LOCAL_MODEL_PROP_TASK_STR "task"                                ///< e.g. "chat-completion", "text-generation"
+#define FOUNDRY_LOCAL_MODEL_PROP_TASK_STR "task"                                ///< e.g. "chat-completion", "coding"
 #define FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR "model_provider"            ///< e.g. "FoundryLocal"
 #define FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR "min_fl_version"            ///< minimum Foundry Local version required
 #define FOUNDRY_LOCAL_MODEL_PROP_PARENT_URI_STR "parent_uri"                    ///< optional
@@ -1003,7 +1003,12 @@ struct flConfigurationApi {
   FL_API_STATUS(SetModelCacheDir, _In_ flConfiguration* config, _In_ const char* dir);
   /// Optional. Add a catalog URL. Defaults to the Azure Foundry Local Catalog if none added.
   /// Multiple catalogs can be added. Catalogs priority is determined by the order they were added.
-  /// @param filter_override Optional filter string for this catalog. Pass NULL for no override.
+  /// Legacy Azure `https://ai.azure.com/.../ux/v1.0` URLs are unsupported. Compatible custom
+  /// catalog endpoints may use a different path.
+  /// @param filter_override Optional filter string for this catalog. Pass NULL, an empty string,
+  /// or `''` for the default `Foundry Local on Devices` deployment option. Prefix catalog-v2
+  /// deployment-option values with `deploymentOptions=`. Unqualified values retain the legacy
+  /// `foundryLocal` tag semantics.
   FL_API_STATUS(AddCatalogUrl, _In_ flConfiguration* config, _In_ const char* url,
                 _In_opt_ const char* filter_override);
   /// Optional. Azure region for the model registry download endpoint
@@ -1068,7 +1073,10 @@ struct flCatalogApi {
   /// Register a model in a local catalog without taking ownership of its assets.
   /// `model_path` must identify a model directory containing genai_config.json.
   /// `model_id` must use the canonical `<name>:<version>` format and be unique in the local catalog.
-  /// The metadata is copied; model identity and location are taken only from the explicit arguments.
+  /// `metadata.task` is required. The metadata is copied; model identity and location come from the explicit arguments.
+  /// Missing display name and modalities receive defaults, while context length comes from model.context_length, then
+  /// search.max_length, when positive. A caller-supplied provider remains the default Load override; when omitted,
+  /// runtime metadata remains unset and genai_config.json selects the provider during loading.
   FL_API_STATUS(RegisterModel, _In_ flCatalog* catalog, _In_ const char* model_path,
                 _In_ const char* model_id, _In_ const flModelInfo* metadata,
                 _Outptr_ flModel** out_model);
@@ -1096,6 +1104,7 @@ struct flModelApi {
 
   /* Model handle operations. Catalog owns Model instances. */
   FL_API_STATUS(IsCached, _In_ const flModel* model, _Out_ int* out_cached);
+  /// Returns the inference directory, which may be a revision subdirectory, not the complete cache root.
   /// Returned path string is owned by the model and valid until the owning manager is destroyed or the model's cache
   /// state changes via Download or RemoveFromCache.
   FL_API_STATUS(GetPath, _In_ const flModel* model, _Out_ const char** out_path);
@@ -1105,6 +1114,12 @@ struct flModelApi {
   FL_API_STATUS(IsLoaded, _In_ const flModel* model, _Out_ int* out_loaded);
   FL_API_STATUS(Load, _In_ flModel* model);
   FL_API_STATUS(Unload, _In_ flModel* model);
+  /// Removes completed or incomplete cached assets and download state for the selected model variant.
+  /// Does not require IsCached to be true. Unload the model and stop downloads before removal.
+  /// Applications sharing a cache must coordinate removal with other instances using the model: the download lock
+  /// does not protect cache-hit reads or models loaded in another process. A concurrent Download can report success
+  /// for a cached model while removal deletes its files, leaving that instance's cached state/path stale.
+  /// Externally registered models must be unregistered instead; their files are never deleted.
   FL_API_STATUS(RemoveFromCache, _In_ flModel* model);
 
   /* Variant support. A model may have multiple device-optimized variants.
@@ -1133,7 +1148,7 @@ struct flModelApi {
   flDeviceType FL_API_T(Info_GetDeviceType, _In_ const flModelInfo* info);
   /// Returns nullptr if not set.
   const char* FL_API_T(Info_GetExecutionProvider, _In_ const flModelInfo* info);
-  /// Task the model performs. "chat-completion", "automatic-speech-recognition", "vision-language-chat"
+  /// Model task: "chat-completion", "coding", "vision-language-chat", "embeddings", or "automatic-speech-recognition".
   const char* FL_API_T(Info_GetTask, _In_ const flModelInfo* info);
 
   /// Get prompt templates as key/value pairs. Returns nullptr if none.

@@ -57,7 +57,17 @@ static void RunToolLoop(ChatSession& session, Response response) {
 
     if (item.GetType() == FOUNDRY_LOCAL_ITEM_MESSAGE) {
       auto msg = item.GetMessage();
-      std::cout << "Assistant: " << msg.GetSimpleText() << "\n";
+      std::cout << "Assistant: ";
+      for (const Item& part : msg.parts) {
+        if (part.GetType() == FOUNDRY_LOCAL_ITEM_TEXT) {
+          auto text = part.GetText();
+          if (text.type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT) {
+            std::cout << text.text;
+          }
+        }
+      }
+
+      std::cout << "\n";
       return;
     }
 
@@ -122,9 +132,14 @@ void StreamingToolCalling(IModel& model) {
   // `<tool_call>...</tool_call>` markers as text.
   session.SetStreamingCallback([](Item item) -> int {
     switch (item.GetType()) {
-      case FOUNDRY_LOCAL_ITEM_TEXT:
-        std::cout << item.GetText().text << std::flush;
+      case FOUNDRY_LOCAL_ITEM_TEXT: {
+        auto text = item.GetText();
+        if (text.type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT) {
+          std::cout << text.text << std::flush;
+        }
+
         break;
+      }
 
       case FOUNDRY_LOCAL_ITEM_TOOL_CALL: {
         auto [call_id, tool_name, arguments] = item.GetToolCall();

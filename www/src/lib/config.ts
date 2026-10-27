@@ -77,7 +77,7 @@ export const features: Feature[] = [
 	{
 		icon: Code,
 		title: 'Native SDKs',
-		description: 'Start in Python or JavaScript; ship across C# and Rust too',
+		description: 'Build in C, C++, C#, JavaScript, Python, or Rust on the same native runtime',
 		size: 'medium'
 	},
 	{

@@ -5,10 +5,17 @@
 #include "utils.h"
 
 #include <functional>
+#include <string_view>
 
 namespace fl {
 
 namespace {
+
+constexpr std::string_view kLegacyAzureCatalogPrefix = "https://ai.azure.com/";
+constexpr std::string_view kLegacyAzureCatalogPath = "/ux/v1.0";
+constexpr const char* kCatalogUrlMigrationMessage =
+  "Configuration: legacy Azure /ux/v1.0 catalog URLs are unsupported; migrate to "
+  "'https://api.catalog.azureml.ms/asset-gallery/v1.0/models'";
 
 /// Replace all occurrences of `placeholder` with `value` in `str`.
 void ReplacePlaceholder(std::string& str, const std::string& placeholder, const std::string& value) {
@@ -36,16 +43,30 @@ std::string ExpandPlaceholders(const std::string& path,
 
 }  // namespace
 
+void ValidateCatalogUrl(const std::string& url) {
+  if (url.empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Configuration: catalog URL must not be empty");
+  }
+
+  const auto suffix = url.find_first_of("?#");
+  auto normalized_url = ToLower(url.substr(0, suffix));
+  while (!normalized_url.empty() && normalized_url.back() == '/') {
+    normalized_url.pop_back();
+  }
+
+  if (normalized_url.starts_with(kLegacyAzureCatalogPrefix) &&
+      normalized_url.ends_with(kLegacyAzureCatalogPath)) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, kCatalogUrlMigrationMessage);
+  }
+}
+
 void Configuration::Validate() {
   if (app_name.empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Configuration: app_name must not be empty");
   }
 
-  // Validate catalog URLs are non-empty strings if present
   for (const auto& [url, filter] : catalog_urls) {
-    if (url.empty()) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Configuration: catalog URL must not be empty");
-    }
+    ValidateCatalogUrl(url);
   }
 
   // Validate web service endpoints are non-empty strings if present

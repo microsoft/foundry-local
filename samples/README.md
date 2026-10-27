@@ -13,3 +13,5 @@ Explore complete working examples that demonstrate how to use Foundry Local — 
 | [**Python**](python/) | 14 | Python samples using the OpenAI-compatible API, including chat, embeddings, audio transcription, LangChain integration, tool calling, web server, Responses API, tutorials, and WinML EP verification. |
 | [**Rust**](rust/) | 12 | Rust SDK samples including native chat, embeddings, audio transcription, tool calling, web server, vision via Responses API, tutorials, and WinML EP verification. |
 | [**C++**](cpp/) | 1 | C++ sample for live audio transcription. |
+
+Additional [C++ SDK examples](../sdk_v2/cpp/examples/) cover chat completions, tool calling, embeddings, and real-time audio transcription. See the [C/C++ SDK guide](../sdk_v2/cpp/README.md#install-from-nuget) for NuGet installation and integration instructions, or the [C API guide](../sdk_v2/cpp/README.md#c-api) to integrate the runtime directly from C.

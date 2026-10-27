@@ -168,6 +168,7 @@ def shutdown(*_args):
 
     session.stop()
     read_thread.join(timeout=5)
+    session.close()
     model.unload()
     print("✓ Done")
     sys.exit(0)

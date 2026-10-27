@@ -253,6 +253,10 @@ void MapRequestParameters(const ChatCompletionRequest& req, Request& session_req
     session_request.options["seed"] = std::to_string(*req.seed);
   }
 
+  if (req.parallel_tool_calls.has_value()) {
+    session_request.options["parallel_tool_calls"] = *req.parallel_tool_calls ? "true" : "false";
+  }
+
   // max_completion_tokens (current) and max_tokens (deprecated) → max_output_tokens
   if (req.max_completion_tokens.has_value()) {
     session_request.options["max_output_tokens"] = std::to_string(*req.max_completion_tokens);

@@ -2,8 +2,8 @@
 #
 # Supports both linux-x64 (pool: onnxruntime-Ubuntu2404-AMD-CPU) and
 # linux-arm64 (pool: onnxruntime-linux-ARM64-CPU-2019) via the `arch`
-# parameter. Native compilation runs in the matching manylinux_2_28
-# container so all downstream packages have a glibc 2.28 baseline.
+# parameter. Native compilation runs in a matching manylinux container:
+# glibc 2.28 for x64 and glibc 2.34 for ARM64.
 
 parameters:
 - name: arch
@@ -22,6 +22,8 @@ parameters:
 
 steps:
 
+- template: steps-prefetch-vcpkg.yml
+
 - task: PipAuthenticate@1
   displayName: 'Authenticate AIFoundryLocal_PublicPackages for pip'
   inputs:
@@ -31,16 +33,18 @@ steps:
     set -euo pipefail
     case '${{ parameters.arch }}' in
       x64)
+        policy='2.28'
         image='quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb'
         ;;
       arm64)
-        image='quay.io/pypa/manylinux_2_28_aarch64@sha256:29a6ceb78de5b00494e6e7456a72782a4cb54238de102e7491d15fe47789b4d1'
+        policy='2.34'
+        image='quay.io/pypa/manylinux_2_34_aarch64@sha256:c6a53d1238a6610d465f415a2a81ccc862eec0bff60fe44dd907fa015168e703'
         ;;
       *) echo "Unsupported architecture: ${{ parameters.arch }}" >&2; exit 1 ;;
     esac
     docker version
     docker pull "$image"
-    build_image="foundry-local-manylinux-2.28:${{ parameters.arch }}"
+    build_image="foundry-local-manylinux-${policy}:${{ parameters.arch }}"
     image_id_file="$(Build.BinariesDirectory)/manylinux-${{ parameters.arch }}.iid"
     docker build \
       --build-arg "BASE_IMAGE=$image" \
@@ -50,7 +54,7 @@ steps:
       "$(Build.SourcesDirectory)/.pipelines/docker/manylinux"
     IFS= read -r image_id < "$image_id_file" || [ -n "$image_id" ]
     echo "##vso[task.setvariable variable=manylinuxImage]$image_id"
-  displayName: 'Prepare manylinux 2.28 build image'
+  displayName: 'Prepare architecture-specific manylinux build image'
 
 - template: steps-prefetch-nuget.yml
   parameters:
@@ -79,6 +83,7 @@ steps:
       --volume "$(Build.BinariesDirectory):$(Build.BinariesDirectory)" \
       --env "HOME=$home_dir" \
       --env "VCPKG_ROOT=$(Build.BinariesDirectory)/vcpkg" \
+      --env "VCPKG_DOWNLOADS=$(Build.BinariesDirectory)/vcpkg-downloads" \
       --env "NUGET_CACHE=$(Build.BinariesDirectory)/nuget_packages" \
       --env "SDK_VERSION=$version" \
       --env PIP_INDEX_URL \
@@ -100,9 +105,15 @@ steps:
             "GENAI_FETCH_URL=$NUGET_CACHE/genai.zip" \
             "ORT_GENAI_VERSION=${{ parameters.genaiVersion }}" \
             "ORT_FETCH_URL=$NUGET_CACHE/ort.zip" \
-            "FOUNDRY_LOCAL_VERSION_STRING=$SDK_VERSION"
+            "FOUNDRY_LOCAL_PACKAGE_VERSION=$SDK_VERSION"
+        # Model-free loader checks run on every Linux build, even when the
+        # model-dependent suite is disabled for this lane.
+        TF_BUILD=true "$HOME/venv/bin/ctest" \
+          --test-dir "build/Linux/${{ parameters.buildConfig }}" \
+          --build-config "${{ parameters.buildConfig }}" \
+          --tests-regex "^elf-" --no-tests=error --output-on-failure
       '
-  displayName: 'Configure and build in manylinux 2.28'
+  displayName: 'Configure and build in manylinux'
 
 - ${{ if eq(parameters.runTests, true) }}:
   - bash: |
@@ -124,7 +135,7 @@ steps:
           --config ${{ parameters.buildConfig }} \
           --cmake_path "$(Build.BinariesDirectory)/manylinux-home/venv/bin/cmake" \
           --ctest_path "$(Build.BinariesDirectory)/manylinux-home/venv/bin/ctest"
-    displayName: 'Run tests in manylinux 2.28'
+    displayName: 'Run tests in manylinux'
 
 - bash: |
     echo "=== vcpkg buildtrees error logs ==="

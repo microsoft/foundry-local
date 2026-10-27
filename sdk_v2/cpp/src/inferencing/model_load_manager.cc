@@ -6,6 +6,7 @@
 #include "inferencing/generative/genai_config.h"
 #include "inferencing/generative/genai_model_instance.h"
 #include "platform/path.h"
+#include "util/path_safety.h"
 #include "utils.h"
 
 #include <algorithm>
@@ -130,6 +131,18 @@ bool ModelLoadManager::HasEP(const std::string& ep_name) const {
   }
 
   return false;
+}
+
+void ModelLoadManager::RunWithUnloadedModelsInDirectory(std::string_view directory,
+                                                        const std::function<void()>& operation) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (const auto& [id, model] : loaded_models_) {
+    if (IsPathWithinDirectory(model->ModelPath(), std::filesystem::path(directory))) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot remove a loaded model from cache; unload it first: " + id);
+    }
+  }
+
+  operation();
 }
 
 // ---------------------------------------------------------------------------

@@ -92,8 +92,16 @@
 					>
 						<Rocket class="size-7" aria-hidden="true" />
 					</div>
-					<h3 id="sdk-lifecycle-title" class="mb-2 text-2xl font-bold text-gray-900 dark:text-white">One SDK lifecycle</h3>
-					<p id="sdk-lifecycle-description" class="mb-6 text-lg text-gray-600 dark:text-neutral-400">
+					<h3
+						id="sdk-lifecycle-title"
+						class="mb-2 text-2xl font-bold text-gray-900 dark:text-white"
+					>
+						One SDK lifecycle
+					</h3>
+					<p
+						id="sdk-lifecycle-description"
+						class="mb-6 text-lg text-gray-600 dark:text-neutral-400"
+					>
 						Initialize the manager, choose a model alias, download and cache it, load it, then call
 						chat or audio clients from your app.
 					</p>
@@ -262,7 +270,10 @@
 					>
 						<Wifi class="size-6" aria-hidden="true" />
 					</div>
-					<h3 id="offline-runtime-title" class="mb-2 text-xl font-semibold text-gray-900 dark:text-white">
+					<h3
+						id="offline-runtime-title"
+						class="mb-2 text-xl font-semibold text-gray-900 dark:text-white"
+					>
 						Offline app runtime
 					</h3>
 					<p id="offline-runtime-description" class="text-gray-600 dark:text-neutral-400">
@@ -394,30 +405,46 @@
 					>
 						<Code class="size-6" aria-hidden="true" />
 					</div>
-					<h3 id="native-sdks-title" class="mb-2 text-xl font-semibold text-gray-900 dark:text-white">Native SDKs</h3>
+					<h3
+						id="native-sdks-title"
+						class="mb-2 text-xl font-semibold text-gray-900 dark:text-white"
+					>
+						Native SDKs
+					</h3>
 					<p id="native-sdks-description" class="text-gray-600 dark:text-neutral-400">
-						Start in Python or JavaScript; ship production apps in C# and Rust too.
+						Build in C, C++, C#, JavaScript, Python, or Rust. The C++ runtime and stable C API power
+						the language bindings; C++ apps can use a header-only C++17 wrapper.
 					</p>
 				</div>
 				<!-- Language icons with staggered pop animation -->
-				<div class="absolute right-4 bottom-4 flex gap-2">
+				<div class="absolute right-4 bottom-4 flex gap-1">
 					<div
-						class="lang-badge lang-1 flex size-8 items-center justify-center rounded-lg bg-blue-500/10 text-xs font-bold text-blue-600 dark:text-blue-400"
+						class="lang-badge lang-5 flex size-7 items-center justify-center rounded-lg bg-blue-500/10 text-xs font-bold text-blue-600 dark:text-blue-400"
+					>
+						C
+					</div>
+					<div
+						class="lang-badge lang-6 flex size-7 items-center justify-center rounded-lg bg-blue-500/10 text-xs font-bold text-blue-600 dark:text-blue-400"
+					>
+						C++
+					</div>
+					<div
+						class="lang-badge lang-1 flex size-7 items-center justify-center rounded-lg bg-blue-500/10 text-xs font-bold text-blue-600 dark:text-blue-400"
 					>
 						PY
 					</div>
 					<div
-						class="lang-badge lang-2 flex size-8 items-center justify-center rounded-lg bg-yellow-500/10 text-xs font-bold text-yellow-700 dark:text-yellow-400"
+						class="lang-badge lang-2 flex size-7 items-center justify-center rounded-lg bg-yellow-500/10 text-xs font-bold text-yellow-700 dark:text-yellow-400"
 					>
 						JS
 					</div>
 					<div
-						class="lang-badge lang-3 flex size-8 items-center justify-center rounded-lg bg-purple-500/10 text-xs font-bold text-purple-600 dark:text-purple-400"
+						class="lang-badge lang-3 flex size-7 items-center justify-center rounded-lg bg-purple-500/10 text-xs font-bold text-purple-600 dark:text-purple-400"
 					>
 						C#
 					</div>
 					<div
-						class="lang-badge lang-4 flex size-8 items-center justify-center rounded-lg bg-orange-500/10 text-xs font-bold text-orange-700 dark:text-orange-400"
+						class="lang-badge lang-4 flex size-7 items-center justify-center rounded-lg bg-orange-500/10 text-xs font-bold text-orange-700 dark:text-orange-400"
 					>
 						RS
 					</div>
@@ -437,6 +464,12 @@
 					}
 					.lang-4 {
 						animation-delay: 0.6s;
+					}
+					.lang-5 {
+						animation-delay: 0.8s;
+					}
+					.lang-6 {
+						animation-delay: 1s;
 					}
 					@keyframes langPop {
 						0%,
@@ -465,7 +498,10 @@
 					>
 						<Bot class="size-6" aria-hidden="true" />
 					</div>
-					<h3 id="native-rest-title" class="mb-2 text-xl font-semibold text-gray-900 dark:text-white">
+					<h3
+						id="native-rest-title"
+						class="mb-2 text-xl font-semibold text-gray-900 dark:text-white"
+					>
 						Native first, REST when needed
 					</h3>
 					<p id="native-rest-description" class="text-gray-600 dark:text-neutral-400">
@@ -528,7 +564,12 @@
 					>
 						<Shield class="size-6" aria-hidden="true" />
 					</div>
-					<h3 id="data-privacy-title" class="mb-2 text-xl font-semibold text-gray-900 dark:text-white">Data Privacy</h3>
+					<h3
+						id="data-privacy-title"
+						class="mb-2 text-xl font-semibold text-gray-900 dark:text-white"
+					>
+						Data Privacy
+					</h3>
 					<p id="data-privacy-description" class="text-gray-600 dark:text-neutral-400">
 						Prompts, audio, and responses stay on the user's device.
 					</p>

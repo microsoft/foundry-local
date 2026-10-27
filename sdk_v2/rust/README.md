@@ -2,6 +2,9 @@
 
 The Foundry Local Rust SDK provides an async Rust interface for running AI models locally on your machine. Discover, download, load, and run inference — all without cloud dependencies.
 
+For the v2 typed inference API, session state, and streaming examples across languages,
+see [Inference with the Foundry Local SDK](../INFERENCING.md).
+
 > **v2 — built on the Foundry Local C++ engine.** This is the v2 binding, layered on the
 > `foundry_local` C ABI (the same native engine used by the v2 Python and C# SDKs). Its public
 > API is **fully backwards-compatible** with the v1 Rust SDK (`sdk/rust`) — existing code
@@ -228,8 +231,7 @@ let mut metadata = local_catalog.create_model_info()?;
 metadata
     .set_string_property("task", "chat-completion")?
     .set_string_property("device_type", "CPU")?
-    .set_string_property("execution_provider", "CPUExecutionProvider")?
-    .set_int_property("context_length", 4096)?;
+    .set_string_property("execution_provider", "CPUExecutionProvider")?;
 
 let model = local_catalog
     .register_model("C:/models/my-model", "my-model:1", metadata)
@@ -241,6 +243,9 @@ local_catalog.unregister_model(model.id()).await?;
 
 The existing `manager.catalog()` accessor remains the default public catalog. Use
 `manager.get_catalog(CatalogType::Public)` when explicit catalog selection is preferred.
+
+Models registered with task `coding` use the existing text-only `ChatSession` interface. See
+[coding models](../INFERENCING.md#coding-models) for capability and compatibility details.
 
 ### Model Lifecycle
 
@@ -596,6 +601,11 @@ When `FOUNDRY_LOCAL_RUNTIME_VERSION` is set, the NuGet acquisition path supports
   `NuGet.Config` or a credential provider supported by the .NET SDK.
 - **`nuget`** — runs `nuget install` once per package. Use this when authentication depends on a
   NuGet or Visual Studio credential provider that the standalone NuGet CLI can host.
+
+By default, HTTP mode tries NuGet.org first, then the Microsoft package feed proxy
+(`https://packagefeedproxy.microsoft.io/nuget/v3/index.json`), then the public ORT-Nightly Azure Artifacts feed.
+The proxy provides a fallback for networks that block direct NuGet.org access. Explicit feed overrides replace
+this list; `dotnet` and `nuget` modes receive the same default sources but control their own source selection.
 
 | Variable | Applies to | Purpose |
 |----------|------------|---------|

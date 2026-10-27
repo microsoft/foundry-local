@@ -12,6 +12,7 @@
 #include "exception.h"
 #include "logger.h"
 #include "model.h"
+#include "telemetry/telemetry_request_metrics.h"
 #include "items/message_item.h"
 #include "items/text_item.h"
 #include "items/tool_result_item.h"
@@ -21,6 +22,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <algorithm>
 #include <chrono>
 #include <future>
 #include <memory>
@@ -611,6 +613,48 @@ bool WaitUntil(Pred pred, std::chrono::milliseconds timeout) {
 
 }  // namespace
 
+TEST(SessionTaskValidationTest, CodingRejectsImageAndAudioDespiteModalityMetadata) {
+  fl::test::FakeServiceBindings svc;
+  ModelInfo info;
+  info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "coding");
+  info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, "text,image,audio");
+  auto model = Model::FromModelInfo(std::move(info), "", svc.download_manager, svc.model_load_manager);
+  TelemetryLogger telemetry{"test", fl::test::NullLog()};
+  CompletingSession session(model, fl::test::NullLog(), telemetry);
+
+  for (const auto type : {FOUNDRY_LOCAL_ITEM_IMAGE, FOUNDRY_LOCAL_ITEM_AUDIO}) {
+    for (const bool nested : {false, true}) {
+      SCOPED_TRACE(Item::TypeName(type));
+      SCOPED_TRACE(nested);
+      Request request;
+      auto item = Item::Create(type);
+      if (nested) {
+        std::vector<std::unique_ptr<Item>> parts;
+        parts.push_back(std::move(item));
+        request.AddOwnedItem(std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_USER, std::move(parts)));
+      } else {
+        request.AddOwnedItem(std::move(item));
+      }
+
+      Response response;
+      try {
+        session.ProcessRequest(request, response);
+        FAIL() << "Expected coding model to reject non-text input";
+      } catch (const fl::Exception& e) {
+        EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+        EXPECT_NE(std::string(e.what()).find("input is not supported by model task 'coding'"), std::string::npos);
+      }
+    }
+  }
+
+  EXPECT_EQ(session.ProcessCount(), 0u);
+  Request request;
+  request.AddOwnedItem(std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_USER, "Write a function."));
+  Response response;
+  EXPECT_NO_THROW(session.ProcessRequest(request, response));
+  EXPECT_EQ(session.ProcessCount(), 1u);
+}
+
 TEST(SessionManagerCancelTest, CancelAllCancelsInFlightRequestsOnEverySession) {
   fl::test::FakeServiceBindings svc;
   Model catalog_model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);
@@ -999,6 +1043,17 @@ TEST_F(SessionTelemetryTest, MovedSessionRetainsPendingContextAndCancellationLat
 
 TEST_F(SessionTelemetryTest, TypedAndJsonMessagesAreCountedWithoutCountingTransportItems) {
   UsageTestSession session(model, telemetry);
+  session.process = [](const Request& request, Response& response) {
+    for (const auto* item : request.items) {
+      if (item != nullptr && item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
+        const auto& text = static_cast<const TextItem&>(*item);
+        if (text.text_type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON) {
+          response.openai_json_message_count = TelemetryInternal::CountParsedJsonMessages(
+              nlohmann::json::parse(text.text));
+        }
+      }
+    }
+  };
   session.execution_provider = "CUDAExecutionProvider";
   session.SetStreamingCallback([](flStreamingCallbackData, void*) { return 0; });
   Request request;
@@ -1016,6 +1071,93 @@ TEST_F(SessionTelemetryTest, TypedAndJsonMessagesAreCountedWithoutCountingTransp
   EXPECT_EQ(telemetry.usages[0].num_messages, 4u);
   EXPECT_EQ(telemetry.usages[0].execution_provider, "CUDAExecutionProvider");
   EXPECT_TRUE(telemetry.usages[0].stream);
+}
+
+TEST_F(SessionTelemetryTest, ReusesLargeJsonMessageCountWithoutInspectingBodyAgain) {
+  UsageTestSession session(model, telemetry);
+  Request request;
+  const auto json = nlohmann::json{
+      {"messages", nlohmann::json::array({
+                       {{"role", "user"}, {"content", std::string(1024 * 1024, 'x')}},
+                       {{"role", "assistant"}, {"content", "reply"}},
+                   })}};
+  auto item = std::make_unique<TextItem>(json.dump(), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON);
+  auto* input = item.get();
+  request.AddOwnedItem(std::move(item));
+  int parse_count = 0;
+  session.process = [input, &parse_count](const Request&, Response& response) {
+    response.openai_json_message_count = nlohmann::json::parse(input->text).at("messages").size();
+    ++parse_count;
+    input->text = "This consumed payload must not be parsed again by telemetry";
+  };
+
+  Response response;
+  session.ProcessRequest(request, response);
+  ASSERT_EQ(telemetry.usages.size(), 1u);
+  EXPECT_EQ(telemetry.usages[0].num_messages, 2u);
+  EXPECT_EQ(telemetry.usages[0].total_tokens, 11);
+  EXPECT_EQ(response.openai_json_message_count, 2u);
+  EXPECT_EQ(parse_count, 1);
+
+  session.process = {};
+  Request next_request;
+  next_request.AddOwnedItem(std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_USER, "next turn"));
+  session.ProcessRequest(next_request, response);
+  ASSERT_EQ(telemetry.usages.size(), 2u);
+  EXPECT_EQ(telemetry.usages[1].num_messages, 1u);
+  EXPECT_EQ(response.openai_json_message_count, 0u);
+}
+
+TEST_F(SessionTelemetryTest, ParsedMessageCountsRemainRequestLocalDuringConcurrentUsage) {
+  UsageTestSession session(model, telemetry, true);
+  std::atomic<int> admitted{0};
+  std::promise<void> both_admitted;
+  const auto ready = both_admitted.get_future().share();
+  session.process = [&admitted, &both_admitted, ready](const Request& request, Response& response) {
+    const auto& text = static_cast<const TextItem&>(*request.items.front());
+    response.openai_json_message_count =
+        TelemetryInternal::CountParsedJsonMessages(nlohmann::json::parse(text.text));
+    if (admitted.fetch_add(1) == 1) {
+      both_admitted.set_value();
+    }
+    if (ready.wait_for(std::chrono::seconds(10)) != std::future_status::ready) {
+      throw std::runtime_error("Concurrent request admission timed out");
+    }
+  };
+
+  Request first;
+  Request second;
+  first.AddOwnedItem(std::make_unique<TextItem>(R"({"messages":[{}]})",
+                                                FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+  second.AddOwnedItem(std::make_unique<TextItem>(R"({"messages":[{},{},{}]})",
+                                                 FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+  Response first_response;
+  Response second_response;
+  auto first_run = std::async(std::launch::async, [&] { session.ProcessRequest(first, first_response); });
+  auto second_run = std::async(std::launch::async, [&] { session.ProcessRequest(second, second_response); });
+  EXPECT_NO_THROW(first_run.get());
+  EXPECT_NO_THROW(second_run.get());
+  ASSERT_EQ(telemetry.usages.size(), 2u);
+  std::vector<uint64_t> counts{telemetry.usages[0].num_messages, telemetry.usages[1].num_messages};
+  std::sort(counts.begin(), counts.end());
+  EXPECT_EQ(counts, (std::vector<uint64_t>{1, 3}));
+  EXPECT_EQ(first_response.openai_json_message_count, 1u);
+  EXPECT_EQ(second_response.openai_json_message_count, 3u);
+}
+
+TEST_F(SessionTelemetryTest, InvalidParsedMetricsDoNotChangeInferenceResponse) {
+  UsageTestSession session(model, telemetry);
+  session.process = [](const Request&, Response& response) {
+    response.openai_json_message_count = TelemetryInternal::CountParsedJsonMessages({{"messages", "invalid"}});
+  };
+  Request request;
+  Response response;
+  EXPECT_NO_THROW(session.ProcessRequest(request, response));
+  EXPECT_EQ(response.usage.total_tokens, 11);
+  EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
+  EXPECT_TRUE(telemetry.usages.empty());
+  ASSERT_EQ(telemetry.actions.size(), 1u);
+  EXPECT_EQ(telemetry.actions[0].status, ActionStatus::kSuccess);
 }
 
 TEST_F(SessionTelemetryTest, UsageSinkFailureDoesNotChangeResponseOrSuppressAdditionalUsage) {

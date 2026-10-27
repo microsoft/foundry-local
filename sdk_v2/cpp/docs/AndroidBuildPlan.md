@@ -64,6 +64,7 @@ Both triplets use:
 | `spdlog`                  | Builds for Android   | Uses `android_sink_mt` for logcat output       |
 | `gtest`                   | Builds for Android   | No changes needed                              |
 | `azure-storage-blobs-cpp` | Works via vcpkg      | Pulls in libcurl + OpenSSL (statically linked) |
+| `cpp-client-telemetry`    | Native curl transport | Overlay declares curl/OpenSSL dependencies and bundles minimal SQLite |
 | `oatpp`                   | Excluded on Android  | Web service disabled via CMake `if(ANDROID)`   |
 | OpenSSL                   | vcpkg builds 3.x     | Unversioned `.so` works natively on Android    |
 
@@ -309,7 +310,10 @@ Java bindings are planned but cleanly deferred. The infrastructure is entirely a
 - [x] ~~**Logcat capture**~~ — `android.py` clears logcat before tests and dumps SDK/crash logs after.
 - [x] ~~**Certificate checker utility**~~ — `ssl_cert_checker.h/.cc` validates `SSL_CERT_FILE` at SDK
   init time (Android debug builds only) using OpenSSL's X509 APIs.
-- [ ] **CI pipeline** — ADO YAML pipeline for automated Android builds and emulator tests.
+- [ ] **CI pipeline** — Tracked in [#1174](https://github.com/microsoft/foundry-local/issues/1174), deferred
+  from #1153. Add arm64-v8a/x86_64 configure/build coverage for telemetry's curl/OpenSSL dependency graph,
+  verify the two public ELF exports (no curl exports) and `DF_1_NODELETE`, and run model-free loader/thread-cleanup
+  checks on the x86_64 emulator.
 
 ---
 

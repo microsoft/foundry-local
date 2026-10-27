@@ -33,16 +33,17 @@
   ],
   "normalizer": null,
   "pre_tokenizer": {
-    "type": "Split",
-    "pattern": {
-      "String": ""
-    },
-    "behavior": "Isolated",
-    "invert": false
+    "type": "ByteLevel",
+    "add_prefix_space": false,
+    "trim_offsets": true,
+    "use_regex": false
   },
   "post_processor": null,
   "decoder": {
-    "type": "Fuse"
+    "type": "ByteLevel",
+    "add_prefix_space": true,
+    "trim_offsets": true,
+    "use_regex": true
   },
   "model": {
     "type": "BPE",
@@ -57,7 +58,7 @@
       "\ue000": 0,
       "\ue001": 1,
       "\ue002": 2,
-      " ": 3,
+      "\u0120": 3,
       "!": 4,
       "\"": 5,
       "#": 6,
@@ -151,7 +152,8 @@
       "{": 94,
       "|": 95,
       "}": 96,
-      "~": 97
+      "~": 97,
+      "\u010a": 98
     },
     "merges": []
   }

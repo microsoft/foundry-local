@@ -19,6 +19,7 @@ namespace fl {
 
 class ILogger;
 class ITelemetry;
+class ModelLoadManager;
 
 /// Orchestrates the full model download flow:
 /// 1. Compute local cache path
@@ -75,6 +76,12 @@ class DownloadManager {
 
   /// Get the local cache path for a model. Returns empty string if not determinable.
   std::string GetModelCachePath(const ModelInfo& info) const;
+
+  /// Remove completed or incomplete model assets and download state.
+  /// local_path is the scanner-discovered inference directory, if available.
+  /// Rejects removal while a download owns the model's cross-process lock.
+  /// Checks loaded models against the resolved deletion subtree and excludes new loads during deletion.
+  void RemoveModelFromCache(const ModelInfo& info, const std::string& local_path, ModelLoadManager& model_load_manager);
 
   /// Get the cache directory.
   const std::string& GetCacheDirectory() const { return cache_directory_; }

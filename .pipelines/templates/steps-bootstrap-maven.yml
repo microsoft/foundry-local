@@ -1,8 +1,10 @@
-# Install a pinned Maven version for self-hosted agents that do not provide it.
+# Install pinned Maven and configure the authenticated Maven Central upstream mirror.
 
 steps:
 - task: PowerShell@2
   displayName: 'Bootstrap Maven 3.9.9'
+  env:
+    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
   inputs:
     targetType: inline
     pwsh: true
@@ -17,10 +19,16 @@ steps:
       $maven = Join-Path $mavenHome $mavenCommand
 
       if (-not (Test-Path -LiteralPath $maven -PathType Leaf)) {
+        if ([string]::IsNullOrWhiteSpace($env:SYSTEM_ACCESSTOKEN)) {
+          throw 'System.AccessToken is required to download Maven from the Azure Artifacts feed.'
+        }
+
         New-Item -ItemType Directory -Force -Path $tools | Out-Null
-        $uri = "https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/$version/" +
+        $uri = 'https://pkgs.dev.azure.com/aiinfra/AIFoundryLocal/_packaging/' +
+          "AIFoundryLocal_PublicPackages/maven/v1/org/apache/maven/apache-maven/$version/" +
           "apache-maven-$version-bin.zip"
-        Invoke-WebRequest $uri -OutFile $archive
+        $headers = @{ Authorization = "Bearer $env:SYSTEM_ACCESSTOKEN" }
+        Invoke-WebRequest -Uri $uri -Headers $headers -OutFile $archive
 
         $expected = '8beac8d11ef208f1e2a8df0682b9448a9a363d2ad13ca74af43705549e72e74' +
           'c9378823bf689287801cbbfc2f6ea9596201d19ccacfdfb682ee8a2ff4c4418ba'
@@ -37,5 +45,26 @@ steps:
         }
       }
 
+      $settings = Join-Path $tools 'settings.xml'
+      @'
+      <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">
+        <servers>
+          <server>
+            <id>AIFoundryLocal_PublicPackages</id>
+            <username>AzureDevOps</username>
+            <password>${env.SYSTEM_ACCESSTOKEN}</password>
+          </server>
+        </servers>
+        <mirrors>
+          <mirror>
+            <id>AIFoundryLocal_PublicPackages</id>
+            <url>https://pkgs.dev.azure.com/aiinfra/AIFoundryLocal/_packaging/AIFoundryLocal_PublicPackages/maven/v1</url>
+            <mirrorOf>*</mirrorOf>
+          </mirror>
+        </mirrors>
+      </settings>
+      '@ | Set-Content -LiteralPath $settings -Encoding utf8
+
       Write-Host "##vso[task.setvariable variable=foundryMavenHome]$mavenHome"
+      Write-Host "##vso[task.setvariable variable=foundryMavenSettings]$settings"
       Write-Host "##vso[task.prependpath]$(Join-Path $mavenHome 'bin')"

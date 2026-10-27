@@ -246,7 +246,7 @@ public class FoundryLocalManager : IDisposable
         _config.Validate();
 
         // Ensure the native DLL resolver is registered before any P/Invoke calls.
-        DllLoader.Initialize();
+        DllLoader.Initialize(_logger);
 
         await Task.Run(() =>
         {

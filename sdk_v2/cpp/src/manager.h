@@ -159,7 +159,9 @@ class Manager {
   Model CreateLocalModel(ModelInfo info, std::string local_path);
 
   static std::mutex s_mutex_;
-  static std::unique_ptr<Manager> s_instance_;
+  struct InstanceOwner;
+  static InstanceOwner* s_owner_;
+  static bool s_destroyed_;
 };
 
 }  // namespace fl

@@ -156,6 +156,7 @@ class ReasoningStreamSplitter {
   struct Segment {
     std::string text;
     flTextItemType type;
+    std::optional<int32_t> token_id = std::nullopt;
   };
 
   /// @param starts_inside_reasoning  Seed the stream as already inside a reasoning block, for prompts whose template
@@ -184,7 +185,7 @@ class ReasoningStreamSplitter {
         return {};
       }
 
-      return {{std::move(decoded_text), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT}};
+      return {{std::move(decoded_text), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT, token_id}};
     }
 
     if (!HasTokenMarkers()) {
@@ -223,6 +224,8 @@ class ReasoningStreamSplitter {
   /// Whether the splitter is currently inside a reasoning block. Used by callers that want to make
   /// downstream decisions (e.g. suppressing chunks) without inspecting segment types.
   bool InsideReasoning() const noexcept { return inside_reasoning_; }
+
+  void UseTokenBoundariesOnly() noexcept { token_boundaries_only_ = HasTokenMarkers(); }
 
   /// Number of generated content tokens classified as reasoning. Boundary marker tokens are excluded.
   int ReasoningTokenCount() const noexcept { return reasoning_token_count_; }
@@ -325,6 +328,21 @@ class ReasoningStreamSplitter {
       auto token = std::move(pending_tokens_.front());
       pending_tokens_.erase(pending_tokens_.begin());
       const auto was_inside_reasoning = inside_reasoning_;
+
+      if (token_boundaries_only_) {
+        if (!IsIgnoredToken(token.id)) {
+          if (inside_reasoning_) {
+            ++reasoning_token_count_;
+          }
+          if (!token.text.empty()) {
+            const auto type =
+                inside_reasoning_ ? FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING : FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT;
+            out.push_back({std::move(token.text), type, token.id});
+          }
+        }
+
+        continue;
+      }
 
       if (IsIgnoredToken(token.id)) {
         // EOS and configured control tokens are neither reasoning content nor visible output, regardless of how
@@ -505,6 +523,7 @@ class ReasoningStreamSplitter {
   std::vector<PendingToken> pending_tokens_;
   std::vector<PendingTextToken> pending_text_tokens_;
   std::string text_buffer_;
+  bool token_boundaries_only_ = false;
   bool inside_reasoning_ = false;
   bool trim_default_prefix_ = false;
   int reasoning_token_count_ = 0;

@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -73,6 +74,11 @@ class ModelLoadManager {
 
   /// Get a loaded model for an immediate query only when its normalized path matches `model_path`.
   GenAIModelInstance* GetLoadedModel(std::string_view model_id, std::string_view model_path);
+
+  /// Reject operations on a directory containing any loaded model, regardless of ID or revision.
+  /// Holds the lifecycle mutex through the operation so another handle cannot load files being removed.
+  /// The operation must not call back into this ModelLoadManager.
+  void RunWithUnloadedModelsInDirectory(std::string_view directory, const std::function<void()>& operation);
 
   /// Reject all future LoadModel calls. Called by Manager::Shutdown().
   /// Idempotent and thread-safe.

@@ -5,7 +5,7 @@ use std::io::{self, Write};
 
 use foundry_local_sdk::{
     ChatSession, FoundryLocalConfig, FoundryLocalError, FoundryLocalManager, Item, Request,
-    RequestOptions, SearchOptions,
+    RequestOptions, SearchOptions, TextKind,
 };
 use tokio_stream::StreamExt;
 
@@ -72,7 +72,21 @@ async fn main() -> Result<()> {
 
     println!("\n--- Synchronous completion ---");
     let response = session.process_request(request).await?;
-    println!("Assistant: {}", response.text());
+    print!("Assistant: ");
+    for item in &response.items {
+        if let Item::Message(message) = item {
+            for part in &message.content {
+                if let Item::Text {
+                    text,
+                    kind: TextKind::Default,
+                } = part
+                {
+                    print!("{text}");
+                }
+            }
+        }
+    }
+    println!();
 
     // ── 6. Streaming request (continues the same conversation) ───────────
     // The session already holds the system prompt and the previous turn, so we
@@ -85,7 +99,11 @@ async fn main() -> Result<()> {
     print!("Assistant: ");
     let mut stream = session.process_streaming_request(streaming);
     while let Some(item) = stream.next().await {
-        if let Some(text) = item?.as_text() {
+        if let Item::Text {
+            text,
+            kind: TextKind::Default,
+        } = item?
+        {
             print!("{text}");
             io::stdout().flush().ok();
         }

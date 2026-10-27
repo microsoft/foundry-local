@@ -38,12 +38,16 @@ parameters:
 
 variables:
 - group: FoundryLocal-ESRP-Signing
+# .NET 10.0.13 validates TMPDIR when creating Unix named mutexes.
+# Shared macOS agents may export an empty value (dotnet/android#13136).
+- name: TMPDIR
+  value: '$(Agent.TempDirectory)'
 # C++ SDK (sdk_v2/cpp) native dependency versions. Must match the stable pins
 # in sdk_v2/deps_versions.json.
 - name: cppOrtVersion
-  value: '1.30.0'
+  value: '1.31.0'
 - name: cppGenaiVersion
-  value: '0.17.0'
+  value: '0.18.0'
 - name: cppWinmlVersion
   value: '2.4.89'
 - name: cppBuildConfig

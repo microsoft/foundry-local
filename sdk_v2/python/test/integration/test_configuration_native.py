@@ -61,8 +61,8 @@ class TestBuildNative:
         c = Configuration(
             app_name="BuildNativeTest",
             catalog_urls=[
-                ("https://example.invalid/catalog.json", None),
-                ("https://example.invalid/other.json", "filter=cpu"),
+                ("https://example.invalid/asset-gallery/v1.0/models", None),
+                ("https://other.invalid/asset-gallery/v1.0/models", "filter=cpu"),
             ],
         )
         with _native_config(c) as ptr:

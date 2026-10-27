@@ -1,9 +1,12 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "exception.h"
+#include "configuration.h"
 #include "logger.h"
 #include "platform/telemetry_device_id.h"
 #include "telemetry/telemetry_action_tracker.h"
+#include "telemetry/download_tracker.h"
+#include "telemetry/ep_download_tracker.h"
 #include "telemetry/device_id.h"
 #include "telemetry/telemetry_context.h"
 #include "telemetry/telemetry_event_properties_sanitizer.h"
@@ -12,6 +15,7 @@
 #include "telemetry/telemetry_metadata.h"
 #include "telemetry/one_ds_telemetry.h"
 #include "telemetry/telemetry_redaction.h"
+#include "telemetry/telemetry_request_metrics.h"
 #include "telemetry/telemetry_sampling.h"
 
 #include <gtest/gtest.h>
@@ -23,6 +27,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -129,14 +134,16 @@ class CapturingTelemetry : public ITelemetry {
 
   void RecordEpDownloadAttempt(const EpDownloadAttemptInfo&) override {}
 
-  void RecordEpDownloadAndRegister(const EpDownloadAndRegisterInfo&) override {}
+  void RecordEpDownloadAndRegister(const EpDownloadAndRegisterInfo& info) override { ep_calls.push_back(info); }
 
-  void RecordDownload(const DownloadInfo&) override {}
+  void RecordDownload(const DownloadInfo& info) override { download_calls.push_back(info); }
 
   void RecordCatalogFetch(const CatalogFetchInfo&) override {}
 
   std::vector<ActionCall> action_calls;
   std::vector<std::pair<Action, std::string>> exception_calls;
+  std::vector<DownloadInfo> download_calls;
+  std::vector<EpDownloadAndRegisterInfo> ep_calls;
 };
 
 }  // namespace
@@ -301,6 +308,36 @@ TEST(OneDsTelemetryTest, OrtEnvironmentVariableSuppressesOnlyNonessentialUpload)
   EXPECT_FALSE(telemetry.IsUploadEnabled());
 }
 
+TEST(OneDsTelemetryTest, RecordProcessInfoUsesCachedIdentityAndResolvedConfiguration) {
+  ScopedEnvVar ci("CI", "true");
+  RecordingLogger logger;
+  OneDsTelemetry telemetry("cached-app", logger);
+  ASSERT_FALSE(telemetry.IsUploadEnabled());
+  logger.entries.clear();
+
+  Configuration configuration;
+  configuration.app_name = "different-config-app";
+  configuration.app_data_dir = "private-app-data";
+  configuration.log_level = LogLevel::Debug;
+  configuration.web_service_endpoints = {"http://127.0.0.1:0", "http://localhost:0"};
+  configuration.external_service_url = "https://private.example.invalid?token=secret";
+  configuration.Validate();
+  {
+    ScopedEnvVar changed_ci("CI", nullptr);
+    telemetry.RecordProcessInfo(configuration);
+  }
+
+  ASSERT_EQ(logger.entries.size(), 1u);
+  const auto& message = logger.entries.front().message;
+  EXPECT_NE(message.find("ProcessInfo AppName=cached-app "), std::string::npos);
+  EXPECT_NE(message.find("DeviceIdStatus=Disabled"), std::string::npos);
+  EXPECT_NE(message.find("AppDataDir=[path] ModelCacheDir=[path] LogsDir=[path]"), std::string::npos);
+  EXPECT_NE(message.find("LogLevel=1 WebServiceUrlCount=2 ExternalUrlCount=1"), std::string::npos);
+  EXPECT_EQ(message.find(configuration.app_name), std::string::npos);
+  EXPECT_EQ(message.find("private"), std::string::npos);
+  EXPECT_EQ(message.find("secret"), std::string::npos);
+}
+
 TEST(TelemetryActionTest, EpActionNamesMatchEventNames) {
   EXPECT_EQ(ActionToString(Action::kEpDownloadAttempt), "EPDownloadAttempt");
   EXPECT_EQ(ActionToString(Action::kEpDownloadAndRegister), "EPDownloadAndRegister");
@@ -428,7 +465,6 @@ TEST(TelemetryLoggerTest, RecordProcessInfoIncludesStartupMetadata) {
   TelemetryLogger telemetry("foundry-local", logger);
 
   ProcessInfo info;
-  info.app_name = "foundry-local";
   info.app_version = "4.5.6";
   info.os_name = "Windows";
   info.os_version = "10.0.26100";
@@ -444,6 +480,12 @@ TEST(TelemetryLoggerTest, RecordProcessInfoIncludesStartupMetadata) {
   info.device_id_scope = "container";
   info.cpu_count = 8;
   info.total_memory_mb = 32768;
+  info.app_data_dir = "private-app-data";
+  info.model_cache_dir = "../private-model-cache";
+  info.logs_dir = "C:\\Users\\sample-user\\private-logs";
+  info.log_level = LogLevel::Debug;
+  info.web_service_url_count = 2;
+  info.external_url_count = 1;
 
   telemetry.RecordProcessInfo(info);
 
@@ -459,6 +501,9 @@ TEST(TelemetryLoggerTest, RecordProcessInfoIncludesStartupMetadata) {
   EXPECT_NE(logger.entries[0].message.find("DeviceIdScope=container"), std::string::npos);
   EXPECT_NE(logger.entries[0].message.find("CpuCount=8"), std::string::npos);
   EXPECT_NE(logger.entries[0].message.find("TotalMemoryMB=32768"), std::string::npos);
+  EXPECT_NE(logger.entries[0].message.find("AppDataDir=[path] ModelCacheDir=[path] LogsDir=[path]"), std::string::npos);
+  EXPECT_NE(logger.entries[0].message.find("LogLevel=1 WebServiceUrlCount=2 ExternalUrlCount=1"), std::string::npos);
+  EXPECT_EQ(logger.entries[0].message.find("private-"), std::string::npos);
 }
 
 TEST(TelemetryLoggerTest, RecordExceptionRedactsPaths) {
@@ -495,11 +540,94 @@ TEST(TelemetryLoggerTest, RecordHardwareInfoIncludesCoarseAcceleratorInventory) 
   EXPECT_NE(logger.entries[0].message.find("HasGPU=true"), std::string::npos);
 }
 
+TEST(TelemetryMetadataTest, HardwareInventoryPreservesExactCountsWithinBudget) {
+  const std::map<std::string, std::vector<std::string>> devices{
+      {"CPU", {"CPUExecutionProvider"}}, {"GPU", {"CUDAExecutionProvider", "CPUExecutionProvider"}}};
+  const auto info = BuildHardwareInfo(devices);
+  EXPECT_TRUE(info.has_cpu);
+  EXPECT_TRUE(info.has_gpu);
+  EXPECT_FALSE(info.has_npu);
+  EXPECT_EQ(info.device_type_count, 2);
+  EXPECT_EQ(info.execution_provider_count, 2);
+  EXPECT_EQ(info.device_types, "CPU,GPU");
+  EXPECT_EQ(info.execution_providers, "CPUExecutionProvider,CUDAExecutionProvider");
+}
+
+TEST(TelemetryMetadataTest, HardwareInventoryBoundsRepeatedAndOversizedEntries) {
+  std::map<std::string, std::vector<std::string>> devices{{"CPU", {}}};
+  devices.at("CPU").assign(kMaxTelemetryInventoryEntries, "CPUExecutionProvider");
+  EXPECT_EQ(BuildHardwareInfo(devices).execution_provider_count, 1);
+  devices.at("CPU").push_back("CPUExecutionProvider");
+  auto info = BuildHardwareInfo(devices);
+  EXPECT_EQ(info.device_type_count, 1);
+  EXPECT_EQ(info.execution_provider_count, -1);
+  EXPECT_EQ(info.execution_providers, "[oversized inventory]");
+
+  devices.at("CPU") = {std::string(1024 * 1024, 'x')};
+  info = BuildHardwareInfo(devices);
+  EXPECT_EQ(info.execution_provider_count, -1);
+  EXPECT_EQ(info.execution_providers, "[oversized inventory]");
+  EXPECT_EQ(devices.at("CPU").front().size(), 1024u * 1024u);
+
+  devices = {{std::string(1024 * 1024, 'x'), {}}};
+  info = BuildHardwareInfo(devices);
+  EXPECT_EQ(info.device_type_count, -1);
+  EXPECT_EQ(info.device_types, "[oversized inventory]");
+  EXPECT_EQ(info.execution_provider_count, 0);
+}
+
+TEST(TelemetryMetadataTest, HardwareInventoryBoundsDeviceIterationWithoutLosingKnownClasses) {
+  std::map<std::string, std::vector<std::string>> devices;
+  for (size_t i = 0; i < kMaxTelemetryInventoryEntries; ++i) {
+    devices.emplace(std::to_string(i), std::vector<std::string>{});
+  }
+  EXPECT_EQ(BuildHardwareInfo(devices).device_type_count, kMaxTelemetryInventoryEntries);
+
+  devices.emplace("CPU", std::vector<std::string>{"CPUExecutionProvider"});
+  devices.emplace("GPU", std::vector<std::string>{});
+  devices.emplace("NPU", std::vector<std::string>{});
+  const auto info = BuildHardwareInfo(devices);
+  EXPECT_TRUE(info.has_cpu);
+  EXPECT_TRUE(info.has_gpu);
+  EXPECT_TRUE(info.has_npu);
+  EXPECT_EQ(info.device_type_count, -1);
+  EXPECT_EQ(info.execution_provider_count, -1);
+  EXPECT_EQ(info.device_types, "[oversized inventory]");
+  EXPECT_EQ(info.execution_providers, "[oversized inventory]");
+}
+
+TEST(TelemetryMetadataTest, HardwareInventoryBoundsJoinedOutputWithoutChangingExactCounts) {
+  const std::map<std::string, std::vector<std::string>> devices{
+      {"CPU", {std::string(kMaxTelemetryStringLength, 'a'), std::string(kMaxTelemetryStringLength, 'b')}}};
+  const auto info = BuildHardwareInfo(devices);
+  EXPECT_EQ(info.execution_provider_count, 2);
+  EXPECT_EQ(info.execution_providers, "[oversized inventory]");
+}
+
 TEST(TelemetryMetadataTest, HostAppVersionIsAlwaysPopulated) {
   auto metadata = BuildTelemetryMetadata("foundry-local-test");
 
   EXPECT_FALSE(metadata.app_version.empty());
   EXPECT_FALSE(metadata.version.empty());
+  EXPECT_FALSE(metadata.process_name.empty());
+}
+
+TEST(TelemetryMetadataTest, ProcessInfoReusesCachedProcessMetadata) {
+  TelemetryMetadata metadata;
+  metadata.app_version = "cached-version";
+  metadata.os_name = "cached-os";
+  metadata.os_version = "cached-os-version";
+  metadata.cpu_arch = "cached-architecture";
+  metadata.process_name = "cached-process.exe";
+
+  const auto info = BuildProcessInfo(metadata, {}, false);
+
+  EXPECT_EQ(info.app_version, metadata.app_version);
+  EXPECT_EQ(info.os_name, metadata.os_name);
+  EXPECT_EQ(info.os_version, metadata.os_version);
+  EXPECT_EQ(info.cpu_arch, metadata.cpu_arch);
+  EXPECT_EQ(info.process_name, metadata.process_name);
+  EXPECT_EQ(info.device_id_status, "Disabled");
 }
 
 #ifdef _WIN32
@@ -585,7 +713,7 @@ TEST(TelemetryDeviceIdPlatformTest, ExistingDeviceIdIsHardenedBeforeReuse) {
 
 #ifdef _WIN32
 TEST(TelemetryMetadataTest, ProcessNamePreservesExecutableExtensionOnWindows) {
-  auto info = BuildProcessInfo(BuildTelemetryMetadata("foundry-local-test"), /*include_device_id_status=*/false);
+  auto info = BuildProcessInfo(BuildTelemetryMetadata("foundry-local-test"), {}, /*include_device_id_status=*/false);
 
   EXPECT_TRUE(info.process_name.ends_with(".exe")) << info.process_name;
 }
@@ -622,6 +750,126 @@ TEST(TelemetryContextTest, SuppressesUnneededCommonContextWithoutChangingExplici
   EXPECT_EQ(context.fields.at("DeviceInfo.Id"), "device-id");
   for (const auto* field : TelemetryInternal::kSuppressedCommonContextFields) {
     EXPECT_TRUE(context.fields.at(field).empty()) << field;
+  }
+}
+
+TEST(TelemetryContextTest, CommonEventIdentityIncludesConfiguredAppNameAndHashedDeviceId) {
+  struct RecordingContext {
+    std::map<std::string, std::string> fields;
+    void SetContext(const char* name, const std::string& value) { fields[name] = value; }
+  } context;
+  const auto hashed = TelemetryDeviceId::HashForTelemetry("01234567-89ab-4def-8123-456789abcdef");
+
+  TelemetryInternal::SetCommonEventIdentity(context, "configured-app", hashed);
+
+  EXPECT_EQ(context.fields.size(), 2u);
+  EXPECT_EQ(context.fields.at("AppName"), "configured-app");
+  EXPECT_FALSE(context.fields.contains("appName"));
+  EXPECT_EQ(context.fields.at("deviceId"), hashed);
+  EXPECT_NE(context.fields.at("deviceId"), "01234567-89ab-4def-8123-456789abcdef");
+
+  TelemetryInternal::SetCommonEventIdentity(context, "app /private", {});
+  EXPECT_EQ(context.fields.size(), 2u);
+  EXPECT_EQ(context.fields.at("AppName"), "app [path]");
+  EXPECT_FALSE(context.fields.contains("appName"));
+  EXPECT_EQ(context.fields.at("deviceId"), "Unavailable");
+}
+
+TEST(TelemetryMetadataTest, ProcessInfoIncludesResolvedRedactedConfiguration) {
+  Configuration configuration;
+  configuration.app_name = "configured-app";
+  configuration.app_data_dir = "private-app-data";
+  configuration.model_cache_dir = "{appdata}/private-models";
+  configuration.logs_dir = "{appdata}/private-logs";
+  configuration.log_level = LogLevel::Debug;
+  configuration.web_service_endpoints = {"http://127.0.0.1:0", "http://localhost:0"};
+  configuration.external_service_url = "https://private.example.invalid?token=secret";
+  configuration.Validate();
+  const auto original = configuration;
+  const auto info = BuildProcessInfo(BuildTelemetryMetadata(configuration.app_name), configuration, false);
+
+  EXPECT_EQ(info.app_data_dir, "[path]");
+  EXPECT_EQ(info.model_cache_dir, "[path]");
+  EXPECT_EQ(info.logs_dir, "[path]");
+  EXPECT_EQ(info.log_level, LogLevel::Debug);
+  EXPECT_EQ(info.web_service_url_count, 2);
+  EXPECT_EQ(info.external_url_count, 1);
+  EXPECT_EQ(configuration.app_data_dir, original.app_data_dir);
+  EXPECT_EQ(configuration.model_cache_dir, original.model_cache_dir);
+  EXPECT_EQ(configuration.logs_dir, original.logs_dir);
+  EXPECT_EQ(configuration.web_service_endpoints, original.web_service_endpoints);
+  EXPECT_EQ(configuration.external_service_url, original.external_service_url);
+}
+
+TEST(TelemetryMetadataTest, ProcessInfoConfigurationDefaultsAndEmptyPaths) {
+  Configuration configuration;
+  configuration.app_name = "configured-app";
+  const auto metadata = BuildTelemetryMetadata(configuration.app_name);
+  const auto unset = BuildProcessInfo(metadata, configuration, false);
+  EXPECT_TRUE(unset.app_data_dir.empty());
+  EXPECT_TRUE(unset.model_cache_dir.empty());
+  EXPECT_TRUE(unset.logs_dir.empty());
+  EXPECT_EQ(unset.log_level, LogLevel::Warning);
+  EXPECT_EQ(unset.web_service_url_count, 0);
+  EXPECT_EQ(unset.external_url_count, 0);
+
+  configuration.app_data_dir = "private-app-data";
+  configuration.Validate();
+  const auto resolved = BuildProcessInfo(metadata, configuration, false);
+  EXPECT_EQ(resolved.app_data_dir, "[path]");
+  EXPECT_EQ(resolved.model_cache_dir, "[path]");
+  EXPECT_EQ(resolved.logs_dir, "[path]");
+
+  configuration.app_data_dir = "";
+  configuration.model_cache_dir = "";
+  configuration.logs_dir = "";
+  const auto empty = BuildProcessInfo(metadata, configuration, false);
+  EXPECT_TRUE(empty.app_data_dir.empty());
+  EXPECT_TRUE(empty.model_cache_dir.empty());
+  EXPECT_TRUE(empty.logs_dir.empty());
+}
+
+TEST(TelemetryMetadataTest, ProcessInfoPreservesEveryLogLevelAndCountsConfiguredUrls) {
+  Configuration configuration;
+  configuration.app_name = "configured-app";
+  const auto metadata = BuildTelemetryMetadata(configuration.app_name);
+  for (const auto level : {LogLevel::Verbose, LogLevel::Debug, LogLevel::Information,
+                           LogLevel::Warning, LogLevel::Error, LogLevel::Fatal}) {
+    configuration.log_level = level;
+    EXPECT_EQ(BuildProcessInfo(metadata, configuration, false).log_level, level);
+  }
+
+  configuration.web_service_endpoints = {"http://127.0.0.1:0"};
+  EXPECT_EQ(BuildProcessInfo(metadata, configuration, false).web_service_url_count, 1);
+  configuration.external_service_url = "https://private.example.invalid";
+  const auto external = BuildProcessInfo(metadata, configuration, false);
+  EXPECT_EQ(external.web_service_url_count, 1);
+  EXPECT_EQ(external.external_url_count, 1);
+  configuration.web_service_endpoints.clear();
+  const auto external_only = BuildProcessInfo(metadata, configuration, false);
+  EXPECT_EQ(external_only.web_service_url_count, 0);
+  EXPECT_EQ(external_only.external_url_count, 1);
+}
+
+TEST(OneDsTelemetryTest, ConfigurationPathsAreAlwaysRedactedBeforeCopiesAndAtFinalBoundary) {
+  using namespace ::Microsoft::Applications::Events;
+  const std::string paths[] = {"C:\\Users\\sample-user\\data", "/home/sample-user/data", "../data", "private-data",
+                               ".", "\\\\server\\private-share", std::string(1024 * 1024, 'x')};
+  for (const char* name : {"appDataDir", "modelCacheDir", "logsDir"}) {
+    for (const auto& path : paths) {
+      TelemetryInternal::BoundedEventProperties bounded("ProcessInfo");
+      bounded.SetProperty(name, path);
+      EXPECT_STREQ(bounded.GetProperties(DataCategory_PartC).at(name).as_string, "[path]") << name;
+
+      EventProperties event("ProcessInfo");
+      event.SetProperty(name, path);
+      TelemetryInternal::SanitizeEventProperties(event);
+      EXPECT_STREQ(event.GetProperties(DataCategory_PartC).at(name).as_string, "[path]") << name;
+    }
+
+    TelemetryInternal::BoundedEventProperties empty("ProcessInfo");
+    empty.SetProperty(name, "");
+    EXPECT_STREQ(empty.GetProperties(DataCategory_PartC).at(name).as_string, "");
   }
 }
 
@@ -679,6 +927,153 @@ TEST(TelemetryRedactionTest, CapsAsciiAndMultibyteStringsAtUtf8Boundary) {
 
   const std::string exact_boundary = std::string(kMaxTelemetryStringLength - euro.size(), 'x') + euro;
   EXPECT_EQ(ScrubStringForTelemetry(exact_boundary), exact_boundary);
+}
+
+TEST(TelemetryRedactionTest, EnforcesOneKiBAtEveryMultibyteBoundary) {
+  ASSERT_EQ(kMaxTelemetryStringLength, 1024u);
+  const std::string codepoints[] = {"\xC2\xA2", "\xE2\x82\xAC", "\xF0\x9F\x98\x80"};
+  for (const auto& codepoint : codepoints) {
+    for (size_t offset = 1; offset < codepoint.size(); ++offset) {
+      const std::string prefix(kMaxTelemetryStringLength - offset, 'x');
+      const auto input = prefix + codepoint;
+      EXPECT_EQ(ScrubStringForTelemetry(input), prefix);
+      EXPECT_EQ(TelemetryInternal::SanitizeCommonContextValue(input), prefix);
+    }
+    const auto exact = std::string(kMaxTelemetryStringLength - codepoint.size(), 'x') + codepoint;
+    EXPECT_EQ(TelemetryInternal::SanitizeCommonContextValue(exact), exact);
+    EXPECT_EQ(ScrubStringForTelemetry(exact + "x"), exact);
+  }
+}
+
+TEST(TelemetryRedactionTest, ReplacesMalformedUtf8WithoutExceedingTheByteLimit) {
+  const std::string malformed[] = {
+      "\x80", "\xC0\xAF", "\xED\xA0\x80", "\xF4\x90\x80\x80", "\xE2\x82", "\xF0\x9F\x98", "\xFF"};
+  for (const auto& value : malformed) {
+    const std::string expected(value.size(), '?');
+    EXPECT_EQ(ScrubStringForTelemetry(value), expected);
+    EXPECT_EQ(TelemetryInternal::SanitizeTelemetryValue(value), expected);
+    EXPECT_EQ(ScrubStringForTelemetry(std::string(kMaxTelemetryStringLength - 1, 'x') + value),
+              std::string(kMaxTelemetryStringLength - 1, 'x') + "?");
+  }
+  EXPECT_EQ(ScrubStringForTelemetry("valid \xE2\x82\xAC then \xFF"), "valid \xE2\x82\xAC then ?");
+  EXPECT_EQ(ScrubStringForTelemetry("\xE2x"), "?x");
+}
+
+TEST(TelemetryRedactionTest, BoundsInspectionAndFailsClosedForUninspectableSuffixes) {
+  const std::string huge(1024 * 1024, 'x');
+  EXPECT_EQ(ScrubStringForTelemetry(huge), "[oversized]");
+  EXPECT_EQ(TelemetryInternal::SanitizeCommonContextValue(huge + "/private/path"), "[oversized]");
+  EXPECT_EQ(TelemetryInternal::SanitizeCommonContextValue(huge + " token=private"), "[oversized]");
+  EXPECT_EQ(TelemetryInternal::SanitizeCommonContextValue(huge + " https://private.invalid"), "[oversized]");
+
+  const std::string prefix(kMaxTelemetryStringLength - 20, 'x');
+  EXPECT_EQ(TelemetryInternal::SanitizeCommonContextValue(prefix + " sample-user/models/private"),
+            prefix + " [path]");
+  EXPECT_EQ(TelemetryInternal::SanitizeCommonContextValue(prefix + " sample-user/models/private token=value"),
+            prefix + " [path]");
+  EXPECT_EQ(TelemetryInternal::SanitizeCommonContextValue(prefix + " token=private"),
+            prefix + " token=[secret]");
+  EXPECT_EQ(TelemetryInternal::SanitizeCommonContextValue(prefix + " https://private.invalid"),
+            prefix + " [url]");
+
+  std::array<char, kMaxTelemetryInspectionLength + 1> unterminated{};
+  unterminated.fill('x');
+  const auto bounded = BoundedTelemetryCString(unterminated.data());
+  EXPECT_EQ(bounded.size(), unterminated.size());
+  EXPECT_EQ(TelemetryInternal::SanitizeTelemetryValue(bounded), "[oversized]");
+  EXPECT_TRUE(BoundedTelemetryCString(nullptr).empty());
+}
+
+TEST(OneDsTelemetryTest, BoundsEveryStringDimensionBeforeEventPropertyCopies) {
+  using namespace ::Microsoft::Applications::Events;
+  TelemetryInternal::BoundedEventProperties event("Limits");
+  const std::string input(kMaxTelemetryStringLength + 1, 'x');
+  const char* dimensions[] = {
+      "Action",
+      "Status",
+      "UserAgent",
+      "AudioSource",
+      "Language",
+      "InitReadyState",
+      "DownloadReadyState",
+      "RegisterReadyState",
+      "DownloadWaitResult",
+      "Operation",
+      "Endpoint",
+      "Region",
+      "Format",
+      "ExceptionMessage",
+      "ErrorMessage",
+      "appVersion",
+      "AppName",
+      "osName",
+      "osVersion",
+      "architecture",
+      "processName",
+      "DeviceInfo.Status",
+      "containerType",
+      "virtualizationType",
+      "hostEnvironment",
+      "environmentDetectionConfidence",
+      "deviceIdScope",
+      "DeviceTypes",
+      "ExecutionProviders",
+  };
+  for (const char* dimension : dimensions) {
+    event.SetProperty(dimension, input);
+    EXPECT_EQ(std::string_view(event.GetProperties(DataCategory_PartC).at(dimension).as_string).size(), 1024u)
+        << dimension;
+  }
+
+  const char* identifiers[] = {"ModelId", "ExecutionProvider", "CorrelationId", "ProviderName", "AppSessionGuid"};
+  for (const char* identifier : identifiers) {
+    event.SetProperty(identifier, input);
+    EXPECT_STREQ(event.GetProperties(DataCategory_PartC).at(identifier).as_string, "[oversized]");
+    event.SetProperty(identifier, "valid-id");
+    EXPECT_STREQ(event.GetProperties(DataCategory_PartC).at(identifier).as_string, "valid-id");
+  }
+
+  event.SetProperty("UserAgent", input.c_str());
+  event.SetProperty("TotalTokens", int64_t{42});
+  event.SetProperty("Stream", true);
+  EXPECT_EQ(std::string_view(event.GetProperties(DataCategory_PartC).at("UserAgent").as_string).size(), 1024u);
+  EXPECT_EQ(event.GetProperties(DataCategory_PartC).at("TotalTokens").as_int64, 42);
+  EXPECT_TRUE(event.GetProperties(DataCategory_PartC).at("Stream").as_bool);
+  event.SetProperty("TotalTokens", int64_t{0});
+  event.SetProperty("Stream", false);
+  EXPECT_EQ(event.GetProperties(DataCategory_PartC).at("TotalTokens").as_int64, 0);
+  EXPECT_FALSE(event.GetProperties(DataCategory_PartC).at("Stream").as_bool);
+  std::vector<std::string> values(TelemetryInternal::kMaxTelemetryStringArrayElements + 1, input);
+  event.SetProperty("Metadata", values, PiiKind_GenericData);
+  const auto& array = event.GetProperties(DataCategory_PartC).at("Metadata");
+  ASSERT_NE(array.as_stringArray, nullptr);
+  ASSERT_EQ(array.as_stringArray->size(), TelemetryInternal::kMaxTelemetryStringArrayElements);
+  EXPECT_EQ(array.as_stringArray->front().size(), 1024u);
+  EXPECT_EQ(array.as_stringArray->back(), "[oversized array]");
+  EXPECT_EQ(array.piiKind, PiiKind_GenericData);
+  EXPECT_EQ(input.size(), 1025u);
+}
+
+TEST(OneDsTelemetryTest, FinalSanitizerBoundsArrayCountAndOversizedIdentifiers) {
+  using namespace ::Microsoft::Applications::Events;
+  EventProperties event("Limits");
+  const std::string huge(1024 * 1024, 'x');
+  event.SetProperty("ModelId", std::string(kMaxTelemetryStringLength + 1, 'i'), PiiKind_GenericData);
+  event.SetProperty("Huge", huge);
+  std::vector<std::string> values(TelemetryInternal::kMaxTelemetryStringArrayElements + 1,
+                                  std::string(kMaxTelemetryInspectionLength + 1, 'x'));
+  event.SetProperty("Metadata", values, PiiKind_GenericData);
+  TelemetryInternal::SanitizeEventProperties(event);
+
+  const auto& properties = event.GetProperties(DataCategory_PartC);
+  EXPECT_STREQ(properties.at("ModelId").as_string, "[oversized]");
+  EXPECT_STREQ(properties.at("Huge").as_string, "[oversized]");
+  const auto& array = properties.at("Metadata");
+  ASSERT_NE(array.as_stringArray, nullptr);
+  ASSERT_EQ(array.as_stringArray->size(), TelemetryInternal::kMaxTelemetryStringArrayElements);
+  EXPECT_EQ(array.as_stringArray->front(), "[oversized]");
+  EXPECT_EQ(array.as_stringArray->back(), "[oversized array]");
+  EXPECT_EQ(array.piiKind, PiiKind_GenericData);
 }
 
 TEST(OneDsTelemetryTest, EventPropertiesSanitizerRedactsNonErrorStringsWithoutChangingSchema) {
@@ -761,6 +1156,24 @@ TEST(OneDsTelemetryTest, EventPropertiesSanitizerCapsEveryStringValue) {
   EXPECT_STREQ(properties.at("Endpoint").as_string, "catalog endpoint");
   EXPECT_EQ(std::string_view(properties.at("Ascii").as_string).size(), kMaxTelemetryStringLength);
   EXPECT_EQ(std::string_view(properties.at("Utf8").as_string).size(), kMaxTelemetryStringLength - 1);
+}
+
+TEST(OneDsTelemetryTest, CatalogFormatPreservesOnlyTheExactPublicRoute) {
+  using namespace ::Microsoft::Applications::Events;
+
+  const std::vector<std::pair<std::string, std::string>> cases{
+      {"asset-gallery/v1.0/models", "asset-gallery/v1.0/models"},
+      {"asset-gallery/v1.0/models/private", "[path]"},
+      {std::string(1024 * 1024, 'x'), "[oversized]"},
+  };
+  for (const auto& [input, expected] : cases) {
+    TelemetryInternal::BoundedEventProperties event("CatalogFetch");
+    event.SetProperty("Format", input);
+    EXPECT_EQ(event.GetProperties(DataCategory_PartC).at("Format").as_string, expected);
+
+    TelemetryInternal::SanitizeEventProperties(event);
+    EXPECT_EQ(event.GetProperties(DataCategory_PartC).at("Format").as_string, expected);
+  }
 }
 
 TEST(OneDsTelemetryTest, EventPropertiesSanitizerRecursesIntoStringArraysInOrder) {
@@ -882,4 +1295,320 @@ TEST(ActionTrackerTest, RecordsExceptionSuccessAndModelIdOnAction) {
   EXPECT_GE(telemetry.action_calls[0].duration_ms, 0);
 
   EXPECT_EQ(telemetry.action_calls[0].model_id, "phi-3-mini");
+}
+
+TEST(TelemetryContextTest, BoundsRetainedContextsAndDefaultUserAgentWithoutChangingSource) {
+  const std::string input(kMaxTelemetryStringLength + 1, 'x');
+  SetDefaultUserAgent(input);
+  EXPECT_EQ(DefaultUserAgent(), std::string(1024, 'x'));
+  EXPECT_EQ(InvocationContext::Direct().user_agent.size(), 1024u);
+  EXPECT_EQ(InvocationContext::Direct(input).user_agent.size(), 1024u);
+
+  const InvocationContext source{input, input, false};
+  const auto bounded = source.BoundedCopy();
+  const auto indirect = source.AsIndirect();
+  EXPECT_EQ(bounded.user_agent.size(), 1024u);
+  EXPECT_EQ(bounded.correlation_id, "[oversized]");
+  EXPECT_FALSE(bounded.indirect);
+  EXPECT_EQ(indirect.user_agent.size(), 1024u);
+  EXPECT_EQ(indirect.correlation_id, "[oversized]");
+  EXPECT_TRUE(indirect.indirect);
+  EXPECT_EQ(source.user_agent, input);
+  EXPECT_EQ(source.correlation_id, input);
+  SetDefaultUserAgent({});
+}
+
+TEST(ActionTrackerTest, BoundsRetainedModelContextAndDownloadProviderState) {
+  CapturingTelemetry telemetry;
+  const std::string input(kMaxTelemetryStringLength + 1, 'x');
+  const InvocationContext context{input, input, false};
+  {
+    ActionTracker action(Action::kModelLoad, telemetry, context);
+    action.SetModelId(input);
+    EXPECT_EQ(action.Context().user_agent.size(), 1024u);
+    EXPECT_EQ(action.Context().correlation_id, "[oversized]");
+    DownloadTracker download(input, input, telemetry);
+    download.SetDownloadWaitResult(input);
+    EpDownloadTracker provider(input, input, input, telemetry);
+    provider.Done();
+  }
+
+  ASSERT_EQ(telemetry.action_calls.size(), 1u);
+  EXPECT_EQ(telemetry.action_calls[0].model_id, "[oversized]");
+  EXPECT_EQ(telemetry.action_calls[0].user_agent.size(), 1024u);
+  ASSERT_EQ(telemetry.download_calls.size(), 1u);
+  EXPECT_EQ(telemetry.download_calls[0].model_id, "[oversized]");
+  EXPECT_EQ(telemetry.download_calls[0].user_agent.size(), 1024u);
+  EXPECT_EQ(telemetry.download_calls[0].download_wait_result.size(), 1024u);
+  ASSERT_EQ(telemetry.ep_calls.size(), 1u);
+  EXPECT_EQ(telemetry.ep_calls[0].provider_name, "[oversized]");
+  EXPECT_EQ(telemetry.ep_calls[0].correlation_id, "[oversized]");
+  EXPECT_EQ(telemetry.ep_calls[0].user_agent.size(), 1024u);
+  EXPECT_EQ(context.user_agent, input);
+  EXPECT_EQ(context.correlation_id, input);
+}
+
+TEST(TelemetryMetadataTest, BoundsMetadataBeforeRetentionAndProcessInfoCopies) {
+  const std::string input(kMaxTelemetryStringLength + 1, 'x');
+  auto metadata = BuildTelemetryMetadata(input);
+  EXPECT_EQ(metadata.app_name.size(), 1024u);
+  metadata.app_name = input;
+  metadata.app_version = input;
+  metadata.os_name = input;
+  metadata.os_version = input;
+  metadata.cpu_arch = input;
+  metadata.process_name = input;
+  const auto process = BuildProcessInfo(metadata, {}, false);
+  EXPECT_EQ(process.app_version.size(), 1024u);
+  EXPECT_EQ(process.os_name.size(), 1024u);
+  EXPECT_EQ(process.os_version.size(), 1024u);
+  EXPECT_EQ(process.cpu_arch.size(), 1024u);
+  EXPECT_EQ(process.process_name.size(), 1024u);
+  EXPECT_EQ(metadata.app_name, input);
+}
+
+TEST(TelemetryEnvironmentTest, PreservesCompleteFunctionalValuesBeyondEventLimit) {
+  const std::string input(kMaxTelemetryStringLength + 100, 'x');
+  ScopedEnvVar variable("FOUNDRY_TELEMETRY_LIMIT_TEST", input.c_str());
+  EXPECT_EQ(TelemetryEnvironment::GetEnv("FOUNDRY_TELEMETRY_LIMIT_TEST"), input);
+  EXPECT_TRUE(TelemetryEnvironment::IsTruthyValue(std::string(kMaxTelemetryEnvironmentLength + 1, ' ')));
+}
+
+TEST(TelemetryEnvironmentTest, DistinguishesUnsetAndEmptyFromRejectedValues) {
+  ScopedEnvVar variable("FOUNDRY_TELEMETRY_LIMIT_TEST", nullptr);
+  auto result = TelemetryEnvironment::TryGetEnv("FOUNDRY_TELEMETRY_LIMIT_TEST");
+  ASSERT_TRUE(result.has_value());
+  EXPECT_TRUE(result->empty());
+  {
+    ScopedEnvVar empty("FOUNDRY_TELEMETRY_LIMIT_TEST", "");
+    result = TelemetryEnvironment::TryGetEnv("FOUNDRY_TELEMETRY_LIMIT_TEST");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_TRUE(result->empty());
+  }
+}
+
+#ifndef _WIN32
+// Windows cannot create an ASCII environment value this long; POSIX permits it.
+TEST(TelemetryEnvironmentTest, RejectsOversizedFunctionalValuesAndFailsClosedForGatingFlags) {
+  const std::string input(kMaxTelemetryEnvironmentLength + 1, 'x');
+  ScopedEnvVar variable("FOUNDRY_TELEMETRY_LIMIT_TEST", input.c_str());
+  ScopedEnvVar disabled("ORT_TELEMETRY_DISABLED", input.c_str());
+  ScopedEnvVar ci("CI", input.c_str());
+  EXPECT_TRUE(TelemetryEnvironment::GetEnv("FOUNDRY_TELEMETRY_LIMIT_TEST").empty());
+  EXPECT_FALSE(TelemetryEnvironment::TryGetEnv("FOUNDRY_TELEMETRY_LIMIT_TEST").has_value());
+  EXPECT_TRUE(TelemetryEnvironment::IsTelemetryDisabledByEnvVar());
+  EXPECT_TRUE(TelemetryEnvironment::IsCiEnvironment());
+  EXPECT_STREQ(std::getenv("FOUNDRY_TELEMETRY_LIMIT_TEST"), input.c_str());
+}
+
+#if !defined(__APPLE__) && !defined(__ANDROID__)
+TEST(TelemetryDeviceIdPlatformTest, RejectedCacheOverrideDoesNotFallBackToHome) {
+  const std::string input(kMaxTelemetryEnvironmentLength + 1, 'x');
+  ScopedEnvVar variable("XDG_CACHE_HOME", input.c_str());
+  ScopedEnvVar home("HOME", "/tmp/must-not-use-telemetry-fallback");
+  EXPECT_TRUE(TelemetryDeviceIdPlatform::GetStorageDirectory().empty());
+  EXPECT_TRUE(TelemetryDeviceIdPlatform::GetCacheDirectory().empty());
+}
+#endif
+#else
+TEST(TelemetryEnvironmentTest, WindowsReadPreservesTheExactByteLimit) {
+  const std::string input(kMaxTelemetryEnvironmentLength, 'x');
+  int calls = 0;
+  const auto result = TelemetryInternal::ReadWindowsEnvironment(
+      "test", [&](const char*, char* buffer, uint32_t size) -> std::optional<uint32_t> {
+        ++calls;
+        if (buffer == nullptr) {
+          return static_cast<uint32_t>(input.size() + 1);
+        }
+        EXPECT_EQ(size, input.size() + 1);
+        std::copy(input.begin(), input.end(), buffer);
+        return static_cast<uint32_t>(input.size());
+      });
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(*result, input);
+  EXPECT_EQ(calls, 2);
+}
+
+TEST(TelemetryEnvironmentTest, WindowsReadRetriesBoundedGrowthAndAcceptsShrinkage) {
+  int calls = 0;
+  const auto result = TelemetryInternal::ReadWindowsEnvironment(
+      "test", [&](const char*, char* buffer, uint32_t size) -> std::optional<uint32_t> {
+        ++calls;
+        if (calls == 1) {
+          EXPECT_EQ(buffer, nullptr);
+          return 2;
+        }
+        if (calls == 2) {
+          EXPECT_EQ(size, 2u);
+          return 6;
+        }
+        EXPECT_EQ(size, 6u);
+        std::copy_n("true", 4, buffer);
+        return 4;
+      });
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(*result, "true");
+  EXPECT_EQ(calls, 3);
+}
+
+TEST(TelemetryEnvironmentTest, WindowsReadRejectsUnstableAndFailedReads) {
+  const std::vector<std::vector<std::optional<uint32_t>>> scenarios{
+      {std::nullopt},
+      {(std::numeric_limits<uint32_t>::max)()},
+      {static_cast<uint32_t>(kMaxTelemetryEnvironmentLength + 2)},
+      {2, 0},
+      {2, std::nullopt},
+      {2, static_cast<uint32_t>(kMaxTelemetryEnvironmentLength + 2)},
+      {2, 3, 4, 5},
+  };
+  for (const auto& scenario : scenarios) {
+    size_t calls = 0;
+    const auto result = TelemetryInternal::ReadWindowsEnvironment(
+        "test", [&](const char*, char*, uint32_t) -> std::optional<uint32_t> {
+          return scenario.at(calls++);
+        });
+    EXPECT_FALSE(result.has_value());
+    EXPECT_EQ(calls, scenario.size());
+  }
+}
+
+TEST(TelemetryEnvironmentTest, WindowsReadAcceptsInitiallyUnsetOrEmptyValues) {
+  for (uint32_t size : {0u, 1u}) {
+    int calls = 0;
+    const auto result = TelemetryInternal::ReadWindowsEnvironment(
+        "test", [&](const char*, char*, uint32_t) -> std::optional<uint32_t> {
+          ++calls;
+          return size;
+        });
+    ASSERT_TRUE(result.has_value());
+    EXPECT_TRUE(result->empty());
+    EXPECT_EQ(calls, 1);
+  }
+}
+
+TEST(TelemetryEnvironmentTest, AppliesByteLimitToWindowsMultibyteEnvironmentValues) {
+  ScopedEnvVar variable("FOUNDRY_TELEMETRY_LIMIT_TEST", nullptr);
+  const std::wstring input(20'000, L'\u4e00');
+  ASSERT_TRUE(::SetEnvironmentVariableW(L"FOUNDRY_TELEMETRY_LIMIT_TEST", input.c_str()));
+  const auto needed = ::GetEnvironmentVariableA("FOUNDRY_TELEMETRY_LIMIT_TEST", nullptr, 0);
+  ASSERT_GT(needed, 0u);
+
+  const auto value = TelemetryEnvironment::GetEnv("FOUNDRY_TELEMETRY_LIMIT_TEST");
+  if (needed > kMaxTelemetryEnvironmentLength + 1) {
+    EXPECT_TRUE(value.empty());
+  } else {
+    std::vector<char> expected(needed);
+    const auto written = ::GetEnvironmentVariableA("FOUNDRY_TELEMETRY_LIMIT_TEST", expected.data(), needed);
+    ASSERT_EQ(written + 1, needed);
+    EXPECT_EQ(value, std::string(expected.data(), written));
+  }
+}
+#endif
+
+TEST(TelemetryEnvironmentTest, BoundsHostEvidenceBeforeCopyingOrClassification) {
+  const std::string huge(1024 * 1024, 'x');
+  EXPECT_EQ(TelemetryInternal::ToLowerAscii(huge).size(), 3 * kMaxTelemetryProbeLength);
+  TelemetryInternal::HostEnvironmentEvidence evidence;
+  evidence.dmi = "VMware " + huge;
+  evidence.cpu_info = huge;
+  evidence.cgroup = "docker " + huge;
+  const auto result = TelemetryInternal::ClassifyHostEnvironment(evidence);
+  EXPECT_STREQ(result.container_type, "docker");
+  EXPECT_STREQ(result.virtualization_type, "vmware");
+}
+
+TEST(TelemetryDeviceIdTest, RejectsInvalidOrOversizedDeviceIdsWithoutHashingThem) {
+  EXPECT_TRUE(TelemetryDeviceId::HashForTelemetry("").empty());
+  EXPECT_TRUE(TelemetryDeviceId::HashForTelemetry("not-a-guid").empty());
+  EXPECT_TRUE(TelemetryDeviceId::HashForTelemetry(std::string(1024 * 1024, 'x')).empty());
+}
+
+TEST(TelemetrySamplingTest, BoundsOversizedSamplingInputsWithoutMutatingIdentifiers) {
+  const std::string huge(1024 * 1024, 'x');
+  EXPECT_EQ(TelemetryInternal::HashSamplingKey("session", huge),
+            TelemetryInternal::HashSamplingKey("session", "[oversized]"));
+  EXPECT_EQ(TelemetryInternal::ShouldSampleTelemetryEvent("session", huge, 1.0),
+            TelemetryInternal::ShouldSampleTelemetryEvent("session", "[oversized]", 1.0));
+  EXPECT_EQ(TelemetryInternal::ShouldSampleTelemetryEvent(huge, "event", 1.0),
+            TelemetryInternal::ShouldSampleTelemetryEvent("[oversized]", "event", 1.0));
+  EXPECT_EQ(huge.size(), 1024u * 1024u);
+}
+
+TEST(TelemetryLoggerTest, BoundsEveryEventStringBeforeFormatting) {
+  RecordingLogger logger;
+  const std::string input(kMaxTelemetryStringLength + 1, 'x');
+  TelemetryLogger telemetry(input, logger);
+  const InvocationContext context{input, input, false};
+  telemetry.RecordAction(Action::kModelLoad, ActionStatus::kSuccess, context, 1, input);
+  telemetry.RecordException(Action::kModelLoad, std::runtime_error(input), context);
+
+  ModelUsageInfo model;
+  model.model_id = model.execution_provider = model.user_agent = model.correlation_id = input;
+  telemetry.RecordModelUsage(model);
+  AudioUsageInfo audio;
+  audio.model_id = audio.execution_provider = audio.user_agent = audio.correlation_id = input;
+  audio.audio_source = audio.language = input;
+  telemetry.RecordAudioUsage(audio);
+  EpDownloadAttemptInfo attempt;
+  attempt.user_agent = attempt.correlation_id = input;
+  telemetry.RecordEpDownloadAttempt(attempt);
+  EpDownloadAndRegisterInfo provider;
+  provider.user_agent = provider.correlation_id = provider.provider_name = input;
+  provider.init_ready_state = provider.download_ready_state = provider.register_ready_state = input;
+  telemetry.RecordEpDownloadAndRegister(provider);
+  DownloadInfo download;
+  download.model_id = download.user_agent = download.correlation_id = download.download_wait_result = input;
+  telemetry.RecordDownload(download);
+  CatalogFetchInfo catalog;
+  catalog.operation = catalog.endpoint = catalog.region = catalog.format = input;
+  catalog.error_message = catalog.user_agent = catalog.correlation_id = input;
+  telemetry.RecordCatalogFetch(catalog);
+  ProcessInfo process;
+  process.app_version = process.os_name = process.os_version = process.cpu_arch = input;
+  process.process_name = process.device_id_status = process.container_type = process.virtualization_type = input;
+  process.host_environment = process.environment_detection_confidence = process.device_id_scope = input;
+  telemetry.RecordProcessInfo(process);
+  HardwareInfo hardware;
+  hardware.device_types = hardware.execution_providers = input;
+  telemetry.RecordHardwareInfo(hardware);
+  telemetry.StartSession();
+  telemetry.EndSession();
+
+  ASSERT_EQ(logger.entries.size(), 12u);
+  for (const auto& entry : logger.entries) {
+    EXPECT_EQ(entry.message.find(input), std::string::npos) << entry.message.substr(0, 64);
+    EXPECT_LE(entry.message.size(), 16 * kMaxTelemetryStringLength);
+  }
+  EXPECT_EQ(model.model_id, input);
+  EXPECT_EQ(context.correlation_id, input);
+}
+
+TEST(TelemetryLoggerTest, CatalogFormatPreservesOnlyTheExactPublicRoute) {
+  RecordingLogger logger;
+  TelemetryLogger telemetry("catalog-test", logger);
+  CatalogFetchInfo catalog;
+  catalog.format = "asset-gallery/v1.0/models";
+  telemetry.RecordCatalogFetch(catalog);
+  catalog.format += "/private";
+  telemetry.RecordCatalogFetch(catalog);
+  catalog.format = std::string(1024 * 1024, 'x');
+  telemetry.RecordCatalogFetch(catalog);
+
+  ASSERT_EQ(logger.entries.size(), 3u);
+  EXPECT_NE(logger.entries[0].message.find("Format=asset-gallery/v1.0/models "), std::string::npos);
+  EXPECT_NE(logger.entries[1].message.find("Format=[path] "), std::string::npos);
+  EXPECT_NE(logger.entries[2].message.find("Format=[oversized] "), std::string::npos);
+}
+
+TEST(TelemetryRequestMetricsTest, ReadsOnlyCountsFromAlreadyParsedLargeInputs) {
+  const auto request = nlohmann::json{
+      {"messages", nlohmann::json::array({
+                       {{"role", "user"}, {"content", std::string(1024 * 1024, 'x')}},
+                       {{"role", "assistant"}, {"content", "reply"}},
+                   })}};
+  EXPECT_EQ(TelemetryInternal::CountParsedJsonMessages(request), 2u);
+  EXPECT_EQ(request.at("messages").at(0).at("content").get_ref<const std::string&>().size(), 1024u * 1024u);
+  EXPECT_EQ(TelemetryInternal::CountParsedJsonMessages(nlohmann::json::object()), 0u);
+  EXPECT_EQ(TelemetryInternal::CountParsedJsonMessages({{"messages", nlohmann::json::array()}}), 0u);
+  EXPECT_FALSE(TelemetryInternal::CountParsedJsonMessages({{"messages", "invalid"}}).has_value());
 }

@@ -18,6 +18,7 @@
 #include "model.h"
 #include "model_info.h"
 #include "service/handler_utils.h"
+#include "service/non_streaming_disconnect_monitor.h"
 #include "service/web_service.h"
 #include "utils/temp_path.h"
 
@@ -36,6 +37,13 @@
 #include <tuple>
 #include <vector>
 
+#ifndef _WIN32
+#include <netinet/in.h>
+#include <sys/select.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
+
 #include <httplib.h>
 
 using namespace fl;
@@ -44,6 +52,7 @@ using json = nlohmann::json;
 namespace {
 
 constexpr const char* kResponseStoreTestModelAlias = "response-store-test-model";
+constexpr const char* kCodingTestModelAlias = "coding-test-model";
 
 TEST(HttpUserAgentTest, KeepsOnlyKnownProductAndNumericReleaseVersion) {
   EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/1.2.3"), "foundry-local-cpp/1.2.3");
@@ -63,6 +72,7 @@ TEST(HttpUserAgentTest, KeepsOnlyKnownProductAndNumericReleaseVersion) {
   EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/1.0-secret"), "unknown-http-client");
   EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/1.0-dev.1234private"), "unknown-http-client");
   EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/1..2"), "unknown-http-client");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/" + std::string(1024 * 1024, '1')), "unknown-http-client");
 }
 
 class WebUsageTelemetry : public TelemetryLogger {
@@ -125,6 +135,130 @@ std::string TestHttpDelete(const std::string& url, const std::string& user_agent
 
 }  // namespace
 
+class NonStreamingDisconnectMonitorTest : public ::testing::Test {
+ protected:
+  using Socket = decltype(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+
+  void SetUp() override {
+#ifdef _WIN32
+    WSADATA winsock{};
+    ASSERT_EQ(::WSAStartup(MAKEWORD(2, 2), &winsock), 0);
+#endif
+    const auto listener_socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    ASSERT_NE(listener_socket, static_cast<Socket>(-1));
+    auto listener = std::make_shared<oatpp::network::tcp::Connection>(listener_socket);
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    ASSERT_EQ(::bind(listener_socket, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0);
+    ASSERT_EQ(::listen(listener_socket, 1), 0);
+#ifdef _WIN32
+    int address_length = sizeof(address);
+#else
+    socklen_t address_length = sizeof(address);
+#endif
+    ASSERT_EQ(::getsockname(listener_socket, reinterpret_cast<sockaddr*>(&address), &address_length), 0);
+    const auto client_socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    ASSERT_NE(client_socket, static_cast<Socket>(-1));
+    client_ = std::make_shared<oatpp::network::tcp::Connection>(client_socket);
+    ASSERT_EQ(::connect(client_socket, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0);
+    const auto server_socket = ::accept(listener_socket, nullptr, nullptr);
+    ASSERT_NE(server_socket, static_cast<Socket>(-1));
+    server_ = std::make_shared<oatpp::network::tcp::Connection>(server_socket);
+  }
+
+  void TearDown() override {
+    server_.reset();
+    client_.reset();
+#ifdef _WIN32
+    ::WSACleanup();
+#endif
+  }
+
+  void ResetClient() {
+    linger abortive_close{1, 0};
+    ASSERT_EQ(::setsockopt(static_cast<Socket>(client_->getHandle()), SOL_SOCKET, SO_LINGER,
+                           reinterpret_cast<const char*>(&abortive_close), sizeof(abortive_close)),
+              0);
+    client_.reset();
+  }
+
+  std::shared_ptr<oatpp::network::tcp::Connection> client_;
+  std::shared_ptr<oatpp::network::tcp::Connection> server_;
+};
+
+TEST_F(NonStreamingDisconnectMonitorTest, CancelsWhenClientResetsWithoutConsumingBufferedInput) {
+  Request request;
+  ASSERT_TRUE(request.TryBegin());
+  NonStreamingDisconnectMonitor monitor(server_, request);
+  ASSERT_EQ(::send(static_cast<Socket>(client_->getHandle()), "x", 1, 0), 1);
+  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  EXPECT_FALSE(request.IsCancellationRequested());
+  char byte = 0;
+  ASSERT_EQ(::recv(static_cast<Socket>(server_->getHandle()), &byte, 1, MSG_PEEK), 1);
+  EXPECT_EQ(byte, 'x');
+
+  ResetClient();
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!request.IsCancellationRequested() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+
+  EXPECT_TRUE(monitor.Stop());
+  EXPECT_TRUE(request.IsCancellationRequested());
+#ifndef _WIN32
+  ASSERT_EQ(::recv(static_cast<Socket>(server_->getHandle()), &byte, 1, MSG_PEEK), 1);
+  EXPECT_EQ(byte, 'x');
+#endif
+}
+
+TEST_F(NonStreamingDisconnectMonitorTest, CompletingRequestDoesNotCancelIt) {
+  Request request;
+  NonStreamingDisconnectMonitor monitor(server_, request);
+  EXPECT_FALSE(monitor.Stop());
+  ResetClient();
+  EXPECT_FALSE(monitor.Stop());
+  EXPECT_FALSE(request.IsCancellationRequested());
+}
+
+TEST_F(NonStreamingDisconnectMonitorTest, StopDetectsResetAfterLastWorkerPoll) {
+  Request request;
+  ASSERT_TRUE(request.TryBegin());
+  NonStreamingDisconnectMonitor monitor(server_, request);
+  ResetClient();
+  fd_set readable;
+  FD_ZERO(&readable);
+  const auto server_socket = static_cast<Socket>(server_->getHandle());
+  FD_SET(server_socket, &readable);
+  timeval timeout{2, 0};
+  ASSERT_EQ(::select(static_cast<int>(server_socket) + 1, &readable, nullptr, nullptr, &timeout), 1);
+  EXPECT_TRUE(monitor.Stop());
+  EXPECT_TRUE(request.IsCancellationRequested());
+}
+
+class NonStreamingHalfCloseTest : public NonStreamingDisconnectMonitorTest,
+                                  public ::testing::WithParamInterface<bool> {};
+
+TEST_P(NonStreamingHalfCloseTest, PreservesResponseWithOrWithoutBufferedInput) {
+  Request request;
+  ASSERT_TRUE(request.TryBegin());
+  NonStreamingDisconnectMonitor monitor(server_, request);
+  if (GetParam()) {
+    ASSERT_EQ(::send(static_cast<Socket>(client_->getHandle()), "x", 1, 0), 1);
+  }
+
+#ifdef _WIN32
+  ASSERT_EQ(::shutdown(static_cast<Socket>(client_->getHandle()), SD_SEND), 0);
+#else
+  ASSERT_EQ(::shutdown(static_cast<Socket>(client_->getHandle()), SHUT_WR), 0);
+#endif
+  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  EXPECT_FALSE(monitor.Stop());
+  EXPECT_FALSE(request.IsCancellationRequested());
+}
+
+INSTANTIATE_TEST_SUITE_P(Tcp, NonStreamingHalfCloseTest, ::testing::Bool());
+
 // ========================================================================
 // Test fixture — starts a real web service on an ephemeral port
 // ========================================================================
@@ -136,7 +270,7 @@ class WebServiceTest : public ::testing::Test {
     ep_detector_ = std::make_unique<test::CpuOnlyEpDetector>();
     model_load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
     session_manager_ = std::make_unique<SessionManager>(*logger_);
-    null_telemetry_ = std::make_unique<TelemetryLogger>("test", fl::test::NullLog());
+    telemetry_ = std::make_unique<WebUsageTelemetry>();
     public_catalog_ = std::make_unique<test::MockCatalog>();
     local_catalog_ = std::make_unique<test::MockCatalog>();
 
@@ -165,6 +299,12 @@ class WebServiceTest : public ::testing::Test {
         response_store_model_path,
         svc_.download_manager,
         *model_load_manager_));
+    public_catalog_->AddModel(Model::FromModelInfo(
+        test::MakeTestModelInfo(kCodingTestModelAlias, "microsoft", "coding"),
+        response_store_model_path, svc_.download_manager, *model_load_manager_));
+    local_catalog_->AddModel(Model::FromModelInfo(
+        test::MakeTestModelInfo(kCodingTestModelAlias, "local-owner", "coding"),
+        response_store_model_path, svc_.download_manager, *model_load_manager_));
 
     local_catalog_->AddModel(Model::FromModelInfo(
         test::MakeTestModelInfo("alpha-model", "local-owner"),
@@ -181,7 +321,7 @@ class WebServiceTest : public ::testing::Test {
         *model_load_manager_));
 
     service_ = std::make_unique<WebService>(*public_catalog_, *local_catalog_, *logger_, "/tmp/test-cache",
-                                            *model_load_manager_, *session_manager_, *null_telemetry_, []() {});
+                                            *model_load_manager_, *session_manager_, *telemetry_, []() {});
     auto urls = service_->Start({"http://127.0.0.1:0"});
     ASSERT_EQ(urls.size(), 1u);
     base_url_ = urls[0];
@@ -195,7 +335,7 @@ class WebServiceTest : public ::testing::Test {
     local_catalog_.reset();
     public_catalog_.reset();
     session_manager_.reset();
-    null_telemetry_.reset();
+    telemetry_.reset();
     model_load_manager_.reset();
     ep_detector_.reset();
     logger_.reset();
@@ -213,7 +353,7 @@ class WebServiceTest : public ::testing::Test {
   static std::unique_ptr<StderrLogger> logger_;
   static std::unique_ptr<ModelLoadManager> model_load_manager_;
   static std::unique_ptr<SessionManager> session_manager_;
-  static std::unique_ptr<TelemetryLogger> null_telemetry_;
+  static std::unique_ptr<WebUsageTelemetry> telemetry_;
   static std::unique_ptr<WebService> service_;
   static std::string base_url_;
   static inline fl::test::FakeServiceBindings svc_;
@@ -226,7 +366,7 @@ std::unique_ptr<test::CpuOnlyEpDetector> WebServiceTest::ep_detector_;
 std::unique_ptr<StderrLogger> WebServiceTest::logger_;
 std::unique_ptr<ModelLoadManager> WebServiceTest::model_load_manager_;
 std::unique_ptr<SessionManager> WebServiceTest::session_manager_;
-std::unique_ptr<TelemetryLogger> WebServiceTest::null_telemetry_;
+std::unique_ptr<WebUsageTelemetry> WebServiceTest::telemetry_;
 std::unique_ptr<WebService> WebServiceTest::service_;
 std::string WebServiceTest::base_url_;
 
@@ -348,7 +488,7 @@ TEST_F(WebServiceTest, OpenAIListModelsReturnsAllModels) {
 
   EXPECT_EQ(j["object"], "list") << "Response: " << j.dump(2);
   ASSERT_TRUE(j["data"].is_array()) << "Response: " << j.dump(2);
-  EXPECT_EQ(j["data"].size(), 4u) << "Expected 4 models. Response: " << j.dump(2);
+  EXPECT_EQ(j["data"].size(), 5u) << "Expected 5 models. Response: " << j.dump(2);
 }
 
 TEST_F(WebServiceTest, OpenAIListModelsContainsExpectedFields) {
@@ -944,6 +1084,114 @@ std::string ErrorMessageOf(const json& body) {
 
 }  // namespace
 
+TEST_F(WebServiceTest, CodingSupportsChatAndResponsesIncludingStreaming) {
+  for (const std::string prefix : {"", "/catalogs/local"}) {
+    SCOPED_TRACE(prefix);
+    const auto listed = Get(prefix + "/v1/models/" + kCodingTestModelAlias + ":1");
+    EXPECT_EQ(listed["id"], std::string(kCodingTestModelAlias) + ":1");
+    const auto loaded = Get(prefix + "/models/load/" + kCodingTestModelAlias);
+    ASSERT_EQ(loaded["status"], "loaded") << loaded.dump(2);
+
+    for (const bool responses : {false, true}) {
+      SCOPED_TRACE(responses);
+      const auto endpoint = prefix + (responses ? "/v1/responses" : "/v1/chat/completions");
+      json body = {{"model", std::string(kCodingTestModelAlias) + ":1"}, {"temperature", 0}};
+      if (responses) {
+        body["input"] = "Write a function.";
+        body["max_output_tokens"] = 4;
+        body["store"] = false;
+      } else {
+        body["messages"] = json::array({{{"role", "user"}, {"content", "Write a function."}}});
+        body["max_tokens"] = 4;
+      }
+
+      const auto result = PostJson(base_url_ + endpoint, body);
+      ASSERT_EQ(result.status, 200) << result.body.dump(2);
+      if (responses) {
+        EXPECT_FALSE(result.body.at("output").empty()) << result.body.dump(2);
+      } else {
+        EXPECT_FALSE(result.body.at("choices").at(0).at("message").at("content").get<std::string>().empty());
+      }
+
+      body["stream"] = true;
+      httplib::Client client(base_url_);
+      const auto streamed = client.Post(endpoint, body.dump(), "application/json");
+      ASSERT_TRUE(streamed) << httplib::to_string(streamed.error());
+      ASSERT_EQ(streamed->status, 200) << streamed->body;
+      if (responses) {
+        EXPECT_NE(streamed->body.find("event: response.output_text.delta"), std::string::npos);
+        EXPECT_TRUE(streamed->body.find("event: response.completed") != std::string::npos ||
+                    streamed->body.find("event: response.incomplete") != std::string::npos)
+            << streamed->body;
+      } else {
+        EXPECT_NE(streamed->body.find("chat.completion.chunk"), std::string::npos);
+        EXPECT_NE(streamed->body.find("data: [DONE]"), std::string::npos);
+      }
+    }
+
+    const auto unloaded = Get(prefix + "/models/unload/" + kCodingTestModelAlias);
+    EXPECT_EQ(unloaded["status"], "unloaded") << unloaded.dump(2);
+  }
+}
+
+TEST_F(WebServiceTest, CodingResponsesRejectImageInput) {
+  const auto loaded = Get(std::string("/models/load/") + kCodingTestModelAlias);
+  ASSERT_EQ(loaded["status"], "loaded") << loaded.dump(2);
+  const auto result = PostJson(
+      base_url_ + "/v1/responses",
+      {{"model", std::string(kCodingTestModelAlias) + ":1"},
+       {"input", json::array({{{"role", "user"},
+                               {"content", json::array({{{"type", "input_image"},
+                                                         {"image_url", "data:image/png;base64,AA=="}}})}}})},
+       {"max_output_tokens", 4}});
+
+  EXPECT_EQ(result.status, 400) << result.body.dump(2);
+  EXPECT_NE(ErrorMessageOf(result.body).find("IMAGE input is not supported by model task 'coding'"),
+            std::string::npos)
+      << result.body.dump(2);
+  const auto unloaded = Get(std::string("/models/unload/") + kCodingTestModelAlias);
+  EXPECT_EQ(unloaded["status"], "unloaded") << unloaded.dump(2);
+}
+
+TEST_F(WebServiceTest, CodingChatCompletionsRejectImageAndAudioInput) {
+  const auto loaded = Get(std::string("/models/load/") + kCodingTestModelAlias);
+  ASSERT_EQ(loaded["status"], "loaded") << loaded.dump(2);
+  const json media_parts = {
+      {{"type", "image_url"}, {"image_url", {{"url", "data:image/png;base64,AA=="}}}},
+      {{"type", "input_audio"}, {"input_audio", {{"data", "AA=="}, {"format", "wav"}}}},
+  };
+  for (const std::string prefix : {"", "/catalogs/local"}) {
+    for (const auto& media : media_parts) {
+      const auto expected = std::string(media.at("type") == "image_url" ? "IMAGE" : "AUDIO") +
+                            " input is not supported by model task 'coding'";
+      for (const bool stream : {false, true}) {
+        SCOPED_TRACE(prefix + media.dump() + (stream ? " streaming" : " non-streaming"));
+        const json body = {
+            {"model", std::string(kCodingTestModelAlias) + ":1"},
+            {"messages", {{{"role", "user"}, {"content", {{{"type", "text"}, {"text", "Write a function."}}, media}}}}},
+            {"max_tokens", 4},
+            {"stream", stream},
+        };
+        httplib::Client client(base_url_);
+        const auto result = client.Post(prefix + "/v1/chat/completions", body.dump(), "application/json");
+        ASSERT_TRUE(result) << httplib::to_string(result.error());
+        if (stream) {
+          EXPECT_EQ(result->status, 200) << result->body;
+          EXPECT_NE(result->body.find("invalid_request_error"), std::string::npos) << result->body;
+          EXPECT_NE(result->body.find(expected), std::string::npos) << result->body;
+          EXPECT_EQ(result->body.find("chat.completion.chunk"), std::string::npos) << result->body;
+        } else {
+          EXPECT_EQ(result->status, 400) << result->body;
+          EXPECT_NE(ErrorMessageOf(json::parse(result->body)).find(expected), std::string::npos) << result->body;
+        }
+      }
+    }
+  }
+
+  const auto unloaded = Get(std::string("/models/unload/") + kCodingTestModelAlias);
+  EXPECT_EQ(unloaded["status"], "unloaded") << unloaded.dump(2);
+}
+
 TEST_F(WebServiceTest, LocalInferenceRoutesResolveOnlyLocalModels) {
   const auto audio_path = fl::test::GetTestDataPath("Recording.mp3");
   const std::vector<std::pair<std::string, json>> requests = {
@@ -1048,6 +1296,112 @@ TEST_F(WebServiceTest, LocalStoredResponsesRemainIsolatedFromPublicRoutes) {
   const auto unload_result = Get(std::string("/catalogs/local/models/unload/") + kResponseStoreTestModelAlias);
   EXPECT_EQ(unload_result["status"], "unloaded") << unload_result.dump(2);
 }
+
+#ifndef _WIN32
+TEST_F(WebServiceTest, HalfClosedNonStreamingChatConnectionReceivesCompletion) {
+  const auto load_result = Get(std::string("/models/load/") + kResponseStoreTestModelAlias);
+  ASSERT_EQ(load_result["status"], "loaded") << load_result.dump(2);
+  const int client = ::socket(AF_INET, SOCK_STREAM, 0);
+  ASSERT_GE(client, 0);
+  auto connection = std::make_shared<oatpp::network::tcp::Connection>(client);
+  sockaddr_in address{};
+  address.sin_family = AF_INET;
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  address.sin_port = htons(static_cast<uint16_t>(std::stoi(base_url_.substr(base_url_.rfind(':') + 1))));
+  ASSERT_EQ(::connect(client, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0);
+  timeval timeout{5, 0};
+  ASSERT_EQ(::setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)), 0);
+  const json body = {
+      {"model", std::string(kResponseStoreTestModelAlias) + ":1"},
+      {"messages", json::array({{{"role", "user"}, {"content", "Hello"}}})},
+      {"max_tokens", 4},
+  };
+  const std::string payload = body.dump();
+  const std::string message =
+      "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+      "Content-Type: application/json\r\nContent-Length: " +
+      std::to_string(payload.size()) + "\r\nConnection: close\r\n\r\n" + payload;
+  ASSERT_EQ(::send(client, message.data(), message.size(), 0), static_cast<ssize_t>(message.size()));
+  ASSERT_EQ(::shutdown(client, SHUT_WR), 0);
+  std::string response;
+  char buffer[4096];
+  ssize_t received;
+  while ((received = ::recv(client, buffer, sizeof(buffer), 0)) > 0) {
+    response.append(buffer, static_cast<size_t>(received));
+  }
+
+  EXPECT_EQ(received, 0) << "Timed out reading the completion";
+  EXPECT_EQ(response.find("HTTP/1.1 200 "), 0u) << response;
+  const auto body_start = response.find("\r\n\r\n");
+  ASSERT_NE(body_start, std::string::npos) << response;
+  EXPECT_TRUE(json::parse(response.substr(body_start + 4)).contains("choices")) << response;
+  const auto unload_result = Get(std::string("/models/unload/") + kResponseStoreTestModelAlias);
+  EXPECT_EQ(unload_result["status"], "unloaded") << unload_result.dump(2);
+}
+
+TEST_F(WebServiceTest, ClosingNonStreamingChatConnectionCancelsInferenceAndReleasesSession) {
+  const auto load_result = Get(std::string("/models/load/") + kResponseStoreTestModelAlias);
+  ASSERT_EQ(load_result["status"], "loaded") << load_result.dump(2);
+  const auto prior_action_count = telemetry_->Events().actions.size();
+
+  const int client = ::socket(AF_INET, SOCK_STREAM, 0);
+  ASSERT_GE(client, 0);
+  sockaddr_in address{};
+  address.sin_family = AF_INET;
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  address.sin_port = htons(static_cast<uint16_t>(std::stoi(base_url_.substr(base_url_.rfind(':') + 1))));
+  ASSERT_EQ(::connect(client, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0);
+
+  const json body = {
+      {"model", std::string(kResponseStoreTestModelAlias) + ":1"},
+      {"messages", json::array({{{"role", "user"}, {"content", "Continue writing a long answer"}}})},
+      {"max_tokens", 512},
+  };
+  const std::string payload = body.dump();
+  const std::string message =
+      "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+      "Content-Type: application/json\r\nContent-Length: " +
+      std::to_string(payload.size()) + "\r\nConnection: close\r\n\r\n" + payload;
+  ASSERT_EQ(::send(client, message.data(), message.size(), 0), static_cast<ssize_t>(message.size()));
+
+  const auto start_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (session_manager_->ActiveCount() == 0 && std::chrono::steady_clock::now() < start_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  const bool started = session_manager_->ActiveCount() > 0;
+  linger abortive_close{1, 0};
+  ASSERT_EQ(::setsockopt(client, SOL_SOCKET, SO_LINGER, &abortive_close, sizeof(abortive_close)), 0);
+  ::close(client);
+  ASSERT_TRUE(started) << "The non-streaming request did not begin inference";
+
+  const auto stop_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (session_manager_->ActiveCount() > 0 && std::chrono::steady_clock::now() < stop_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_EQ(session_manager_->ActiveCount(), 0u) << "Disconnected inference did not stop";
+
+  bool canceled = false;
+  const auto telemetry_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!canceled && std::chrono::steady_clock::now() < telemetry_deadline) {
+    const auto actions = telemetry_->Events().actions;
+    for (size_t i = prior_action_count; i < actions.size(); ++i) {
+      canceled |= actions[i].action == Action::kOpenAIChatCompletions && actions[i].status == ActionStatus::kCanceled;
+    }
+    if (!canceled) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+  }
+  EXPECT_TRUE(canceled) << "The disconnected request completed instead of being canceled";
+
+  const auto recovered = PostJson(base_url_ + "/v1/chat/completions",
+                                  {{"model", std::string(kResponseStoreTestModelAlias) + ":1"},
+                                   {"messages", json::array({{{"role", "user"}, {"content", "Hello"}}})},
+                                   {"max_tokens", 4}});
+  EXPECT_EQ(recovered.status, 200) << recovered.body.dump(2);
+  const auto unload_result = Get(std::string("/models/unload/") + kResponseStoreTestModelAlias);
+  EXPECT_EQ(unload_result["status"], "unloaded") << unload_result.dump(2);
+}
+#endif
 
 TEST_F(WebServiceTest, ClosingResponsesStreamCancelsInferenceAndPreservesConversation) {
   const auto load_result = Get(std::string("/models/load/") + kResponseStoreTestModelAlias);
@@ -1265,6 +1619,34 @@ TEST_F(WebServiceTest, ResponsesStrictContractIsValidatedBeforeModelResolution) 
       }
     }
   }
+}
+
+TEST_F(WebServiceTest, ChatCompletionsRejectsNonBooleanParallelToolCalls) {
+  const json body = {
+      {"model", "alpha-model"},
+      {"messages", json::array({{{"role", "user"}, {"content", "hi"}}})},
+      {"parallel_tool_calls", "false"},
+  };
+
+  const auto result = PostJson(base_url_ + "/v1/chat/completions", body);
+
+  EXPECT_EQ(result.status, 400) << result.body.dump(2);
+  EXPECT_NE(ErrorMessageOf(result.body).find("boolean"), std::string::npos)
+      << result.body.dump(2);
+}
+
+TEST_F(WebServiceTest, ResponsesRejectsNonBooleanParallelToolCalls) {
+  const json body = {
+      {"model", "alpha-model"},
+      {"input", "hi"},
+      {"parallel_tool_calls", "false"},
+  };
+
+  const auto result = PostJson(base_url_ + "/v1/responses", body);
+
+  EXPECT_EQ(result.status, 400) << result.body.dump(2);
+  EXPECT_NE(ErrorMessageOf(result.body).find("boolean"), std::string::npos)
+      << result.body.dump(2);
 }
 
 TEST_F(WebServiceTest, ChatCompletionsAcceptsTextCustomToolDeclaration) {

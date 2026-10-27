@@ -204,7 +204,11 @@ impl Catalog {
         .await
     }
 
-    /// Register existing model assets in the local catalog without transferring ownership of those assets.
+    /// Register existing model assets without transferring ownership of those assets.
+    ///
+    /// `task` is required and metadata is copied. Missing display name and modalities receive defaults, while context
+    /// length comes from `model.context_length`, then `search.max_length`, when positive. A caller-supplied provider
+    /// remains the default load override; when omitted, runtime metadata stays unset and `genai_config.json` selects it.
     pub async fn register_model(
         &self,
         model_path: &str,

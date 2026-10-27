@@ -54,6 +54,47 @@ fn config_defaults_to_http_and_public_feeds() {
 }
 
 #[test]
+fn default_sources_include_proxy_before_nightly_in_each_mode() {
+    for mode in ["http", "dotnet", "nuget"] {
+        let config = config_from(&[("FOUNDRY_LOCAL_NUGET_MODE", mode)], false).unwrap();
+        let expected = [
+            "https://api.nuget.org/v3/index.json",
+            "https://packagefeedproxy.microsoft.io/nuget/v3/index.json",
+            "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json",
+        ];
+        assert_eq!(config.feeds, expected);
+        if config.mode != NuGetMode::Http {
+            let (args, flag) = match config.mode {
+                NuGetMode::Dotnet => (
+                    build_support::build_dotnet_restore_args(
+                        &config,
+                        Path::new("restore.csproj"),
+                        Path::new("packages"),
+                    ),
+                    "--source",
+                ),
+                _ => (
+                    build_support::build_nuget_install_args(
+                        &config,
+                        "Microsoft.ML.OnnxRuntime",
+                        "1.30.0",
+                        Path::new("packages"),
+                    ),
+                    "-Source",
+                ),
+            };
+            let args = args_as_strings(args);
+            let sources: Vec<_> = args
+                .windows(2)
+                .filter(|pair| pair[0] == flag)
+                .map(|pair| pair[1].as_str())
+                .collect();
+            assert_eq!(sources, expected);
+        }
+    }
+}
+
+#[test]
 fn config_accepts_each_mode_and_windows_nuget_default() {
     assert_eq!(
         config_from(&[("FOUNDRY_LOCAL_NUGET_MODE", "http")], false)

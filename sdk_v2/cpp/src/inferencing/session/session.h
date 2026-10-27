@@ -133,9 +133,9 @@ class Session {
   /// Stage telemetry context for the next operation (including a cached session's next turn).
   /// HTTP callers exclusively own the session while staging an indirect child of the route context.
   /// Without a staged context, each ProcessRequest creates an independent direct context.
-  void SetInvocationContext(InvocationContext context) {
+  void SetInvocationContext(const InvocationContext& context) {
     std::lock_guard<std::mutex> lock(*invocation_context_mutex_);
-    invocation_context_ = std::move(context);
+    invocation_context_ = context.BoundedCopy();
   }
 
  protected:

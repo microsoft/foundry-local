@@ -2,6 +2,9 @@
 
 The Foundry Local C# SDK provides a .NET interface for running AI models locally via the Foundry Local Core. Discover, download, load, and run inference entirely on your own machine — no cloud required.
 
+For the v2 inference concepts and typed, stateful session examples, see
+[Inference with the Foundry Local SDK](../INFERENCING.md).
+
 ## Features
 
 - **Model catalog** — browse and search all available models; filter by cached or loaded state
@@ -192,6 +195,9 @@ await localCatalog.UnregisterModelAsync(model.Id);
 ```
 
 Calling `GetCatalogAsync()` without a `CatalogType` remains equivalent to requesting `CatalogType.Public`.
+
+Models registered with task `coding` use the existing text-only `ChatSession` interface. See
+[coding models](../INFERENCING.md#coding-models) for capability and compatibility details.
 
 ### Model Lifecycle
 
@@ -402,6 +408,16 @@ await FoundryLocalManager.Instance.StopWebServiceAsync();
 | `LogLevel` | `LogLevel` | `Warning` | `Verbose`, `Debug`, `Information`, `Warning`, `Error`, `Fatal` |
 | `Web` | `WebService?` | `null` | Web service configuration (see below) |
 | `AdditionalSettings` | `IDictionary<string, string>?` | `null` | Extra key-value settings passed to Core |
+
+**Logging**
+
+The `ILogger` passed to `FoundryLocalManager.CreateAsync` controls managed SDK diagnostics,
+including native library resolution. Successful library loads are logged at `Debug`; failed
+preload attempts are logged at `Warning`. Use `NullLogger.Instance` to discard managed SDK
+logs. The SDK does not write these diagnostics directly to the console or `Trace`.
+
+`Configuration.LogLevel` and `LogsDir` separately control the native Core log level and log
+directory; they do not configure the supplied `ILogger`.
 
 **`Configuration.WebService`**
 

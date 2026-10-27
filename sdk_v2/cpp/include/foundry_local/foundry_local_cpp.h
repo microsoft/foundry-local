@@ -250,6 +250,10 @@ class Configuration {
 
   /// Optional. Add a catalog URL to connect to.
   /// Defaults to the Azure Foundry Local Catalog if none are added.
+  /// Legacy Azure `https://ai.azure.com/.../ux/v1.0` URLs are unsupported. Compatible custom
+  /// catalog endpoints may use a different path.
+  /// Prefix catalog-v2 deployment-option overrides with `deploymentOptions=`. Unqualified
+  /// overrides retain the legacy `foundryLocal` tag semantics.
   Configuration& AddCatalogUrl(const std::string& url,
                                const std::optional<std::string>& filter_override = std::nullopt);
 
@@ -792,6 +796,7 @@ class ICatalog {
   /// Get every individual model variant currently present in the local cache.
   virtual ModelList GetCachedModels() const = 0;
 
+  /// Get every loaded leaf variant, independently of each alias group's selected variant.
   virtual ModelList GetLoadedModels() const = 0;
   virtual std::unique_ptr<IModel> GetModel(const std::string& alias) const = 0;
   virtual std::unique_ptr<IModel> GetModelVariant(const std::string& model_id) const = 0;
@@ -808,7 +813,10 @@ class ICatalog {
                                      const std::string& variant_name = {},
                                      int max_versions = 50) = 0;
 
-  /// Register existing local model assets. `model_id` must use `<name>:<version>`; metadata is copied.
+  /// Register existing local model assets. `model_id` must use `<name>:<version>` and `metadata.Task()` is required.
+  /// Metadata is copied. Missing display name and modalities receive defaults, while context length comes from
+  /// model.context_length, then search.max_length, when positive. A caller-supplied provider remains the default
+  /// IModel::Load override; when omitted, runtime metadata remains unset and genai_config.json selects the provider.
   /// The catalog does not take ownership of `model_path` and never deletes its contents.
   virtual std::unique_ptr<IModel> RegisterModel(const std::string& model_path, const std::string& model_id,
                                                 const ModelInfo& metadata) = 0;
@@ -1116,6 +1124,7 @@ class Session {
   std::unique_ptr<detail::StreamingCallbackHelper> streaming_callback_helper_;
 };
 
+/// Session for chat-completion, coding (text-only), and vision-language-chat models.
 class ChatSession : public Session {
  public:
   explicit ChatSession(IModel& model);
