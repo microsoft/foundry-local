@@ -54,7 +54,7 @@ class NonGenerativeRuntimeState {
 };
 
 std::shared_ptr<NonGenerativeRuntimeState> CreateNonGenerativeRuntimeState(
-    uint64_t memory_budget_bytes = std::numeric_limits<uint64_t>::max(),
+    uint64_t memory_budget_bytes = (std::numeric_limits<uint64_t>::max)(),
     size_t readiness_concurrency = 1);
 std::shared_ptr<oatpp::web::server::HttpRequestHandler> CreateSystemOneHandler(ServiceContext& ctx);
 std::shared_ptr<oatpp::web::server::HttpRequestHandler> CreateRankHandler(ServiceContext& ctx);

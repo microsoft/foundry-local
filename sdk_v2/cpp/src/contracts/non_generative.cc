@@ -10,7 +10,7 @@ namespace {
 
 void ValidateStructuredNumbers(const nlohmann::ordered_json& value) {
   if (value.is_number_unsigned() &&
-      value.get<uint64_t>() > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+      value.get<uint64_t>() > static_cast<uint64_t>((std::numeric_limits<int64_t>::max)())) {
     throw nlohmann::json::other_error::create(
         501, "unsigned structured value exceeds INT64_MAX", &value);
   }

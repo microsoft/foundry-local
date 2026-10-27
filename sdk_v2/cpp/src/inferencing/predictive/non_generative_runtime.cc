@@ -56,7 +56,7 @@ OgaStructuredValue ToStructured(const json& value) {
   if (value.is_number_integer()) return value.get<int64_t>();
   if (value.is_number_unsigned()) {
     const auto number = value.get<uint64_t>();
-    if (number > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+    if (number > static_cast<uint64_t>((std::numeric_limits<int64_t>::max)()))
       throw std::invalid_argument("unsigned structured value exceeds INT64_MAX");
     return static_cast<int64_t>(number);
   }

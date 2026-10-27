@@ -242,7 +242,7 @@ std::optional<NonGenerativePackageMetadata> ReadNonGenerativePackage(
     if (!entry.is_regular_file()) continue;
     const auto bytes = entry.file_size();
     if (bytes >
-        std::numeric_limits<uint64_t>::max() - result.package_bytes)
+        (std::numeric_limits<uint64_t>::max)() - result.package_bytes)
       throw std::invalid_argument("package byte size overflows uint64");
     result.package_bytes += bytes;
   }

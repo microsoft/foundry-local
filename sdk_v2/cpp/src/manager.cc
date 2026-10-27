@@ -578,12 +578,12 @@ void Manager::StartWebService() {
   const auto non_generative_memory_budget_bytes =
       UnsignedAdditionalOption(
           config_, "NonGenerativeMemoryBudgetBytes",
-          std::numeric_limits<uint64_t>::max());
+          (std::numeric_limits<uint64_t>::max)());
   const auto non_generative_readiness_concurrency =
       UnsignedAdditionalOption(
           config_, "NonGenerativeReadinessConcurrency", 1);
   if (non_generative_readiness_concurrency >
-      std::numeric_limits<size_t>::max())
+      (std::numeric_limits<size_t>::max)())
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
              "NonGenerativeReadinessConcurrency exceeds size_t");
   web_service_ = std::make_unique<WebService>(*public_catalog_, *local_catalog_, *logger_, *config_.model_cache_dir,
