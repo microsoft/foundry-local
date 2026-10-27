@@ -73,3 +73,5 @@ steps:
     echo "Verifying Maven installation..."
     mvn --version
   displayName: 'Verify Maven Version'
+  env:
+    JAVA_HOME: $(foundryJavaHome)
