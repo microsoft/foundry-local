@@ -160,7 +160,7 @@ public abstract class Session : IDisposable
                 {
                     ct.ThrowIfCancellationRequested();
                     using var managerLease = _managerLifetime.Acquire(this, trackReentrancy: true);
-                    var responsePtr = _session.ProcessRequest(requestLease.Ptr);
+                    var responsePtr = _session.ProcessRequest(requestLease.Ptr, ct);
                     return new Response(responsePtr);
                 }
                 finally

@@ -70,6 +70,35 @@ internal sealed class ChatSessionTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Chat_NoStreaming_TokenCancellation_AllowsRequestReuse(bool cancelBeforeStart)
+    {
+        using var session = new ChatSession(model!);
+        using var request = new Request();
+        request.AddItem(MessageItem.User("Count from 1 to 10000, writing every integer on its own line."));
+        request.SetOptions(new RequestOptions { Search = new SearchOptions { MaxOutputTokens = 256 } });
+        using var cts = new CancellationTokenSource();
+        if (cancelBeforeStart)
+        {
+            cts.Cancel();
+        }
+        else
+        {
+            cts.CancelAfter(TimeSpan.FromMilliseconds(100));
+        }
+
+        await Assert.That(async () =>
+        {
+            using var response = await session.ProcessRequestAsync(request, cts.Token).ConfigureAwait(false);
+        }).Throws<OperationCanceledException>();
+
+        request.SetOptions(new RequestOptions { Search = new SearchOptions { MaxOutputTokens = 8 } });
+        using var nextResponse = await session.ProcessRequestAsync(request).ConfigureAwait(false);
+        await Assert.That(nextResponse.GetUsage().CompletionTokens).IsGreaterThan(0);
+    }
+
+    [Test]
     public async Task RequestPreflight_CaptureSurvivesSourceDisposal()
     {
         var session = new ChatSession(model!);

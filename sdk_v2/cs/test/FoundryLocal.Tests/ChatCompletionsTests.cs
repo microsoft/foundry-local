@@ -1,4 +1,4 @@
-// --------------------------------------------------------------------------------------------------------------------
+﻿// --------------------------------------------------------------------------------------------------------------------
 // <copyright company="Microsoft">
 //   Copyright (c) Microsoft. All rights reserved.
 // </copyright>
@@ -76,6 +76,33 @@ internal sealed class OpenAIChatCompletionsTests
         message = response.Choices[0].Message;
         await Assert.That(message.Content).IsNotNull();
         await Assert.That(message.Content).Contains("Yes");
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task DirectChat_NoStreaming_TokenCancellation_AllowsSubsequentCall(bool cancelBeforeStart)
+    {
+        var chatClient = await model!.GetChatClientAsync();
+        chatClient.Settings.MaxTokens = 256;
+        using var cts = new CancellationTokenSource();
+        if (cancelBeforeStart)
+        {
+            cts.Cancel();
+        }
+        else
+        {
+            cts.CancelAfter(TimeSpan.FromMilliseconds(100));
+        }
+
+        await Assert.That(async () => await chatClient.CompleteChatAsync(
+            [new ChatMessage { Role = "user", Content = "Count from 1 to 10000, writing every integer on its own line." }],
+            cts.Token).ConfigureAwait(false)).Throws<OperationCanceledException>();
+
+        chatClient.Settings.MaxTokens = 8;
+        var response = await chatClient.CompleteChatAsync(
+            [new ChatMessage { Role = "user", Content = "What is 2 + 2?" }]).ConfigureAwait(false);
+        await Assert.That(response.Choices).IsNotEmpty();
     }
 
     [Test]

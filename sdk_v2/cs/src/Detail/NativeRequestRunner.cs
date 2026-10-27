@@ -42,7 +42,7 @@ internal static class NativeRequestRunner
                 using var request = new Request();
                 request.AddItem(jsonItem);
 
-                var responsePtr = session.ProcessRequest(request.Ptr);
+                var responsePtr = session.ProcessRequest(request.Ptr, ct ?? CancellationToken.None);
                 using var response = new Response(responsePtr);
                 using var responseItem = response.GetItem(0);
 

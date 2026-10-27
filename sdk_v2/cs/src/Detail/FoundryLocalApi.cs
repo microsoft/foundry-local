@@ -878,10 +878,23 @@ public sealed class Session : IDisposable
     /// <summary>
     /// Process a request. Returns a new Response pointer. Caller owns it.
     /// </summary>
-    internal IntPtr ProcessRequest(IntPtr requestPtr)
+    internal IntPtr ProcessRequest(IntPtr requestPtr, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
+        using var cancellation = ct.CanBeCanceled
+            ? ct.Register(() => Api.CheckStatus(Api.Inference.RequestCancel(requestPtr)))
+            : default;
+
+        ct.ThrowIfCancellationRequested();
         IntPtr responsePtr = IntPtr.Zero;
         Api.CheckStatus(Api.Inference.SessionProcessRequest(Ptr, requestPtr, ref responsePtr));
+
+        if (ct.IsCancellationRequested)
+        {
+            Api.Inference.ResponseRelease(responsePtr);
+            ct.ThrowIfCancellationRequested();
+        }
+
         return responsePtr;
     }
 
