@@ -10,6 +10,7 @@
 #include "ep_detection/ep_detector.h"
 #include "http/http_client.h"
 #include "inferencing/model_load_manager.h"
+#include "inferencing/predictive/non_generative_session.h"
 #include "inferencing/session/session_manager.h"
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
@@ -679,6 +680,13 @@ TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCpuPackagesWhenConfi
       "", std::chrono::minutes(3)));
   ASSERT_EQ(ranking.at("ranked").size(), 2u);
   EXPECT_EQ(ranking.at("model"), clm_metadata.model_id);
+  auto* shared_clm = local_catalog_->GetModelVariant(clm_metadata.model_id);
+  ASSERT_NE(shared_clm, nullptr);
+  ASSERT_TRUE(shared_clm->IsLoaded());
+  {
+    NonGenerativeSession sdk_session(*shared_clm, *logger_, *telemetry_);
+  }
+  EXPECT_TRUE(shared_clm->IsLoaded());
   EXPECT_THROW(
       TestHttpGet(base_url_ + "/catalogs/local/models/load/" +
                   clm_metadata.model_id),

@@ -25,6 +25,7 @@ NonGenerativeSession::NonGenerativeSession(
       provider_ = NormalizeNonGenerativeProvider(
           model_->Info().execution_provider);
     }
+    model_->PrepareExternalProvider(provider_);
     if (model_->Info().task == "text-ranking") {
       ranking_ =
           std::make_unique<RankingRuntime>(model_->GetPath(), provider_);
@@ -36,10 +37,9 @@ NonGenerativeSession::NonGenerativeSession(
                "unsupported non-generative model task: ",
                model_->Info().task);
     }
+    model_->MarkExternalRuntimeLoaded();
   } catch (...) {
     model_->ReleaseExternalSession();
-    if (model_->ActiveExternalSessionCount() == 0)
-      model_->UnloadExternalRuntime();
     model_ = nullptr;
     throw;
   }
@@ -50,12 +50,6 @@ NonGenerativeSession::~NonGenerativeSession() {
   decision_.reset();
   if (!model_) return;
   model_->ReleaseExternalSession();
-  if (model_->ActiveExternalSessionCount() == 0) {
-    try {
-      model_->UnloadExternalRuntime();
-    } catch (...) {
-    }
-  }
 }
 
 void NonGenerativeSession::ProcessRequestImpl(
