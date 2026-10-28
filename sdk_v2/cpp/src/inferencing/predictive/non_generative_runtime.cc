@@ -35,6 +35,17 @@ std::vector<std::string> ExplicitProviders(const std::string& provider) {
                           : std::vector<std::string>{provider};
 }
 
+std::unique_ptr<::NonGenerativeSession> CreateSession(
+    const std::string& path, const std::vector<std::string>& providers) {
+  auto config = OgaConfig::Create(path.c_str());
+  if (!providers.empty()) {
+    config->ClearProviders();
+    for (const auto& provider : providers)
+      config->AppendProvider(provider.c_str());
+  }
+  return std::make_unique<::NonGenerativeSession>(*config);
+}
+
 json StructuredRequestJson(const NonGenerativeRequest& request) {
   json questions = json::object();
   for (const auto& [id, question] : request.questions) {
@@ -151,7 +162,7 @@ class SessionExecutor {
 struct RankingRuntime::Impl {
   Impl(const std::string& path, std::vector<std::string> providers)
       : executor([path, providers = std::move(providers)] {
-          return std::make_unique<::NonGenerativeSession>(path, providers);
+          return CreateSession(path, providers);
         }) {}
   SessionExecutor<::NonGenerativeSession> executor;
 };
@@ -192,7 +203,7 @@ nlohmann::json RankingRuntime::Rank(const RankingRequest& request) {
 struct DecisionRuntime::Impl {
   Impl(const std::string& path, std::vector<std::string> providers)
       : executor([path, providers = std::move(providers)] {
-          return std::make_unique<::NonGenerativeSession>(path, providers);
+          return CreateSession(path, providers);
         }) {}
   SessionExecutor<::NonGenerativeSession> executor;
 };
