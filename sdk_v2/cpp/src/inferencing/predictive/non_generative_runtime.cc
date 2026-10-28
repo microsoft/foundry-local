@@ -53,13 +53,13 @@ size_t CacheSetting(const char* name, size_t fallback) {
 OgaStructuredValue ToStructured(const json& value) {
   if (value.is_null()) return {};
   if (value.is_boolean()) return value.get<bool>();
-  if (value.is_number_integer()) return value.get<int64_t>();
   if (value.is_number_unsigned()) {
     const auto number = value.get<uint64_t>();
     if (number > static_cast<uint64_t>((std::numeric_limits<int64_t>::max)()))
       throw std::invalid_argument("unsigned structured value exceeds INT64_MAX");
     return static_cast<int64_t>(number);
   }
+  if (value.is_number_integer()) return value.get<int64_t>();
   if (value.is_number_float()) return value.get<double>();
   if (value.is_string()) return value.get<std::string>();
   if (value.is_array()) {

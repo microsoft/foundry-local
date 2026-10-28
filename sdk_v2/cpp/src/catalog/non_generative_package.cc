@@ -61,6 +61,33 @@ fs::path ContainedRegularFile(const fs::path& canonical_root,
   return canonical_candidate;
 }
 
+uint64_t MeasureContainedPackage(const fs::path& canonical_root) {
+  uint64_t total{};
+  std::error_code ec;
+  fs::recursive_directory_iterator iterator(
+      canonical_root, fs::directory_options::none, ec);
+  const fs::recursive_directory_iterator end;
+  if (ec) throw std::invalid_argument("cannot enumerate package");
+  for (; iterator != end; iterator.increment(ec)) {
+    if (ec) throw std::invalid_argument("cannot enumerate package");
+    const auto canonical_entry = fs::canonical(iterator->path(), ec);
+    if (ec || !IsWithin(canonical_root, canonical_entry)) {
+      throw std::invalid_argument(
+          "package entry resolves outside the package root");
+    }
+    if (!fs::is_regular_file(canonical_entry, ec)) {
+      if (ec) throw std::invalid_argument("cannot inspect package entry");
+      continue;
+    }
+    const auto bytes = fs::file_size(canonical_entry, ec);
+    if (ec) throw std::invalid_argument("cannot inspect package file size");
+    if (bytes > (std::numeric_limits<uint64_t>::max)() - total)
+      throw std::invalid_argument("package byte size overflows uint64");
+    total += bytes;
+  }
+  return total;
+}
+
 }  // namespace
 
 std::string NormalizeNonGenerativeProvider(std::string_view provider) {
@@ -75,12 +102,10 @@ std::string NormalizeNonGenerativeProvider(std::string_view provider) {
   if (name == "cuda") return "cuda";
   if (name == "qnn") return "QNN";
   if (name == "webgpu") return "WebGPU";
-  if (name == "dml" || name == "directml") return "DML";
   if (name == "openvino") return "OpenVINO";
   if (name == "vitisai") return "VitisAI";
   if (name == "ryzenai") return "RyzenAI";
   if (name == "nvtensorrtrtx") return "NvTensorRtRtx";
-  if (name == "amdgpu") return "AMDGPU";
   throw std::invalid_argument("unsupported execution provider: " + std::string(provider));
 }
 
@@ -100,6 +125,14 @@ bool DeclaresNonGenerativePackage(const fs::path& package_root) {
   } catch (...) {
     return false;
   }
+}
+
+uint64_t EstimateNonGenerativePackageBytes(const fs::path& package_root) {
+  std::error_code ec;
+  const auto canonical_root = fs::canonical(package_root, ec);
+  if (ec || !fs::is_directory(canonical_root, ec))
+    throw std::invalid_argument("package root must be an existing directory");
+  return MeasureContainedPackage(canonical_root);
 }
 
 std::optional<NonGenerativePackageMetadata> ReadNonGenerativePackage(
@@ -237,15 +270,7 @@ std::optional<NonGenerativePackageMetadata> ReadNonGenerativePackage(
     throw std::invalid_argument(
         "typed-decision requires backbone and pointer_head/kev_head");
   }
-  for (const auto& entry :
-       fs::recursive_directory_iterator(canonical_root)) {
-    if (!entry.is_regular_file()) continue;
-    const auto bytes = entry.file_size();
-    if (bytes >
-        (std::numeric_limits<uint64_t>::max)() - result.package_bytes)
-      throw std::invalid_argument("package byte size overflows uint64");
-    result.package_bytes += bytes;
-  }
+  result.package_bytes = MeasureContainedPackage(canonical_root);
   result.estimated_resident_bytes =
       estimated_resident_bytes ? estimated_resident_bytes
                                : result.package_bytes;

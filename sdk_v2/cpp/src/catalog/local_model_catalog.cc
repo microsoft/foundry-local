@@ -286,7 +286,8 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
       }
       resolved_input_metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR,
                                              std::move(capabilities));
-    } else if (std::filesystem::is_regular_file(config_path, ec)) {
+    } else if (!DeclaresNonGenerativePackage(model_path) &&
+               std::filesystem::is_regular_file(config_path, ec)) {
       genai_config = GenAIConfig::LoadFromFile(config_path.string());
     } else {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,

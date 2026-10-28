@@ -420,6 +420,19 @@ TEST_F(LocalModelCatalogTest, BundleRegistrationValidatesIdentityAndTask) {
                Exception);
 }
 
+TEST_F(LocalModelCatalogTest, MalformedDeclaredBundleCannotFallBackToGenAiConfig) {
+  const auto bundle_path = root_.path() / "bundle";
+  WriteBundle(bundle_path, "clm-generic-cpu:1", "text-ranking");
+  std::filesystem::remove(bundle_path / "inference_model.json");
+  std::ofstream(bundle_path / "genai_config.json")
+      << R"({"model":{"type":"phi3"}})";
+
+  EXPECT_THROW(
+      catalog_.RegisterModel(bundle_path.string(), "clm-generic-cpu:1",
+                             MakeMetadata("text-ranking")),
+      Exception);
+}
+
 TEST_F(LocalModelCatalogTest, ActiveExternalSessionBlocksUnloadAndUnregister) {
   const auto bundle_path = root_.path() / "bundle";
   WriteBundle(bundle_path, "clm-generic-cpu:1", "text-ranking");
@@ -428,6 +441,7 @@ TEST_F(LocalModelCatalogTest, ActiveExternalSessionBlocksUnloadAndUnregister) {
 
   EXPECT_EQ(model->GetPath(), bundle_path.string());
   auto* acquired = model->AcquireExternalSession();
+  acquired->MarkExternalRuntimeLoaded();
   EXPECT_EQ(acquired, model);
   EXPECT_TRUE(model->IsLoaded());
   EXPECT_THROW(model->Unload(), Exception);
@@ -444,6 +458,7 @@ TEST_F(LocalModelCatalogTest, DirectUnloadRejectsNonGenerativeModels) {
                                        MakeMetadata("text-ranking"));
 
   auto* acquired = model->AcquireExternalSession();
+  acquired->MarkExternalRuntimeLoaded();
   acquired->ReleaseExternalSession();
   EXPECT_THROW(model->Unload(), Exception);
   EXPECT_TRUE(model->IsLoaded());
@@ -492,6 +507,15 @@ TEST_F(LocalModelCatalogTest, NormalizesSupportedPackageProvidersAndRejectsUnkno
   auto* cuda = catalog_.RegisterModel(cuda_path.string(), "clm-cuda-gpu:1",
                                       MakeMetadata("text-ranking"));
   EXPECT_EQ(cuda->Info().execution_provider, "cuda");
+
+  for (const auto provider : {"DmlExecutionProvider", "AMDGPUExecutionProvider"}) {
+    const auto path = root_.path() / provider;
+    WriteBundle(path, "clm-unsupported:1", "text-ranking", provider);
+    EXPECT_THROW(
+        catalog_.RegisterModel(path.string(), "clm-unsupported:1",
+                               MakeMetadata("text-ranking")),
+        Exception);
+  }
 
   const auto unknown_path = root_.path() / "unknown";
   WriteBundle(unknown_path, "clm-unknown:1", "text-ranking", "mystery");

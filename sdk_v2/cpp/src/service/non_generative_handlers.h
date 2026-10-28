@@ -19,10 +19,30 @@ namespace fl {
 class Model;
 struct ServiceContext;
 
+class NonGenerativeAdmissionCoordinator {
+ public:
+  NonGenerativeAdmissionCoordinator(uint64_t memory_budget_bytes,
+                                    size_t readiness_concurrency);
+
+ private:
+  uint64_t memory_budget_bytes_;
+  uint64_t reserved_bytes_{};
+  size_t readiness_concurrency_;
+  std::mutex mutex_;
+  std::mutex readiness_mutex_;
+  std::condition_variable readiness_condition_;
+  std::unordered_map<std::string, size_t> active_readiness_;
+
+  friend class NonGenerativeRuntimeState;
+  friend bool UnloadNonGenerativeRuntime(ServiceContext& ctx, Model& model);
+  friend void ClearNonGenerativeRuntimes(ServiceContext& ctx);
+};
+
 class NonGenerativeRuntimeState {
  public:
-  NonGenerativeRuntimeState(uint64_t memory_budget_bytes,
-                            size_t readiness_concurrency);
+  explicit NonGenerativeRuntimeState(
+      std::shared_ptr<NonGenerativeAdmissionCoordinator> admission);
+  ~NonGenerativeRuntimeState();
   std::shared_ptr<void> Acquire(
       const std::string& identity, const std::string& model_id, Model* owner,
       const std::function<std::shared_ptr<void>()>& factory);
@@ -42,17 +62,18 @@ class NonGenerativeRuntimeState {
 
   std::mutex mutex_;
   std::map<std::string, RuntimeEntry> runtimes_;
-  uint64_t memory_budget_bytes_;
-  uint64_t reserved_bytes_{};
-  size_t readiness_concurrency_;
-  std::mutex readiness_mutex_;
-  std::condition_variable readiness_condition_;
-  std::unordered_map<std::string, size_t> active_readiness_;
+  std::shared_ptr<NonGenerativeAdmissionCoordinator> admission_;
 
   friend bool UnloadNonGenerativeRuntime(ServiceContext& ctx, Model& model);
   friend void ClearNonGenerativeRuntimes(ServiceContext& ctx);
 };
 
+std::shared_ptr<NonGenerativeAdmissionCoordinator>
+CreateNonGenerativeAdmissionCoordinator(
+    uint64_t memory_budget_bytes = (std::numeric_limits<uint64_t>::max)(),
+    size_t readiness_concurrency = 1);
+std::shared_ptr<NonGenerativeRuntimeState> CreateNonGenerativeRuntimeState(
+    std::shared_ptr<NonGenerativeAdmissionCoordinator> admission);
 std::shared_ptr<NonGenerativeRuntimeState> CreateNonGenerativeRuntimeState(
     uint64_t memory_budget_bytes = (std::numeric_limits<uint64_t>::max)(),
     size_t readiness_concurrency = 1);

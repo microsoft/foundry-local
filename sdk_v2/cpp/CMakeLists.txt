@@ -116,6 +116,7 @@ find_package(OnnxRuntime REQUIRED)
 
 include(CheckCXXSourceCompiles)
 set(CMAKE_REQUIRED_INCLUDES "${ORT_GENAI_HEADER_DIR}")
+unset(FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI CACHE)
 check_cxx_source_compiles(
     "#include <ort_genai_c.h>
      int main() {

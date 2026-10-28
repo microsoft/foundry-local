@@ -77,6 +77,23 @@ TEST(NonGenerativeRuntimeStateTest, RejectsLoadsBeyondMemoryBudget) {
       std::runtime_error);
 }
 
+TEST(NonGenerativeRuntimeStateTest, SharesAdmissionAcrossIsolatedRegistries) {
+  auto admission = CreateNonGenerativeAdmissionCoordinator(100, 1);
+  auto public_state = CreateNonGenerativeRuntimeState(admission);
+  auto local_state = CreateNonGenerativeRuntimeState(admission);
+  auto factory = []() -> std::shared_ptr<void> {
+    return std::make_shared<int>(42);
+  };
+
+  EXPECT_NE(public_state->Acquire(
+                "public", "public:1", nullptr, 80, "cpu", factory),
+            nullptr);
+  EXPECT_THROW(
+      local_state->Acquire(
+          "local", "local:1", nullptr, 21, "cpu", factory),
+      std::runtime_error);
+}
+
 TEST(NonGenerativeRuntimeStateTest, SerializesReadinessWithinProviderGroup) {
   auto state = CreateNonGenerativeRuntimeState(1000, 1);
   std::promise<void> first_entered;

@@ -325,6 +325,14 @@ TEST_F(LocalModelScannerTest, SymlinkedPackageAssetEscapeIsExcluded) {
   fs::create_symlink(fs::path(test_dir_) / "outside-tokenizer.json", tokenizer);
   EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
 }
+
+TEST_F(LocalModelScannerTest, UndeclaredSymlinkedSidecarEscapeIsExcluded) {
+  CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
+  CreateFile("outside-sidecar.bin");
+  const auto sidecar = fs::path(test_dir_) / "microsoft/clm/optional-sidecar.bin";
+  fs::create_symlink(fs::path(test_dir_) / "outside-sidecar.bin", sidecar);
+  EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
+}
 #endif
 
 TEST_F(LocalModelScannerTest, EmptyDirectoryReturnsEmptyMap) {

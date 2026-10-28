@@ -452,7 +452,6 @@ Model* Model::AcquireExternalSession() {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
   }
   ++external_session_count_;
-  external_runtime_loaded_.store(true);
   return this;
 }
 
@@ -466,6 +465,18 @@ size_t Model::ActiveExternalSessionCount() const {
     return sv->ActiveExternalSessionCount();
   }
   return external_session_count_.load();
+}
+
+void Model::MarkExternalRuntimeLoaded() {
+  if (Model* sv = selected_variant_.load(std::memory_order_acquire)) {
+    sv->MarkExternalRuntimeLoaded();
+    return;
+  }
+  std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+  if (!active_ || unregistering_)
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "model is no longer registered");
+  external_runtime_loaded_.store(true);
 }
 
 void Model::UnloadExternalRuntime() {

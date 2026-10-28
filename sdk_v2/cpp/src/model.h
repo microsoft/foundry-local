@@ -157,6 +157,7 @@ class Model {
   Model* AcquireExternalSession();
   void ReleaseExternalSession() noexcept;
   size_t ActiveExternalSessionCount() const;
+  void MarkExternalRuntimeLoaded();
   void UnloadExternalRuntime();
   void RemoveFromCache();
 

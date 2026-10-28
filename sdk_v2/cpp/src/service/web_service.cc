@@ -232,6 +232,8 @@ struct WebService::Impl {
   ResponseStore local_response_store;
   StreamingThreadTracker thread_tracker;
   std::function<void()> shutdown_callback;
+  std::shared_ptr<NonGenerativeAdmissionCoordinator>
+      non_generative_admission;
   std::unique_ptr<ServiceContext> public_context;
   std::unique_ptr<ServiceContext> local_context;
   std::atomic<bool> running{false};
@@ -262,6 +264,15 @@ struct WebService::Impl {
         public_response_store(ResponseStore::kDefaultCapacity, &session_cache),
         local_response_store(ResponseStore::kDefaultCapacity, &session_cache),
         shutdown_callback(std::move(shutdown_callback)),
+        non_generative_admission(
+#ifdef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
+            CreateNonGenerativeAdmissionCoordinator(
+                non_generative_memory_budget_bytes,
+                non_generative_readiness_concurrency)
+#else
+            nullptr
+#endif
+                ),
         public_context(std::make_unique<ServiceContext>(
             ServiceContext{public_catalog,
                            logger,
@@ -274,8 +285,7 @@ struct WebService::Impl {
                            thread_tracker,
 #ifdef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
                            CreateNonGenerativeRuntimeState(
-                               non_generative_memory_budget_bytes,
-                               non_generative_readiness_concurrency)
+                               non_generative_admission)
 #else
                            nullptr
 #endif
@@ -292,8 +302,7 @@ struct WebService::Impl {
                            thread_tracker,
 #ifdef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
                            CreateNonGenerativeRuntimeState(
-                               non_generative_memory_budget_bytes,
-                               non_generative_readiness_concurrency)
+                               non_generative_admission)
 #else
                            nullptr
 #endif
