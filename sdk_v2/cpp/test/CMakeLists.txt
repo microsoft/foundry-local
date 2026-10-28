@@ -158,6 +158,11 @@ add_executable(foundry_local_tests
     internal_api/zip_extract_test.cc
 )
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    target_sources(foundry_local_tests PRIVATE internal_api/telemetry_test.rc)
+    target_compile_definitions(foundry_local_tests PRIVATE FOUNDRY_LOCAL_TEST_HOST_VERSION_RESOURCE=1)
+endif()
+
 if(FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS)
     target_sources(foundry_local_tests PRIVATE
         internal_api/cuda_ep_bootstrapper_test.cc

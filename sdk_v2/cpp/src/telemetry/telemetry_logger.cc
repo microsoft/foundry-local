@@ -112,13 +112,14 @@ void TelemetryLogger::RecordCatalogFetch(const CatalogFetchInfo& info) {
 
 void TelemetryLogger::RecordProcessInfo(const ProcessInfo& info) {
   logger_.Log(LogLevel::Debug,
-              fmt::format("[Telemetry] ProcessInfo AppName={} AppVersion={} OsName={} "
+              fmt::format("[Telemetry] ProcessInfo AppName={} AppVersion={} Publisher={} OsName={} "
                           "OsVersion={} CpuArch={} ProcessName={} DeviceIdStatus={} IsContainer={} "
                           "ContainerType={} IsVirtualMachine={} VirtualizationType={} IsEmulator={} "
                           "HostEnvironment={} EnvironmentDetectionConfidence={} "
                           "DeviceIdScope={} CpuCount={} TotalMemoryMB={} AppDataDir={} ModelCacheDir={} LogsDir={} "
                           "LogLevel={} WebServiceUrlCount={} ExternalUrlCount={}",
-                          app_name_, Text(info.app_version), Text(info.os_name), Text(info.os_version),
+                          app_name_, Text(info.app_version), Text(info.publisher), Text(info.os_name),
+                          Text(info.os_version),
                           Text(info.cpu_arch), Text(info.process_name), Text(info.device_id_status), info.is_container,
                           Text(info.container_type), info.is_virtual_machine, Text(info.virtualization_type),
                           info.is_emulator, Text(info.host_environment), Text(info.environment_detection_confidence),

@@ -466,6 +466,7 @@ TEST(TelemetryLoggerTest, RecordProcessInfoIncludesStartupMetadata) {
 
   ProcessInfo info;
   info.app_version = "4.5.6";
+  info.publisher = "Example Publisher";
   info.os_name = "Windows";
   info.os_version = "10.0.26100";
   info.cpu_arch = "amd64";
@@ -492,6 +493,7 @@ TEST(TelemetryLoggerTest, RecordProcessInfoIncludesStartupMetadata) {
   ASSERT_EQ(logger.entries.size(), 1u);
   EXPECT_NE(logger.entries[0].message.find("ProcessInfo"), std::string::npos);
   EXPECT_NE(logger.entries[0].message.find("AppVersion=4.5.6"), std::string::npos);
+  EXPECT_NE(logger.entries[0].message.find("Publisher=Example Publisher"), std::string::npos);
   EXPECT_NE(logger.entries[0].message.find("ProcessName=foundry_local_test.exe"), std::string::npos);
   EXPECT_NE(logger.entries[0].message.find("DeviceIdStatus=Existing"), std::string::npos);
   EXPECT_NE(logger.entries[0].message.find("ContainerType=kubernetes"), std::string::npos);
@@ -610,6 +612,37 @@ TEST(TelemetryMetadataTest, HostAppVersionIsAlwaysPopulated) {
   EXPECT_FALSE(metadata.app_version.empty());
   EXPECT_FALSE(metadata.version.empty());
   EXPECT_FALSE(metadata.process_name.empty());
+}
+
+TEST(TelemetryMetadataTest, HostPublisherUsesExecutableCompanyNameWhenAvailable) {
+  const auto metadata = BuildTelemetryMetadata("not-the-publisher");
+  const auto process = BuildProcessInfo(metadata, {}, false);
+
+#ifdef FOUNDRY_LOCAL_TEST_HOST_VERSION_RESOURCE
+  EXPECT_EQ(metadata.publisher, "Foundry Telemetry Test Publisher");
+  EXPECT_EQ(metadata.app_version, "7.8.9");
+#else
+  EXPECT_TRUE(metadata.publisher.empty());
+#endif
+  EXPECT_EQ(process.publisher, metadata.publisher);
+}
+
+TEST(TelemetryMetadataTest, PublisherIsOptionalAndSanitizedBeforeRetention) {
+  TelemetryMetadata metadata;
+  EXPECT_TRUE(BuildProcessInfo(metadata, {}, false).publisher.empty());
+
+  metadata.publisher = "Example Publisher C:\\Users\\Alice\\private";
+  const auto process = BuildProcessInfo(metadata, {}, false);
+  EXPECT_EQ(process.publisher, "Example Publisher [path]");
+
+  RecordingLogger logger;
+  TelemetryLogger telemetry("test-app", logger);
+  ProcessInfo unsanitized;
+  unsanitized.publisher = metadata.publisher;
+  telemetry.RecordProcessInfo(unsanitized);
+  ASSERT_EQ(logger.entries.size(), 1u);
+  EXPECT_NE(logger.entries[0].message.find("Publisher=Example Publisher [path]"), std::string::npos);
+  EXPECT_EQ(logger.entries[0].message.find("Alice"), std::string::npos);
 }
 
 TEST(TelemetryMetadataTest, ProcessInfoReusesCachedProcessMetadata) {
@@ -1354,12 +1387,14 @@ TEST(TelemetryMetadataTest, BoundsMetadataBeforeRetentionAndProcessInfoCopies) {
   EXPECT_EQ(metadata.app_name.size(), 1024u);
   metadata.app_name = input;
   metadata.app_version = input;
+  metadata.publisher = input;
   metadata.os_name = input;
   metadata.os_version = input;
   metadata.cpu_arch = input;
   metadata.process_name = input;
   const auto process = BuildProcessInfo(metadata, {}, false);
   EXPECT_EQ(process.app_version.size(), 1024u);
+  EXPECT_EQ(process.publisher.size(), 1024u);
   EXPECT_EQ(process.os_name.size(), 1024u);
   EXPECT_EQ(process.os_version.size(), 1024u);
   EXPECT_EQ(process.cpu_arch.size(), 1024u);
@@ -1564,6 +1599,7 @@ TEST(TelemetryLoggerTest, BoundsEveryEventStringBeforeFormatting) {
   catalog.error_message = catalog.user_agent = catalog.correlation_id = input;
   telemetry.RecordCatalogFetch(catalog);
   ProcessInfo process;
+  process.publisher = input;
   process.app_version = process.os_name = process.os_version = process.cpu_arch = input;
   process.process_name = process.device_id_status = process.container_type = process.virtualization_type = input;
   process.host_environment = process.environment_detection_confidence = process.device_id_scope = input;
