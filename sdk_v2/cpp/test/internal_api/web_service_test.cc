@@ -1236,7 +1236,7 @@ TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCpuPackagesWhenConfi
   ASSERT_NE(shared_clm, nullptr);
   ASSERT_TRUE(shared_clm->IsLoaded());
   {
-    NonGenerativeSession sdk_session(*shared_clm, *logger_, *telemetry_);
+    fl::NonGenerativeSession sdk_session(*shared_clm, *logger_, *telemetry_);
   }
   EXPECT_TRUE(shared_clm->IsLoaded());
   EXPECT_THROW(
