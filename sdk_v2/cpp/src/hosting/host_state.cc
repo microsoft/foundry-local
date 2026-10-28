@@ -67,6 +67,12 @@ std::filesystem::path ReadyPath(const std::filesystem::path& bootstrap) {
   return path;
 }
 
+std::filesystem::path FailurePath(const std::filesystem::path& bootstrap) {
+  auto path = bootstrap;
+  path += ".error";
+  return path;
+}
+
 #ifdef _WIN32
 
 std::string UserKey() {
@@ -384,6 +390,21 @@ std::optional<ProcessIdentity> HostStateStore::ReadPublishedProcess(const HostLa
   return DecodeProcess(value.at("process"));
 }
 
+std::string HostStateStore::ReadStartupFailure(const HostLaunchRecord& record) const {
+  const auto path = FailurePath(BootstrapPath(record));
+  if (!std::filesystem::exists(path)) {
+    return {};
+  }
+
+  const auto value = ReadBootstrapJson(path);
+  if (value.at("version") != 1 || value.at("profile") != profile_key_ ||
+      value.at("incarnation") != record.child.incarnation) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "native host startup failure does not match its launch");
+  }
+
+  return value.at("message").get<std::string>();
+}
+
 std::string NewHostIncarnation() {
   std::random_device random;
   constexpr char digits[] = "0123456789ABCDEF";
@@ -429,6 +450,7 @@ void HostStateStore::ForgetExited(const HostLaunchRecord& record) const {
   const auto bootstrap = BootstrapPath(record);
   std::filesystem::remove(ProcessPath(bootstrap));
   std::filesystem::remove(ReadyPath(bootstrap));
+  std::filesystem::remove(FailurePath(bootstrap));
   std::filesystem::remove(bootstrap);
   std::filesystem::remove(directory_ / "launch.json");
 }
@@ -440,6 +462,7 @@ void HostStateStore::ForgetRejected(const HostLaunchRecord& record) const {
   }
 
   std::filesystem::remove(BootstrapPath(record));
+  std::filesystem::remove(FailurePath(BootstrapPath(record)));
   std::filesystem::remove(directory_ / "launch.json");
 }
 
@@ -450,6 +473,7 @@ void HostStateStore::ForgetAbandoned(const HostLaunchRecord& record) const {
   }
 
   std::filesystem::remove(BootstrapPath(record));
+  std::filesystem::remove(FailurePath(BootstrapPath(record)));
   std::filesystem::remove(directory_ / "launch.json");
 }
 
@@ -553,6 +577,14 @@ void PublishHostReady(const std::filesystem::path& bootstrap_path, const ChildHo
   value["inode"] = static_cast<uint64_t>(socket.st_ino);
 #endif
   WriteHostJson(ReadyPath(bootstrap_path), value);
+}
+
+void PublishHostStartupFailure(const std::filesystem::path& bootstrap_path, const ChildHostRole& child,
+                               std::string_view message) {
+  WriteHostJson(FailurePath(bootstrap_path), {{"version", 1},
+                                              {"profile", child.profile_key},
+                                              {"incarnation", child.incarnation},
+                                              {"message", message.substr(0, 4096)}});
 }
 
 }  // namespace fl::hosting

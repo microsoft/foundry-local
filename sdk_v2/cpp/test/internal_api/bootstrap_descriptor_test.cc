@@ -528,6 +528,27 @@ TEST_F(BootstrapDescriptorTest, ExecutableBootstrapsIndependentlyAndActuallyExit
   EXPECT_EQ(host.ExitCode(), 0);
 }
 
+TEST_F(BootstrapDescriptorTest, CoordinatorReportsChildStartupFailureAndRetiresItsExitedLaunch) {
+  auto assets = ResidentAssets();
+  assets.bootstrap.ort = Artifact("invalid-ort", "not a loadable library");
+  HostCoordinator coordinator(descriptor_.configuration, std::move(assets));
+  try {
+    coordinator.Connect(true);
+    FAIL() << "Host started with an unloadable ORT library";
+  } catch (const Exception& error) {
+    EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_INTERNAL);
+    const std::string message = error.what();
+    EXPECT_NE(message.find("native host exited before owner attachment"), std::string::npos);
+#ifdef _WIN32
+    EXPECT_NE(message.find("load native host artifact"), std::string::npos);
+#else
+    EXPECT_NE(message.find("invalid-ort"), std::string::npos);
+#endif
+  }
+
+  EXPECT_FALSE(coordinator.Store().Read());
+}
+
 TEST_F(BootstrapDescriptorTest, CoordinatorStartsOnceSharesOwnersReconnectsAndReplacesOnlyAfterActualExit) {
   const auto assets = ResidentAssets();
   HostCoordinator first(descriptor_.configuration, assets);

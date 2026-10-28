@@ -85,6 +85,12 @@ TEST_F(HostStateTest, PendingLaunchAndChildProcessPublicationRemainDistinctUntil
   other.child.incarnation = NewHostIncarnation();
   other.child.endpoint = store.Endpoint(other.child.incarnation);
   EXPECT_FALSE(store.ReadPublishedProcess(other));
+  EXPECT_TRUE(store.ReadStartupFailure(record).empty());
+  PublishHostStartupFailure(store.BootstrapPath(record), record.child, std::string(8192, 'x'));
+  EXPECT_EQ(store.ReadStartupFailure(record), std::string(4096, 'x'));
+  EXPECT_TRUE(store.ReadStartupFailure(other).empty());
+  store.ForgetExited(record);
+  EXPECT_TRUE(store.ReadStartupFailure(record).empty());
 }
 
 TEST_F(HostStateTest, RejectsForgedProfileTraversalProcessAndPublicationIdentity) {
@@ -106,6 +112,8 @@ TEST_F(HostStateTest, RejectsForgedProfileTraversalProcessAndPublicationIdentity
   wrong_child.profile_key = std::string(64, 'B');
   PublishHostProcess(store.BootstrapPath(record), wrong_child, CurrentProcessIdentity());
   EXPECT_THROW(store.ReadPublishedProcess(record), Exception);
+  PublishHostStartupFailure(store.BootstrapPath(record), wrong_child, "startup failed");
+  EXPECT_THROW(store.ReadStartupFailure(record), Exception);
 }
 
 TEST_F(HostStateTest, RejectsExistingDirectoriesThatGrantOtherUsersAccess) {

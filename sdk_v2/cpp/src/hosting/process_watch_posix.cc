@@ -145,8 +145,14 @@ std::optional<GenerationSnapshot> TryReadGeneration(pid_t pid) {
 }
 
 int TryOpenObserver(pid_t pid) {
+#if defined(SYS_pidfd_open) || defined(__x86_64__) || defined(__aarch64__)
 #ifdef SYS_pidfd_open
-  const auto fd = static_cast<int>(syscall(SYS_pidfd_open, pid, 0));
+  constexpr auto kPidfdOpen = SYS_pidfd_open;
+#else
+  // The supported Linux ABIs use syscall 434, including when manylinux's older headers omit its name.
+  constexpr long kPidfdOpen = 434;
+#endif
+  const auto fd = static_cast<int>(syscall(kPidfdOpen, pid, 0));
   if (fd < 0) {
     if (errno == ESRCH) {
       return -1;

@@ -6,6 +6,7 @@
 #include "hosting/sdk_connection.h"
 #include "internal_api/c_api_test_helpers.h"
 #include "manager.h"
+#include "utils/temp_path.h"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -66,7 +67,8 @@ class ChildHostApiTest : public testing::Test {
     role_.endpoint = LR"(\\.\pipe\foundry-native-child-test-)" + std::filesystem::path(suffix).native();
 #else
     std::filesystem::permissions(root_, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
-    role_.endpoint = root_ / "s";
+    socket_directory_ = test::MakePrivateIpcDirectory();
+    role_.endpoint = socket_directory_ / "s";
 #endif
     role_.profile_key = std::string(64, 'A');
     role_.incarnation = suffix;
@@ -84,6 +86,9 @@ class ChildHostApiTest : public testing::Test {
   void TearDown() override {
     api_->Manager_Release(manager_);
     api_->GetConfigurationApi()->Configuration_Release(config_);
+    if (!socket_directory_.empty()) {
+      std::filesystem::remove_all(socket_directory_);
+    }
     if (owns_root_) {
       std::filesystem::remove_all(root_);
     }
@@ -117,6 +122,7 @@ class ChildHostApiTest : public testing::Test {
   flConfiguration* config_ = nullptr;
   flManager* manager_ = nullptr;
   std::filesystem::path root_;
+  std::filesystem::path socket_directory_;
   bool owns_root_ = false;
   ChildHostRole role_;
 };

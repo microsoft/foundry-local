@@ -102,8 +102,20 @@ class HostServerTest : public testing::Test {
     return false;
   }
 
+  Channel ConnectPeer() const {
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    do {
+      if (auto channel = TryConnect(endpoint_, deadline)) {
+        return std::move(*channel);
+      }
+
+      std::this_thread::sleep_for(5ms);
+    } while (std::chrono::steady_clock::now() < deadline);
+    throw std::runtime_error("Host test endpoint did not become available");
+  }
+
   std::shared_ptr<SdkConnection> NewConnection() const {
-    return std::make_shared<SdkConnection>(Connect(endpoint_), SdkConnection::Side::Client);
+    return std::make_shared<SdkConnection>(ConnectPeer(), SdkConnection::Side::Client);
   }
 
   Json HandshakePayload(bool owner) const {
@@ -288,18 +300,29 @@ TEST_F(HostServerTest, ConcurrentCallLimitRejectsAcrossClientsAndCancellationRes
   auto arrived = streamed.get_future();
   std::vector<SdkConnection::InvocationId> ids;
   std::vector<std::future<SdkResult>> running;
-  ScopeGuard close([&]() noexcept { connection->Close(); });
+  std::vector<std::thread> workers;
+  ids.reserve(HostServer::kMaxConcurrentCalls);
+  running.reserve(HostServer::kMaxConcurrentCalls);
+  workers.reserve(HostServer::kMaxConcurrentCalls);
+  ScopeGuard close([&]() noexcept {
+    connection->Close();
+    for (auto& worker : workers) {
+      worker.join();
+    }
+  });
   for (std::size_t i = 0; i < HostServer::kMaxConcurrentCalls; ++i) {
     const auto id = connection->AllocateInvocation();
     ids.push_back(id);
     // No callback acknowledgment: the first request waits in streaming, the rest wait for the same session.
-    running.push_back(std::async(std::launch::async, [&, id, i] {
+    std::packaged_task<SdkResult()> task([&, id, i] {
       return connection->Call(id, Operation::ProcessRequest, payload, [&](auto, const Json&) {
         if (i == 0) {
           streamed.set_value();
         }
       });
-    }));
+    });
+    running.push_back(task.get_future());
+    workers.emplace_back(std::move(task));
     if (i == 0) {
       ASSERT_EQ(arrived.wait_for(5s), std::future_status::ready);
     }
@@ -354,10 +377,12 @@ TEST_F(HostServerTest, ConcurrentCallLimitRejectsAcrossClientsAndCancellationRes
 
 TEST_F(HostServerTest, ConnectionLimitIncludesUnauthenticatedPeersAndDisconnectRestoresCapacity) {
   std::vector<Channel> peers;
-  for (std::size_t i = 0; i < HostServer::kMaxConnections; ++i) {
-    peers.push_back(Connect(endpoint_));
+  for (std::size_t i = 0; i < HostServer::kMaxConnections - 1; ++i) {
+    peers.push_back(ConnectPeer());
   }
 
+  // The last peer's handshake confirms the preceding unauthenticated connections have been accepted.
+  auto observer = Attach(false);
   EXPECT_THROW(Attach(), std::exception);
   peers.front().Close();
   std::shared_ptr<api::HostedContext> owner;

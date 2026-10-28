@@ -189,11 +189,13 @@ std::shared_ptr<api::HostedContext> HostCoordinator::Connect(bool acquire) const
         process = ObserveProcess(*record->process, deadline);
       }
       if (!process || process->IsExited()) {
+        const auto failure = launched ? store_.ReadStartupFailure(*record) : std::string{};
         store_.ForgetExited(*record);
         record.reset();
         process.reset();
         if (launched) {
-          FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "native host exited before owner attachment");
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "native host exited before owner attachment",
+                   failure.empty() ? "" : ": ", failure);
         }
 
         continue;

@@ -174,7 +174,18 @@ struct RequestRun {
       run.callback_exception.reset();
     }
 
-    run.call->SendEvent({{"kind", "stream"}, {"sequence", sequence}, {"items", std::move(items)}});
+    try {
+      run.call->SendEvent({{"kind", "stream"}, {"sequence", sequence}, {"items", std::move(items)}});
+    } catch (...) {
+      if (!run.call->IsCancelled()) {
+        throw;
+      }
+
+      // Wire cancellation can unblock SendEvent before the asynchronous native cancellation hook runs.
+      run.Cancel();
+      return 1;
+    }
+
     std::unique_lock lock(run.mutex);
     run.changed.wait(lock, [&] { return run.acknowledged || run.canceled || run.input_closed; });
     if (run.callback_exception) {

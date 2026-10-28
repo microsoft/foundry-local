@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -176,8 +177,10 @@ void RunNativeHost(const flApi& api, const hosting::BootstrapDescriptor& descrip
 }
 
 int Run(const std::filesystem::path& descriptor_path, int launch_lease = -1) {
+  std::optional<hosting::ChildHostRole> startup;
   try {
     const auto descriptor = hosting::DecodeBootstrapDescriptor(hosting::ReadBootstrapJson(descriptor_path));
+    startup = descriptor.child;
     const auto process = hosting::CurrentProcessIdentity();
     hosting::PublishHostProcess(descriptor_path, descriptor.child, process);
 #ifndef _WIN32
@@ -208,6 +211,14 @@ int Run(const std::filesystem::path& descriptor_path, int launch_lease = -1) {
     RunNativeHost(*native.Api(), descriptor, descriptor_path);
     return 0;
   } catch (const std::exception& error) {
+    if (startup) {
+      try {
+        hosting::PublishHostStartupFailure(descriptor_path, *startup, error.what());
+      } catch (...) {
+        // Diagnostics never substitute for process observation or prevent normal failure reporting.
+      }
+    }
+
     std::fprintf(stderr, "Foundry Local host failed: %s\n", error.what());
     return 1;
   }

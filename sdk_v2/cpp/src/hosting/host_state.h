@@ -11,6 +11,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace fl::hosting {
 
@@ -45,6 +46,7 @@ class HostStateStore {
   std::optional<HostLaunchRecord> Read() const;
   void Write(const HostLaunchRecord& record) const;
   std::optional<ProcessIdentity> ReadPublishedProcess(const HostLaunchRecord& record) const;
+  std::string ReadStartupFailure(const HostLaunchRecord& record) const;
   // Requires the startup lock and OS-confirmed predecessor exit. Never use missing IPC/files as exit evidence.
   void ForgetExited(const HostLaunchRecord& record) const;
   // Only for a launch that the OS rejected before creating a child.
@@ -68,5 +70,7 @@ void WriteHostJson(const std::filesystem::path& path, const nlohmann::json& valu
 void PublishHostProcess(const std::filesystem::path& bootstrap_path, const ChildHostRole& child,
                         ProcessIdentity process);
 void PublishHostReady(const std::filesystem::path& bootstrap_path, const ChildHostRole& child, ProcessIdentity process);
+void PublishHostStartupFailure(const std::filesystem::path& bootstrap_path, const ChildHostRole& child,
+                               std::string_view message);
 
 }  // namespace fl::hosting
