@@ -672,11 +672,9 @@ TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCpuPackagesWhenConfi
 #ifdef _WIN32
   _putenv_s("FOUNDRY_LOCAL_RANK_MODEL_PATH", clm.string().c_str());
   _putenv_s("FOUNDRY_LOCAL_SYSTEMONE_MODEL_PATH", kev.string().c_str());
-  _putenv_s("FOUNDRY_LOCAL_NON_GENERATIVE_PROVIDER", "");
 #else
   setenv("FOUNDRY_LOCAL_RANK_MODEL_PATH", clm.string().c_str(), 1);
   setenv("FOUNDRY_LOCAL_SYSTEMONE_MODEL_PATH", kev.string().c_str(), 1);
-  unsetenv("FOUNDRY_LOCAL_NON_GENERATIVE_PROVIDER");
 #endif
 
   auto ranking = json::parse(TestHttpPost(

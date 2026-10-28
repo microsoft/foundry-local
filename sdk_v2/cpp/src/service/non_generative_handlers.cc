@@ -183,9 +183,7 @@ ResolvedPackage ResolvePackage(ServiceContext& ctx, const std::string& requested
       throw std::invalid_argument(
           "selected catalog model ID does not match package metadata");
     }
-    auto provider = model->Info().execution_provider.empty()
-                        ? package->execution_provider
-                        : NormalizeNonGenerativeProvider(model->Info().execution_provider);
+    auto provider = package->execution_provider;
     auto canonical = std::filesystem::weakly_canonical(model->GetPath()).string();
     return {ctx.catalog.GetName() + "|" + model->Id() + "|" + canonical + "|" + provider,
             model->Id(),
@@ -215,10 +213,6 @@ ResolvedPackage ResolvePackage(ServiceContext& ctx, const std::string& requested
         expected_alias));
   }
   std::string provider = metadata ? metadata->execution_provider : std::string{};
-  if (const auto value = Utils::GetEnv("FOUNDRY_LOCAL_NON_GENERATIVE_PROVIDER");
-      value && !value->empty()) {
-    provider = NormalizeNonGenerativeProvider(*value);
-  }
   const auto model_id = metadata ? metadata->model_id : requested;
   const auto estimated_resident_bytes =
       metadata ? metadata->estimated_resident_bytes
@@ -252,16 +246,12 @@ AcquireRuntime(ServiceContext& ctx, const ResolvedPackage& package) {
                    : nullptr;
   auto state = ctx.non_generative_runtimes;
   try {
-    if (acquired)
-      acquired->PrepareExternalProvider(package.provider);
-    else
-      ctx.model_load_manager.PrepareNonGenerativeProvider(package.provider);
     auto runtime = std::static_pointer_cast<Runtime>(state->Acquire(
         package.identity, package.model_id, package.model,
         package.estimated_resident_bytes,
         package.provider.empty() ? "cpu" : package.provider,
         [&] {
-          return std::make_shared<Runtime>(package.path, package.provider);
+          return std::make_shared<Runtime>(package.path);
         }));
     if (acquired) acquired->MarkExternalRuntimeLoaded();
     return {

@@ -4,11 +4,10 @@
 // Example: KEV typed decisions with Foundry Local Core.
 //
 // Usage:
-//   kev_decision_example <package_path> [provider]
+//   kev_decision_example <package_path>
 //
 // Examples:
 //   kev_decision_example /models/kev-4b-mixed-middle-mlp
-//   kev_decision_example /models/kev-4b-mixed-middle-mlp cuda
 
 #include "contracts/non_generative.h"
 #include "inferencing/predictive/non_generative_runtime.h"
@@ -21,19 +20,18 @@
 namespace {
 
 void PrintUsage(const char* executable) {
-  std::cerr << "Usage: " << executable << " <package_path> [provider]\n";
+  std::cerr << "Usage: " << executable << " <package_path>\n";
 }
 
 }  // namespace
 
 int main(int argc, char* argv[]) {
-  if (argc < 2 || argc > 3) {
+  if (argc != 2) {
     PrintUsage(argv[0]);
     return 2;
   }
 
   const std::string package_path = argv[1];
-  const std::string provider = argc == 3 ? argv[2] : "";
 
   try {
     fl::NonGenerativeRequest request;
@@ -47,7 +45,7 @@ int main(int argc, char* argv[]) {
     question.instructions = "Should I take an umbrella?";
     request.questions.emplace_back("umbrella", std::move(question));
 
-    fl::DecisionRuntime runtime(package_path, provider);
+    fl::DecisionRuntime runtime(package_path);
     const auto answers = runtime.Decide(request);
 
     std::cout << "KEV answers:\n"

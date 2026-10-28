@@ -41,14 +41,11 @@ incomplete.
 
 Provider aliases are normalized and unknown values are rejected. CPU uses the
 ORT default provider (an empty provider list); CUDA normalizes to `cuda`.
-Supported aliases also include QNN, WebGPU, OpenVINO, VitisAI, RyzenAI, and
-NvTensorRtRtx.
-
-Provider libraries are prepared before a non-generative runtime is acquired.
+Runtime provider selection and options come from `genai_config.json`; Foundry
+metadata records CPU or CUDA for catalog identity and admission grouping.
 Foundry Local packages the CUDA add-on and matching ORT provider libraries;
 all ORT core/provider binaries must come from one ABI- and CUDA-compatible
-bundle. WebGPU uses the normal Foundry EP bootstrapper and additionally
-registers the downloaded provider in ORT GenAI's environment.
+bundle.
 
 Optimized fixed-catalog CLM packages may also contain:
 

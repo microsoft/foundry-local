@@ -16,6 +16,20 @@ namespace {
 
 namespace fs = std::filesystem;
 
+std::string NormalizeProvider(std::string_view provider) {
+  std::string name(provider);
+  std::transform(name.begin(), name.end(), name.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  constexpr std::string_view suffix = "executionprovider";
+  if (name.size() > suffix.size() && name.ends_with(suffix))
+    name.resize(name.size() - suffix.size());
+  if (name == "cpu") return {};
+  if (name == "cuda") return "cuda";
+  throw std::invalid_argument(
+      "non-generative packages support only CPU and CUDA execution providers: " +
+      std::string(provider));
+}
+
 std::string RequiredString(const nlohmann::json& object, const char* key) {
   if (!object.contains(key) || !object[key].is_string() ||
       object[key].get_ref<const std::string&>().empty()) {
@@ -89,25 +103,6 @@ uint64_t MeasureContainedPackage(const fs::path& canonical_root) {
 }
 
 }  // namespace
-
-std::string NormalizeNonGenerativeProvider(std::string_view provider) {
-  std::string name(provider);
-  std::transform(name.begin(), name.end(), name.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  constexpr std::string_view suffix = "executionprovider";
-  if (name.size() > suffix.size() && name.ends_with(suffix)) {
-    name.resize(name.size() - suffix.size());
-  }
-  if (name == "cpu") return {};
-  if (name == "cuda") return "cuda";
-  if (name == "qnn") return "QNN";
-  if (name == "webgpu") return "WebGPU";
-  if (name == "openvino") return "OpenVINO";
-  if (name == "vitisai") return "VitisAI";
-  if (name == "ryzenai") return "RyzenAI";
-  if (name == "nvtensorrtrtx") return "NvTensorRtRtx";
-  throw std::invalid_argument("unsupported execution provider: " + std::string(provider));
-}
 
 bool DeclaresNonGenerativePackage(const fs::path& package_root) {
   std::error_code ec;
@@ -186,7 +181,7 @@ std::optional<NonGenerativePackageMetadata> ReadNonGenerativePackage(
   if (!inference.contains("Provider") || !inference["Provider"].is_object()) {
     throw std::invalid_argument("inference_model.json requires Provider");
   }
-  result.execution_provider = NormalizeNonGenerativeProvider(
+  result.execution_provider = NormalizeProvider(
       RequiredString(inference["Provider"], "execution_provider"));
   result.provider_variant = RequiredString(inference["Provider"], "variant");
 

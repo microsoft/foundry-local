@@ -1,8 +1,6 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "inferencing/predictive/non_generative_runtime.h"
-#include "catalog/non_generative_package.h"
-#include "utils.h"
 
 #include <condition_variable>
 #include <deque>
@@ -20,29 +18,8 @@ namespace {
 
 using json = nlohmann::ordered_json;
 
-std::vector<std::string> EnvironmentProviders() {
-  if (const auto value = Utils::GetEnv("FOUNDRY_LOCAL_NON_GENERATIVE_PROVIDER");
-      value && !value->empty()) {
-    const auto provider = NormalizeNonGenerativeProvider(*value);
-    return provider.empty() ? std::vector<std::string>{}
-                            : std::vector<std::string>{provider};
-  }
-  return {};
-}
-
-std::vector<std::string> ExplicitProviders(const std::string& provider) {
-  return provider.empty() ? std::vector<std::string>{}
-                          : std::vector<std::string>{provider};
-}
-
-std::unique_ptr<::NonGenerativeSession> CreateSession(
-    const std::string& path, const std::vector<std::string>& providers) {
+std::unique_ptr<::NonGenerativeSession> CreateSession(const std::string& path) {
   auto config = OgaConfig::Create(path.c_str());
-  if (!providers.empty()) {
-    config->ClearProviders();
-    for (const auto& provider : providers)
-      config->AppendProvider(provider.c_str());
-  }
   return std::make_unique<::NonGenerativeSession>(*config);
 }
 
@@ -160,17 +137,13 @@ class SessionExecutor {
 }  // namespace
 
 struct RankingRuntime::Impl {
-  Impl(const std::string& path, std::vector<std::string> providers)
-      : executor([path, providers = std::move(providers)] {
-          return CreateSession(path, providers);
-        }) {}
+  explicit Impl(const std::string& path)
+      : executor([path] { return CreateSession(path); }) {}
   SessionExecutor<::NonGenerativeSession> executor;
 };
 
 RankingRuntime::RankingRuntime(const std::string& package_path)
-    : impl_(std::make_unique<Impl>(package_path, EnvironmentProviders())) {}
-RankingRuntime::RankingRuntime(const std::string& package_path, std::string provider)
-    : impl_(std::make_unique<Impl>(package_path, ExplicitProviders(provider))) {}
+    : impl_(std::make_unique<Impl>(package_path)) {}
 RankingRuntime::~RankingRuntime() = default;
 
 nlohmann::json RankingRuntime::Rank(const RankingRequest& request) {
@@ -201,17 +174,13 @@ nlohmann::json RankingRuntime::Rank(const RankingRequest& request) {
 }
 
 struct DecisionRuntime::Impl {
-  Impl(const std::string& path, std::vector<std::string> providers)
-      : executor([path, providers = std::move(providers)] {
-          return CreateSession(path, providers);
-        }) {}
+  explicit Impl(const std::string& path)
+      : executor([path] { return CreateSession(path); }) {}
   SessionExecutor<::NonGenerativeSession> executor;
 };
 
 DecisionRuntime::DecisionRuntime(const std::string& package_path)
-    : impl_(std::make_unique<Impl>(package_path, EnvironmentProviders())) {}
-DecisionRuntime::DecisionRuntime(const std::string& package_path, std::string provider)
-    : impl_(std::make_unique<Impl>(package_path, ExplicitProviders(provider))) {}
+    : impl_(std::make_unique<Impl>(package_path)) {}
 DecisionRuntime::~DecisionRuntime() = default;
 
 nlohmann::json DecisionRuntime::Decide(const NonGenerativeRequest& request) {
