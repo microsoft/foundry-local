@@ -70,6 +70,7 @@ class LocalModelScannerTest : public ::testing::Test {
                        const std::string& model_name,
                        const std::string& task = "text-ranking") {
     const auto root = fs::path(test_dir_) / relative_path;
+    CreateFile(relative_path + "/genai_config.json");
     CreateFile(relative_path + "/tokenizer.json");
     CreateFile(relative_path + "/tokenizer_config.json");
     nlohmann::json components = nlohmann::json::object();
@@ -225,6 +226,12 @@ TEST_F(LocalModelScannerTest, MalformedMultiComponentPackageIsExcluded) {
 TEST_F(LocalModelScannerTest, IncompleteBundleDownloadIsExcluded) {
   CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
   CreateFile("microsoft/clm/download.tmp", "");
+  EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
+}
+
+TEST_F(LocalModelScannerTest, BundleWithoutGenAiConfigIsExcluded) {
+  CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
+  fs::remove(fs::path(test_dir_) / "microsoft/clm/genai_config.json");
   EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
 }
 

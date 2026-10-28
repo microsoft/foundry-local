@@ -48,6 +48,7 @@ class LocalModelCatalogTest : public ::testing::Test {
                           const std::string& task,
                           const std::string& provider = "cpu") {
     std::filesystem::create_directories(path / "components");
+    std::ofstream(path / "genai_config.json") << "{}";
     std::ofstream(path / "tokenizer.json") << "{}";
     std::ofstream(path / "tokenizer_config.json") << "{}";
     nlohmann::json components = nlohmann::json::object();

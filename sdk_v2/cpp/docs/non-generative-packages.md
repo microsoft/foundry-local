@@ -1,9 +1,9 @@
 # Multi-component non-generative packages
 
 Foundry Local recognizes a package root when it contains `inference_model.json`,
-the referenced `component_manifest.json`, `tokenizer.json`, and
-`tokenizer_config.json`. Component directories are assets of that package and
-are not catalogued independently.
+the referenced `component_manifest.json`, `genai_config.json`, `tokenizer.json`,
+and `tokenizer_config.json`. Component directories are assets of that package
+and are not catalogued independently.
 
 `inference_model.json` extends the existing local artifact:
 
@@ -41,8 +41,8 @@ incomplete.
 
 Provider aliases are normalized and unknown values are rejected. CPU uses the
 ORT default provider (an empty provider list); CUDA normalizes to `cuda`.
-Supported aliases also include QNN, WebGPU, DML, OpenVINO, VitisAI, RyzenAI,
-NvTensorRtRtx, and AMDGPU.
+Supported aliases also include QNN, WebGPU, OpenVINO, VitisAI, RyzenAI, and
+NvTensorRtRtx.
 
 Provider libraries are prepared before a non-generative runtime is acquired.
 Foundry Local packages the CUDA add-on and matching ORT provider libraries;

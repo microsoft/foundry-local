@@ -229,6 +229,7 @@ std::optional<NonGenerativePackageMetadata> ReadNonGenerativePackage(
   }
   result.component_manifest =
       ContainedRegularFile(canonical_root, manifest_relative, "ComponentManifest");
+  ContainedRegularFile(canonical_root, "genai_config.json", "genai_config.json");
   ContainedRegularFile(canonical_root, "tokenizer.json", "tokenizer.json");
   ContainedRegularFile(canonical_root, "tokenizer_config.json", "tokenizer_config.json");
 
