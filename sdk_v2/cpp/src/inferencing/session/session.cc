@@ -6,9 +6,7 @@
 #include "inferencing/generative/audio/audio_session.h"
 #include "inferencing/generative/chat/chat_session.h"
 #include "inferencing/generative/embeddings/embeddings_session.h"
-#ifdef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
 #include "inferencing/predictive/non_generative_session.h"
-#endif
 #include "inferencing/model_load_manager.h"
 #include "inferencing/session/session_manager.h"
 #include "items/message_item.h"
@@ -136,14 +134,12 @@ std::unique_ptr<Session> Session::Create(const fl::Model& model) {
       return session;
     }
 
-#ifdef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
     if (non_generative) {
       auto session =
           std::make_unique<NonGenerativeSession>(model, logger, telemetry);
       tracker.SetStatus(ActionStatus::kSuccess);
       return session;
     }
-#endif
 
     FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unsupported model task: ", info.task);
   } catch (const std::exception& ex) {
