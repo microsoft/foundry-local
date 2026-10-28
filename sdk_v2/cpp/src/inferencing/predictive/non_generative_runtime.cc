@@ -35,70 +35,20 @@ std::vector<std::string> ExplicitProviders(const std::string& provider) {
                           : std::vector<std::string>{provider};
 }
 
-OgaStructuredValue ToStructured(const json& value) {
-  if (value.is_null()) return {};
-  if (value.is_boolean()) return value.get<bool>();
-  if (value.is_number_unsigned()) {
-    const auto number = value.get<uint64_t>();
-    if (number > static_cast<uint64_t>((std::numeric_limits<int64_t>::max)()))
-      throw std::invalid_argument("unsigned structured value exceeds INT64_MAX");
-    return static_cast<int64_t>(number);
+json StructuredRequestJson(const NonGenerativeRequest& request) {
+  json questions = json::object();
+  for (const auto& [id, question] : request.questions) {
+    questions[id] = {
+        {"type", question.type},
+        {"instructions", question.instructions},
+        {"criteria", question.criteria},
+    };
   }
-  if (value.is_number_integer()) return value.get<int64_t>();
-  if (value.is_number_float()) return value.get<double>();
-  if (value.is_string()) return value.get<std::string>();
-  if (value.is_array()) {
-    OgaStructuredValue::Array result;
-    result.reserve(value.size());
-    for (const auto& item : value) result.push_back(ToStructured(item));
-    return result;
-  }
-  if (value.is_object()) {
-    OgaStructuredValue::Object result;
-    result.reserve(value.size());
-    for (auto item = value.begin(); item != value.end(); ++item)
-      result.emplace_back(item.key(), ToStructured(*item));
-    return result;
-  }
-  throw std::invalid_argument("unsupported structured JSON value");
-}
-
-OgaStructuredRequest ToRequest(const NonGenerativeRequest& value) {
-  OgaStructuredRequest result;
-  result.state = ToStructured(value.state);
-  result.temperature = value.temperature;
-  for (const auto& [id, source] : value.questions) {
-    OgaQuestion question;
-    question.type = source.type;
-    question.instructions = ToStructured(source.instructions);
-    question.criteria = ToStructured(source.criteria);
-    result.questions.emplace_back(id, std::move(question));
-  }
-  return result;
-}
-
-json ToJson(const OgaAnswer& answer) {
-  json result{{"type", answer.type}};
-  if (answer.noul) result["noul"] = *answer.noul;
-  if (answer.choice) result["choice"] = *answer.choice;
-  if (answer.score) result["score"] = *answer.score;
-  if (answer.confidence) result["confidence"] = *answer.confidence;
-  if (!answer.probabilities.empty()) {
-    result["probabilities"] = json::object();
-    for (const auto& [key, value] : answer.probabilities)
-      result["probabilities"][key] = value;
-  }
-  if (!answer.legend.empty()) {
-    result["legend"] = json::object();
-    for (const auto& [key, value] : answer.legend) result["legend"][key] = value;
-  }
-  return result;
-}
-
-json ToJson(const OgaModelResult& value) {
-  json result = json::object();
-  for (const auto& [id, answer] : value.answers) result[id] = ToJson(answer);
-  return result;
+  return {
+      {"state", request.state},
+      {"temperature", request.temperature},
+      {"questions", std::move(questions)},
+  };
 }
 
 template <typename Session>
@@ -213,33 +163,39 @@ RankingRuntime::RankingRuntime(const std::string& package_path, std::string prov
 RankingRuntime::~RankingRuntime() = default;
 
 nlohmann::json RankingRuntime::Rank(const NonGenerativeRequest& request) {
-  auto translated = ToRequest(request);
-  return impl_->executor.Invoke(
-      [translated = std::move(translated)](RankingSession& session) mutable {
-        return ToJson(session.Run(translated));
+  const auto request_json = StructuredRequestJson(request).dump();
+  const auto response = impl_->executor.Invoke(
+      [request_json](RankingSession& session) {
+        return session.Run(request_json);
       });
+  return json::parse(response).at("answers");
 }
 
 nlohmann::json RankingRuntime::Rank(const RankingRequest& request) {
-  OgaFreeFormRankRequest translated;
-  translated.state = ToStructured(request.context);
-  translated.instructions = request.question;
-  translated.temperature = request.temperature;
+  json candidates = json::object();
   for (size_t i = 0; i < request.answers.size(); ++i)
-    translated.candidates.emplace_back(std::to_string(i), request.answers[i]);
-  const auto result = impl_->executor.Invoke(
-      [translated = std::move(translated)](RankingSession& session) mutable {
-        return session.Rank(translated);
+    candidates[std::to_string(i)] = request.answers[i];
+  const auto request_json =
+      json{{"state", request.context},
+           {"instructions", request.question},
+           {"temperature", request.temperature},
+           {"candidates", std::move(candidates)}}
+          .dump();
+  const auto response = impl_->executor.Invoke(
+      [request_json](RankingSession& session) {
+        return session.Rank(request_json);
       });
+  const auto result = json::parse(response);
   json ranked = json::array();
-  for (const auto& item : result.ranked) {
+  for (const auto& item : result.at("ranked")) {
+    const auto key = item.at("key").get<std::string>();
     ranked.push_back({
-        {"rank", item.rank},
-        {"candidate", request.answers.at(static_cast<size_t>(std::stoull(item.key)))},
-        {"prob", item.probability},
+        {"rank", item.at("rank")},
+        {"candidate", request.answers.at(static_cast<size_t>(std::stoull(key)))},
+        {"prob", item.at("probability")},
     });
   }
-  return {{"model", result.model}, {"ranked", std::move(ranked)}};
+  return {{"model", result.at("model")}, {"ranked", std::move(ranked)}};
 }
 
 struct DecisionRuntime::Impl {
@@ -257,11 +213,12 @@ DecisionRuntime::DecisionRuntime(const std::string& package_path, std::string pr
 DecisionRuntime::~DecisionRuntime() = default;
 
 nlohmann::json DecisionRuntime::Decide(const NonGenerativeRequest& request) {
-  auto translated = ToRequest(request);
-  return impl_->executor.Invoke(
-      [translated = std::move(translated)](DecisionSession& session) mutable {
-        return ToJson(session.Decide(translated));
+  const auto request_json = StructuredRequestJson(request).dump();
+  const auto response = impl_->executor.Invoke(
+      [request_json](DecisionSession& session) {
+        return session.Decide(request_json);
       });
+  return json::parse(response).at("answers");
 }
 
 }  // namespace fl
