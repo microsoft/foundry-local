@@ -4,7 +4,6 @@
 #include "catalog/non_generative_package.h"
 #include "utils.h"
 
-#include <charconv>
 #include <condition_variable>
 #include <deque>
 #include <functional>
@@ -34,20 +33,6 @@ std::vector<std::string> EnvironmentProviders() {
 std::vector<std::string> ExplicitProviders(const std::string& provider) {
   return provider.empty() ? std::vector<std::string>{}
                           : std::vector<std::string>{provider};
-}
-
-size_t CacheSetting(const char* name, size_t fallback) {
-  const auto value = Utils::GetEnv(name);
-  if (!value || value->empty()) return fallback;
-  size_t parsed{};
-  const std::string_view text(*value);
-  const auto [end, error] =
-      std::from_chars(text.data(), text.data() + text.size(), parsed);
-  if (error != std::errc{} || end != text.data() + text.size()) {
-    throw std::invalid_argument(std::string(name) +
-                                " must be a non-negative integer");
-  }
-  return parsed;
 }
 
 OgaStructuredValue ToStructured(const json& value) {
@@ -216,12 +201,7 @@ class SessionExecutor {
 struct RankingRuntime::Impl {
   Impl(const std::string& path, std::vector<std::string> providers)
       : executor([path, providers = std::move(providers)] {
-          auto session = std::make_unique<RankingSession>(path, providers);
-          session->SetCacheCapacity(
-              CacheSetting("FOUNDRY_LOCAL_CLM_CACHE_CAPACITY", 256),
-              CacheSetting("FOUNDRY_LOCAL_CLM_CACHE_CAPACITY_BYTES",
-                           64 * 1024 * 1024));
-          return session;
+          return std::make_unique<RankingSession>(path, providers);
         }) {}
   SessionExecutor<RankingSession> executor;
 };
@@ -265,12 +245,7 @@ nlohmann::json RankingRuntime::Rank(const RankingRequest& request) {
 struct DecisionRuntime::Impl {
   Impl(const std::string& path, std::vector<std::string> providers)
       : executor([path, providers = std::move(providers)] {
-          auto session = std::make_unique<DecisionSession>(path, providers);
-          session->SetCacheCapacity(
-              CacheSetting("FOUNDRY_LOCAL_KEV_CACHE_CAPACITY", 512),
-              CacheSetting("FOUNDRY_LOCAL_KEV_CACHE_CAPACITY_BYTES",
-                           16 * 1024 * 1024));
-          return session;
+          return std::make_unique<DecisionSession>(path, providers);
         }) {}
   SessionExecutor<DecisionSession> executor;
 };
