@@ -75,6 +75,7 @@ bool IsAdditionalOptionEnabled(const Configuration& config, const std::string& o
   return it != config.additional_options.cend() && IsTruthyConfigValue(it->second);
 }
 
+#ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
 uint64_t UnsignedAdditionalOption(const Configuration& config,
                                   const std::string& name,
                                   uint64_t fallback) {
@@ -89,6 +90,7 @@ uint64_t UnsignedAdditionalOption(const Configuration& config,
              " must be a positive integer");
   return value;
 }
+#endif
 
 OrtLoggingLevel GetDefaultOrtLoggingLevel(bool genai_verbose_logging_enabled) {
   // If someone explicitly enables ORTGENAI_ORT_VERBOSE_LOGGING, treat this as

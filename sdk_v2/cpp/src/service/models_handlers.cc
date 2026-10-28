@@ -144,7 +144,6 @@ class UnloadModelHandler : public HttpRequestHandler {
     }
 
     try {
-#ifdef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
       if (model->Info().task == "text-ranking" ||
           model->Info().task == "typed-decision") {
         const bool unloaded = UnloadNonGenerativeRuntime(ctx_, *model);
@@ -152,7 +151,6 @@ class UnloadModelHandler : public HttpRequestHandler {
         return JsonResponse(Status::CODE_200,
                             {{"status", unloaded ? "unloaded" : "not_loaded"}});
       }
-#endif
       model->Unload();
       tracker.SetStatus(ActionStatus::kSuccess);
 

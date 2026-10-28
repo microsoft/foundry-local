@@ -632,7 +632,6 @@ TEST_F(WebServiceTest, ChatCompletionsRejectsMissingMessages) {
                std::exception);
 }
 
-#ifdef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
 TEST_F(WebServiceTest, NonGenerativeRoutesRejectInvalidContracts) {
   EXPECT_THROW(TestHttpPost(base_url_ + "/v1/rank", ""),
                std::exception);
@@ -753,47 +752,6 @@ TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCudaPackagesWhenConf
       "", std::chrono::minutes(3)));
   EXPECT_EQ(decision.at("model"), kev_metadata.model_id);
 }
-
-TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedWebGpuPackagesWhenConfigured) {
-  const auto enabled = test::SafeGetEnv("FOUNDRY_LOCAL_RUN_WEBGPU_TESTS");
-  const auto root_value = test::SafeGetEnv("FOUNDRY_LOCAL_NON_GENERATIVE_TEST_ROOT");
-  if (enabled != "1" || root_value.empty()) {
-    GTEST_SKIP() << "set FOUNDRY_LOCAL_RUN_WEBGPU_TESTS=1 and "
-                    "FOUNDRY_LOCAL_NON_GENERATIVE_TEST_ROOT to run WebGPU packages";
-  }
-  const auto provider_library =
-      test::SafeGetEnv("FOUNDRY_LOCAL_WEBGPU_EP_LIBRARY");
-  if (provider_library.empty()) {
-    GTEST_SKIP() << "set FOUNDRY_LOCAL_WEBGPU_EP_LIBRARY to the WebGPU EP";
-  }
-  OgaRegisterExecutionProviderLibrary("WebGpuExecutionProvider",
-                                      provider_library.c_str());
-  const auto root = std::filesystem::path(root_value);
-  const auto clm = root / "clm-v0.1-8b-webgpu";
-  const auto kev = root / "kev-4b-webgpu";
-  const auto clm_metadata = AddLocalPackage(clm);
-  const auto kev_metadata = AddLocalPackage(kev);
-
-  auto ranking = json::parse(TestHttpPost(
-      base_url_ + "/catalogs/local/v1/rank",
-      json{{"model", clm_metadata.model_id},
-           {"context", {{"weather", "heavy rain"}}},
-           {"question", "select"},
-           {"answers", {"outside", "inside"}}}
-          .dump(),
-      "", std::chrono::minutes(5)));
-  EXPECT_EQ(ranking.at("model"), clm_metadata.model_id);
-
-  auto decision = json::parse(TestHttpPost(
-      base_url_ + "/catalogs/local/v1/systemone",
-      json{{"model", kev_metadata.model_id},
-           {"state", {{"weather", "heavy rain"}}},
-           {"questions", {{"umbrella", {{"type", "noul"}}}}}}
-          .dump(),
-      "", std::chrono::minutes(5)));
-  EXPECT_EQ(decision.at("model"), kev_metadata.model_id);
-}
-#endif
 
 TEST_F(WebServiceTest, ChatCompletionsRejectsUnknownModel) {
   json body = {

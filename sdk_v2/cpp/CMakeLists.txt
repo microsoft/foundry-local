@@ -114,25 +114,6 @@ find_package(OnnxRuntimeGenAI REQUIRED)
 
 find_package(OnnxRuntime REQUIRED)
 
-include(CheckCXXSourceCompiles)
-set(CMAKE_REQUIRED_INCLUDES "${ORT_GENAI_HEADER_DIR}")
-unset(FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI CACHE)
-check_cxx_source_compiles(
-    "#include <ort_genai_c.h>
-     int main() {
-       OgaNonGenerativeSession* session = nullptr;
-       return session == nullptr ? 0 : 1;
-     }"
-    FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
-)
-unset(CMAKE_REQUIRED_INCLUDES)
-if(FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI)
-    add_compile_definitions(FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI=1)
-    message(STATUS "ORT GenAI non-generative runtime APIs: enabled")
-else()
-    message(STATUS "ORT GenAI non-generative runtime APIs: unavailable; routes and runtime disabled")
-endif()
-
 # WinML EP Catalog — Windows-only, for hardware EP discovery and download. The
 # WinML 2.x runtime is reg-free, delay-loaded, and degrades gracefully when the
 # DLL is absent, so it is always included on Windows; other platforms skip it.
@@ -324,12 +305,10 @@ set(FOUNDRY_LOCAL_SOURCES
     ${FOUNDRY_LOCAL_INTERNAL_HEADERS}
 )
 
-if(FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI)
-    list(APPEND FOUNDRY_LOCAL_SOURCES
-        src/inferencing/predictive/non_generative_runtime.cc
-        src/service/non_generative_handlers.cc
-    )
-endif()
+list(APPEND FOUNDRY_LOCAL_SOURCES
+    src/inferencing/predictive/non_generative_runtime.cc
+    src/service/non_generative_handlers.cc
+)
 
 list(APPEND FOUNDRY_LOCAL_SOURCES
     src/inferencing/generative/chat/onnx_chat_engine.cc
@@ -685,10 +664,8 @@ if(FOUNDRY_LOCAL_BUILD_EXAMPLES)
     set_target_properties(tool_calling_example PROPERTIES FOLDER "Examples")
     set_target_properties(realtime_audio_example PROPERTIES FOLDER "Examples")
     set_target_properties(embeddings_example PROPERTIES FOLDER "Examples")
-    if(FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI)
-        add_subdirectory(examples/kev_decision)
-        set_target_properties(kev_decision_example PROPERTIES FOLDER "Examples")
-    endif()
+    add_subdirectory(examples/kev_decision)
+    set_target_properties(kev_decision_example PROPERTIES FOLDER "Examples")
 
     # On Linux, GenAI does dlopen("libonnxruntime.so") internally. Modern GCC
     # emits RUNPATH which doesn't propagate to transitive dlopen calls.
@@ -698,8 +675,6 @@ if(FOUNDRY_LOCAL_BUILD_EXAMPLES)
         target_link_options(tool_calling_example PRIVATE -Wl,--disable-new-dtags)
         target_link_options(realtime_audio_example PRIVATE -Wl,--disable-new-dtags)
         target_link_options(embeddings_example PRIVATE -Wl,--disable-new-dtags)
-        if(FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI)
-            target_link_options(kev_decision_example PRIVATE -Wl,--disable-new-dtags)
-        endif()
+        target_link_options(kev_decision_example PRIVATE -Wl,--disable-new-dtags)
     endif()
 endif()

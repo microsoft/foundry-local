@@ -261,10 +261,11 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallback&
   }
 }
 
-bool CudaEpBootstrapper::PrepareForModelLoad([[maybe_unused]] ILogger& logger) {
+bool CudaEpBootstrapper::PrepareForModelLoad(ILogger& logger) {
 #ifdef _WIN32
   return platform::SetDynamicLibrarySearchDirectory(bundle_dir_, logger);
 #else
+  (void)logger;
   return true;
 #endif
 }
