@@ -467,6 +467,14 @@ size_t Model::ActiveExternalSessionCount() const {
   return external_session_count_.load();
 }
 
+void Model::PrepareExternalProvider(std::string_view provider) {
+  if (Model* sv = selected_variant_.load(std::memory_order_acquire)) {
+    sv->PrepareExternalProvider(provider);
+    return;
+  }
+  model_load_manager_->PrepareNonGenerativeProvider(provider);
+}
+
 void Model::MarkExternalRuntimeLoaded() {
   if (Model* sv = selected_variant_.load(std::memory_order_acquire)) {
     sv->MarkExternalRuntimeLoaded();

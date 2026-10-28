@@ -252,7 +252,10 @@ AcquireRuntime(ServiceContext& ctx, const ResolvedPackage& package) {
                    : nullptr;
   auto state = ctx.non_generative_runtimes;
   try {
-    ctx.model_load_manager.PrepareNonGenerativeProvider(package.provider);
+    if (acquired)
+      acquired->PrepareExternalProvider(package.provider);
+    else
+      ctx.model_load_manager.PrepareNonGenerativeProvider(package.provider);
     auto runtime = std::static_pointer_cast<Runtime>(state->Acquire(
         package.identity, package.model_id, package.model,
         package.estimated_resident_bytes,
