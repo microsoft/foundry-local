@@ -407,7 +407,17 @@ await FoundryLocalManager.Instance.StopWebServiceAsync();
 | `LogsDir` | `string?` | `{AppDataDir}/logs` | Log output directory |
 | `LogLevel` | `LogLevel` | `Warning` | `Verbose`, `Debug`, `Information`, `Warning`, `Error`, `Fatal` |
 | `Web` | `WebService?` | `null` | Web service configuration (see below) |
+| `UseSharedHost` | `bool` | `false` | Route existing model/session APIs through the packaged native shared host |
 | `AdditionalSettings` | `IDictionary<string, string>?` | `null` | Extra key-value settings passed to Core |
+
+With `UseSharedHost = true`, execution or web-service Start lazily starts or joins a compatible host; metadata,
+discovery and downloads do not start it. Matching runtime dependencies and effective catalog, data/cache, provider
+and web settings determine compatibility, not the binding or installation directory. Hosted mode does not fall back
+to in-process execution and cannot be combined with an external web-service URL.
+
+Manager shutdown/disposal releases only this client. After the final owner, the host drains admitted work, allows
+a five-second reconnect grace and exits normally. Retain the manager while using HTTP: a connection pool is not an
+owner. Explicit model unload is shared and rejects in-use models. Web-service Stop rejects other owners or HTTP work.
 
 **Logging**
 

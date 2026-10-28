@@ -149,6 +149,26 @@ model
 
 Catalog access does not block on EP downloads. Call `download_and_register_eps` when you need hardware-accelerated execution providers.
 
+## Native shared serving
+
+Opt in through normal SDK configuration; no separate host installation or control API is needed:
+
+```rust
+let manager = FoundryLocalManager::create(
+    FoundryLocalConfig::new("my-app").use_shared_host(true),
+)?;
+```
+
+In-process remains the default. Metadata, discovery and downloads do not start a host; execution or
+`start_web_service()` starts or joins a compatible host from the selected runtime. Compatibility requires matching
+native dependencies and effective catalog, data/cache, provider and web settings, not the same binding or package
+directory. Hosted mode cannot be combined with `service_endpoint` and never falls back to in-process execution.
+
+Shutdown/drop is client-local. Retained handles and admitted work keep their required native lifetime.
+After the final owner, the host drains admitted work, allows a five-second reconnect grace and exits normally.
+Keep the manager alive while using HTTP: connections are not owners. Explicit model unload stays shared and
+rejects in-use models; web-service Stop rejects other owners or active HTTP work.
+
 ## Quick Start
 
 ```rust

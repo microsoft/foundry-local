@@ -134,6 +134,14 @@ steps:
         foreach ($f in $files) {
             Copy-Item $f.FullName -Destination $dest -Force
         }
+        $hostName = if ('${{ parameters.rid }}' -like 'win-*') { 'foundry-local-host.exe' } else { 'foundry-local-host' }
+        foreach ($required in @($hostName, 'foundry-local-runtime.json')) {
+            if (-not (Test-Path (Join-Path $dest $required))) { throw "Required runtime payload missing: $required" }
+        }
+        if ('${{ parameters.rid }}' -notlike 'win-*') {
+            chmod u+x (Join-Path $dest $hostName)
+            if ($LASTEXITCODE -ne 0) { throw "Failed to make the shared host executable" }
+        }
         Write-Host "Copied $($files.Count) native file(s) to $dest"
         Get-ChildItem $dest | ForEach-Object { Write-Host "  $($_.Name)" }
 

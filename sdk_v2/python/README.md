@@ -148,6 +148,19 @@ FoundryLocalManager.initialize(config)
 manager = FoundryLocalManager.instance
 ```
 
+### Native shared hosting
+
+Set `use_shared_host=True` on `Configuration` to route existing model/session APIs through the native host included
+in the wheel. The default remains in-process. Metadata, discovery and downloads do not start the host; execution or
+`manager.start_web_service()` starts or joins it. Matching runtime dependencies and effective catalog, data/cache,
+provider and web settings determine compatibility, not the binding or installation directory. Shared hosting cannot
+be combined with `web.external_url`, and never silently falls back to in-process execution.
+
+`manager.close()` releases only this client. After the final owner, the host drains admitted work, allows a
+five-second reconnect grace and exits normally. Keep the manager alive while using its HTTP endpoint; HTTP
+connections are not owners. Explicit model unload stays shared and rejects in-use models. Web-service Stop rejects
+other owners or active HTTP work.
+
 ### Discovering models
 
 ```python

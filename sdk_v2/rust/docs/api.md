@@ -13,6 +13,7 @@
 - [Model Catalog](#model-catalog)
   - [Catalog](#catalog)
   - [Model](#model)
+- [Shared Serving](#shared-serving)
 - [OpenAI Clients](#openai-clients)
   - [ChatClient](#chatclient)
   - [ChatCompletionStream](#chatcompletionstream)
@@ -69,11 +70,27 @@ pub struct FoundryLocalManager { /* private fields */ }
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `create` | `fn create(config: FoundryLocalConfig) -> Result<Arc<Self>, FoundryLocalError>` | Initialise the SDK. Returns a shared handle: while any handle is alive, all calls return the same instance (config ignored after the first). Once the last handle is dropped the native manager is torn down via `Drop`, and a later call builds a fresh instance. |
+| `create` | `fn create(config: FoundryLocalConfig) -> Result<Arc<Self>, FoundryLocalError>` | Initialise the SDK. Live handles reuse the same instance; conflicting hosted/in-process modes are rejected, including when derived handles retain it. Other settings remain those of the first configuration. Once the final native handle is dropped, a later call builds a fresh instance. |
 | `catalog` | `fn catalog(&self) -> &Catalog` | Access the model catalog. |
-| `urls` | `fn urls(&self) -> Result<Vec<String>, FoundryLocalError>` | URLs the local web service is listening on. Empty until `start_web_service` is called. |
+| `urls` | `fn urls(&self) -> Result<Vec<String>, FoundryLocalError>` | Observe current listening URLs without starting the service or acquiring shared-host ownership. Empty when no listener is running. |
 | `start_web_service` | `async fn start_web_service(&self) -> Result<(), FoundryLocalError>` | Start the local web service. Retrieve listening URLs via `urls()`. |
 | `stop_web_service` | `async fn stop_web_service(&self) -> Result<(), FoundryLocalError>` | Stop the local web service. |
+| `is_shutdown_requested` | `fn is_shutdown_requested(&self) -> bool` | Observe shutdown requested by native code or a web-service handler. |
+
+---
+
+## Shared Serving
+
+Use `FoundryLocalConfig::new("my-app").use_shared_host(true)` to route the normal manager, model and session APIs
+through the native host shipped with the runtime. In-process remains the default. Metadata, discovery and downloads
+do not start the host; execution or `start_web_service()` starts or joins it. Matching native dependencies and
+effective catalog, data/cache, provider and web settings determine compatibility, not the binding or installation
+directory. Hosted mode cannot be combined with `service_endpoint` and never falls back to in-process execution.
+
+Manager shutdown/drop releases only this client's ownership. After the final owner, the host drains admitted work,
+allows a five-second reconnect grace and exits normally. Keep the manager alive while using its HTTP endpoint:
+HTTP connections are not owners. Explicit model unload stays shared and rejects in-use models. Web-service Stop
+rejects other owners or active HTTP work.
 
 ---
 
@@ -95,6 +112,7 @@ pub struct FoundryLocalConfig { /* private fields */ }
 | `log_level` | `fn log_level(self, level: LogLevel) -> Self` | Set the log level. |
 | `web_service_urls` | `fn web_service_urls(self, urls: impl Into<String>) -> Self` | Set the web-service listen URLs. |
 | `service_endpoint` | `fn service_endpoint(self, endpoint: impl Into<String>) -> Self` | Set an external service endpoint URL. |
+| `use_shared_host` | `fn use_shared_host(self, enabled: bool) -> Self` | Route existing APIs through the packaged native host; defaults to `false`. |
 | `catalog_url` | `fn catalog_url(self, url: impl Into<String>) -> Self` | Add a catalog source URL (no filter override). May be called multiple times. |
 | `catalog_url_with_filter` | `fn catalog_url_with_filter(self, url: impl Into<String>, filter_override: impl Into<String>) -> Self` | Add a catalog source URL with a filter override. |
 | `catalog_region` | `fn catalog_region(self, region: impl Into<String>) -> Self` | Set the Azure region used by the catalog service. |
