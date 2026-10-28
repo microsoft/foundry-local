@@ -83,6 +83,13 @@ steps:
           Copy-Item -Path $src -Destination $dst -Force
         }
 
+        $hostName = if ($Rid -like 'win-*') { 'foundry-local-host.exe' } else { 'foundry-local-host' }
+        foreach ($required in @($hostName, 'foundry-local-runtime.json')) {
+          $src = Join-Path $nativeSrc $required
+          if (-not (Test-Path $src)) { throw "Required runtime payload not found: $src" }
+          Copy-Item -Path $src -Destination $libDst -Force
+        }
+
         foreach ($f in $OptionalFiles) {
           $matches = @(Get-ChildItem -Path (Join-Path $nativeSrc $f) -ErrorAction SilentlyContinue)
           foreach ($src in $matches) {
@@ -118,7 +125,20 @@ steps:
               throw "Zip creation failed for RID '$Rid'"
             }
           } else {
-            tar -czf $archive include lib
+            $tarScript = @'
+      import sys
+      import tarfile
+
+      def executable_host(entry):
+          if entry.name == "lib/foundry-local-host":
+              entry.mode |= 0o111
+          return entry
+
+      with tarfile.open(sys.argv[1], "w:gz") as archive:
+          archive.add("include")
+          archive.add("lib", filter=executable_host)
+      '@
+            $tarScript | python - $archive
             if ($LASTEXITCODE -ne 0) {
               throw "Tar creation failed for RID '$Rid'"
             }

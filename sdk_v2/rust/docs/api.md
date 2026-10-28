@@ -13,6 +13,7 @@
 - [Model Catalog](#model-catalog)
   - [Catalog](#catalog)
   - [Model](#model)
+- [Shared Serving](#shared-serving)
 - [OpenAI Clients](#openai-clients)
   - [ChatClient](#chatclient)
   - [ChatCompletionStream](#chatcompletionstream)
@@ -69,11 +70,87 @@ pub struct FoundryLocalManager { /* private fields */ }
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `create` | `fn create(config: FoundryLocalConfig) -> Result<Arc<Self>, FoundryLocalError>` | Initialise the SDK. Returns a shared handle: while any handle is alive, all calls return the same instance (config ignored after the first). Once the last handle is dropped the native manager is torn down via `Drop`, and a later call builds a fresh instance. |
+| `create` | `fn create(config: FoundryLocalConfig) -> Result<Arc<Self>, FoundryLocalError>` | Initialise the SDK. Live handles reuse the same instance; conflicting hosted/in-process modes are rejected, including when derived handles retain it. Other settings remain those of the first configuration. Once the final native handle is dropped, a later call builds a fresh instance. |
 | `catalog` | `fn catalog(&self) -> &Catalog` | Access the model catalog. |
 | `urls` | `fn urls(&self) -> Result<Vec<String>, FoundryLocalError>` | URLs the local web service is listening on. Empty until `start_web_service` is called. |
 | `start_web_service` | `async fn start_web_service(&self) -> Result<(), FoundryLocalError>` | Start the local web service. Retrieve listening URLs via `urls()`. |
 | `stop_web_service` | `async fn stop_web_service(&self) -> Result<(), FoundryLocalError>` | Stop the local web service. |
+| `is_shutdown_requested` | `fn is_shutdown_requested(&self) -> bool` | Observe shutdown requested by native code or a web-service handler. |
+
+---
+
+## Shared Serving
+
+Use `FoundryLocalConfig::new("my-app").use_shared_host(true)` to route the normal manager, model and session APIs
+through the native host shipped with the runtime. In-process remains the default. Metadata, discovery and downloads
+do not start the host; execution or `start_web_service()` starts or joins it. Matching native dependencies and
+effective catalog, data/cache, provider and web settings determine compatibility, not the binding or installation
+directory. Hosted mode cannot be combined with `service_endpoint` and never falls back to in-process execution.
+
+Manager shutdown/drop releases only this client's ownership. After the final owner, the host drains admitted work,
+allows a five-second reconnect grace and exits normally. Keep the manager alive while using its HTTP endpoint:
+HTTP connections are not owners. Explicit model unload stays shared and rejects in-use models. Web-service Stop
+rejects other owners or active HTTP work.
+
+### Legacy preview service
+
+The earlier `shared_service` preview remains temporarily for consumer migration; new applications should use the
+configuration setting above, not install a separate Rust executable. The following describes only that preview.
+
+`shared_service` provides SDK control of a separately hosted model, while catalog
+queries, downloads, and execution-provider preparation remain existing SDK operations.
+The crate also builds `foundry-local-host`; distribute it alongside the matching SDK
+and native runtime using the normal application packaging mechanism.
+The Rust pipeline stages matched `foundry-host-<rid>` bundles containing the host,
+native libraries, license, and a SHA-256 manifest. Building the source crate alone
+does not install this bundle; callers must supply its actual executable/library
+paths rather than assume a separately installed Foundry service is compatible.
+The manifest records both the SDK version and source revision. Release pipelines
+stamp the SDK version before building; a client built from an unstamped source
+checkout is not interchangeable with a differently versioned release host.
+
+`SharedServiceConfig` has five absolute `PathBuf` fields: `directory` (user-private
+coordination state), `executable` (host binary), `library` (native library file),
+`model_cache_dir`, and `app_data_dir` (including local model registrations).
+Its `execution_providers: Vec<String>` names the providers the host must prepare
+and register through existing SDK acquisition before becoming ready. Use the
+selected models' runtime metadata, not an integration-maintained provider list.
+CPU-only tests can leave it empty. This set is part of host compatibility.
+Use the same cache/application-data configuration for metadata clients and host.
+Create/download/register models before starting the host; the current shared-host
+API does not refresh local registrations made after host startup.
+Load and unload require the selected artifact's absolute filesystem path. The host
+checks it before changing residency, so re-registering an ID in another metadata
+client cannot silently reuse or stop a different artifact from the host's snapshot.
+Use `Model::path().await`, not the catalog download URI.
+
+| Method | Description |
+| --- | --- |
+| `SharedService::new(config)` | Configure without starting the host or loading native code. |
+| `service.connect().await` | Return `Option<SharedServiceConnection>`; absent differs from incompatible/unreachable. |
+| `service.ensure_started().await` | Start or reuse one matching host across clients. |
+| `connection.inference_endpoint(catalog)` | OpenAI base URL, with separate public/local catalog routing. |
+| `connection.load(catalog, model_id, model_path).await` | Require the absolute artifact path from `Model::path().await` after acquisition. Return `SharedModelState` with resolved `model_id`, authoritative `model_path`, and optional loaded-config `context_length`; not a residency/resource reservation. |
+| `connection.unload(catalog, model_id, model_path).await` | Explicit shared unload of the selected artifact; mismatched-path and in-use failures are not deferred. |
+| `connection.loaded_models(catalog).await` | Authoritative server-loaded IDs, not the client's local state. |
+| `connection.loaded_model_states(catalog).await` | Observe authoritative loaded artifact paths and effective contexts without loading weights; use path identity as well as ID for readiness. |
+
+Host/native artifact hashes (including adjacent platform libraries), SDK protocol/version and canonical configuration must
+match before reuse. Protocol 2 also requires the native status capability for
+artifact-qualified model management before readiness or control; older hosts and
+native libraries are rejected before changing residency. Use freshly matched host/native
+artifacts, not a new host combined with a legacy runtime.
+An incompatible live host is not replaced. Client drop never
+unloads shared models or stops the host. Cancelling a startup/load waiter does not
+promise to cancel non-interruptible server work. Query actual state before another
+authorized attempt; never automatically replay inference.
+
+Control uses existing Foundry management HTTP routes internally, with redirects and
+proxy use disabled. Inference retains the existing loopback server's access policy:
+loopback is not authentication or OS-user isolation. Keep the state directory in
+the current user's private application data. Sharing does not promise unlimited
+concurrency or pinned residency. A reported loaded context length is not an
+output-budget policy or a reservation of currently available GPU memory.
 
 ---
 
@@ -95,6 +172,7 @@ pub struct FoundryLocalConfig { /* private fields */ }
 | `log_level` | `fn log_level(self, level: LogLevel) -> Self` | Set the log level. |
 | `web_service_urls` | `fn web_service_urls(self, urls: impl Into<String>) -> Self` | Set the web-service listen URLs. |
 | `service_endpoint` | `fn service_endpoint(self, endpoint: impl Into<String>) -> Self` | Set an external service endpoint URL. |
+| `use_shared_host` | `fn use_shared_host(self, enabled: bool) -> Self` | Route existing APIs through the packaged native host; defaults to `false`. |
 | `catalog_url` | `fn catalog_url(self, url: impl Into<String>) -> Self` | Add a catalog source URL (no filter override). May be called multiple times. |
 | `catalog_url_with_filter` | `fn catalog_url_with_filter(self, url: impl Into<String>, filter_override: impl Into<String>) -> Self` | Add a catalog source URL with a filter override. |
 | `catalog_region` | `fn catalog_region(self, region: impl Into<String>) -> Self` | Set the Azure region used by the catalog service. |

@@ -340,12 +340,9 @@ fn stage_restored_package(
         ));
     }
     build_support::invalidate_package(out_dir, &pkg.expected_file)?;
+    http_extract::stage_files(&files, out_dir)?;
     for file in files {
-        let file_name = file
-            .file_name()
-            .ok_or_else(|| format!("native file has no file name: {}", file.display()))?;
-        fs::copy(&file, out_dir.join(file_name))
-            .map_err(|error| format!("stage {}: {error}", file.display()))?;
+        let file_name = file.file_name().expect("staged native file has a name");
         println!("cargo:warning=  Staged {}", file_name.to_string_lossy());
     }
     if out_dir.join(&pkg.expected_file).exists() {
@@ -464,22 +461,22 @@ fn restore_with_nuget(
 }
 
 fn copy_from_local_dir(src: &Path, out_dir: &Path) -> Result<bool, String> {
-    let ext = native_lib_extension();
-    let Ok(entries) = fs::read_dir(src) else {
-        return Ok(false);
-    };
+    let entries =
+        fs::read_dir(src).map_err(|error| format!("read local native directory: {error}"))?;
     let mut copied = false;
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some(ext) {
+        if path.is_file() && build_support::is_native_payload(&path, native_lib_extension()) {
             if let Some(name) = path.file_name() {
-                if fs::copy(&path, out_dir.join(name)).is_ok() {
-                    println!(
-                        "cargo:warning=Copied {} from FOUNDRY_LOCAL_NATIVE_BIN_DIR",
-                        name.to_string_lossy()
-                    );
-                    copied = true;
-                }
+                fs::copy(&path, out_dir.join(name)).map_err(|error| {
+                    format!("copy local native payload {}: {error}", path.display())
+                })?;
+                http_extract::make_host_executable(&out_dir.join(name))?;
+                println!(
+                    "cargo:warning=Copied {} from FOUNDRY_LOCAL_NATIVE_BIN_DIR",
+                    name.to_string_lossy()
+                );
+                copied = true;
             }
         }
     }

@@ -20,9 +20,10 @@
 #      integration suite (serialised: the native core enforces a single manager
 #      per process).
 #
-# For a cross build (`crossTarget` set) only fmt + `cargo clippy --target`
-# (check-level) run: the arm64 binaries can't execute on the x64 host, matching
-# the build-only treatment win-arm64 gets in the C# / Python matrices.
+# Every platform also builds a release serving host and stages it with its
+# matching native runtime and checksum manifest as foundry-host-<rid>.
+# Cross builds check the SDK and link the host, but do not execute ARM64 binaries
+# on the x64 agent.
 
 parameters:
 - name: rid
@@ -178,7 +179,45 @@ steps:
     env:
       FOUNDRY_LOCAL_NATIVE_BIN_DIR: $(flNativeDir)
 
-# ── 4c. Native build: clippy + build (+ tests) ───────────────────────────────
+# ── 4c. Package the shared serving host (native and cross) ───────────────────
+- task: PowerShell@2
+  displayName: 'Build and stage shared Foundry serving host'
+  inputs:
+    targetType: inline
+    pwsh: true
+    workingDirectory: '$(Build.SourcesDirectory)/sdk_v2/rust'
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $cross = '${{ parameters.crossTarget }}'
+      $cargoArgs = @('build', '--release', '--bin', 'foundry-local-host')
+      if ($cross -ne '') { $cargoArgs += @('--target', $cross) }
+      cargo @cargoArgs
+      if ($LASTEXITCODE -ne 0) { throw 'Shared host build failed' }
+
+      $rid = '${{ parameters.rid }}'
+      $binary = if ($rid.StartsWith('win')) { 'foundry-local-host.exe' } else { 'foundry-local-host' }
+      $targetRoot = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $PWD 'target' }
+      if ($cross -ne '') { $targetRoot = Join-Path $targetRoot $cross }
+      $destination = Join-Path '$(Build.ArtifactStagingDirectory)' "foundry-host-$rid"
+      New-Item -ItemType Directory -Force -Path $destination | Out-Null
+      Copy-Item (Join-Path $targetRoot "release/$binary") $destination
+      Get-ChildItem '$(flNativeDir)' -File | Copy-Item -Destination $destination
+      Copy-Item 'LICENSE.txt' $destination
+
+      $files = @(Get-ChildItem $destination -File | Where-Object Name -ne 'manifest.json' | Sort-Object Name | ForEach-Object {
+        [ordered]@{ name = $_.Name; sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
+      })
+      $manifest = [ordered]@{
+        rid = $rid
+        sdkVersion = [regex]::Match((Get-Content 'Cargo.toml' -Raw), '(?m)^version\s*=\s*"([^"]+)"').Groups[1].Value
+        sourceVersion = '$(Build.SourceVersion)'
+        files = $files
+      }
+      $manifest | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $destination 'manifest.json')
+  env:
+    FOUNDRY_LOCAL_NATIVE_BIN_DIR: $(flNativeDir)
+
+# ── 4d. Native build: clippy + build (+ tests) ───────────────────────────────
 - ${{ if eq(parameters.crossTarget, '') }}:
   - task: PowerShell@2
     displayName: 'cargo clippy -D warnings'

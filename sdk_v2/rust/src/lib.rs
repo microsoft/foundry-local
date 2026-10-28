@@ -11,6 +11,7 @@ mod item_queue;
 mod request;
 mod response;
 mod session;
+pub mod shared_service;
 mod types;
 
 pub(crate) mod detail;

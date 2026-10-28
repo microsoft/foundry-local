@@ -331,6 +331,8 @@ public class FoundryLocalManager : IDisposable
                 }
             }
 
+            _nativeConfig.SetUseSharedHost(_config.UseSharedHost);
+
             // Create the native manager
             _nativeManager = new NativeManager(_nativeConfig);
 #pragma warning restore IDISP003

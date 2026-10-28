@@ -129,7 +129,8 @@ impl FoundryLocalManager {
     /// While at least one handle is alive — this `Arc`, or any
     /// [`Model`](crate::Model), client, or session derived from it, each of
     /// which keeps the native manager alive — every call returns a handle to the
-    /// **same** native manager and the `config` passed to later calls is ignored.
+    /// **same** native manager. A conflicting hosting mode is rejected; other
+    /// configuration passed to later calls is ignored.
     /// If the `Arc` returned here is dropped while a derived handle is still
     /// alive, a subsequent call rebuilds a lightweight wrapper around the
     /// still-live native manager rather than creating a second one (the core
@@ -142,6 +143,7 @@ impl FoundryLocalManager {
     /// the C++ SDK's local-`Manager` semantics and avoids the WebGPU
     /// `ReleaseEpFactory` teardown throw (ORT #29206).
     pub fn create(config: FoundryLocalConfig) -> Result<Arc<Self>> {
+        config.validate_hosting_mode()?;
         // Hold the lock across the whole decision so the reuse check, any native
         // creation, and the slot update are atomic; concurrent callers then
         // observe and share the result. A poisoned lock is recoverable: the
@@ -152,6 +154,9 @@ impl FoundryLocalManager {
 
         // 1. A live outer wrapper already exists: share it.
         if let Some(existing) = slot.outer.upgrade() {
+            existing
+                .native
+                .check_hosting_mode(config.shared_host_enabled())?;
             return Ok(existing);
         }
 
@@ -160,6 +165,7 @@ impl FoundryLocalManager {
         //    than calling `Manager_Create` again (the core permits only one live
         //    manager and would reject a second creation).
         if let Some(native) = slot.native.upgrade() {
+            native.check_hosting_mode(config.shared_host_enabled())?;
             let manager = Self::wrap_existing(native, config)?;
             slot.outer = Arc::downgrade(&manager);
             return Ok(manager);
@@ -182,6 +188,7 @@ impl FoundryLocalManager {
         let native = Arc::new(NativeManager::create(
             Arc::clone(&api),
             native_config.as_ptr(),
+            config.shared_host_enabled(),
         )?);
 
         let catalog_ptr = native.catalog_ptr()?;
@@ -269,6 +276,12 @@ impl FoundryLocalManager {
     /// `shutdown`, the manager should not be used for further inference.
     pub fn shutdown(&self) -> Result<()> {
         self.native.shutdown()
+    }
+
+    /// Whether native shutdown was requested, including through the web service.
+    /// A serving host should observe this and perform teardown on its own thread.
+    pub fn is_shutdown_requested(&self) -> bool {
+        self.native.is_shutdown_requested()
     }
 
     /// URLs that the local web service is listening on.

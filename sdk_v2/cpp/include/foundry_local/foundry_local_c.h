@@ -60,7 +60,12 @@
  * Incremented with each release.
  * Used to request the API function table via FoundryLocalGetApi.
  * ----------------------------------------------------------------------- */
-#define FOUNDRY_LOCAL_API_VERSION 2
+#define FOUNDRY_LOCAL_API_VERSION 3
+
+// Payload schemas evolve independently of the function-table ABI.
+#define FOUNDRY_LOCAL_DATA_VERSION 2
+#define FOUNDRY_LOCAL_TOOL_DEFINITION_VERSION 2
+#define FOUNDRY_LOCAL_REQUEST_PREFLIGHT_RESULT_VERSION 2
 
 /* -----------------------------------------------------------------------
  * Platform export macros (C version)
@@ -371,7 +376,7 @@ typedef enum flToolChoice {
 
 /// Token usage statistics returned with a completed response.
 typedef struct flUsage {
-  uint32_t version;  ///< Set to FOUNDRY_LOCAL_API_VERSION.
+  uint32_t version;  ///< Set to FOUNDRY_LOCAL_DATA_VERSION.
   int64_t prompt_tokens;
   int64_t completion_tokens;
   int64_t total_tokens;
@@ -380,7 +385,7 @@ typedef struct flUsage {
 
 /// Exact token-budget preflight result for a request in the captured session state.
 typedef struct flRequestPreflightResult {
-  uint32_t version;               ///< Set to FOUNDRY_LOCAL_API_VERSION.
+  uint32_t version;               ///< Set to FOUNDRY_LOCAL_REQUEST_PREFLIGHT_RESULT_VERSION.
   int64_t prompt_tokens;          ///< Exact number of prompt tokens after request preparation.
   int64_t output_reserve_tokens;  ///< Tokens reserved for generated output.
   int64_t required_tokens;        ///< Total tokens required: prompt plus output reserve.
@@ -396,7 +401,7 @@ typedef struct flRequestPreflightResult {
 /// `is_registered` may be updated by a concurrent Manager_DownloadAndRegisterEps;
 /// readers see a recent snapshot.
 typedef struct flEpInfo {
-  uint32_t version;    ///< Set by impl to FOUNDRY_LOCAL_API_VERSION.
+  uint32_t version;    ///< Set by impl to FOUNDRY_LOCAL_DATA_VERSION.
   const char* name;    ///< UTF-8 EP name. Stable for Manager lifetime.
   bool is_registered;  ///< Whether the EP is currently registered with ORT.
   /* V3 fields go here. Read only when version >= 3. */
@@ -431,7 +436,7 @@ typedef void (*flAudioDataDeleter)(const flAudioData* data, void* user_data);
 
 /// Versioned struct for TEXT item content.
 typedef struct flTextData {
-  uint32_t version;     ///< Set to FOUNDRY_LOCAL_API_VERSION.
+  uint32_t version;     ///< Set to FOUNDRY_LOCAL_DATA_VERSION.
   const char* text;     ///< UTF-8 text. Borrowed by caller; copied on Set. Pointer into item storage on Get.
   flTextItemType type;  ///< Text type tag. Defaults to FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT.
   /* V3 fields go here. Read only when version >= 3. */
@@ -439,7 +444,7 @@ typedef struct flTextData {
 
 /// Versioned struct for raw bytes data.
 struct flBytesData {
-  uint32_t version;            ///< Set to FOUNDRY_LOCAL_API_VERSION.
+  uint32_t version;            ///< Set to FOUNDRY_LOCAL_DATA_VERSION.
   flItemType item_type;        ///< The type of item these bytes are from, e.g. AUDIO
   const void* data;            ///< Read-only data pointer. Always populated on Get.
   void* mutable_data;          ///< Writable data pointer. NULL for read-only data. NULL on Get.
@@ -451,7 +456,7 @@ struct flBytesData {
 
 /// Versioned struct for tensor data.
 struct flTensorData {
-  uint32_t version;             ///< Set to FOUNDRY_LOCAL_API_VERSION.
+  uint32_t version;             ///< Set to FOUNDRY_LOCAL_DATA_VERSION.
   flTensorDataType data_type;   ///< Element data type.
   const void* data;             ///< Read-only data pointer. Always populated on Get.
   void* mutable_data;           ///< Writable data pointer. NULL for read-only data. NULL on Get.
@@ -474,7 +479,7 @@ struct flTensorData {
 /// Single-text messages are expressed as a one-element array containing a TEXT item.
 /// Language bindings provide single-string convenience overloads.
 typedef struct flMessageData {
-  uint32_t version;                    ///< Set to FOUNDRY_LOCAL_API_VERSION.
+  uint32_t version;                    ///< Set to FOUNDRY_LOCAL_DATA_VERSION.
   flMessageRole role;                  ///< Message role (FOUNDRY_LOCAL_ROLE_NONE to omit).
   const flItem* const* content_items;  ///< Array of content part items (TEXT/IMAGE/AUDIO).
   size_t content_items_count;          ///< Number of entries in `content_items`.
@@ -485,7 +490,7 @@ typedef struct flMessageData {
 /// Versioned struct for image data.
 /// Set `data`+`data_size` for byte-based images, or `uri` for URI-based images.
 struct flImageData {
-  uint32_t version;            ///< Set to FOUNDRY_LOCAL_API_VERSION.
+  uint32_t version;            ///< Set to FOUNDRY_LOCAL_DATA_VERSION.
   const void* data;            ///< Read-only data pointer. Always populated on Get.
   void* mutable_data;          ///< Writable data pointer. NULL for read-only data. NULL on Get.
   size_t data_size;            ///< Byte count. 0 for URI-based images.
@@ -497,7 +502,7 @@ struct flImageData {
 };
 
 struct flAudioData {
-  uint32_t version;            ///< Set to FOUNDRY_LOCAL_API_VERSION.
+  uint32_t version;            ///< Set to FOUNDRY_LOCAL_DATA_VERSION.
   const void* data;            ///< Read-only data pointer. Always populated on Get.
   void* mutable_data;          ///< Writable data pointer. NULL for read-only data. NULL on Get.
   size_t data_size;            ///< Byte count. 0 for URI-based audio.
@@ -511,7 +516,7 @@ struct flAudioData {
 
 /// Versioned struct for tool call data.
 typedef struct flToolCallData {
-  uint32_t version;     ///< Set to FOUNDRY_LOCAL_API_VERSION.
+  uint32_t version;     ///< Set to FOUNDRY_LOCAL_DATA_VERSION.
   const char* call_id;  ///< Tool call identifier.
   const char* name;     ///< Tool name.
   /// Arguments for the call, shaped by the registered flToolDefinition with the same `name`:
@@ -525,7 +530,7 @@ typedef struct flToolCallData {
 
 /// Versioned struct for tool result data.
 typedef struct flToolResultData {
-  uint32_t version;     ///< Set to FOUNDRY_LOCAL_API_VERSION.
+  uint32_t version;     ///< Set to FOUNDRY_LOCAL_DATA_VERSION.
   const char* call_id;  ///< Tool call identifier this result is for.
   const char* result;   ///< Result content.
   /* V3 fields go here. Read only when version >= 3. */
@@ -564,7 +569,7 @@ typedef enum flSpeechSegmentKind {
 /// Versioned struct for a single word within a speech segment.
 /// All optional fields use sentinels (FOUNDRY_LOCAL_DURATION_UNSET / FOUNDRY_LOCAL_CONFIDENCE_UNSET / NULL) when absent.
 typedef struct flSpeechWord {
-  uint32_t version;        ///< Set to FOUNDRY_LOCAL_API_VERSION.
+  uint32_t version;        ///< Set to FOUNDRY_LOCAL_DATA_VERSION.
   const char* text;        ///< UTF-8 word text. Always populated.
   int64_t start_time_ms;   ///< Milliseconds from audio start. FOUNDRY_LOCAL_DURATION_UNSET if absent.
   int64_t end_time_ms;     ///< Milliseconds from audio start. FOUNDRY_LOCAL_DURATION_UNSET if absent.
@@ -575,7 +580,7 @@ typedef struct flSpeechWord {
 
 /// Versioned struct for SPEECH_SEGMENT item content (output-only).
 typedef struct flSpeechSegmentData {
-  uint32_t version;           ///< Set to FOUNDRY_LOCAL_API_VERSION.
+  uint32_t version;           ///< Set to FOUNDRY_LOCAL_DATA_VERSION.
   flSpeechSegmentKind kind;   ///< NONE / PARTIAL / FINAL.
   const char* text;           ///< UTF-8. For PARTIAL: cumulative current hypothesis. May be NULL/"".
   int64_t start_time_ms;      ///< Milliseconds from audio start. FOUNDRY_LOCAL_DURATION_UNSET if absent.
@@ -590,7 +595,7 @@ typedef struct flSpeechSegmentData {
 /// Versioned struct for SPEECH_RESULT item content (output-only).
 /// `segments` entries are SPEECH_SEGMENT items with kind = FINAL or NONE.
 typedef struct flSpeechResultData {
-  uint32_t version;               ///< Set to FOUNDRY_LOCAL_API_VERSION.
+  uint32_t version;               ///< Set to FOUNDRY_LOCAL_DATA_VERSION.
   const char* text;               ///< UTF-8 concatenated final transcript. May be NULL/"".
   const char* language;           ///< Detected source language. NULL if absent.
   int64_t duration_ms;            ///< Total audio duration. FOUNDRY_LOCAL_DURATION_UNSET if absent.
@@ -602,7 +607,7 @@ typedef struct flSpeechResultData {
 /// Versioned struct that we pass to a callback during Session::ProcessRequest.
 /// Guarantees ordering and synchronization via the flItemQueue.
 typedef struct flStreamingCallbackData {
-  uint32_t version;         ///< Set to FOUNDRY_LOCAL_API_VERSION;
+  uint32_t version;         ///< Set to FOUNDRY_LOCAL_DATA_VERSION.
   flItemQueue* item_queue;  // One item is added to the queue for each callback.
   // TBD if we need output_index of content_index values at the Session.Run callback level or whether that is
   // handled above when converting to chat completions or responses api events.
@@ -629,7 +634,7 @@ typedef uint32_t flToolKind;
 /// Version 2 appends `kind`. Public FUNCTION and CUSTOM definitions using version 2 must have a
 /// non-empty `name`.
 typedef struct flToolDefinition {
-  uint32_t version;         ///< Set to FOUNDRY_LOCAL_API_VERSION. 0 is invalid.
+  uint32_t version;         ///< Set to FOUNDRY_LOCAL_TOOL_DEFINITION_VERSION. 0 is invalid.
   const char* name;         ///< Tool name. Case-sensitive; v2 names must be non-empty and unique across kinds.
   const char* description;  ///< Tool description for model context.
   /// JSON schema defining the tool's arguments. FUNCTION: required, must be valid JSON text.
@@ -760,6 +765,7 @@ typedef struct flApi {
   /// Model loads will be prevented.
   /// Existing sessions will be stopped.
   /// Models will be unloaded once that completes.
+  /// In shared-host mode this closes only this client's ownership and dependent work; other clients are unaffected.
   /// User must call Manager_Release free the manager instance.
   FL_API_STATUS(Manager_Shutdown, _In_ flManager* manager);
 
@@ -977,7 +983,7 @@ struct flInferenceApi {
                 _Outptr_ flRequestPreflight** out_preflight);
 
   /// Synchronously execute a preflight. This operation may be expensive.
-  /// The caller must initialize out_result->version to FOUNDRY_LOCAL_API_VERSION.
+  /// The caller must initialize out_result->version to FOUNDRY_LOCAL_REQUEST_PREFLIGHT_RESULT_VERSION.
   FL_API_STATUS(RequestPreflight_Execute, _In_ flRequestPreflight* preflight,
                 _Inout_ flRequestPreflightResult* out_result);
 
@@ -1030,6 +1036,14 @@ struct flConfigurationApi {
   FL_API_STATUS(SetAdditionalOptions, _In_ flConfiguration* config, _In_ const flKeyValuePairs* options);
 
   // End V1
+
+  /// Optional. Route existing execution APIs to the packaged native shared host. Defaults to false (in-process).
+  /// First execution starts or joins a compatible host; discovery alone does not start it. Releasing a manager
+  /// closes only that client's ownership. The last owner's drained work and reconnect grace precede host exit.
+  /// Cannot be combined with SetExternalServiceUrl. Requires API version 3.
+  FL_API_STATUS(SetUseSharedHost, _In_ flConfiguration* config, _In_ bool enabled);
+
+  // End V3
 };
 
 /* --- Catalog API ------------------------------------------------------- */
@@ -1040,7 +1054,8 @@ struct flCatalogApi {
 
   /// The caller owns each returned model list and must release it with ModelList_Release. The model handles in a list
   /// are borrowed from the catalog and remain address-valid until the owning manager is destroyed. Releasing a list
-  /// does not invalidate its model handles. Models are mutable for load/unload/remove operations; model info is immutable.
+  /// does not invalidate its model handles. Models are mutable for load/unload/remove operations; model info is
+  /// immutable.
   FL_API_STATUS(GetModels, _In_ const flCatalog* catalog, _Outptr_ flModelList** out_models);
   FL_API_STATUS(GetModel, _In_ const flCatalog* catalog, _In_ const char* alias,
                 _Outptr_ flModel** out_model);

@@ -4,6 +4,7 @@
 
 #include "inferencing/session/session_manager.h"
 #include "inferencing/session/session_registration.h"
+#include "c_api_types.h"
 #include "inferencing/execution_provider.h"
 #include "inferencing/generative/chat/chat_session.h"
 #include "inferencing/model_load_manager.h"
@@ -492,6 +493,36 @@ class ControlledCancelSession : public Session {
   std::atomic<bool> release_first_invocation_{false};
 };
 
+class ConcurrentCallbackSession : public Session {
+ public:
+  ConcurrentCallbackSession(const Model& model, ILogger& logger, ITelemetry& telemetry)
+      : Session(model, logger, telemetry, /*allow_concurrent_requests=*/true) {}
+
+  SessionType Type() const override { return SessionType::kChat; }
+
+ protected:
+  void ProcessRequestImpl(const Request& request, Response& response) override {
+    entered_.fetch_add(1, std::memory_order_acq_rel);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (entered_.load(std::memory_order_acquire) < 2) {
+      if (std::chrono::steady_clock::now() >= deadline) {
+        throw std::runtime_error("concurrent callback session deadline exceeded");
+      }
+
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    if (auto callback = CreateCallbackHandler(request)) {
+      callback->PushItem(std::make_unique<TextItem>(request.options.Entries().at("message")));
+    }
+
+    response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
+  }
+
+ private:
+  std::atomic<size_t> entered_{0};
+};
+
 class CallbackExceptionSession : public Session {
  public:
   CallbackExceptionSession(const Model& model, ILogger& logger, ITelemetry& telemetry)
@@ -731,6 +762,47 @@ TEST(SessionRequestLifecycleTest, IdleCancelIsNoOpAndRequestReachesBackend) {
 
   EXPECT_EQ(ProcessAndGetCode(session, request), FOUNDRY_LOCAL_OK);
   EXPECT_EQ(session.ProcessCount(), 1u);
+}
+
+TEST(SessionRequestLifecycleTest, ConcurrentInvocationCallbacksStayIsolatedAndPreserveTheSessionDefault) {
+  fl::test::FakeServiceBindings svc;
+  auto model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);
+  TelemetryLogger telemetry{"test", fl::test::NullLog()};
+  ConcurrentCallbackSession session(model, fl::test::NullLog(), telemetry);
+  const auto collect = [](flStreamingCallbackData data, void* context) {
+    auto& output = *static_cast<std::string*>(context);
+    while (auto item = AsImpl(data.item_queue)->TryPop()) {
+      output += static_cast<TextItem&>(*item).text;
+    }
+
+    return 0;
+  };
+  std::string first, second, fallback;
+  session.SetStreamingCallback(collect, &fallback);
+  Request first_request, second_request;
+  first_request.options.Add("message", "first");
+  second_request.options.Add("message", "second");
+  auto a = std::async(std::launch::async, [&] {
+    Response response;
+    session.ProcessRequest(first_request, response, StreamingCallback{collect, &first});
+  });
+  auto b = std::async(std::launch::async, [&] {
+    Response response;
+    session.ProcessRequest(second_request, response, StreamingCallback{collect, &second});
+  });
+  a.get();
+  b.get();
+  EXPECT_EQ(first, "first");
+  EXPECT_EQ(second, "second");
+  EXPECT_TRUE(fallback.empty());
+
+  Request next;
+  next.options.Add("message", "default");
+  Response response;
+  session.ProcessRequest(next, response);
+  EXPECT_EQ(fallback, "default");
+  session.ProcessRequest(next, response, StreamingCallback{});
+  EXPECT_EQ(fallback, "default");
 }
 
 TEST(SessionRequestLifecycleTest, PublishedCompletionMakesLateCancellationNoOp) {

@@ -68,6 +68,12 @@ std::string Sha256File(const std::filesystem::path& file_path) {
     }
   }
 
+  if (file.bad() || !file.eof()) {
+    BCryptDestroyHash(hash);
+    BCryptCloseAlgorithmProvider(alg, 0);
+    return {};
+  }
+
   UCHAR digest[32];
   status = BCryptFinishHash(hash, digest, sizeof(digest), 0);
   if (!BCRYPT_SUCCESS(status)) {
@@ -167,6 +173,11 @@ std::string Sha256File(const std::filesystem::path& file_path) {
       EVP_MD_CTX_free(ctx);
       FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "EVP_DigestUpdate failed");
     }
+  }
+
+  if (file.bad() || !file.eof()) {
+    EVP_MD_CTX_free(ctx);
+    return {};
   }
 
   unsigned char digest[EVP_MAX_MD_SIZE];

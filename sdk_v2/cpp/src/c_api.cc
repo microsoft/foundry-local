@@ -5,6 +5,8 @@
 #include <foundry_local/foundry_local_c.h>
 #include <foundry_local/foundry_local_cpp.h>
 
+#include "api/manager_root.h"
+#include "api/request_admission.h"
 #include "c_api_types.h"
 #include "catalog.h"
 #include "exception.h"
@@ -67,17 +69,19 @@ struct flModelList {
 
 // --- Catalog ---
 struct flCatalog {
-  fl::ICatalog& impl;
+  fl::api::CatalogBackend& impl;
 };
 
 // --- Manager ---
 struct flManager {
-  explicit flManager(fl::Manager& manager)
-      : impl(manager),
-        public_catalog{manager.GetCatalog(fl::CatalogType::kPublic)},
-        local_catalog{manager.GetCatalog(fl::CatalogType::kLocal)} {}
+  explicit flManager(const fl::Configuration& configuration)
+      : root(configuration),
+        impl(root.Backend()),
+        public_catalog{impl.GetCatalog(fl::CatalogType::kPublic)},
+        local_catalog{impl.GetCatalog(fl::CatalogType::kLocal)} {}
 
-  fl::Manager& impl;
+  fl::api::ManagerRoot root;
+  fl::api::ManagerBackend& impl;
   mutable flCatalog public_catalog;
   mutable flCatalog local_catalog;
   mutable std::vector<const char*> urls_cache;
@@ -306,6 +310,17 @@ FL_API_STATUS_IMPL(SetCatalogRegionImpl, flConfiguration* config, const char* re
   API_IMPL_END
 }
 
+FL_API_STATUS_IMPL(SetUseSharedHostImpl, flConfiguration* config, bool enabled) {
+  API_IMPL_BEGIN
+  if (!config) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "config must not be null");
+  }
+
+  AsImpl(config)->use_shared_host = enabled;
+  return nullptr;
+  API_IMPL_END
+}
+
 static const flConfigurationApi g_configuration_api = {
     Configuration_CreateImpl,
     Configuration_ReleaseImpl,
@@ -318,10 +333,13 @@ static const flConfigurationApi g_configuration_api = {
     AddWebServiceEndpointImpl,
     SetExternalServiceUrlImpl,
     SetAdditionalOptionsImpl,
+    SetUseSharedHostImpl,
 };
 
 static_assert(offsetof(flConfigurationApi, SetAdditionalOptions) / sizeof(void*) == 10,
               "Size of version 1 Configuration API cannot change");
+static_assert(offsetof(flConfigurationApi, SetUseSharedHost) / sizeof(void*) == 11,
+              "Size of version 3 Configuration API cannot change");
 
 // ========================================================================
 // Manager API
@@ -338,7 +356,7 @@ FL_API_STATUS_IMPL(Manager_CreateImpl, const flConfiguration* config, flManager*
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "app_name must not be empty");
   }
 
-  *out_manager = new flManager(fl::Manager::Create(*cfg));
+  *out_manager = new flManager(*cfg);
   return nullptr;
   API_IMPL_END
 }
@@ -348,7 +366,6 @@ static void FL_API_CALL Manager_ReleaseImpl(flManager* manager) FL_NO_EXCEPTION 
     return;
   }
 
-  fl::Manager::Destroy();
   delete manager;
 }
 
@@ -510,7 +527,7 @@ FL_API_STATUS_IMPL(Manager_GetDiscoverableEpsImpl, const flManager* manager,
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
 
-  auto view = manager->impl.GetEpDetector().GetDiscoverableEpsCApi();
+  auto view = manager->impl.GetDiscoverableEps();
   *out_eps = view.data();
   *out_count = view.size();
   return nullptr;
@@ -568,7 +585,7 @@ static bool FL_API_CALL Manager_IsEpDownloadInProgressImpl(const flManager* mana
     return false;
   }
 
-  return manager->impl.GetEpDetector().IsDownloadInProgress();
+  return manager->impl.IsEpDownloadInProgress();
 }
 
 FL_API_STATUS_IMPL(Manager_ShutdownImpl, flManager* manager) {
@@ -577,7 +594,7 @@ FL_API_STATUS_IMPL(Manager_ShutdownImpl, flManager* manager) {
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null manager");
   }
 
-  manager->impl.Shutdown();
+  manager->root.Shutdown();
   return nullptr;
   API_IMPL_END
 }
@@ -587,7 +604,7 @@ static bool FL_API_CALL Manager_IsShutdownRequestedImpl(const flManager* manager
     return false;
   }
 
-  return manager->impl.IsShutdownRequested();
+  return manager->root.IsShutdownRequested();
 }
 
 // ========================================================================
@@ -656,7 +673,7 @@ FL_API_STATUS_IMPL(Catalog_GetLatestVersionImpl, const flCatalog* catalog, const
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
 
-  auto* latest = catalog->impl.GetLatestVersion(AsImpl(model));
+  auto* latest = catalog->impl.GetLatestVersion(*AsImpl(model));
   if (!latest) {
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "latest version not found");
   }
@@ -1234,7 +1251,7 @@ FL_API_STATUS_IMPL(Item_GetTextImpl, const flItem* item, flTextData* out_text_da
   }
 
   const auto* t = AsItemType<fl::TextItem>(item);
-  out_text_data->version = FOUNDRY_LOCAL_API_VERSION;
+  out_text_data->version = FOUNDRY_LOCAL_DATA_VERSION;
   out_text_data->text = t->text.c_str();
   out_text_data->type = t->text_type;
 
@@ -1728,7 +1745,7 @@ FL_API_STATUS_IMPL(Request_CancelImpl, flRequest* request) {
   if (!request) {
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
-  AsImpl(request)->Cancel();
+  fl::api::CancelRequest(*AsImpl(request));
   return nullptr;
   API_IMPL_END
 }
@@ -1782,7 +1799,7 @@ FL_API_STATUS_IMPL(Response_GetUsageImpl, const flResponse* response, flUsage* o
   }
 
   const auto& usage = AsImpl(response)->usage;
-  out_usage->version = FOUNDRY_LOCAL_API_VERSION;
+  out_usage->version = FOUNDRY_LOCAL_DATA_VERSION;
   out_usage->prompt_tokens = usage.prompt_tokens;
   out_usage->completion_tokens = usage.completion_tokens;
   out_usage->total_tokens = usage.total_tokens;
@@ -1798,7 +1815,7 @@ FL_API_STATUS_IMPL(Session_CreateImpl, const flModel* model, flSession** out_ses
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
 
-  auto session = fl::Session::Create(*AsImpl(model));
+  auto session = AsImpl(model)->CreateSession();
   *out_session = AsHandle<flSession>(session.release());
   return nullptr;
   API_IMPL_END
@@ -1917,7 +1934,7 @@ FL_API_STATUS_IMPL(Session_CreateRequestPreflightImpl, const flSession* session,
   }
 
   auto operation = AsImpl(session)->CreateRequestPreflight(*AsImpl(request));
-  *out_preflight = reinterpret_cast<flRequestPreflight*>(operation.release());
+  *out_preflight = AsHandle<flRequestPreflight>(operation.release());
   return nullptr;
   API_IMPL_END
 }
@@ -1928,13 +1945,13 @@ FL_API_STATUS_IMPL(RequestPreflight_ExecuteImpl, flRequestPreflight* preflight,
   if (!preflight || !out_result) {
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
-  if (out_result->version != FOUNDRY_LOCAL_API_VERSION) {
+  if (out_result->version != FOUNDRY_LOCAL_REQUEST_PREFLIGHT_RESULT_VERSION) {
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "out_result->version is not supported");
   }
 
-  auto* operation = reinterpret_cast<fl::Session::RequestPreflightOperation*>(preflight);
+  auto* operation = AsImpl(preflight);
   const auto result = operation->Execute();
-  out_result->version = FOUNDRY_LOCAL_API_VERSION;
+  out_result->version = FOUNDRY_LOCAL_REQUEST_PREFLIGHT_RESULT_VERSION;
   out_result->prompt_tokens = result.prompt_tokens;
   out_result->output_reserve_tokens = result.output_reserve_tokens;
   out_result->required_tokens = result.required_tokens;
@@ -1946,7 +1963,7 @@ FL_API_STATUS_IMPL(RequestPreflight_ExecuteImpl, flRequestPreflight* preflight,
 }
 
 static void FL_API_CALL RequestPreflight_ReleaseImpl(flRequestPreflight* preflight) FL_NO_EXCEPTION {
-  delete reinterpret_cast<fl::Session::RequestPreflightOperation*>(preflight);
+  delete AsImpl(preflight);
 }
 
 static const flInferenceApi g_inference_api = {

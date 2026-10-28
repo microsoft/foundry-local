@@ -2,14 +2,13 @@
 #
 # Builds win-x64 + win-arm64 + linux-x64 + linux-arm64 + osx-arm64;
 # runs unit + integration tests on win-x64 + linux-x64 + linux-arm64 + osx-arm64
-# (win-arm64 is cross-compiled from an x64 host, so it is clippy/check-only —
-# matching the build-only treatment it gets in the C# / Python matrices).
+# (win-arm64 is cross-compiled from an x64 host; its SDK is check-only and its
+# serving host is linked but not executed).
 #
-# Unlike the wheel/npm SDKs, the Rust crate is a source package: there is no
-# per-platform binary to hand off, so each platform stage rebuilds from source
-# and there is a single, platform-independent `.crate` produced once by the pack
-# stage. Each build stage depends on the matching native stage from
-# stages-build-native.yml and consumes the `cpp-native-<rid>` artifact for
+# The SDK crate remains a source package, produced once by the pack stage.
+# Each platform also emits foundry-host-<rid> with the serving executable,
+# matching native runtime and checksum manifest. Each build stage depends on the
+# matching native stage from stages-build-native.yml and consumes the `cpp-native-<rid>` artifact for
 # `foundry_local`; the test platforms additionally pull ONNX Runtime + GenAI from
 # the pinned public NuGet packages so a model can be loaded at run time.
 #
@@ -39,6 +38,10 @@ stages:
       - input: pipelineArtifact
         artifactName: 'cpp-native-win-x64'
         targetPath: '$(Pipeline.Workspace)/cpp-native-win-x64'
+      outputs:
+      - output: pipelineArtifact
+        artifactName: 'foundry-host-win-x64'
+        targetPath: '$(Build.ArtifactStagingDirectory)/foundry-host-win-x64'
     steps:
     - checkout: self
       clean: true
@@ -67,6 +70,10 @@ stages:
       - input: pipelineArtifact
         artifactName: 'cpp-native-win-arm64'
         targetPath: '$(Pipeline.Workspace)/cpp-native-win-arm64'
+      outputs:
+      - output: pipelineArtifact
+        artifactName: 'foundry-host-win-arm64'
+        targetPath: '$(Build.ArtifactStagingDirectory)/foundry-host-win-arm64'
     steps:
     - checkout: self
       clean: true
@@ -95,6 +102,10 @@ stages:
       - input: pipelineArtifact
         artifactName: 'cpp-native-linux-x64'
         targetPath: '$(Pipeline.Workspace)/cpp-native-linux-x64'
+      outputs:
+      - output: pipelineArtifact
+        artifactName: 'foundry-host-linux-x64'
+        targetPath: '$(Build.ArtifactStagingDirectory)/foundry-host-linux-x64'
     steps:
     - checkout: self
       clean: true
@@ -125,6 +136,10 @@ stages:
       - input: pipelineArtifact
         artifactName: 'cpp-native-linux-arm64'
         targetPath: '$(Pipeline.Workspace)/cpp-native-linux-arm64'
+      outputs:
+      - output: pipelineArtifact
+        artifactName: 'foundry-host-linux-arm64'
+        targetPath: '$(Build.ArtifactStagingDirectory)/foundry-host-linux-arm64'
     steps:
     - checkout: self
       clean: true
@@ -156,6 +171,10 @@ stages:
       - input: pipelineArtifact
         artifactName: 'cpp-native-osx-arm64'
         targetPath: '$(Pipeline.Workspace)/cpp-native-osx-arm64'
+      outputs:
+      - output: pipelineArtifact
+        artifactName: 'foundry-host-osx-arm64'
+        targetPath: '$(Build.ArtifactStagingDirectory)/foundry-host-osx-arm64'
     steps:
     - checkout: self
       clean: true

@@ -158,6 +158,8 @@ steps:
 
       $sources = @(
         (Join-Path $binDir  'foundry_local.dll'),
+        (Join-Path $binDir  'foundry-local-host.exe'),
+        (Join-Path $binDir  'foundry-local-runtime.json'),
         (Join-Path $binDir  'foundry_local.pdb'),
         (Join-Path $linkDir 'foundry_local.lib'),
         (Join-Path $binDir  'onnxruntime.dll'),
@@ -181,7 +183,7 @@ steps:
       }
 
 - task: SFP.build-tasks.custom-build-task-1.EsrpCodeSigning@5
-  displayName: 'Sign staged foundry_local.dll'
+  displayName: 'Sign staged native runtime and shared host'
   condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
   inputs:
     ConnectedServiceName: 'OnnxrunTimeCodeSign_20240611'
@@ -192,13 +194,23 @@ steps:
     AuthAKVName: '$(esrpAkvName)'
     AuthSignCertName: '$(esrpSignCertName)'
     FolderPath: '$(Build.ArtifactStagingDirectory)/native'
-    Pattern: 'foundry_local.dll'
+    Pattern: 'foundry_local.dll;foundry-local-host.exe'
     SessionTimeout: 90
     ServiceEndpointUrl: 'https://api.esrp.microsoft.com/api/v2'
     MaxConcurrency: 25
     signConfigType: inlineSignParams
     inlineOperation: |
       [{"keyCode":"CP-230012","operationSetCode":"SigntoolSign","parameters":[{"parameterName":"OpusName","parameterValue":"Microsoft"},{"parameterName":"OpusInfo","parameterValue":"http://www.microsoft.com"},{"parameterName":"PageHash","parameterValue":"/NPH"},{"parameterName":"FileDigest","parameterValue":"/fd sha256"},{"parameterName":"TimeStamp","parameterValue":"/tr \"http://rfc3161.gtm.corp.microsoft.com/TSS/HttpTspServer\" /td sha256"}],"toolName":"signtool.exe","toolVersion":"6.2.9304.0"}]
+
+- task: PowerShell@2
+  displayName: 'Refresh final native runtime manifest'
+  inputs:
+    targetType: inline
+    pwsh: true
+    script: |
+      cmake "-DOUTPUT_FILE=$(Build.ArtifactStagingDirectory)/native/foundry-local-runtime.json" `
+        -P "$(Build.SourcesDirectory)/sdk_v2/cpp/cmake/WriteHostManifest.cmake"
+      if ($LASTEXITCODE -ne 0) { throw "Native runtime manifest generation failed" }
 
 - ${{ if eq(parameters.stageHeaders, true) }}:
   - task: CopyFiles@2
