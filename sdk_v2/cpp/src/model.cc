@@ -699,6 +699,11 @@ void Model::BeginUnregister() {
     lifecycle_mutex_.unlock();
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
   }
+  if (external_session_count_.load() != 0) {
+    lifecycle_mutex_.unlock();
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "cannot unregister model while non-generative sessions are active");
+  }
 
   unregistering_ = true;
 }

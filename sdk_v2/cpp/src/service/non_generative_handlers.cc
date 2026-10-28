@@ -47,6 +47,7 @@ NonGenerativeRuntimeState::~NonGenerativeRuntimeState() {
   uint64_t released_bytes{};
   for (const auto& [_, entry] : runtimes_)
     released_bytes += entry.resource_bytes;
+  runtimes_.clear();
   std::lock_guard admission_lock(admission_->mutex_);
   admission_->reserved_bytes_ -= released_bytes;
 }
@@ -290,11 +291,12 @@ bool UnloadNonGenerativeRuntime(ServiceContext& ctx, Model& model) {
   bool removed = false;
   for (auto it = state->runtimes_.begin(); it != state->runtimes_.end();) {
     if (it->second.owner == leaf) {
+      const auto released_bytes = it->second.resource_bytes;
+      it = state->runtimes_.erase(it);
       {
         std::lock_guard admission_lock(state->admission_->mutex_);
-        state->admission_->reserved_bytes_ -= it->second.resource_bytes;
+        state->admission_->reserved_bytes_ -= released_bytes;
       }
-      it = state->runtimes_.erase(it);
       removed = true;
     } else {
       ++it;

@@ -94,6 +94,52 @@ TEST(NonGenerativeRuntimeStateTest, SharesAdmissionAcrossIsolatedRegistries) {
       std::runtime_error);
 }
 
+TEST(NonGenerativeRuntimeStateTest,
+     ReleasesAdmissionAfterRuntimeDestruction) {
+  struct BlockingRuntime {
+    std::promise<void>& entered;
+    std::shared_future<void> release;
+    BlockingRuntime(std::promise<void>& entered_value,
+                    std::shared_future<void> release_value)
+        : entered(entered_value), release(std::move(release_value)) {}
+    ~BlockingRuntime() {
+      entered.set_value();
+      release.wait();
+    }
+  };
+
+  auto admission = CreateNonGenerativeAdmissionCoordinator(100, 1);
+  auto public_state = CreateNonGenerativeRuntimeState(admission);
+  auto local_state = CreateNonGenerativeRuntimeState(admission);
+  std::promise<void> destructor_entered;
+  std::promise<void> release_destructor;
+  auto release_future = release_destructor.get_future().share();
+  public_state->Acquire(
+      "public", "public:1", nullptr, 80, "cpu",
+      [&]() -> std::shared_ptr<void> {
+        return std::make_shared<BlockingRuntime>(destructor_entered,
+                                                 release_future);
+      });
+
+  auto destroy = std::async(
+      std::launch::async,
+      [state = std::move(public_state)]() mutable { state.reset(); });
+  destructor_entered.get_future().wait();
+
+  auto factory = []() -> std::shared_ptr<void> {
+    return std::make_shared<int>(42);
+  };
+  EXPECT_THROW(
+      local_state->Acquire("local", "local:1", nullptr, 21, "cpu", factory),
+      std::runtime_error);
+
+  release_destructor.set_value();
+  destroy.get();
+  EXPECT_NE(
+      local_state->Acquire("local", "local:1", nullptr, 21, "cpu", factory),
+      nullptr);
+}
+
 TEST(NonGenerativeRuntimeStateTest, SerializesReadinessWithinProviderGroup) {
   auto state = CreateNonGenerativeRuntimeState(1000, 1);
   std::promise<void> first_entered;
