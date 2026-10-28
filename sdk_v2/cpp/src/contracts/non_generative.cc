@@ -21,12 +21,11 @@ void ValidateStructuredNumbers(const nlohmann::ordered_json& value) {
   }
 }
 
-}  // namespace
-
-void from_json(const nlohmann::ordered_json& json, NonGenerativeQuestion& question) {
+NonGenerativeQuestion ParseQuestion(const nlohmann::ordered_json& json) {
   if (!json.is_object()) {
     throw nlohmann::json::type_error::create(302, "question must be an object", &json);
   }
+  NonGenerativeQuestion question;
   question.type = json.at("type").get<std::string>();
   question.criteria = json.value("criteria", nlohmann::ordered_json(nullptr));
   question.instructions = json.value("instructions", nlohmann::ordered_json(nullptr));
@@ -35,7 +34,10 @@ void from_json(const nlohmann::ordered_json& json, NonGenerativeQuestion& questi
   if (question.type != "noul" && question.type != "choice" && question.type != "score") {
     throw nlohmann::json::other_error::create(501, "question type must be noul, choice, or score", &json);
   }
+  return question;
 }
+
+}  // namespace
 
 void from_json(const nlohmann::ordered_json& json, NonGenerativeRequest& request) {
   if (!json.is_object()) {
@@ -50,7 +52,7 @@ void from_json(const nlohmann::ordered_json& json, NonGenerativeRequest& request
   }
   request.questions.clear();
   for (auto it = questions.begin(); it != questions.end(); ++it)
-    request.questions.emplace_back(it.key(), it->get<NonGenerativeQuestion>());
+    request.questions.emplace_back(it.key(), ParseQuestion(*it));
   if (request.questions.empty()) {
     throw nlohmann::json::other_error::create(501, "questions must be a non-empty object", &json);
   }
