@@ -167,19 +167,14 @@ packages use the metadata described in
 [`docs/non-generative-packages.md`](docs/non-generative-packages.md). Runtime
 caches are isolated by canonical model identity and provider; active requests
 hold lifecycle ownership and block unload. Each loaded typed runtime executes
-session construction and requests on one dedicated thread so CUDA graph
-capture and replay are not moved across web-service workers. Explicit local paths remain a
+session construction and requests on one dedicated thread so provider and
+session ownership stay on the same execution thread. Explicit local paths remain a
 prototype fallback when an alias is not registered:
 
 ```bash
 export FOUNDRY_LOCAL_RANK_MODEL_PATH=/models/clm
 export FOUNDRY_LOCAL_SYSTEMONE_MODEL_PATH=/models/kev
 export FOUNDRY_LOCAL_NON_GENERATIVE_PROVIDER=cuda
-# Bounded session-local caches; setting either corresponding value to 0 disables.
-export FOUNDRY_LOCAL_CLM_CACHE_CAPACITY=256
-export FOUNDRY_LOCAL_CLM_CACHE_CAPACITY_BYTES=67108864
-export FOUNDRY_LOCAL_KEV_CACHE_CAPACITY=512
-export FOUNDRY_LOCAL_KEV_CACHE_CAPACITY_BYTES=16777216
 # Alternatively set FOUNDRY_LOCAL_NON_GENERATIVE_PACKAGE_ROOT, containing
 # rank/ and systemone/ subdirectories.
 
@@ -197,7 +192,7 @@ tasks, criteria, or token bounds are HTTP 400. This bounded integration does
 not add remote catalog submission or C/Python SDK APIs.
 Until the corresponding ORT GenAI package is published, configure this branch
 with `--ort_genai_home /path/to/onnxruntime-genai` so the native
-`DirectoryTokenizer` and component session exports are available.
+`OgaConfig`-based `NonGenerativeSession` API is available.
 
 ## Build From Source
 
