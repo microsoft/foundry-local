@@ -15,6 +15,7 @@ struct RuntimeAssets {
 };
 
 RuntimeAssets ResolveRuntimeAssets();
+RuntimeAssets ResolveRuntimeAssets(const ResidentModule& native);
 // The explicit form also permits testing discovery against a separately loaded, public-API-only runtime.
 RuntimeAssets ResolveRuntimeAssets(const ResidentModule& native, const ResidentModule& ort,
                                    const ResidentModule& genai);

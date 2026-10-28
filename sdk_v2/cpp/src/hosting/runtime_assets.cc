@@ -5,10 +5,15 @@
 #include "exception.h"
 #include "hosting/sdk_connection.h"
 #include "util/sha256.h"
+#include "util/scope_guard.h"
 #include "version.h"
 
 #include <onnxruntime_c_api.h>
 #include <ort_genai_c.h>
+
+#ifdef __linux__
+#include <dlfcn.h>
+#endif
 
 namespace fl::hosting {
 namespace {
@@ -54,10 +59,26 @@ RuntimeAssets ResolveRuntimeAssets(const ResidentModule& native, const ResidentM
   return assets;
 }
 
+RuntimeAssets ResolveRuntimeAssets(const ResidentModule& native) {
+#ifdef __linux__
+  // Imported function addresses can identify an executable's PLT entry instead of the dependency's code.
+  // NOLOAD only references the already-loaded native module; dependency loading remains the binding's job.
+  const auto library = dlopen(native.path.c_str(), RTLD_LAZY | RTLD_NOLOAD);
+  if (!library) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "cannot inspect the resident native runtime's dependencies");
+  }
+
+  ScopeGuard release([&]() noexcept { dlclose(library); });
+  const auto genai = dlsym(library, "OgaCreateModel");
+#else
+  const auto genai = reinterpret_cast<const void*>(&OgaCreateModel);
+#endif
+  return ResolveRuntimeAssets(native, ResidentModuleAt(OrtGetApiBase()), ResidentModuleAt(genai));
+}
+
 RuntimeAssets ResolveRuntimeAssets() {
   static const char native_anchor = 0;
-  return ResolveRuntimeAssets(ResidentModuleAt(&native_anchor), ResidentModuleAt(OrtGetApiBase()),
-                              ResidentModuleAt(reinterpret_cast<const void*>(&OgaCreateModel)));
+  return ResolveRuntimeAssets(ResidentModuleAt(&native_anchor));
 }
 
 }  // namespace fl::hosting

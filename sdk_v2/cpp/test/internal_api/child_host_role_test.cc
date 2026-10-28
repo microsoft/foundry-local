@@ -14,6 +14,7 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <iostream>
 #include <thread>
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
@@ -128,10 +129,15 @@ class ChildHostApiTest : public testing::Test {
 };
 
 TEST_F(ChildHostApiTest, VersionedEntryPointOwnsTheServiceAndNormalFinalOwnerShutdown) {
+  const auto phase = [](const char* description) {
+    std::cout << "Child host lifecycle: " << description << std::endl;
+  };
+  phase("creating manager");
   SetBootstrap(EncodeChildHostRole(role_));
   ASSERT_FL_OK(api_, api_->Manager_Create(config_, &manager_));
   EXPECT_FALSE(Manager::Instance().GetConfiguration().additional_options.contains(kChildHostOption));
   EXPECT_FALSE(api_->Manager_IsShutdownRequested(manager_));
+  phase("attaching owners");
   auto first = Attach();
   auto second = Attach();
   EXPECT_EQ(first->Call(Operation::Observe, {}).value.at("owners"), 2);
@@ -144,6 +150,7 @@ TEST_F(ChildHostApiTest, VersionedEntryPointOwnsTheServiceAndNormalFinalOwnerShu
   }
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
+  phase("checking HTTP shutdown rejection");
   const auto start = first->Call(Operation::WebServiceStart, {});
   ASSERT_EQ(start.status, 0) << start.error;
   const auto urls = first->Call(Operation::WebServiceUrls, {});
@@ -156,17 +163,21 @@ TEST_F(ChildHostApiTest, VersionedEntryPointOwnsTheServiceAndNormalFinalOwnerShu
   EXPECT_FALSE(api_->Manager_IsShutdownRequested(manager_));
 #endif
 
+  phase("closing owners");
   first->Close();
   EXPECT_EQ(second->Call(Operation::Observe, {}).status, 0);
   EXPECT_FALSE(api_->Manager_IsShutdownRequested(manager_));
   second->Close();
+  phase("waiting for ownership-driven shutdown");
   const auto deadline = std::chrono::steady_clock::now() + 10s;
   while (!api_->Manager_IsShutdownRequested(manager_) && std::chrono::steady_clock::now() < deadline) {
     std::this_thread::sleep_for(10ms);
   }
 
   ASSERT_TRUE(api_->Manager_IsShutdownRequested(manager_));
+  phase("joining host shutdown");
   ASSERT_FL_OK(api_, api_->Manager_Shutdown(manager_));
+  phase("host shutdown joined");
 }
 
 TEST_F(ChildHostApiTest, MalformedBootstrapDoesNotInitializeOrPoisonTheNativeSingleton) {

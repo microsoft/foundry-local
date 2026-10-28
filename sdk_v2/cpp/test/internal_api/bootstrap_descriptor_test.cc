@@ -248,9 +248,7 @@ class BootstrapDescriptorTest : public testing::Test {
 
   RuntimeAssets ResidentAssets() const {
     return WithRuntime([](const auto get_api) {
-      return ResolveRuntimeAssets(ResidentModuleAt(reinterpret_cast<const void*>(get_api)),
-                                  ResidentModuleAt(OrtGetApiBase()),
-                                  ResidentModuleAt(reinterpret_cast<const void*>(&OgaCreateModel)));
+      return ResolveRuntimeAssets(ResidentModuleAt(reinterpret_cast<const void*>(get_api)));
     });
   }
 
@@ -360,12 +358,18 @@ TEST_F(BootstrapDescriptorTest, DiscoversResidentAssetsAndRejectsChangedOrUniden
   ASSERT_NE(symbol, nullptr);
   const auto native = ResidentModuleAt(symbol);
   const auto ort = ResidentModuleAt(OrtGetApiBase());
-  const auto genai = ResidentModuleAt(reinterpret_cast<const void*>(&OgaCreateModel));
-  for (const auto& module : {native, ort, genai}) {
+  // Keep the imported address observable so non-PIE builds exercise canonical executable PLT entries.
+  const auto imported_genai = ResidentModuleAt(reinterpret_cast<const void*>(&OgaCreateModel));
+#ifdef __linux__
+  const auto genai = ResidentModuleAt(dlsym(library, "OgaCreateModel"));
+#else
+  const auto& genai = imported_genai;
+#endif
+  for (const auto& module : {native, ort, imported_genai, genai}) {
     EXPECT_EQ(FileModuleIdentity(module.path), module.image_identity) << module.path;
   }
 
-  const auto assets = ResolveRuntimeAssets(native, ort, genai);
+  const auto assets = ResolveRuntimeAssets(native);
   EXPECT_EQ(std::filesystem::canonical(assets.executable),
             std::filesystem::canonical(std::filesystem::path(FOUNDRY_HOST_EXECUTABLE)));
   EXPECT_EQ(assets.bootstrap.native.sha256, manifest.at("native").at("sha256").get<std::string>());
