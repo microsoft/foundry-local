@@ -668,14 +668,6 @@ TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCpuPackagesWhenConfi
   const auto kev = root / "kev-4b-fp32";
   const auto clm_metadata = AddLocalPackage(clm);
   const auto kev_metadata = AddLocalPackage(kev);
-#ifdef _WIN32
-  _putenv_s("FOUNDRY_LOCAL_RANK_MODEL_PATH", clm.string().c_str());
-  _putenv_s("FOUNDRY_LOCAL_SYSTEMONE_MODEL_PATH", kev.string().c_str());
-#else
-  setenv("FOUNDRY_LOCAL_RANK_MODEL_PATH", clm.string().c_str(), 1);
-  setenv("FOUNDRY_LOCAL_SYSTEMONE_MODEL_PATH", kev.string().c_str(), 1);
-#endif
-
   auto ranking = json::parse(TestHttpPost(
       base_url_ + "/catalogs/local/v1/rank",
       json{{"model", clm_metadata.model_id},
@@ -704,11 +696,6 @@ TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCpuPackagesWhenConfi
   ASSERT_TRUE(decision.at("answers").contains("umbrella"));
   EXPECT_EQ(decision.at("model"), kev_metadata.model_id);
 
-  auto fallback = json::parse(TestHttpPost(
-      base_url_ + "/v1/rank",
-      R"({"model":"clm-latest","context":{},"question":"select","answers":["a","b"]})",
-      "", std::chrono::minutes(3)));
-  EXPECT_EQ(fallback.at("model"), clm_metadata.model_id);
 }
 
 TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCudaPackagesWhenConfigured) {

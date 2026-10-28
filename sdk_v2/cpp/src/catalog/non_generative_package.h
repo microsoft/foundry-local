@@ -27,11 +27,6 @@ struct NonGenerativePackageMetadata {
 /// the standard manifest file, ComponentManifest metadata, or a supported task.
 bool DeclaresNonGenerativePackage(const std::filesystem::path& package_root);
 
-/// Validate that every entry resolves within the package and return the total
-/// regular-file bytes. Directory and file symlinks escaping the root throw.
-uint64_t EstimateNonGenerativePackageBytes(
-    const std::filesystem::path& package_root);
-
 /// Parse and validate a multi-component package root. Returns nullopt when the
 /// directory is not a multi-component package; malformed packages throw.
 std::optional<NonGenerativePackageMetadata> ReadNonGenerativePackage(

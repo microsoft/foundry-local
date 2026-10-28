@@ -122,14 +122,6 @@ bool DeclaresNonGenerativePackage(const fs::path& package_root) {
   }
 }
 
-uint64_t EstimateNonGenerativePackageBytes(const fs::path& package_root) {
-  std::error_code ec;
-  const auto canonical_root = fs::canonical(package_root, ec);
-  if (ec || !fs::is_directory(canonical_root, ec))
-    throw std::invalid_argument("package root must be an existing directory");
-  return MeasureContainedPackage(canonical_root);
-}
-
 std::optional<NonGenerativePackageMetadata> ReadNonGenerativePackage(
     const fs::path& package_root) {
   std::error_code ec;

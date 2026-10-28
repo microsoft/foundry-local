@@ -481,16 +481,12 @@ TEST_F(LocalModelCatalogTest, ExternalLeaseRetainsExactLeafAcrossAliasSelectionC
 
   auto* leased_leaf = alias->AcquireExternalSession();
   ASSERT_EQ(leased_leaf, first);
-  EXPECT_EQ(first->ActiveExternalSessionCount(), 1u);
   alias->SelectVariant(*second);
   EXPECT_EQ(alias->SelectedLeaf(), second);
-  EXPECT_EQ(first->ActiveExternalSessionCount(), 1u);
-  EXPECT_EQ(second->ActiveExternalSessionCount(), 0u);
   EXPECT_THROW(first->UnloadExternalRuntime(), Exception);
   EXPECT_NO_THROW(second->UnloadExternalRuntime());
 
   leased_leaf->ReleaseExternalSession();
-  EXPECT_EQ(first->ActiveExternalSessionCount(), 0u);
   EXPECT_NO_THROW(first->UnloadExternalRuntime());
 }
 

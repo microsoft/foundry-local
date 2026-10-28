@@ -168,15 +168,10 @@ packages use the metadata described in
 caches are isolated by canonical model identity and provider; active requests
 hold lifecycle ownership and block unload. Each loaded typed runtime executes
 session construction and requests on one dedicated thread so provider and
-session ownership stay on the same execution thread. Explicit local paths remain a
-prototype fallback when an alias is not registered:
+session ownership stay on the same execution thread. Requests resolve a
+registered local-catalog model ID or alias:
 
 ```bash
-export FOUNDRY_LOCAL_RANK_MODEL_PATH=/models/clm
-export FOUNDRY_LOCAL_SYSTEMONE_MODEL_PATH=/models/kev
-# Alternatively set FOUNDRY_LOCAL_NON_GENERATIVE_PACKAGE_ROOT, containing
-# rank/ and systemone/ subdirectories.
-
 curl -s http://127.0.0.1:5272/v1/rank \
   -H 'Content-Type: application/json' \
   -d '{"model":"clm","context":{"text":"sample"},"question":"Select","answers":["first","second"],"temperature":1}'

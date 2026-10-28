@@ -12,7 +12,6 @@
 #include "model.h"
 #include "service/handler_utils.h"
 #include "service/web_service.h"
-#include "utils.h"
 
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
@@ -148,84 +147,43 @@ class ModelNotFoundError : public std::runtime_error {
   using std::runtime_error::runtime_error;
 };
 
-std::string ConfiguredPackagePath(const char* specific, const char* directory) {
-  if (const auto value = Utils::GetEnv(specific); value && !value->empty()) return *value;
-  if (const auto root = Utils::GetEnv("FOUNDRY_LOCAL_NON_GENERATIVE_PACKAGE_ROOT");
-      root && !root->empty())
-    return (std::filesystem::path(*root) / directory).string();
-  throw std::runtime_error(fmt::format(
-      "{} is not configured; register the requested package in the local catalog, set {}, "
-      "or set FOUNDRY_LOCAL_NON_GENERATIVE_PACKAGE_ROOT with {}/ beneath it",
-      directory, specific, directory));
-}
-
 ResolvedPackage ResolvePackage(ServiceContext& ctx, const std::string& requested,
-                               const char* expected_task, const char* environment,
-                               const char* directory) {
+                               const char* expected_task) {
   Model* model = ctx.catalog.GetModelVariant(requested);
   if (!model) {
     if (auto* alias = ctx.catalog.GetModel(requested)) model = alias->SelectedLeaf();
   }
-  if (model) {
-    if (model->Info().task != expected_task) {
-      throw std::invalid_argument(fmt::format(
-          "model '{}' has task '{}'; expected '{}'", requested, model->Info().task,
-          expected_task));
-    }
-    if (!model->IsCached()) {
-      throw std::invalid_argument("selected model package is not available locally");
-    }
-    const auto package = ReadNonGenerativePackage(model->GetPath());
-    if (!package) {
-      throw std::invalid_argument("selected catalog model is not a multi-component package");
-    }
-    if (package->model_id != model->Id()) {
-      throw std::invalid_argument(
-          "selected catalog model ID does not match package metadata");
-    }
-    auto provider = package->execution_provider;
-    auto canonical = std::filesystem::weakly_canonical(model->GetPath()).string();
-    return {ctx.catalog.GetName() + "|" + model->Id() + "|" + canonical + "|" + provider,
-            model->Id(),
-            std::move(canonical), std::move(provider),
-            package->estimated_resident_bytes, model};
-  }
-
-  const bool is_rank = std::string_view(expected_task) == "text-ranking";
-  const bool allowed_fallback =
-      is_rank ? (requested == "clm" || requested == "clm-latest")
-              : (requested == "kev" || requested == "kev-latest");
-  if (!allowed_fallback) {
+  if (!model)
     throw ModelNotFoundError("model not found: " + requested);
-  }
-
-  const auto path = ConfiguredPackagePath(environment, directory);
-  auto canonical = std::filesystem::weakly_canonical(path).string();
-  const auto metadata = ReadNonGenerativePackage(canonical);
-  if (metadata && metadata->task != expected_task) {
+  if (model->Info().task != expected_task) {
     throw std::invalid_argument(fmt::format(
-        "fallback package has task '{}'; expected '{}'", metadata->task, expected_task));
+        "model '{}' has task '{}'; expected '{}'", requested, model->Info().task,
+        expected_task));
   }
-  const std::string_view expected_alias = is_rank ? "clm" : "kev";
-  if (metadata && metadata->alias != expected_alias) {
-    throw std::invalid_argument(fmt::format(
-        "fallback package has alias '{}'; expected '{}'", metadata->alias,
-        expected_alias));
+  if (!model->IsCached()) {
+    throw std::invalid_argument("selected model package is not available locally");
   }
-  std::string provider = metadata ? metadata->execution_provider : std::string{};
-  const auto model_id = metadata ? metadata->model_id : requested;
-  const auto estimated_resident_bytes =
-      metadata ? metadata->estimated_resident_bytes
-               : EstimateNonGenerativePackageBytes(canonical);
-  return {"prototype|" + model_id + "|" + canonical + "|" + provider, model_id,
-          std::move(canonical), std::move(provider),
-          estimated_resident_bytes, nullptr};
+  const auto package = ReadNonGenerativePackage(model->GetPath());
+  if (!package) {
+    throw std::invalid_argument(
+        "selected catalog model is not a multi-component package");
+  }
+  if (package->model_id != model->Id()) {
+    throw std::invalid_argument(
+        "selected catalog model ID does not match package metadata");
+  }
+  auto provider = package->execution_provider;
+  auto canonical =
+      std::filesystem::weakly_canonical(model->GetPath()).string();
+  return {ctx.catalog.GetName() + "|" + model->Id() + "|" + canonical + "|" +
+              provider,
+          model->Id(), std::move(canonical), std::move(provider),
+          package->estimated_resident_bytes, model};
 }
 
 class ModelSessionLease {
  public:
-  struct AlreadyAcquired {};
-  explicit ModelSessionLease(Model* model, AlreadyAcquired) : model_(model) {}
+  explicit ModelSessionLease(Model* model) : model_(model) {}
   ~ModelSessionLease() {
     if (model_) model_->ReleaseExternalSession();
   }
@@ -239,37 +197,24 @@ class ModelSessionLease {
 template <typename Runtime>
 std::pair<std::shared_ptr<Runtime>, std::unique_ptr<ModelSessionLease>>
 AcquireRuntime(ServiceContext& ctx, const ResolvedPackage& package) {
-  Model* acquired = package.model ? package.model->AcquireExternalSession() : nullptr;
-  auto lease = acquired
-                   ? std::make_unique<ModelSessionLease>(
-                         acquired, ModelSessionLease::AlreadyAcquired{})
-                   : nullptr;
+  Model* acquired = package.model->AcquireExternalSession();
+  auto lease = std::make_unique<ModelSessionLease>(acquired);
   auto state = ctx.non_generative_runtimes;
-  try {
-    auto runtime = std::static_pointer_cast<Runtime>(state->Acquire(
-        package.identity, package.model_id, package.model,
-        package.estimated_resident_bytes,
-        package.provider.empty() ? "cpu" : package.provider,
-        [&] {
-          return std::make_shared<Runtime>(package.path);
-        }));
-    if (acquired) acquired->MarkExternalRuntimeLoaded();
-    return {
-        std::move(runtime),
-        std::move(lease),
-    };
-  } catch (...) {
-    lease.reset();
-    throw;
-  }
+  auto runtime = std::static_pointer_cast<Runtime>(state->Acquire(
+      package.identity, package.model_id, package.model,
+      package.estimated_resident_bytes,
+      package.provider.empty() ? "cpu" : package.provider,
+      [&] { return std::make_shared<Runtime>(package.path); }));
+  acquired->MarkExternalRuntimeLoaded();
+  return {std::move(runtime), std::move(lease)};
 }
 
 template <typename Runtime, typename Request, bool IsRank>
 class NonGenerativeHandler final : public HttpRequestHandler {
  public:
-  NonGenerativeHandler(ServiceContext& ctx, const char* environment,
-                       const char* directory, const char* task)
-      : ctx_(ctx), environment_(environment), directory_(directory), task_(task) {}
+  NonGenerativeHandler(ServiceContext& ctx, const char* route,
+                       const char* task)
+      : ctx_(ctx), route_(route), task_(task) {}
 
   std::shared_ptr<OutgoingResponse> handle(
       const std::shared_ptr<IncomingRequest>& request) override {
@@ -282,8 +227,7 @@ class NonGenerativeHandler final : public HttpRequestHandler {
       return ErrorResponse(Status::CODE_400, "Invalid request", error.what());
     }
     try {
-      const auto package = ResolvePackage(
-          ctx_, input.model, task_, environment_, directory_);
+      const auto package = ResolvePackage(ctx_, input.model, task_);
       auto [runtime, lease] = AcquireRuntime<Runtime>(ctx_, package);
       auto output = [&]() {
         if constexpr (IsRank) {
@@ -305,18 +249,15 @@ class NonGenerativeHandler final : public HttpRequestHandler {
       return ErrorResponse(Status::CODE_400, "Invalid request", error.what());
     } catch (const std::exception& error) {
       ctx_.logger.Log(LogLevel::Error,
-                      fmt::format("{} inference failed: {}", directory_, error.what()));
+                      fmt::format("{} inference failed: {}", route_, error.what()));
       const auto detail = std::string(error.what());
-      if (detail.find("is not configured") != std::string::npos)
-        return ErrorResponse(Status::CODE_503, "Model package not configured", detail);
       return ErrorResponse(Status::CODE_500, "Inference failed", detail);
     }
   }
 
  private:
   ServiceContext& ctx_;
-  const char* environment_;
-  const char* directory_;
+  const char* route_;
   const char* task_;
 };
 
@@ -381,12 +322,12 @@ std::shared_ptr<oatpp::web::server::HttpRequestHandler> CreateSystemOneHandler(
     ServiceContext& ctx) {
   return std::make_shared<
       NonGenerativeHandler<DecisionRuntime, NonGenerativeRequest, false>>(
-      ctx, "FOUNDRY_LOCAL_SYSTEMONE_MODEL_PATH", "systemone", "typed-decision");
+      ctx, "systemone", "typed-decision");
 }
 
 std::shared_ptr<oatpp::web::server::HttpRequestHandler> CreateRankHandler(ServiceContext& ctx) {
   return std::make_shared<NonGenerativeHandler<RankingRuntime, RankingRequest, true>>(
-      ctx, "FOUNDRY_LOCAL_RANK_MODEL_PATH", "rank", "text-ranking");
+      ctx, "rank", "text-ranking");
 }
 
 }  // namespace fl

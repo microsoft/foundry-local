@@ -460,13 +460,6 @@ void Model::ReleaseExternalSession() noexcept {
   external_session_count_.fetch_sub(1);
 }
 
-size_t Model::ActiveExternalSessionCount() const {
-  if (Model* sv = selected_variant_.load(std::memory_order_acquire)) {
-    return sv->ActiveExternalSessionCount();
-  }
-  return external_session_count_.load();
-}
-
 void Model::MarkExternalRuntimeLoaded() {
   if (Model* sv = selected_variant_.load(std::memory_order_acquire)) {
     sv->MarkExternalRuntimeLoaded();

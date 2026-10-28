@@ -96,11 +96,9 @@ registered ID or alias. Runtimes are cached by resolved model ID, canonical
 path, and provider. Active requests own a model session, so unload and
 unregister fail until they drain. Unload evicts the runtime.
 
-Explicit `FOUNDRY_LOCAL_RANK_MODEL_PATH`,
-`FOUNDRY_LOCAL_SYSTEMONE_MODEL_PATH`, and
-`FOUNDRY_LOCAL_NON_GENERATIVE_PACKAGE_ROOT` remain prototype-only fallbacks
-when the endpoint default (`clm`/`clm-latest` or `kev`/`kev-latest`) is absent
-from the selected catalog. Unknown explicit names return not found rather than
+HTTP routes require a registered local-catalog model ID or alias. The direct
+C++ `RankingRuntime` and `DecisionRuntime` helpers may still be used with an
+explicit package path by examples and internal integrations. Unknown explicit names return not found rather than
 silently using an environment package. When fallback metadata is present it is
 validated and the response reports its actual package model ID. No remote
 catalog submission is performed.
