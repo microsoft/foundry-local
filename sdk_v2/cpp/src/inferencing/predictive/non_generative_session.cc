@@ -18,20 +18,17 @@ NonGenerativeSession::NonGenerativeSession(
   model_ = const_cast<Model&>(model).AcquireExternalSession();
   try {
     model_id_ = model_->Id();
-    if (model_->Info().execution_provider.empty()) {
-      const auto package = ReadNonGenerativePackage(model_->GetPath());
-      if (package) provider_ = package->execution_provider;
-    } else {
-      provider_ = NormalizeNonGenerativeProvider(
-          model_->Info().execution_provider);
-    }
-    model_->PrepareExternalProvider(provider_);
+    const auto package = ReadNonGenerativePackage(model_->GetPath());
+    if (!package)
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+               "model is not a non-generative package");
+    provider_ = package->execution_provider;
     if (model_->Info().task == "text-ranking") {
       ranking_ =
-          std::make_unique<RankingRuntime>(model_->GetPath(), provider_);
+          std::make_unique<RankingRuntime>(model_->GetPath());
     } else if (model_->Info().task == "typed-decision") {
       decision_ =
-          std::make_unique<DecisionRuntime>(model_->GetPath(), provider_);
+          std::make_unique<DecisionRuntime>(model_->GetPath());
     } else {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
                "unsupported non-generative model task: ",
