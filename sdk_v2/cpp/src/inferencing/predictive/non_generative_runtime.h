@@ -17,7 +17,6 @@ class RankingRuntime {
   explicit RankingRuntime(const std::string& package_path);
   RankingRuntime(const std::string& package_path, std::string provider);
   ~RankingRuntime();
-  nlohmann::json Rank(const NonGenerativeRequest& request);
   nlohmann::json Rank(const RankingRequest& request);
 
  private:

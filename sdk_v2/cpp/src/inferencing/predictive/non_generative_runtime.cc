@@ -162,15 +162,6 @@ RankingRuntime::RankingRuntime(const std::string& package_path, std::string prov
     : impl_(std::make_unique<Impl>(package_path, ExplicitProviders(provider))) {}
 RankingRuntime::~RankingRuntime() = default;
 
-nlohmann::json RankingRuntime::Rank(const NonGenerativeRequest& request) {
-  const auto request_json = StructuredRequestJson(request).dump();
-  const auto response = impl_->executor.Invoke(
-      [request_json](RankingSession& session) {
-        return session.Run(request_json);
-      });
-  return json::parse(response).at("answers");
-}
-
 nlohmann::json RankingRuntime::Rank(const RankingRequest& request) {
   json candidates = json::object();
   for (size_t i = 0; i < request.answers.size(); ++i)
