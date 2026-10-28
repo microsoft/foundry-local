@@ -248,6 +248,29 @@ class AzureModelCatalogTest : public ::testing::Test {
   int model_handle_factory_calls_ = 0;
 };
 
+TEST_F(AzureModelCatalogTest, CachedModelsTrackExternalChangesWithoutRefetchingCatalog) {
+  const std::string url = "https://example.test/models";
+  auto behavior = AddBehavior(url);
+  behavior->all_models = {MakeModelInfo("shared-model:1", "shared-model", 1, "shared", "Microsoft")};
+  auto catalog = CreateCatalog({{url, std::nullopt}});
+  auto* model = FindVariant(catalog->ListModels(), "shared-model:1");
+  ASSERT_NE(model, nullptr);
+  EXPECT_FALSE(model->IsCached());
+  EXPECT_TRUE(catalog->GetCachedModels().empty());
+
+  const auto downloaded = AddLocalModel("shared-model:1", "shared-model-1");
+  const auto cached = catalog->GetCachedModels();
+  ASSERT_EQ(cached.size(), 1u);
+  EXPECT_EQ(cached.front(), model);
+  EXPECT_TRUE(model->IsCached());
+  EXPECT_EQ(fs::path(model->GetPath()), downloaded);
+
+  fs::remove_all(downloaded);
+  EXPECT_TRUE(catalog->GetCachedModels().empty());
+  EXPECT_FALSE(model->IsCached());
+  EXPECT_EQ(behavior->fetch_all_calls, 1);
+}
+
 TEST_F(AzureModelCatalogTest, LiveFetchBucketsConfiguredCatalogsAsCustom) {
   const std::string azure_url = "https://ai.azure.com/api/eastus/ux/v1.0?token=private";
   const std::string custom_url = "https://private.example/tenant/private-models?token=private";

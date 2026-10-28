@@ -35,6 +35,8 @@ class AzureModelCatalog : public BaseModelCatalog {
                     ITelemetry& telemetry);
   ~AzureModelCatalog() override;
 
+  std::vector<Model*> GetCachedModels() const override;
+
  protected:
   std::vector<Model> FetchModels() const override;
   std::vector<Model> FetchModelVersions(const std::string& model_alias,

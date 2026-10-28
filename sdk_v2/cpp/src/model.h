@@ -143,6 +143,8 @@ class Model {
 
   // --- Mutation methods ---
 
+  void RefreshCachedState(const std::string& local_path);
+
   /// Download the model to local cache.
   /// `progress_cb` (optional) is called with percent in [0, 100].
   /// Return 0 to continue, non-zero to cancel — cancellation surfaces as

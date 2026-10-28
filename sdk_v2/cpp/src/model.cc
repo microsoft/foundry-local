@@ -434,6 +434,19 @@ bool Model::IsLoaded() const {
 // Mutation (delegate to selected_variant_ when container)
 // ---------------------------------------------------------------------------
 
+void Model::RefreshCachedState(const std::string& local_path) {
+  std::unique_lock<std::mutex> lifecycle_lock(lifecycle_mutex_, std::try_to_lock);
+  if (!lifecycle_lock.owns_lock() || !active_ || external_registration_ || active_downloads_.load() != 0) {
+    return;
+  }
+
+  std::lock_guard<std::mutex> state_lock(state_mutex_);
+  if (!local_path.empty() && local_path_ != local_path) {
+    local_path_ = local_path;
+  }
+  cached_.store(!local_path.empty());
+}
+
 void Model::Download(std::function<int(float)> progress_cb) {
   if (Model* sv = selected_variant_.load(std::memory_order_acquire)) {
     sv->Download(std::move(progress_cb));

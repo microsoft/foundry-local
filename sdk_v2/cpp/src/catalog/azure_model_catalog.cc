@@ -232,6 +232,18 @@ std::vector<Model> AzureModelCatalog::CreateModelsWithLocalPaths(const std::vect
   return models;
 }
 
+std::vector<Model*> AzureModelCatalog::GetCachedModels() const {
+  const auto models = ListModels();
+  const auto local_models = ScanLocalModels(cache_dir_, logger_);
+  for (auto* model : models) {
+    for (auto* variant : model->Variants()) {
+      const auto cached = local_models.find(variant->Info().model_id);
+      variant->RefreshCachedState(cached == local_models.end() ? std::string{} : cached->second);
+    }
+  }
+  return BaseModelCatalog::GetCachedModels();
+}
+
 std::vector<Model> AzureModelCatalog::FetchModels() const {
   logger_.Log(LogLevel::Information, "Getting catalog metadata and locally cached models.");
 
