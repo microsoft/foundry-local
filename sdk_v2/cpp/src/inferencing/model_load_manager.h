@@ -56,6 +56,11 @@ class ModelLoadManager {
                        std::string_view model_id,
                        ExecutionProvider ep_override = ExecutionProvider::kDefault);
 
+  /// Verify that a required provider is registered and prepare its runtime
+  /// dependencies before constructing an ORT GenAI model or session.
+  void PrepareProviderForModelLoad(std::string_view registration_name,
+                                   std::string_view model_id);
+
   /// Unload a previously loaded model.
   /// @returns true if the model was found and unloaded; false if the model was not loaded
   ///          (idempotent no-op).

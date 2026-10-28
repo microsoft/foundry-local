@@ -190,8 +190,10 @@ void RegisterOpenAIRoutes(const std::shared_ptr<oatpp::web::server::HttpRouter>&
   router->route("POST", prefix + "/v1/chat/completions", CreateChatCompletionsHandler(ctx));
   router->route("POST", prefix + "/v1/audio/transcriptions", CreateAudioTranscriptionsHandler(ctx));
   router->route("POST", prefix + "/v1/embeddings", CreateEmbeddingsHandler(ctx));
+#ifdef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
   router->route("POST", prefix + "/v1/systemone", CreateSystemOneHandler(ctx));
   router->route("POST", prefix + "/v1/rank", CreateRankHandler(ctx));
+#endif
   router->route("POST", prefix + "/v1/responses", CreateResponsesHandler(ctx));
   router->route("GET", prefix + "/v1/responses", CreateListResponsesHandler(ctx));
   router->route("GET", prefix + "/v1/responses/{id}", CreateGetResponseHandler(ctx));
@@ -263,9 +265,13 @@ struct WebService::Impl {
         local_response_store(ResponseStore::kDefaultCapacity, &session_cache),
         shutdown_callback(std::move(shutdown_callback)),
         non_generative_admission(
+#ifdef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
             CreateNonGenerativeAdmissionCoordinator(
                 non_generative_memory_budget_bytes,
                 non_generative_readiness_concurrency)
+#else
+            nullptr
+#endif
                 ),
         public_context(std::make_unique<ServiceContext>(
             ServiceContext{public_catalog,
@@ -277,8 +283,12 @@ struct WebService::Impl {
                            public_response_store,
                            telemetry,
                            thread_tracker,
+#ifdef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
                            CreateNonGenerativeRuntimeState(
                                non_generative_admission)
+#else
+                           nullptr
+#endif
             })),
         local_context(std::make_unique<ServiceContext>(
             ServiceContext{local_catalog,
@@ -290,9 +300,17 @@ struct WebService::Impl {
                            local_response_store,
                            telemetry,
                            thread_tracker,
+#ifdef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
                            CreateNonGenerativeRuntimeState(
                                non_generative_admission)
+#else
+                           nullptr
+#endif
             })) {
+#ifndef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
+    (void)non_generative_memory_budget_bytes;
+    (void)non_generative_readiness_concurrency;
+#endif
   }
 };
 
@@ -459,8 +477,10 @@ void WebService::Stop() {
     }
   }
 
+#ifdef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
   ClearNonGenerativeRuntimes(*impl_->public_context);
   ClearNonGenerativeRuntimes(*impl_->local_context);
+#endif
   impl_->servers.clear();
   impl_->listener_threads.clear();
   impl_->providers.clear();

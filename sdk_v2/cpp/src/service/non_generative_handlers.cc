@@ -205,7 +205,16 @@ AcquireRuntime(ServiceContext& ctx, const ResolvedPackage& package) {
       package.identity, package.model_id, package.model,
       package.estimated_resident_bytes,
       package.provider.empty() ? "cpu" : package.provider,
-      [&] { return std::make_shared<Runtime>(package.path); }));
+      [&] {
+        const auto registration =
+            package.provider.empty()
+                ? std::string_view{}
+                : EPUtils::EPtoRegistrationName(
+                      EPUtils::StringtoEP(package.provider));
+        ctx.model_load_manager.PrepareProviderForModelLoad(
+            registration, package.model_id);
+        return std::make_shared<Runtime>(package.path);
+      }));
   acquired->MarkExternalRuntimeLoaded();
   return {std::move(runtime), std::move(lease)};
 }

@@ -632,6 +632,7 @@ TEST_F(WebServiceTest, ChatCompletionsRejectsMissingMessages) {
                std::exception);
 }
 
+#ifdef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
 TEST_F(WebServiceTest, NonGenerativeRoutesRejectInvalidContracts) {
   EXPECT_THROW(TestHttpPost(base_url_ + "/v1/rank", ""),
                std::exception);
@@ -739,6 +740,7 @@ TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCudaPackagesWhenConf
       "", std::chrono::minutes(3)));
   EXPECT_EQ(decision.at("model"), kev_metadata.model_id);
 }
+#endif
 
 TEST_F(WebServiceTest, ChatCompletionsRejectsUnknownModel) {
   json body = {

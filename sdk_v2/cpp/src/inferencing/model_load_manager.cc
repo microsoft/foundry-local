@@ -145,6 +145,21 @@ void ModelLoadManager::RunWithUnloadedModelsInDirectory(std::string_view directo
   operation();
 }
 
+void ModelLoadManager::PrepareProviderForModelLoad(
+    std::string_view registration_name, std::string_view model_id) {
+  if (registration_name.empty()) return;
+  if (!HasEP(std::string(registration_name))) {
+    FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                     "model '", model_id, "' requires ", registration_name,
+                     " which is not registered. Call DownloadAndRegisterEps() first.");
+  }
+  if (!ep_detector_.PrepareForModelLoad(registration_name)) {
+    FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INTERNAL,
+                     "failed to prepare ", registration_name,
+                     " for model loading");
+  }
+}
+
 // ---------------------------------------------------------------------------
 // LoadModel
 // ---------------------------------------------------------------------------
@@ -224,16 +239,7 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
   }
 
   // OGA can crash or hang if a model is loaded with an unregistered EP.
-  if (!required_ep.empty() && !HasEP(std::string(required_ep))) {
-    FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
-                     "model '", id_str, "' requires ", required_ep,
-                     " which is not registered. Call DownloadAndRegisterEps() first.");
-  }
-
-  if (!required_ep.empty() && !ep_detector_.PrepareForModelLoad(required_ep)) {
-    FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INTERNAL,
-                     "failed to prepare ", required_ep, " for model loading");
-  }
+  PrepareProviderForModelLoad(required_ep, id_str);
 
   // std::make_unique cannot access the private constructor; using new directly is intentional.
   auto loaded = std::unique_ptr<GenAIModelInstance>(new GenAIModelInstance(id_str,
