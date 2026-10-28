@@ -120,9 +120,8 @@ unset(FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI CACHE)
 check_cxx_source_compiles(
     "#include <ort_genai_c.h>
      int main() {
-       OgaRankingSessionHandle* ranking = nullptr;
-       OgaDecisionSessionHandle* decision = nullptr;
-       return ranking == nullptr && decision == nullptr ? 0 : 1;
+       OgaNonGenerativeSession* session = nullptr;
+       return session == nullptr ? 0 : 1;
      }"
     FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
 )

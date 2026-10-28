@@ -151,9 +151,9 @@ class SessionExecutor {
 struct RankingRuntime::Impl {
   Impl(const std::string& path, std::vector<std::string> providers)
       : executor([path, providers = std::move(providers)] {
-          return std::make_unique<RankingSession>(path, providers);
+          return std::make_unique<::NonGenerativeSession>(path, providers);
         }) {}
-  SessionExecutor<RankingSession> executor;
+  SessionExecutor<::NonGenerativeSession> executor;
 };
 
 RankingRuntime::RankingRuntime(const std::string& package_path)
@@ -173,8 +173,8 @@ nlohmann::json RankingRuntime::Rank(const RankingRequest& request) {
            {"candidates", std::move(candidates)}}
           .dump();
   const auto response = impl_->executor.Invoke(
-      [request_json](RankingSession& session) {
-        return session.Rank(request_json);
+      [request_json](::NonGenerativeSession& session) {
+        return session.Run(request_json);
       });
   const auto result = json::parse(response);
   json ranked = json::array();
@@ -192,9 +192,9 @@ nlohmann::json RankingRuntime::Rank(const RankingRequest& request) {
 struct DecisionRuntime::Impl {
   Impl(const std::string& path, std::vector<std::string> providers)
       : executor([path, providers = std::move(providers)] {
-          return std::make_unique<DecisionSession>(path, providers);
+          return std::make_unique<::NonGenerativeSession>(path, providers);
         }) {}
-  SessionExecutor<DecisionSession> executor;
+  SessionExecutor<::NonGenerativeSession> executor;
 };
 
 DecisionRuntime::DecisionRuntime(const std::string& package_path)
@@ -206,8 +206,8 @@ DecisionRuntime::~DecisionRuntime() = default;
 nlohmann::json DecisionRuntime::Decide(const NonGenerativeRequest& request) {
   const auto request_json = StructuredRequestJson(request).dump();
   const auto response = impl_->executor.Invoke(
-      [request_json](DecisionSession& session) {
-        return session.Decide(request_json);
+      [request_json](::NonGenerativeSession& session) {
+        return session.Run(request_json);
       });
   return json::parse(response).at("answers");
 }
