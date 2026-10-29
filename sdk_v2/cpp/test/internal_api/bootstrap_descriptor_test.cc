@@ -378,6 +378,14 @@ TEST_F(BootstrapDescriptorTest, DiscoversResidentAssetsAndRejectsChangedOrUniden
   auto replaced = native;
   replaced.image_identity += "different-build";
   EXPECT_THROW(ResolveRuntimeAssets(replaced, ort, genai), Exception);
+  replaced.image_identity.clear();
+  try {
+    static_cast<void>(ResolveRuntimeAssets(replaced, ort, genai));
+    FAIL() << "Missing resident identity must be rejected";
+  } catch (const Exception& error) {
+    EXPECT_NE(std::string(error.what()).find("identifiable runtime module"), std::string::npos);
+  }
+
   EXPECT_THROW(FileModuleIdentity(descriptor_.native.path), Exception);
   EXPECT_THROW(ResidentModuleAt(nullptr), Exception);
 #ifdef _WIN32

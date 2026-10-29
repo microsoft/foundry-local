@@ -29,6 +29,7 @@
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -494,6 +495,87 @@ TEST_F(IpcChannelTest, ClientDisconnectBeforeAcceptDoesNotCloseTheListener) {
   const auto frame = SampleFrame(7, FrameKind::Data, 8);
   client->WriteFrame(frame);
   ExpectFrame(server.ReadFrame(), frame);
+}
+#endif
+
+#ifndef _WIN32
+TEST_F(IpcChannelTest, DescriptorExhaustionRecoversAndRemainsInterruptibleByClose) {
+  const auto style = GTEST_FLAG_GET(death_test_style);
+  ScopeGuard restore_style([&]() noexcept { GTEST_FLAG_SET(death_test_style, style); });
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  for (const bool close_listener : {false, true}) {
+    ASSERT_EXIT(
+        {
+          const auto exercise = [&]() -> bool {
+            Listener listener(endpoint_);
+            RawPeer pending(endpoint_);
+            rlimit original{};
+            if (getrlimit(RLIMIT_NOFILE, &original) != 0) {
+              return false;
+            }
+
+            auto limited = original;
+            limited.rlim_cur = std::min<rlim_t>(original.rlim_cur, 128);
+            if (setrlimit(RLIMIT_NOFILE, &limited) != 0) {
+              return false;
+            }
+
+            std::vector<int> descriptors;
+            const auto restore = [&]() noexcept {
+              for (const auto fd : descriptors) {
+                close(fd);
+              }
+
+              descriptors.clear();
+              setrlimit(RLIMIT_NOFILE, &original);
+            };
+            ScopeGuard restore_limit(restore);
+            for (int fd; (fd = open("/dev/null", O_RDONLY)) >= 0;) {
+              descriptors.push_back(fd);
+            }
+
+            auto accepted = std::async(std::launch::async, [&] { return listener.Accept(); });
+            ScopeGuard close_accept([&]() noexcept { listener.Close(); });
+            const auto blocked = accepted.wait_for(50ms) == std::future_status::timeout;
+            if (close_listener) {
+              listener.Close();
+            } else {
+              restore();
+            }
+
+            if (accepted.wait_for(5s) != std::future_status::ready) {
+              _exit(1);
+            }
+            if (close_listener) {
+              try {
+                static_cast<void>(accepted.get());
+              } catch (const Exception& error) {
+                return blocked && error.code() == FOUNDRY_LOCAL_ERROR_INVALID_USAGE;
+              }
+
+              return false;
+            }
+
+            auto first = accepted.get();
+            first.first.Close();
+            RawPeer healthy(endpoint_);
+            auto next = listener.Accept();
+            const auto frame = SampleFrame(7, FrameKind::Data, 8);
+            healthy.Write(WireHeader(frame.payload.size()), 20);
+            healthy.Write(frame.payload, frame.payload.size());
+            const auto received = next.first.ReadFrame();
+            return blocked && next.second.process_id == CurrentPid() && received.payload == frame.payload;
+          };
+          try {
+            const auto success = exercise();
+            TearDown();
+            _exit(success ? 0 : 1);
+          } catch (...) {
+            _exit(1);
+          }
+        },
+        testing::ExitedWithCode(0), "");
+  }
 }
 #endif
 

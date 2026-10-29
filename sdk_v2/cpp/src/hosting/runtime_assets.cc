@@ -19,7 +19,10 @@ namespace fl::hosting {
 namespace {
 
 BootstrapArtifact Capture(const ResidentModule& module) {
-  if (module.image_identity.empty() || FileModuleIdentity(module.path) != module.image_identity) {
+  if (module.image_identity.empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "native hosting requires an identifiable runtime module: ", module.path);
+  }
+  if (FileModuleIdentity(module.path) != module.image_identity) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "resident runtime file was replaced since loading: ", module.path);
   }
 

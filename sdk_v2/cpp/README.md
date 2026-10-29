@@ -376,13 +376,20 @@ multimodal input. Rebuilt release artifacts must pass the same gates independent
 ## Quick Start
 
 In-process execution is the default. Call `config.SetUseSharedHost(true)` before constructing `Manager` to route
-the same model/session APIs through the native host shipped beside the runtime. Metadata, discovery and downloads
-do not start it; execution, cache removal or `StartWebService()` starts or joins a compatible host. Cache removal
-always runs in the host so it cannot race a newly started host loading the same weights. Compatible applications must
-use the same Foundry native build and IPC protocol, platform, and effective catalog, data/cache, provider and web
-configuration. Dependency file hashes and packaging differences do not separate clients into different hosts.
+the same model/session APIs through the native host shipped beside the runtime. Metadata, discovery and model downloads
+do not start it; execution, cache removal, EP download/registration or `StartWebService()` starts or joins a compatible host.
+Cache removal always runs in the host so it cannot race a newly started host loading the same weights.
+Compatible applications must use the same Foundry native build and IPC protocol, platform, and effective catalog,
+data/cache, provider and web configuration. Logs directory/level, effective telemetry settings and additional settings
+other than `UserAgent` also separate hosts. Dependency file hashes and packaging differences do not separate clients
+into different hosts.
 The first starter selects the host's runtime; its files are verified at launch, and that runtime serves all attached
 clients. Joining a host does not replace its runtime with the joining client's local dependencies.
+
+The host inherits the first starter's environment, working directory and application identity; later clients do not
+reconfigure them. Environment-derived settings resolved into the compatibility profile, including telemetry, still
+affect sharing. Linux shared hosting requires kernel 5.3+ with `pidfd_open` permitted by the container/seccomp policy,
+and GNU build IDs in the Foundry, ORT and GenAI runtime modules.
 
 Destroying or shutting down a hosted manager releases only that client. The host drains admitted work and exits after
 the final owner and a five-second reconnect grace. Keep a manager alive while using its HTTP endpoint: HTTP connections

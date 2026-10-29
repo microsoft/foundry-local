@@ -82,15 +82,19 @@ pub struct FoundryLocalManager { /* private fields */ }
 ## Shared Serving
 
 Use `FoundryLocalConfig::new("my-app").use_shared_host(true)` to route the normal manager, model and session APIs
-through the native host shipped with the runtime. In-process remains the default. Metadata, discovery and downloads
-do not start the host; execution or `start_web_service()` starts or joins it. Matching native dependencies and
-effective catalog, data/cache, provider and web settings determine compatibility, not the binding or installation
-directory. Hosted mode cannot be combined with `service_endpoint` and never falls back to in-process execution.
+through the native host shipped with the runtime. In-process remains the default. Metadata, discovery and model
+downloads do not start the host; execution, cache removal, EP download/registration or `start_web_service()` starts or
+joins it. Clients must match the Foundry native build, IPC protocol, platform and effective catalog, data/cache,
+provider, web, logs directory/level, telemetry and additional settings other than `UserAgent`. Dependency hashes and
+packaging paths do not split hosts; the first starter's verified runtime serves all clients. Hosted mode cannot be
+combined with `service_endpoint` and never falls back to in-process execution.
 
 Manager shutdown/drop releases only this client's ownership. After the final owner, the host drains admitted work,
 allows a five-second reconnect grace and exits normally. Keep the manager alive while using its HTTP endpoint:
 HTTP connections are not owners. Explicit model unload stays shared and rejects in-use models. Web-service Stop
 rejects other owners or active HTTP work.
+
+See the [shared-host requirements](../../cpp/README.md#quick-start) for inherited environment/cwd and Linux prerequisites.
 
 ---
 

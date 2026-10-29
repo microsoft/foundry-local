@@ -440,15 +440,20 @@ steps:
                     print("  " + name)
                 sys.exit(1)
 
-        hits = [name for name in names if name.endswith(expected)]
-        if not hits:
-            print("ERROR: " + expected + " not found in wheel")
-            for name in names:
-                if name.endswith((".so", ".dll", ".dylib")):
-                    print("  " + name)
-            sys.exit(1)
-
-        print("OK: found " + hits[0])
+        prefix = expected.rsplit("/", 1)[0] + "/"
+        host = "foundry-local-host.exe" if rid.startswith("win-") else "foundry-local-host"
+        with zipfile.ZipFile(whl) as wheel:
+            for required in (expected, prefix + host, prefix + "foundry-local-runtime.json"):
+                hits = [name for name in names if name.endswith(required)]
+                if not hits:
+                    sys.exit("ERROR: " + required + " not found in wheel")
+                entry = wheel.getinfo(hits[0])
+                if entry.is_dir():
+                    sys.exit("ERROR: required wheel payload is a directory: " + hits[0])
+                if required == prefix + host and not rid.startswith("win-"):
+                    if not (entry.external_attr >> 16) & 0o100:
+                        sys.exit("ERROR: wheel host is not executable: " + hits[0])
+                print("OK: found " + hits[0])
         '@
         $code | python - "$($whl.FullName)" "$expected" "${{ parameters.rid }}"
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

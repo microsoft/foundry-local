@@ -573,8 +573,15 @@ ResidentModule ResidentModuleAt(const void* address) {
 #endif
 #endif
   if (module.path.empty() || module.image_identity.empty()) {
+#ifdef __linux__
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "native hosting requires GNU build IDs in Foundry, ORT and GenAI runtime modules; "
+             "cannot identify resident module: ",
+             module.path);
+#else
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
              "native hosting cannot identify the resident runtime module: ", module.path);
+#endif
   }
 
   module.path = std::filesystem::canonical(module.path);

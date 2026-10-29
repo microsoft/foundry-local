@@ -15,6 +15,12 @@ parameters:
 
 steps:
 
+- task: UsePythonVersion@0
+  displayName: 'Use Python 3.12'
+  inputs:
+    versionSpec: '3.12'
+    architecture: 'x64'
+
 - task: PowerShell@2
   displayName: 'Create C++ SDK platform bundles (.zip/.tgz)'
   inputs:
@@ -137,8 +143,17 @@ steps:
       with tarfile.open(sys.argv[1], "w:gz") as archive:
           archive.add("include")
           archive.add("lib", filter=executable_host)
+
+      library = "libfoundry_local.dylib" if sys.argv[2] == "osx-arm64" else "libfoundry_local.so"
+      with tarfile.open(sys.argv[1], "r:gz") as archive:
+          for name in (library, "foundry-local-host", "foundry-local-runtime.json"):
+              entry = archive.getmember("lib/" + name)
+              if not entry.isfile():
+                  raise ValueError("Required C++ SDK payload is not a regular file: " + entry.name)
+              if name == "foundry-local-host" and entry.mode & 0o111 != 0o111:
+                  raise ValueError("C++ SDK host is not executable: " + entry.name)
       '@
-            $tarScript | python - $archive
+            $tarScript | python - $archive $Rid
             if ($LASTEXITCODE -ne 0) {
               throw "Tar creation failed for RID '$Rid'"
             }

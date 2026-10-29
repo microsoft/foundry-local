@@ -14,6 +14,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <limits>
+#include <new>
 #include <poll.h>
 #include <sstream>
 #include <string>
@@ -143,7 +144,7 @@ Descriptor NewSocket() {
   return socket_fd;
 }
 
-std::optional<Descriptor> AcceptSocket(int listener) {
+std::optional<Descriptor> AcceptSocket(int listener, bool& backoff) {
   int fd = -1;
   do {
 #ifdef __linux__
@@ -153,23 +154,19 @@ std::optional<Descriptor> AcceptSocket(int listener) {
 #endif
   } while (fd < 0 && errno == EINTR);
 
-  if (fd < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-    return std::nullopt;
-  }
-
-  Descriptor accepted(fd);
   if (fd < 0) {
+    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == ECONNABORTED || errno == EPROTO) {
+      return std::nullopt;
+    }
+    if (errno == EMFILE || errno == ENFILE || errno == ENOBUFS || errno == ENOMEM) {
+      backoff = true;
+      return std::nullopt;
+    }
+
     Fail("accept");
   }
 
-#ifdef __APPLE__
-  SetCloseOnExec(fd);
-  SetNonBlocking(fd, false);
-  const int enabled = 1;
-  if (setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled)) < 0) {
-    Fail("setsockopt(SO_NOSIGPIPE)");
-  }
-#endif
+  Descriptor accepted(fd);
   return accepted;
 }
 
@@ -434,11 +431,12 @@ struct Listener::State {
     AcceptLease(const AcceptLease&) = delete;
     AcceptLease& operator=(const AcceptLease&) = delete;
 
-    void Wait() const {
-      std::array<pollfd, 2> fds{{{fd, POLLIN, 0}, {state.wakeup.first.Get(), POLLIN, 0}}};
+    void Wait(bool backoff = false) const {
+      // Resource recovery must ignore a readable backlog while still responding immediately to Close().
+      std::array<pollfd, 2> fds{{{backoff ? -1 : fd, POLLIN, 0}, {state.wakeup.first.Get(), POLLIN, 0}}};
       int result = 0;
       do {
-        result = poll(fds.data(), static_cast<nfds_t>(fds.size()), -1);
+        result = poll(fds.data(), static_cast<nfds_t>(fds.size()), backoff ? 50 : -1);
       } while (result < 0 && errno == EINTR);
 
       if (result < 0) {
@@ -447,6 +445,10 @@ struct Listener::State {
 
       const std::lock_guard lock(state.mutex);
       state.RequireOpenLocked();
+      if (backoff && result == 0) {
+        return;
+      }
+
       if ((fds[0].revents & POLLIN) == 0 || fds[1].revents != 0) {
         Fail("poll(listener readiness)", EIO);
       }
@@ -564,13 +566,38 @@ std::pair<Channel, PeerIdentity> Listener::Accept() {
   const State::AcceptLease lease(*state_);
   while (true) {
     lease.Wait();
-    auto fd = AcceptSocket(lease.fd);
+    bool backoff = false;
+    auto fd = AcceptSocket(lease.fd, backoff);
     if (!fd) {
+      if (backoff) {
+        lease.Wait(true);
+      }
+
       continue;
     }
 
-    const auto peer = Authenticate(fd->Get());
-    auto channel_state = std::make_shared<Channel::State>(std::move(*fd), peer);
+    PeerIdentity peer;
+    std::shared_ptr<Channel::State> channel_state;
+    try {
+#ifdef __APPLE__
+      SetCloseOnExec(fd->Get());
+      SetNonBlocking(fd->Get(), false);
+      const int enabled = 1;
+      if (setsockopt(fd->Get(), SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled)) < 0) {
+        Fail("setsockopt(SO_NOSIGPIPE)");
+      }
+#endif
+      peer = Authenticate(fd->Get());
+      channel_state = std::make_shared<Channel::State>(std::move(*fd), peer);
+    } catch (const Exception&) {
+      // A rejected or disconnected peer retires only its accepted socket, never the shared listener.
+      continue;
+    } catch (const std::bad_alloc&) {
+      fd.reset();
+      lease.Wait(true);
+      continue;
+    }
+
     const std::lock_guard lock(state_->mutex);
     state_->RequireOpenLocked();
     return {Channel(std::move(channel_state)), peer};

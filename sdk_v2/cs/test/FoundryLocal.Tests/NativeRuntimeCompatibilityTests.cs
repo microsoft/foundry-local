@@ -15,24 +15,32 @@ internal sealed class NativeRuntimeCompatibilityTests
 {
     [Test]
     [NotInParallel]
+    [SkipUnlessIntegration]
     public async Task UrlsObserveNativeListenerChanges()
     {
-        await FoundryLocalManager.CreateAsync(
-            new PublicConfiguration { AppName = "listener-observation-test" },
-            Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
-        using var manager = FoundryLocalManager.Instance;
-        await Assert.That(manager.Urls).IsNull();
-        manager.NativeManager.StartService();
+        var manager = FoundryLocalManager.Instance;
+        var wasRunning = manager.Urls is not null;
         try
         {
+            manager.NativeManager.StopService();
+            await Assert.That(manager.Urls).IsNull();
+            manager.NativeManager.StartService();
             await Assert.That(manager.Urls).IsNotNull();
             await Assert.That(manager.Urls!.Length).IsGreaterThan(0);
+            manager.NativeManager.StopService();
+            await Assert.That(manager.Urls).IsNull();
         }
         finally
         {
-            manager.NativeManager.StopService();
+            if (wasRunning)
+            {
+                manager.NativeManager.StartService();
+            }
+            else
+            {
+                manager.NativeManager.StopService();
+            }
         }
-        await Assert.That(manager.Urls).IsNull();
     }
 
     [Test]

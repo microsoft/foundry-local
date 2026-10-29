@@ -15,6 +15,8 @@
 #include <exception>
 #include <limits>
 #include <mutex>
+#include <new>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -306,20 +308,37 @@ struct HostServer::Impl {
       try {
         while (!stopping.load(std::memory_order_acquire)) {
           auto [channel, identity] = listener.Accept();
-          std::lock_guard lock(mutex);
-          if (stopping.load(std::memory_order_acquire)) {
-            break;
-          }
-          if (peers.size() >= kMaxConnections) {
+          try {
+            std::lock_guard lock(mutex);
+            if (stopping.load(std::memory_order_acquire)) {
+              break;
+            }
+            if (peers.size() >= kMaxConnections) {
+              continue;
+            }
+            if (next_generation == std::numeric_limits<uint64_t>::max()) {
+              FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "native host connection generation exhausted");
+            }
+
+            auto peer = std::make_shared<Peer>(*this, std::move(channel), identity, next_generation++);
+            peers.push_back(peer);
+            try {
+              peer->thread = std::thread([value = peer.get()] { value->Run(); });
+            } catch (...) {
+              peers.pop_back();
+              throw;
+            }
             continue;
-          }
-          if (next_generation == std::numeric_limits<uint64_t>::max()) {
-            FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "native host connection generation exhausted");
+          } catch (const std::system_error& error) {
+            if (error.code() != std::errc::resource_unavailable_try_again &&
+                error.code() != std::errc::not_enough_memory) {
+              throw;
+            }
+          } catch (const std::bad_alloc&) {
           }
 
-          auto peer = std::make_shared<Peer>(*this, std::move(channel), identity, next_generation++);
-          peers.push_back(peer);
-          peer->thread = std::thread([value = peer.get()] { value->Run(); });
+          std::unique_lock lock(mutex);
+          wake.wait_for(lock, 50ms, [this] { return stopping.load(std::memory_order_acquire); });
         }
       } catch (...) {
         if (!stopping.load(std::memory_order_acquire)) {
@@ -476,6 +495,12 @@ HostLifetime& HostServer::Lifetime() noexcept { return *impl_->lifetime; }
 
 bool HostServer::WaitUntilStopped(HostLifetime::TimePoint deadline) {
   std::unique_lock lock(impl_->mutex);
+  if (deadline == HostLifetime::TimePoint::max()) {
+    // Older libstdc++ converts steady deadlines to system time, overflowing max() before releasing the mutex.
+    impl_->wake.wait(lock, [this] { return impl_->stopped; });
+    return true;
+  }
+
   return impl_->wake.wait_until(lock, deadline, [this] { return impl_->stopped; });
 }
 

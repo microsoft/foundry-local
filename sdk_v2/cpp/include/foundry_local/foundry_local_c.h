@@ -1039,7 +1039,10 @@ struct flConfigurationApi {
   // End V1
 
   /// Optional. Route existing execution APIs to the packaged native shared host. Defaults to false (in-process).
-  /// First execution starts or joins a compatible host; discovery alone does not start it. Releasing a manager
+  /// Execution, cache removal, EP download/registration or web-service Start starts or joins a compatible host;
+  /// metadata, discovery and model downloads do not. Compatibility includes the native build, IPC protocol, platform
+  /// and effective catalog/data/cache/provider/web/log/telemetry/additional settings (except UserAgent), not dependency
+  /// hashes or packaging paths. The first starter's verified runtime serves all attached clients. Releasing a manager
   /// closes only that client's ownership. The last owner's drained work and reconnect grace precede host exit.
   /// Cannot be combined with SetExternalServiceUrl. Requires API version 3.
   FL_API_STATUS(SetUseSharedHost, _In_ flConfiguration* config, _In_ bool enabled);

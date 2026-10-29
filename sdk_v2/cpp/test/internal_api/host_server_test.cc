@@ -18,6 +18,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <future>
 #include <thread>
@@ -174,6 +175,45 @@ TEST_F(HostServerTest, ObservationHasNoOwnershipAndCannotLoadOrExtendUnusedStart
   Advance(30s);
   ExpectStopped();
   EXPECT_THROW(observer->Call(Operation::Observe, {}), std::exception);
+}
+
+TEST_F(HostServerTest, InfiniteStopWaitReleasesTheMutexUntilShutdownCompletes) {
+  const auto style = GTEST_FLAG_GET(death_test_style);
+  ScopeGuard restore_style([&]() noexcept { GTEST_FLAG_SET(death_test_style, style); });
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  ASSERT_EXIT(
+      {
+        // The isolated child's watchdog must not depend on fixture locks or stack unwinding.
+        std::thread([] {
+          std::this_thread::sleep_for(15s);
+          std::_Exit(1);
+        }).detach();
+        auto stopped = std::async(std::launch::async, [&] {
+          return server_->WaitUntilStopped(HostLifetime::TimePoint::max());
+        });
+        EXPECT_EQ(stopped.wait_for(20ms), std::future_status::timeout);
+        Advance(30s);
+        if (stopped.wait_for(5s) != std::future_status::ready) {
+          std::_Exit(1);
+        }
+
+        EXPECT_TRUE(stopped.get());
+        ExpectStopped();
+        TearDown();
+        std::_Exit(testing::Test::HasFailure() ? 1 : 0);
+      },
+      testing::ExitedWithCode(0), "");
+}
+
+TEST_F(HostServerTest, DisconnectedPeerDoesNotPreventTheNextOwner) {
+  {
+    auto abandoned = ConnectPeer();
+    abandoned.Close();
+  }
+
+  auto owner = Attach();
+  EXPECT_EQ(owner->Call(Operation::Observe, {}).at("owners"), 1);
+  EXPECT_NO_THROW(server_->RethrowFailure());
 }
 
 TEST_F(HostServerTest, InvalidProfileProtocolAndPeerIdentityNeverAcquireAnOwner) {
