@@ -24,6 +24,18 @@ TEST(ExecutionProviderTest, StringToEPReturnsUnknownForUnsupportedOrEmptyNames) 
   EXPECT_EQ(EPUtils::StringtoEP(""), ExecutionProvider::kUnknown);
   EXPECT_EQ(EPUtils::StringtoEP("trt"), ExecutionProvider::kUnknown);
   EXPECT_EQ(EPUtils::StringtoEP("DirectMLExecutionProvider"), ExecutionProvider::kUnknown);
+  EXPECT_EQ(EPUtils::StringtoEP("MIGraphXExecutionProvider"), ExecutionProvider::kUnknown);
+  EXPECT_EQ(EPUtils::StringtoEP("migraphx"), ExecutionProvider::kUnknown);
+}
+
+TEST(ExecutionProviderTest, AmdGpuMappingsUseGenAiNameAndCanonicalRegistrationName) {
+  for (const auto name : {"AMDGPU", "amdgpu", "AMDGPUExecutionProvider", "AmDgPuExEcUtIoNpRoViDeR"}) {
+    EXPECT_EQ(EPUtils::StringtoEP(name), ExecutionProvider::kAMDGPU) << name;
+  }
+  EXPECT_EQ(static_cast<int>(ExecutionProvider::kQNN), 9);
+  EXPECT_EQ(static_cast<int>(ExecutionProvider::kAMDGPU), 10);
+  EXPECT_EQ(EPUtils::EPtoGenAI(ExecutionProvider::kAMDGPU), "AMDGPU");
+  EXPECT_EQ(EPUtils::EPtoRegistrationName(ExecutionProvider::kAMDGPU), "AMDGPUExecutionProvider");
 }
 
 TEST(ExecutionProviderTest, EPtoGenAIReturnsExpectedProviderNames) {
@@ -47,6 +59,7 @@ TEST(ExecutionProviderTest, RoundTripPreservesSupportedNonDefaultProviders) {
       ExecutionProvider::kVitisAI,
       ExecutionProvider::kRyzenAI,
       ExecutionProvider::kQNN,
+      ExecutionProvider::kAMDGPU,
   };
 
   for (auto provider : providers) {
