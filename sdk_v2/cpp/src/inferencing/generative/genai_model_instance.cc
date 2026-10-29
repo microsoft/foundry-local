@@ -174,24 +174,37 @@ GenAIModelInstance::GenAIModelInstance(std::string model_id,
                      "failed to create OGA config for model ", model_id_, ": ", e.what());
   }
 
-  // Every explicit EP overrides providers from genai_config.json. CPU is OGA's default when the provider list is
-  // empty, and EPtoGenAI intentionally has no CPU name, so CPU clears the list without appending a provider.
+  // Every explicit EP overrides the main decoder provider from genai_config.json. CPU is OGA's default when the
+  // provider list is empty, and EPtoGenAI intentionally has no CPU name, so CPU clears the list without appending a
+  // provider. DFlash has separate provider options and is not changed by these main decoder overrides.
   if (ep_ != ExecutionProvider::kDefault) {
     try {
+      logger_.Log(LogLevel::Information,
+                  fmt::format("model {} applying explicit main decoder EP override: {}", model_id_,
+                              EPUtils::EPtoRegistrationName(ep_)));
       oga_config->ClearProviders();
       if (ep_ != ExecutionProvider::kCPU) {
         std::string_view provider_str = EPUtils::EPtoGenAI(ep_);
         oga_config->AppendProvider(provider_str.data());
       }
 
-      // Disable CUDA graph for CUDA EP (matches C# behavior)
+      // Preserve existing behavior: an explicit CUDA override disables graph capture for the main decoder only.
       if (ep_ == ExecutionProvider::kCUDA) {
         oga_config->SetProviderOption("cuda", "enable_cuda_graph", "0");
+        logger_.Log(LogLevel::Information,
+                    fmt::format("model {} explicit CUDA override set main decoder enable_cuda_graph=0; "
+                                "DFlash provider options are unchanged",
+                                model_id_));
       }
     } catch (const std::runtime_error& e) {
       FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,
                        "failed to configure EP for model ", model_id_, ": ", e.what());
     }
+  } else {
+    const auto configured_provider = genai_config_.DefaultProvider();
+    logger_.Log(LogLevel::Information,
+                fmt::format("model {} using main decoder provider options from genai_config.json (provider={})",
+                            model_id_, configured_provider.empty() ? "implicit CPU" : configured_provider));
   }
 
   // Create OGA Model

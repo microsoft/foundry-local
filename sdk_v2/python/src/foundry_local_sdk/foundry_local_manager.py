@@ -16,6 +16,37 @@ from foundry_local_sdk.exception import FoundryLocalException
 from foundry_local_sdk.logging_helper import set_default_logger_severity
 
 
+def _build_ep_download_result(
+    before_eps: list[EpInfo],
+    after_eps: list[EpInfo],
+    requested_names: list[str] | None,
+) -> EpDownloadResult:
+    before_by_name = {ep.name: ep.is_registered for ep in before_eps}
+    after_by_name = {ep.name: ep for ep in after_eps}
+    requested = list(
+        dict.fromkeys(
+            requested_names if requested_names is not None else (ep.name for ep in before_eps)
+        )
+    )
+    registered = [
+        ep.name
+        for ep in after_eps
+        if ep.is_registered and not before_by_name.get(ep.name, False)
+    ]
+    failed = [
+        name
+        for name in requested
+        if name not in after_by_name or not after_by_name[name].is_registered
+    ]
+
+    return EpDownloadResult(
+        success=len(failed) == 0,
+        status="All EPs registered" if not failed else "Some EPs failed",
+        registered_eps=registered,
+        failed_eps=failed,
+    )
+
+
 class FoundryLocalManager:
     """Singleton manager for Foundry Local SDK operations.
 
@@ -271,25 +302,13 @@ class FoundryLocalManager:
                 )
             )
 
-        # Determine which EPs were newly registered.
         after_eps = self.discover_eps()
-        registered = [
-            ep.name
-            for ep in after_eps
-            if ep.is_registered and not before_eps.get(ep.name, False)
-        ]
-        failed = [
-            ep.name
-            for ep in after_eps
-            if not ep.is_registered and ep.name in (names or [])
-        ]
 
         # Native owns catalog cache invalidation after EP registration; no Python-side action needed.
-        return EpDownloadResult(
-            success=len(failed) == 0,
-            status="Completed",
-            registered_eps=registered,
-            failed_eps=failed,
+        return _build_ep_download_result(
+            [EpInfo(name=name, is_registered=is_registered) for name, is_registered in before_eps.items()],
+            after_eps,
+            names,
         )
 
     # ------------------------------------------------------------------
