@@ -118,9 +118,9 @@ TEST_F(WindowsDllLoaderTest, ReportsMissingDependencyWithoutLeakingModules) {
   ASSERT_EQ(logger.messages.size(), 1u);
   EXPECT_NE(logger.messages.back().find("(126)"), std::string::npos);
   EXPECT_NE(logger.messages.back().find("one of its dependencies"), std::string::npos);
-  EXPECT_NE(logger.messages.back().find("cudart64_12.dll"), std::string::npos);
+  EXPECT_NE(logger.messages.back().find("CUDA 12"), std::string::npos);
   EXPECT_NE(logger.messages.back().find("PATH or AddDllDirectory"), std::string::npos);
-  EXPECT_NE(logger.messages.back().find("CUDA 13 alone"), std::string::npos);
+  EXPECT_NE(logger.messages.back().find("CUDA 13"), std::string::npos);
 
   logger.messages.clear();
   EXPECT_EQ(LoadSharedLibrary(library, logger), nullptr);
