@@ -529,6 +529,14 @@ std::string DownloadManager::GetModelCachePath(const ModelInfo& info) const {
   return {};
 }
 
+std::string DownloadManager::GetCompletedModelCachePath(const ModelInfo& info) const {
+  if (!IsModelCached(info)) {
+    return {};
+  }
+
+  return ResolveEffectiveModelPath(ComputeModelPath(info));
+}
+
 void DownloadManager::RemoveModelFromCache(const ModelInfo& info, const std::string& local_path,
                                            ModelLoadManager& model_load_manager) {
   // The download lock coordinates cache mutations, not model use. Both Model::Download's cached-state shortcut and

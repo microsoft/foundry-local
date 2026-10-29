@@ -60,7 +60,6 @@ function installExitHandlersOnce(): void {
 export class FoundryLocalManager {
   readonly #native: NativeManager;
   readonly #catalogs = new Map<CatalogType, Catalog>();
-  #urls: string[] = [];
 
   constructor(config: FoundryLocalConfig) {
     if (config === null || config === undefined) {
@@ -153,29 +152,27 @@ export class FoundryLocalManager {
     return catalog;
   }
 
-  /** URLs the embedded web service is bound to. Empty when not running. */
+  /** Observe native listening URLs without starting the service or acquiring shared-host ownership. */
   get urls(): string[] {
-    return this.#urls;
+    return this.disposed ? [] : this.#native.getWebServiceEndpoints();
   }
 
-  /** True when the embedded web service is currently running. */
+  /** True when the native web service is currently running. */
   get isWebServiceRunning(): boolean {
-    return this.#urls.length > 0;
+    return this.urls.length > 0;
   }
 
   /** Start the embedded web service. Updates `urls`. */
   startWebService(): void {
     this.#native.startWebService();
-    this.#urls = this.#native.getWebServiceEndpoints();
   }
 
   /** Stop the embedded web service. Clears `urls`. */
   stopWebService(): void {
-    if (this.#urls.length === 0) {
+    if (this.urls.length === 0) {
       return;
     }
     this.#native.stopWebService();
-    this.#urls = [];
   }
 
   /** Discover available execution providers and their registration status. */
@@ -253,7 +250,6 @@ export class FoundryLocalManager {
     }
     this.#native.dispose();
     this.#catalogs.clear();
-    this.#urls = [];
   }
 
   [Symbol.dispose](): void {

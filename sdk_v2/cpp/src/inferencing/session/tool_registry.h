@@ -95,7 +95,7 @@ class ToolRegistry {
 /// exercisable by tests that hand it a struct allocated at an older, smaller size.
 ///
 /// @throws fl::Exception (FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT) for version 0, versions newer than
-///         FOUNDRY_LOCAL_API_VERSION, unknown kinds, and null strings the kind requires.
+///         FOUNDRY_LOCAL_TOOL_DEFINITION_VERSION, unknown kinds, and null strings the kind requires.
 ToolDefinition ToolDefinitionFromC(const flToolDefinition& tool_def);
 
 }  // namespace fl

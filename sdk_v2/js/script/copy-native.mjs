@@ -7,7 +7,7 @@
 // NOT used by CI publish — see pack-prebuilds.mjs. The published npm tarball
 // only ships foundry_local.{dll,so,dylib}; ORT/GenAI/WinML are the user's
 // responsibility at runtime per the legacy libraryPath contract.
-import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, symlinkSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -48,11 +48,18 @@ const wanted = (() => {
     // unversioned alias is added as a symlink after the copy loop (see below).
     return ["libfoundry_local.dylib", "libonnxruntime.1.dylib", "libonnxruntime-genai.dylib"];
   }
-  return ["libfoundry_local.so", "libonnxruntime.so.1", "libonnxruntime-genai.so"];
+  return ["libfoundry_local.so", "libonnxruntime.so.1", "libonnxruntime.so", "libonnxruntime-genai.so"];
 })();
 
 let copied = 0;
 const available = new Set(readdirSync(sourceDir));
+const host = process.platform === "win32" ? "foundry-local-host.exe" : "foundry-local-host";
+for (const required of [host, "foundry-local-runtime.json"]) {
+  if (!available.has(required)) {
+    throw new Error(`[copy-native] required runtime payload not found: ${required}`);
+  }
+  wanted.push(required);
+}
 for (const file of wanted) {
   if (!available.has(file)) {
     // Skip optional deps not produced on this platform (e.g. the Windows ML
@@ -62,6 +69,7 @@ for (const file of wanted) {
   const src = resolve(sourceDir, file);
   const dst = resolve(destDir, file);
   copyFileSync(src, dst);
+  if (file === "foundry-local-host") chmodSync(dst, 0o755);
   const size = statSync(dst).size;
   console.log(`[copy-native] ${file} (${size} bytes)`);
   copied += 1;

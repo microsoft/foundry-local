@@ -3,6 +3,7 @@
 #pragma once
 
 #include "catalog/base_model_catalog.h"
+#include "configuration.h"
 #include "ep_detection/ep_detector.h"
 #include "logger.h"
 
@@ -35,6 +36,11 @@ class AzureModelCatalog : public BaseModelCatalog {
                     ITelemetry& telemetry);
   ~AzureModelCatalog() override;
 
+  std::vector<Model*> GetCachedModels() const override;
+
+  // Metadata-only override for hosted clients; never changes the native runtime's registered providers.
+  void SetRuntimeDevices(std::map<std::string, std::vector<std::string>> devices);
+
  protected:
   std::vector<Model> FetchModels() const override;
   std::vector<Model> FetchModelVersions(const std::string& model_alias,
@@ -57,8 +63,8 @@ class AzureModelCatalog : public BaseModelCatalog {
     CatalogSource source;
   };
 
-  static constexpr const char* kDefaultCatalogUrl = "https://api.catalog.azureml.ms/asset-gallery/v1.0/models";
-  static constexpr const char* kDefaultCatalogFilter = "";
+  static constexpr const char* kDefaultCatalogUrl = Configuration::kDefaultCatalogUrl;
+  static constexpr const char* kDefaultCatalogFilter = Configuration::kDefaultCatalogFilter;
 
   CatalogResult GetLiveCatalogOrLocalSnapshot(const std::vector<std::string>& cached_model_ids) const;
   std::vector<Model> CreateModelsWithLocalPaths(const std::vector<ModelInfo>& model_infos,
@@ -67,7 +73,8 @@ class AzureModelCatalog : public BaseModelCatalog {
   std::vector<std::pair<std::string, std::optional<std::string>>> catalog_urls_;
   std::string cache_dir_;
   ModelFactory model_factory_;
-  const IEpDetector& ep_detector_;
+  class CatalogDevices;
+  std::unique_ptr<CatalogDevices> catalog_devices_;
   ILogger& logger_;
   bool cache_only_;
   ITelemetry& telemetry_;

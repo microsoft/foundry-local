@@ -25,7 +25,7 @@ class FoundryLocalManager:
     Attributes:
         instance: The singleton ``FoundryLocalManager`` instance.
         catalog: The model ``Catalog`` for discovering and managing models.
-        urls: Bound URL(s) after ``start_web_service()`` is called, or ``None``.
+        urls: Current native listening URL(s), or ``None`` when not running.
     """
 
     _lock = threading.RLock()
@@ -53,7 +53,6 @@ class FoundryLocalManager:
         self._sessions: weakref.WeakSet[object] = weakref.WeakSet()
         self._close_started = threading.Event()
         self._close_started_lock = threading.Lock()
-        self.urls: list[str] | None = None
 
         with FoundryLocalManager._lock:
             if FoundryLocalManager.instance is not None:
@@ -296,6 +295,22 @@ class FoundryLocalManager:
     # Web service lifecycle
     # ------------------------------------------------------------------
 
+    @property
+    def urls(self) -> list[str] | None:
+        """Observe native URLs without starting the service or owning the shared host."""
+        from foundry_local_sdk._native.api import api, ffi
+
+        with self._native_call() as native_manager:
+            urls_out = ffi.new("char***")
+            count_out = ffi.new("size_t*")
+            api.check_status(
+                api.root.Manager_WebServiceUrls(native_manager, urls_out, count_out)
+            )
+            urls = [
+                ffi.string(urls_out[0][i]).decode("utf-8") for i in range(int(count_out[0]))
+            ]
+            return urls or None
+
     def start_web_service(self) -> None:
         """Start the optional built-in web service.
 
@@ -303,19 +318,10 @@ class FoundryLocalManager:
         or ``http://127.0.0.1:0`` (a random ephemeral port) if not specified.
         ``FoundryLocalManager.urls`` is updated with the actual bound URL(s).
         """
-        from foundry_local_sdk._native.api import api, ffi
+        from foundry_local_sdk._native.api import api
 
         with self._native_call() as native_manager:
             api.check_status(api.root.Manager_WebServiceStart(native_manager))
-
-            urls_out = ffi.new("char***")
-            count_out = ffi.new("size_t*")
-            api.check_status(
-                api.root.Manager_WebServiceUrls(native_manager, urls_out, count_out)
-            )
-            self.urls = [
-                ffi.string(urls_out[0][i]).decode("utf-8") for i in range(int(count_out[0]))
-            ]
 
     def stop_web_service(self) -> None:
         """Stop the optional built-in web service.
@@ -330,7 +336,6 @@ class FoundryLocalManager:
                 raise FoundryLocalException("Web service is not running.")
 
             api.check_status(api.root.Manager_WebServiceStop(native_manager))
-            self.urls = None
 
     # ------------------------------------------------------------------
     # Shutdown

@@ -139,9 +139,9 @@ std::vector<ToolDefinition> ToolRegistry::Definitions() const {
 ToolDefinition ToolDefinitionFromC(const flToolDefinition& tool_def) {
   // Gate on the version before touching anything past the version 1 prefix — a caller built
   // against an older header allocated a struct that ends at `json_schema`.
-  if (tool_def.version == 0 || tool_def.version > FOUNDRY_LOCAL_API_VERSION) {
+  if (tool_def.version == 0 || tool_def.version > FOUNDRY_LOCAL_TOOL_DEFINITION_VERSION) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unsupported flToolDefinition.version: ", tool_def.version,
-             " (supported: 1 to ", static_cast<uint32_t>(FOUNDRY_LOCAL_API_VERSION), ")");
+             " (supported: 1 to ", static_cast<uint32_t>(FOUNDRY_LOCAL_TOOL_DEFINITION_VERSION), ")");
   }
 
   if (!tool_def.name || !tool_def.description) {

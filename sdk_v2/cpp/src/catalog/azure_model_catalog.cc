@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <iterator>
+#include <mutex>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -143,6 +144,33 @@ void RemoveIncompatibleModels(std::vector<ModelInfo>& model_infos) {
 
 }  // namespace
 
+class AzureModelCatalog::CatalogDevices final : public IEpDetector {
+ public:
+  using Devices = std::map<std::string, std::vector<std::string>>;
+
+  explicit CatalogDevices(const IEpDetector& local) : local_(local) {}
+
+  Devices GetAvailableDevicesToEPs() const override {
+    std::lock_guard lock(mutex_);
+    return hosted_ ? *hosted_ : local_.GetAvailableDevicesToEPs();
+  }
+
+  bool Set(Devices devices) {
+    std::lock_guard lock(mutex_);
+    if (hosted_ && *hosted_ == devices) {
+      return false;
+    }
+
+    hosted_ = std::move(devices);
+    return true;
+  }
+
+ private:
+  const IEpDetector& local_;
+  mutable std::mutex mutex_;
+  std::optional<Devices> hosted_;
+};
+
 AzureModelCatalog::AzureModelCatalog(std::vector<std::pair<std::string, std::optional<std::string>>> catalog_urls,
                                      std::string cache_dir,
                                      ModelFactory model_factory,
@@ -154,7 +182,7 @@ AzureModelCatalog::AzureModelCatalog(std::vector<std::pair<std::string, std::opt
       catalog_urls_(std::move(catalog_urls)),
       cache_dir_(std::move(cache_dir)),
       model_factory_(std::move(model_factory)),
-      ep_detector_(ep_detector),
+      catalog_devices_(std::make_unique<CatalogDevices>(ep_detector)),
       logger_(logger),
       cache_only_(cache_only),
       telemetry_(telemetry) {
@@ -169,9 +197,15 @@ AzureModelCatalog::AzureModelCatalog(std::vector<std::pair<std::string, std::opt
 
 AzureModelCatalog::~AzureModelCatalog() = default;
 
+void AzureModelCatalog::SetRuntimeDevices(std::map<std::string, std::vector<std::string>> devices) {
+  if (catalog_devices_->Set(std::move(devices))) {
+    InvalidateCache();
+  }
+}
+
 std::unique_ptr<ICatalogClient> AzureModelCatalog::CreateCatalogClient(const std::string& url,
                                                                        const std::string& filter) const {
-  return MakeCatalogClient(url, filter, ep_detector_, logger_, cache_dir_);
+  return MakeCatalogClient(url, filter, *catalog_devices_, logger_, cache_dir_);
 }
 
 AzureModelCatalog::CatalogResult AzureModelCatalog::GetLiveCatalogOrLocalSnapshot(
@@ -230,6 +264,18 @@ std::vector<Model> AzureModelCatalog::CreateModelsWithLocalPaths(const std::vect
   }
 
   return models;
+}
+
+std::vector<Model*> AzureModelCatalog::GetCachedModels() const {
+  const auto models = ListModels();
+  const auto local_models = ScanLocalModels(cache_dir_, logger_);
+  for (auto* model : models) {
+    for (auto* variant : model->Variants()) {
+      const auto cached = local_models.find(variant->Info().model_id);
+      variant->RefreshCachedState(cached == local_models.end() ? std::string{} : cached->second);
+    }
+  }
+  return BaseModelCatalog::GetCachedModels();
 }
 
 std::vector<Model> AzureModelCatalog::FetchModels() const {

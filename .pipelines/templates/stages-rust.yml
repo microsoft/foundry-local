@@ -2,16 +2,11 @@
 #
 # Builds win-x64 + win-arm64 + linux-x64 + linux-arm64 + osx-arm64;
 # runs unit + integration tests on win-x64 + linux-x64 + linux-arm64 + osx-arm64
-# (win-arm64 is cross-compiled from an x64 host, so it is clippy/check-only —
-# matching the build-only treatment it gets in the C# / Python matrices).
+# (win-arm64 is cross-compiled from an x64 host and is check-only).
 #
-# Unlike the wheel/npm SDKs, the Rust crate is a source package: there is no
-# per-platform binary to hand off, so each platform stage rebuilds from source
-# and there is a single, platform-independent `.crate` produced once by the pack
-# stage. Each build stage depends on the matching native stage from
-# stages-build-native.yml and consumes the `cpp-native-<rid>` artifact for
-# `foundry_local`; the test platforms additionally pull ONNX Runtime + GenAI from
-# the pinned public NuGet packages so a model can be loaded at run time.
+# The SDK crate remains a source package, produced once by the pack stage.
+# Each build stage depends on the matching native stage from stages-build-native.yml
+# and consumes its complete `cpp-native-<rid>` runtime artifact for SDK tests.
 #
 # The pack stage emits the `rust-sdk-v2` pipeline artifact (the `.crate`).
 

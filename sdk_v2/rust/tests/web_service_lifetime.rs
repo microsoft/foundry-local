@@ -68,8 +68,7 @@ fn base_url(urls: &[String]) -> String {
 ///
 /// Also regression-covers the singleton fix: after the outer manager is dropped
 /// while a derived `Model` keeps the native alive, recreating must surface the
-/// still-running service through `urls()` (the rebuilt wrapper seeds its URL
-/// cache from the live native manager).
+/// still-running service through `urls()` by observing the live native manager.
 #[tokio::test]
 async fn web_service_starts_serves_and_survives_wrap_existing() {
     // 1. Create; skip cleanly when the native core isn't available.
@@ -161,7 +160,7 @@ async fn web_service_starts_serves_and_survives_wrap_existing() {
     }
 
     // 5. The socket should no longer accept connections (best-effort; the
-    //    deterministic signal is the cleared URL cache asserted above).
+    //    deterministic signal is the native listener state asserted above).
     match http.get(format!("{base}/status")).send().await {
         Ok(resp) => eprintln!(
             "note: /status still answered after stop with {}",

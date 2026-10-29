@@ -9,7 +9,7 @@ void SpeechSegmentItem::Finalize() {
   cached_words_.reserve(words.size());
   for (const auto& w : words) {
     flSpeechWord aw{};
-    aw.version = FOUNDRY_LOCAL_API_VERSION;
+    aw.version = FOUNDRY_LOCAL_DATA_VERSION;
     aw.text = w.text.c_str();
     aw.start_time_ms = w.start_time_ms.value_or(FOUNDRY_LOCAL_DURATION_UNSET);
     aw.end_time_ms = w.end_time_ms.value_or(FOUNDRY_LOCAL_DURATION_UNSET);
@@ -19,7 +19,7 @@ void SpeechSegmentItem::Finalize() {
   }
 
   cached_ = {};
-  cached_.version = FOUNDRY_LOCAL_API_VERSION;
+  cached_.version = FOUNDRY_LOCAL_DATA_VERSION;
   cached_.kind = kind;
   cached_.text = text.c_str();
   cached_.start_time_ms = start_time_ms.value_or(FOUNDRY_LOCAL_DURATION_UNSET);
