@@ -4,13 +4,46 @@
 """Real-model protocol checks. This does not replace the actual Copilot coding-agent qualification."""
 
 import argparse
+import ast
 import copy
 import io
 import json
 from pathlib import Path
+import re
 import time
 import urllib.error
 import urllib.request
+
+
+FAILED_TOOL_RECOVERY = "failed_tool_recovery_auto"
+TOOL_FAILURE = "Intentional qualification failure. Do not retry; write the requested Python function and test."
+
+
+def failed_tool_recovery_request():
+    return {
+        "temperature": 0,
+        "max_tokens": 2048,
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "multiply",
+                "description": "Multiply two integers. Call this tool when the user explicitly requests multiplication.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}},
+                    "required": ["a", "b"],
+                    "additionalProperties": False,
+                },
+            },
+        }],
+        "messages": [
+            {"role": "system", "content": "You are a coding assistant. Follow the user's instructions."},
+            {"role": "user", "content": (
+                "Call multiply with a=7 and b=9. If that tool fails, do not retry it. "
+                "Instead write a Python multiply(a,b) function and one unit test asserting multiply(7,9)==63."
+            )},
+        ],
+    }
 
 
 def cases():
@@ -156,6 +189,8 @@ def cases():
         request["messages"][0]["content"] = "Do not call any tools. Reply exactly READY."
         yield name, request, [], expected
 
+    yield FAILED_TOOL_RECOVERY, failed_tool_recovery_request(), [], None
+
 
 def validate_finish_reason(reason, has_calls):
     expected = "tool_calls" if has_calls else "stop"
@@ -228,6 +263,8 @@ def parse_stream(response):
         choice = choices[0]
         delta = choice.get("delta", {})
         message["content"] += delta.get("content") or ""
+        if delta.get("reasoning_content") is not None:
+            message["reasoning_content"] = message.get("reasoning_content", "") + delta["reasoning_content"]
         for part in delta.get("tool_calls") or []:
             index = part["index"]
             if type(index) is not int or index < 0:
@@ -276,6 +313,90 @@ def complete(endpoint, request, timeout):
         if responses:
             return parse_responses_completion(json.load(response))
         return parse_stream(response) if request["stream"] else parse_completion(json.load(response))
+
+
+def is_multiply_test_call(node):
+    return (
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "multiply"
+        and not node.keywords and len(node.args) == 2
+        and all(isinstance(arg, ast.Constant) and type(arg.value) is int and arg.value == value
+                for arg, value in zip(node.args, (7, 9)))
+    )
+
+
+def is_expected_assertion(node):
+    if isinstance(node, ast.Assert):
+        test = node.test
+        return (
+            isinstance(test, ast.Compare) and len(test.ops) == 1 and isinstance(test.ops[0], ast.Eq)
+            and is_multiply_test_call(test.left) and len(test.comparators) == 1
+            and isinstance(test.comparators[0], ast.Constant)
+            and type(test.comparators[0].value) is int and test.comparators[0].value == 63
+        )
+    return (
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "assertEqual"
+        and len(node.args) == 2 and is_multiply_test_call(node.args[0])
+        and isinstance(node.args[1], ast.Constant) and type(node.args[1].value) is int and node.args[1].value == 63
+    )
+
+
+def has_python_multiply_and_test(content):
+    # Inspect syntax only: never execute model-generated code as part of qualification.
+    blocks = re.findall(r"```(?:python|py)?[ \t]*\r?\n(.*?)```", content, re.DOTALL)
+    try:
+        tree = ast.parse("\n\n".join(blocks) if blocks else content)
+    except SyntaxError:
+        return False
+    functions = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "multiply"]
+    valid_function = False
+    for function in functions:
+        body = function.body
+        if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+            body = body[1:]
+        if [arg.arg for arg in function.args.args] != ["a", "b"] or len(body) != 1:
+            continue
+        value = body[0].value if isinstance(body[0], ast.Return) else None
+        valid_function |= (
+            isinstance(value, ast.BinOp) and isinstance(value.op, ast.Mult)
+            and isinstance(value.left, ast.Name) and value.left.id == "a"
+            and isinstance(value.right, ast.Name) and value.right.id == "b"
+        )
+    return valid_function and any(is_expected_assertion(node) for node in ast.walk(tree))
+
+
+def fail_multiply(a, b):
+    if type(a) is not int or type(b) is not int or (a, b) != (7, 9):
+        raise ValueError("Expected multiply arguments a=7, b=9")
+    raise RuntimeError(TOOL_FAILURE)
+
+
+def complete_failed_tool_recovery(endpoint, request, timeout, transport=complete):
+    first, first_evidence = transport(endpoint, copy.deepcopy(request), timeout)
+    calls = first.get("tool_calls") or []
+    if len(calls) != 1 or calls[0]["function"]["name"] != "multiply":
+        raise RuntimeError("Expected one initial multiply call")
+    call = calls[0]
+    arguments = json.loads(call["function"]["arguments"])
+    if arguments != {"a": 7, "b": 9}:
+        raise RuntimeError("Expected initial multiply arguments a=7, b=9")
+    try:
+        fail_multiply(**arguments)
+    except RuntimeError as error:
+        tool_result = str(error)
+    else:
+        raise RuntimeError("Expected the multiply callback to fail")
+    recovery = copy.deepcopy(request)
+    recovery["messages"] += [
+        dict(first, role="assistant"),
+        {"role": "tool", "tool_call_id": call["id"], "content": tool_result},
+    ]
+    final, final_evidence = transport(endpoint, recovery, timeout)
+    return {
+        "passed": not final.get("tool_calls") and has_python_multiply_and_test(final.get("content") or ""),
+        "callback_count": 1,
+        "tools_unchanged": recovery["tools"] == request["tools"],
+        "response": {"first": first_evidence, "recovery": final_evidence},
+    }
 
 
 def self_test():
@@ -333,6 +454,9 @@ def self_test():
                                 "function": {"name": "look", "arguments": '{"city":'}}]}),
         choice({"tool_calls": [{"index": 0, "function": {"name": "up", "arguments": '"Paris"}'}}]}),
         choice({}, "tool_calls")))[0] == expected_tool)
+    require("valid_stream_reasoning_history", lambda: parse_stream(stream(
+        choice({"reasoning_content": "Need "}), choice({"reasoning_content": "multiply."}),
+        choice(tool_delta), choice({}, "tool_calls")))[0] == dict(expected_tool, reasoning_content="Need multiply."))
     invalid = {
         "missing_terminal": stream(choice(text)),
         "length_limited": stream(choice(text), choice({}, "length")),
@@ -391,6 +515,49 @@ def self_test():
     for index in (-1, True, "0"):
         require("reject_stream_invalid_index_" + str(index), lambda i=index: parse_stream(stream(
             choice({"tool_calls": [dict(tool_call, index=i)]}), choice({}, "tool_calls"))), rejects=True)
+    python = "def multiply(a, b):\n    return a * b\n\nassert multiply(7, 9) == 63\n"
+    require("recovery_accepts_python_and_exact_assertion", lambda: has_python_multiply_and_test(python))
+    require("recovery_accepts_fenced_python", lambda: has_python_multiply_and_test("```python\n" + python + "```"))
+    require("recovery_accepts_unittest", lambda: has_python_multiply_and_test(
+        "def multiply(a, b):\n    return a * b\n\n"
+        "import unittest\nclass TestMultiply(unittest.TestCase):\n"
+        "    def test_product(self):\n        self.assertEqual(multiply(7, 9), 63)\n"))
+    for name, source in {
+        "empty_response": "",
+        "wrong_product": python.replace("== 63", "== 64"),
+        "wrong_function": python.replace("a * b", "a + b"),
+        "missing_test": "def multiply(a, b):\n    return a * b\n",
+        "text_only": "Define multiply(a,b) and assert that the result is 63.",
+        "invalid_python": "def multiply(",
+    }.items():
+        require("recovery_rejects_" + name, lambda s=source: not has_python_multiply_and_test(s))
+
+    def recovery_round_trip(final):
+        request = dict(failed_tool_recovery_request(), model="offline-model", stream=False)
+        original = copy.deepcopy(request)
+        seen = []
+        fresh_call = {"id": "fresh_call", "type": "function",
+                      "function": {"name": "multiply", "arguments": '{"a":7,"b":9}'}}
+        first = {"role": "assistant", "content": "", "reasoning_content": "Need multiply.", "tool_calls": [fresh_call]}
+
+        def transport(endpoint, body, timeout):
+            seen.append(copy.deepcopy(body))
+            return (first, {}) if len(seen) == 1 else (final, {})
+
+        result = complete_failed_tool_recovery("offline-endpoint", request, 1, transport)
+        require("recovery_does_not_mutate_original_request", lambda: request == original)
+        require("recovery_preserves_tools_and_auto_default", lambda: (
+            seen[0]["tools"] == seen[1]["tools"] == request["tools"]
+            and all("tool_choice" not in body and "reasoning_effort" not in body for body in seen)))
+        require("recovery_preserves_real_call_reasoning_and_error", lambda: (
+            seen[1]["messages"] == original["messages"] + [
+                first, {"role": "tool", "tool_call_id": "fresh_call", "content": TOOL_FAILURE}]))
+        require("recovery_executes_exactly_one_callback", lambda: result["callback_count"] == 1 and len(seen) == 2)
+        return result
+
+    require("recovery_qualifies_final_python", lambda: recovery_round_trip({"content": python})["passed"])
+    require("recovery_rejects_repeated_call", lambda: not recovery_round_trip(tool)["passed"])
+    require("recovery_rejects_noninteger_callback_arguments", lambda: fail_multiply(7.0, 9), rejects=True)
     passed = all(checks.values())
     print(json.dumps({"self_test_passed": passed, "endpoint_qualification_performed": False,
                       "checks": checks}, indent=2))
@@ -421,15 +588,18 @@ def main():
             result = {"case": name, "stream": stream, "passed": False}
             start = time.perf_counter()
             try:
-                message, evidence = complete(args.endpoint, request, args.timeout_seconds)
-                calls = message.get("tool_calls") or []
-                actual = [json.loads(call["function"]["arguments"]) for call in calls]
-                names = [call["function"]["name"] for call in calls]
-                result["passed"] = (
-                    actual == expected_calls and names == ["lookup"] * len(expected_calls)
-                    and (expected_text is None or (message.get("content") or "").strip() == expected_text)
-                )
-                result["response"] = evidence
+                if name == FAILED_TOOL_RECOVERY:
+                    result.update(complete_failed_tool_recovery(args.endpoint, request, args.timeout_seconds))
+                else:
+                    message, evidence = complete(args.endpoint, request, args.timeout_seconds)
+                    calls = message.get("tool_calls") or []
+                    actual = [json.loads(call["function"]["arguments"]) for call in calls]
+                    names = [call["function"]["name"] for call in calls]
+                    result["passed"] = (
+                        actual == expected_calls and names == ["lookup"] * len(expected_calls)
+                        and (expected_text is None or (message.get("content") or "").strip() == expected_text)
+                    )
+                    result["response"] = evidence
             except urllib.error.HTTPError as error:
                 result["error"] = {"status": error.code, "body": error.read().decode("utf-8")}
             except (OSError, RuntimeError, ValueError, KeyError) as error:

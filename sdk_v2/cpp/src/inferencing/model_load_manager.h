@@ -16,6 +16,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -27,9 +28,8 @@ namespace fl {
 ///
 /// Returned GenAIModelInstance pointers are non-owning and valid only while the
 /// model remains loaded. The caller must ensure the model is not unloaded (via
-/// UnloadModel) while the pointer is in use. In practice, the Manager serializes
-/// load/unload operations through the web service, so concurrent unload during
-/// active inference does not occur.
+/// UnloadModel) while the pointer is in use. Session factories use AcquireSessionModel
+/// to acquire their construction-time reference atomically with lookup.
 class ModelLoadManager {
  public:
   enum class LoadStatus {
@@ -91,6 +91,25 @@ class ModelLoadManager {
   /// Get a loaded model for an immediate query only when its normalized path matches `model_path`.
   GenAIModelInstance* GetLoadedModel(std::string_view model_id, std::string_view model_path);
 
+  struct SessionReferenceDeleter {
+    void operator()(GenAIModelInstance* model) const noexcept { model->ReleaseSession(); }
+  };
+  using SessionModelReference = std::unique_ptr<GenAIModelInstance, SessionReferenceDeleter>;
+
+  /// Acquire the construction-time session reference under the lifecycle lock. The session factory retains it until
+  /// the constructed session has acquired its own reference, or releases it on construction failure.
+  SessionModelReference AcquireSessionModel(std::string_view model_id, std::string_view model_path);
+
+  struct LoadedModelState {
+    GenAIConfig config;
+    std::string model_path;
+    std::optional<uint64_t> context_length;
+  };
+
+  /// Copy loaded configuration, actual path, and effective context under the lock, qualified by ID and artifact path.
+  /// Engine limits come from its already-initialized native capabilities, without creating a request or session.
+  std::optional<LoadedModelState> GetLoadedModelState(std::string_view model_id, std::string_view model_path);
+
   /// Reject operations on a directory containing any loaded model, regardless of ID or revision.
   /// Holds the lifecycle mutex through the operation so another handle cannot load files being removed.
   /// The operation must not call back into this ModelLoadManager.
@@ -115,6 +134,7 @@ class ModelLoadManager {
   bool HasEP(const std::string& ep_name) const;
   bool UnloadModel(std::string_view model_id, const std::string* normalized_model_path);
   GenAIModelInstance* GetLoadedModel(std::string_view model_id, const std::string* normalized_model_path);
+  GenAIModelInstance* FindLoadedModelLocked(std::string_view model_id, const std::string* normalized_model_path);
 
   IEpDetector& ep_detector_;
   ILogger& logger_;
