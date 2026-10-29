@@ -640,6 +640,23 @@ TEST_F(BootstrapDescriptorTest, CoordinatorStartsOnceSharesOwnersReconnectsAndRe
 }
 
 TEST_F(BootstrapDescriptorTest, PublicConfigurationLazilyRoutesExistingApisThroughThePackagedHost) {
+  const auto cached_path = std::filesystem::path(*descriptor_.configuration.model_cache_dir) / "tiny-cache-1";
+  std::filesystem::create_directories(cached_path.parent_path());
+  std::filesystem::copy(std::filesystem::path(FOUNDRY_LOCAL_TEST_DATA_DIR) / "tiny-paged-attention", cached_path,
+                        std::filesystem::copy_options::recursive);
+  Write(cached_path / "inference_model.json", Json{{"Name", "tiny-cache:1"}}.dump());
+  ModelInfo cached_info;
+  cached_info.model_id = "tiny-cache:1";
+  cached_info.name = "tiny-cache";
+  cached_info.alias = "tiny-cache";
+  cached_info.version = 1;
+  cached_info.device_type = DeviceType::kCPU;
+  cached_info.execution_provider = "CPUExecutionProvider";
+  cached_info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "coding");
+  Write(cached_path.parent_path() / "foundry.modelinfo.json",
+        Json{{"version", 1}, {"savedAtUnix", 0}, {"models", Json::array({ModelInfoToJson(cached_info)})}}.dump());
+  descriptor_.configuration.catalog_urls = {{"http://127.0.0.1:0", std::nullopt}};
+
   WithRuntime([&](const auto get_api) -> void {
     const auto* native = get_api(3);
     ASSERT_NE(native, nullptr);
@@ -698,9 +715,12 @@ TEST_F(BootstrapDescriptorTest, PublicConfigurationLazilyRoutesExistingApisThrou
     });
     ASSERT_FL_OK(native, config_api->Create(descriptor_.configuration.app_name.c_str(), &config));
     ASSERT_FL_OK(native, config_api->SetUseSharedHost(config, true));
-    ASSERT_FL_OK(native, config_api->SetAppDataDir(config, descriptor_.configuration.app_data_dir->c_str()));
-    ASSERT_FL_OK(native, config_api->SetModelCacheDir(config, descriptor_.configuration.model_cache_dir->c_str()));
-    ASSERT_FL_OK(native, config_api->SetLogsDir(config, descriptor_.configuration.logs_dir->c_str()));
+    const auto relative_data = std::filesystem::relative(*descriptor_.configuration.app_data_dir).string();
+    const auto relative_cache = std::filesystem::relative(*descriptor_.configuration.model_cache_dir).string();
+    const auto relative_logs = std::filesystem::relative(*descriptor_.configuration.logs_dir).string();
+    ASSERT_FL_OK(native, config_api->SetAppDataDir(config, relative_data.c_str()));
+    ASSERT_FL_OK(native, config_api->SetModelCacheDir(config, relative_cache.c_str()));
+    ASSERT_FL_OK(native, config_api->SetLogsDir(config, relative_logs.c_str()));
     ASSERT_FL_OK(native, config_api->SetCatalogRegion(config, descriptor_.configuration.catalog_region->c_str()));
     for (const auto& [url, filter] : descriptor_.configuration.catalog_urls) {
       ASSERT_FL_OK(native, config_api->AddCatalogUrl(config, url.c_str(), filter ? filter->c_str() : nullptr));
@@ -740,6 +760,20 @@ TEST_F(BootstrapDescriptorTest, PublicConfigurationLazilyRoutesExistingApisThrou
     ASSERT_FL_OK(native, model_api->IsLoaded(model, &loaded));
     EXPECT_EQ(loaded, 0);
     EXPECT_FALSE(coordinator.Store().Read());
+    flCatalog* public_catalog = nullptr;
+    flModel* cached_model = nullptr;
+    ASSERT_FL_OK(native, native->Manager_GetCatalogByType(manager, FOUNDRY_LOCAL_CATALOG_PUBLIC, &public_catalog));
+    ASSERT_FL_OK(native, native->GetCatalogApi()->GetModelVariant(public_catalog, "tiny-cache:1", &cached_model));
+    ASSERT_NE(cached_model, nullptr);
+    int cached = 0;
+    ASSERT_FL_OK(native, model_api->IsCached(cached_model, &cached));
+    ASSERT_EQ(cached, 1);
+    EXPECT_FALSE(coordinator.Store().Read());
+    ASSERT_FL_OK(native, model_api->Load(cached_model));
+    ASSERT_FL_OK(native, inference->Session_Create(cached_model, &first));
+    inference->Session_Release(first);
+    first = nullptr;
+    ASSERT_FL_OK(native, model_api->Unload(cached_model));
     ASSERT_FL_OK(native, model_api->Load(model));
     const auto record = coordinator.Store().Read();
     ASSERT_TRUE(record && record->process);

@@ -214,9 +214,4 @@ std::shared_ptr<api::HostedContext> HostCoordinator::Connect(bool acquire) const
   }
 }
 
-api::HostedConnector CreateNativeHostConnector(const Configuration& configuration) {
-  auto coordinator = std::make_shared<HostCoordinator>(configuration, ResolveRuntimeAssets());
-  return [coordinator = std::move(coordinator)](bool acquire) { return coordinator->Connect(acquire); };
-}
-
 }  // namespace fl::hosting

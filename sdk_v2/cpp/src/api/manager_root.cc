@@ -45,8 +45,9 @@ ManagerRoot::ManagerRoot(const Configuration& configuration) {
   if (effective.use_shared_host) {
 #if FOUNDRY_LOCAL_HAS_SHARED_HOST
     effective.use_shared_host = false;
-    auto connector = hosting::CreateNativeHostConnector(effective);
-    auto metadata = CreateEmbeddedBackend(effective);
+    auto coordinator = std::make_shared<hosting::HostCoordinator>(effective, hosting::ResolveRuntimeAssets());
+    auto metadata = CreateEmbeddedBackend(coordinator->EffectiveConfiguration());
+    auto connector = [coordinator = std::move(coordinator)](bool acquire) { return coordinator->Connect(acquire); };
     backend_ = CreateHostedBackend(std::move(metadata), std::move(connector));
     return;
 #else
