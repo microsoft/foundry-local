@@ -113,8 +113,16 @@ std::string RequiredEpForConfigProvider(std::string_view provider) {
 // Construction / Destruction
 // ---------------------------------------------------------------------------
 
-ModelLoadManager::ModelLoadManager(IEpDetector& ep_detector, ILogger& logger)
-    : ep_detector_(ep_detector), logger_(logger) {}
+ModelLoadManager::ModelLoadManager(
+    IEpDetector& ep_detector, ILogger& logger,
+    uint64_t non_generative_memory_budget_bytes,
+    size_t non_generative_readiness_concurrency)
+    : ep_detector_(ep_detector),
+      logger_(logger),
+      non_generative_admission_(
+          std::make_shared<NonGenerativeAdmissionCoordinator>(
+              non_generative_memory_budget_bytes,
+              non_generative_readiness_concurrency)) {}
 
 ModelLoadManager::~ModelLoadManager() {
   // Destroy all loaded models under the lock.

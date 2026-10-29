@@ -15,6 +15,8 @@
 
 namespace fl {
 
+class NonGenerativeAdmissionCoordinator;
+
 class DownloadManager;
 struct Item;
 class ModelLoadManager;
@@ -157,7 +159,11 @@ class Model {
   /// called on the returned leaf, not on an alias container.
   Model* AcquireExternalSession();
   void ReleaseExternalSession() noexcept;
+  void PrepareExternalProvider(std::string_view provider);
+  std::shared_ptr<NonGenerativeAdmissionCoordinator>
+  NonGenerativeAdmission() const;
   void MarkExternalRuntimeLoaded();
+  void ReleaseExternalRuntime() noexcept;
   void UnloadExternalRuntime();
   void RemoveFromCache();
 
@@ -214,7 +220,7 @@ class Model {
   std::atomic<bool> active_{true};
   std::string local_path_;
   bool external_registration_ = false;
-  std::atomic<bool> external_runtime_loaded_{false};
+  std::atomic<size_t> external_runtime_count_{0};
   std::atomic<size_t> external_session_count_{0};
 
   // Non-owning service bindings for leaf operations. Set once at construction and never

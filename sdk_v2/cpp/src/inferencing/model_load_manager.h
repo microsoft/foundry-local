@@ -4,12 +4,15 @@
 
 #include "inferencing/execution_provider.h"
 #include "inferencing/generative/genai_model_instance.h"
+#include "inferencing/predictive/non_generative_admission.h"
 #include "logger.h"
 #include "ep_detection/ep_detector.h"
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -40,7 +43,11 @@ class ModelLoadManager {
     GenAIModelInstance* model = nullptr;  // non-owning pointer; lifetime managed by this class
   };
 
-  ModelLoadManager(IEpDetector& ep_detector, ILogger& logger);
+  ModelLoadManager(
+      IEpDetector& ep_detector, ILogger& logger,
+      uint64_t non_generative_memory_budget_bytes =
+          (std::numeric_limits<uint64_t>::max)(),
+      size_t non_generative_readiness_concurrency = 1);
   ~ModelLoadManager();
 
   ModelLoadManager(const ModelLoadManager&) = delete;
@@ -60,6 +67,10 @@ class ModelLoadManager {
   /// dependencies before constructing an ORT GenAI model or session.
   void PrepareProviderForModelLoad(std::string_view registration_name,
                                    std::string_view model_id);
+  std::shared_ptr<NonGenerativeAdmissionCoordinator>
+  NonGenerativeAdmission() const {
+    return non_generative_admission_;
+  }
 
   /// Unload a previously loaded model.
   /// @returns true if the model was found and unloaded; false if the model was not loaded
@@ -107,6 +118,8 @@ class ModelLoadManager {
 
   IEpDetector& ep_detector_;
   ILogger& logger_;
+  std::shared_ptr<NonGenerativeAdmissionCoordinator>
+      non_generative_admission_;
   std::atomic<bool> shutdown_{false};
   mutable std::mutex mutex_;
   std::map<std::string, std::unique_ptr<GenAIModelInstance>> loaded_models_;

@@ -7,6 +7,7 @@
 
 #include "exception.h"
 #include "inferencing/generative/openresponses/response_store.h"
+#include "inferencing/model_load_manager.h"
 #include "inferencing/session/session_manager.h"
 #include "service/audio_transcriptions_handler.h"
 #include "service/chat_completions_handler.h"
@@ -255,18 +256,13 @@ struct WebService::Impl {
 
   Impl(ICatalog& public_catalog, ICatalog& local_catalog, ILogger& logger, std::string model_cache_dir,
        ModelLoadManager& model_load_manager, SessionManager& session_manager,
-       ITelemetry& telemetry, std::function<void()> shutdown_callback,
-       uint64_t non_generative_memory_budget_bytes,
-       size_t non_generative_readiness_concurrency)
+       ITelemetry& telemetry, std::function<void()> shutdown_callback)
       : session_cache(session_manager),
         public_response_store(ResponseStore::kDefaultCapacity, &session_cache),
         local_response_store(ResponseStore::kDefaultCapacity, &session_cache),
         shutdown_callback(std::move(shutdown_callback)),
         non_generative_admission(
-            CreateNonGenerativeAdmissionCoordinator(
-                non_generative_memory_budget_bytes,
-                non_generative_readiness_concurrency)
-                ),
+            model_load_manager.NonGenerativeAdmission()),
         public_context(std::make_unique<ServiceContext>(
             ServiceContext{public_catalog,
                            logger,
@@ -298,14 +294,10 @@ struct WebService::Impl {
 
 WebService::WebService(ICatalog& public_catalog, ICatalog& local_catalog, ILogger& logger, std::string model_cache_dir,
                        ModelLoadManager& model_load_manager, SessionManager& session_manager,
-                       ITelemetry& telemetry, std::function<void()> shutdown_callback,
-                       uint64_t non_generative_memory_budget_bytes,
-                       size_t non_generative_readiness_concurrency)
+                       ITelemetry& telemetry, std::function<void()> shutdown_callback)
     : impl_(std::make_unique<Impl>(public_catalog, local_catalog, logger, std::move(model_cache_dir),
                                    model_load_manager, session_manager, telemetry,
-                                   std::move(shutdown_callback),
-                                   non_generative_memory_budget_bytes,
-                                   non_generative_readiness_concurrency)) {}
+                                   std::move(shutdown_callback))) {}
 
 WebService::~WebService() {
   if (impl_->running.load()) {

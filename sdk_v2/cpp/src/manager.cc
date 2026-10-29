@@ -75,7 +75,6 @@ bool IsAdditionalOptionEnabled(const Configuration& config, const std::string& o
   return it != config.additional_options.cend() && IsTruthyConfigValue(it->second);
 }
 
-#ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
 uint64_t UnsignedAdditionalOption(const Configuration& config,
                                   const std::string& name,
                                   uint64_t fallback) {
@@ -90,7 +89,6 @@ uint64_t UnsignedAdditionalOption(const Configuration& config,
              " must be a positive integer");
   return value;
 }
-#endif
 
 OrtLoggingLevel GetDefaultOrtLoggingLevel(bool genai_verbose_logging_enabled) {
   // If someone explicitly enables ORTGENAI_ORT_VERBOSE_LOGGING, treat this as
@@ -402,7 +400,20 @@ Manager::Manager(const Configuration& config) : config_(config) {
   download_manager_ =
       std::make_unique<DownloadManager>(*config_.model_cache_dir, config_.catalog_region.value_or("auto"),
                                         download_concurrency, *logger_, *telemetry_, disable_region_fallback);
-  model_load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
+  const auto non_generative_memory_budget_bytes =
+      UnsignedAdditionalOption(
+          config_, "NonGenerativeMemoryBudgetBytes",
+          (std::numeric_limits<uint64_t>::max)());
+  const auto non_generative_readiness_concurrency =
+      UnsignedAdditionalOption(
+          config_, "NonGenerativeReadinessConcurrency", 1);
+  if (non_generative_readiness_concurrency >
+      (std::numeric_limits<size_t>::max)())
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "NonGenerativeReadinessConcurrency exceeds size_t");
+  model_load_manager_ = std::make_unique<ModelLoadManager>(
+      *ep_detector_, *logger_, non_generative_memory_budget_bytes,
+      static_cast<size_t>(non_generative_readiness_concurrency));
   session_manager_ = std::make_unique<SessionManager>(*logger_);
 
   public_catalog_ = std::make_unique<AzureModelCatalog>(
@@ -577,24 +588,10 @@ void Manager::StartWebService() {
   ActionTracker tracker(Action::kCoreServiceStart, *telemetry_);
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
-  const auto non_generative_memory_budget_bytes =
-      UnsignedAdditionalOption(
-          config_, "NonGenerativeMemoryBudgetBytes",
-          (std::numeric_limits<uint64_t>::max)());
-  const auto non_generative_readiness_concurrency =
-      UnsignedAdditionalOption(
-          config_, "NonGenerativeReadinessConcurrency", 1);
-  if (non_generative_readiness_concurrency >
-      (std::numeric_limits<size_t>::max)())
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             "NonGenerativeReadinessConcurrency exceeds size_t");
   web_service_ = std::make_unique<WebService>(*public_catalog_, *local_catalog_, *logger_, *config_.model_cache_dir,
                                               *model_load_manager_,
                                               *session_manager_, *telemetry_,
-                                              [this]() { Shutdown(); },
-                                              non_generative_memory_budget_bytes,
-                                              static_cast<size_t>(
-                                                  non_generative_readiness_concurrency));
+                                              [this]() { Shutdown(); });
 
   auto endpoints = config_.web_service_endpoints;
   if (endpoints.empty()) {

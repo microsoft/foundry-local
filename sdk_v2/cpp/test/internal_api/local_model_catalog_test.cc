@@ -480,6 +480,25 @@ TEST_F(LocalModelCatalogTest, DirectUnloadRejectsNonGenerativeModels) {
   EXPECT_NO_THROW(model->UnloadExternalRuntime());
 }
 
+TEST_F(LocalModelCatalogTest, ExternalRuntimeOwnersReleaseIndependently) {
+  const auto bundle_path = root_.path() / "bundle";
+  WriteBundle(bundle_path, "clm-generic-cpu:1", "text-ranking");
+  auto* model = catalog_.RegisterModel(bundle_path.string(),
+                                       "clm-generic-cpu:1",
+                                       MakeMetadata("text-ranking"));
+
+  auto* sdk_leaf = model->AcquireExternalSession();
+  sdk_leaf->MarkExternalRuntimeLoaded();
+  model->MarkExternalRuntimeLoaded();
+  model->ReleaseExternalRuntime();
+  EXPECT_TRUE(model->IsLoaded());
+
+  sdk_leaf->ReleaseExternalRuntime();
+  sdk_leaf->ReleaseExternalSession();
+  EXPECT_FALSE(model->IsLoaded());
+  EXPECT_NO_THROW(catalog_.UnregisterModel("clm"));
+}
+
 TEST_F(LocalModelCatalogTest, ExternalLeaseRetainsExactLeafAcrossAliasSelectionChange) {
   const auto first_path = root_.path() / "clm-v1";
   const auto second_path = root_.path() / "clm-v2";

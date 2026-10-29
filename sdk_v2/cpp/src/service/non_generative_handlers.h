@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "inferencing/predictive/non_generative_admission.h"
+
 #include <functional>
 #include <future>
 #include <limits>
@@ -18,25 +20,6 @@ class HttpRequestHandler;
 namespace fl {
 class Model;
 struct ServiceContext;
-
-class NonGenerativeAdmissionCoordinator {
- public:
-  NonGenerativeAdmissionCoordinator(uint64_t memory_budget_bytes,
-                                    size_t readiness_concurrency);
-
- private:
-  uint64_t memory_budget_bytes_;
-  uint64_t reserved_bytes_{};
-  size_t readiness_concurrency_;
-  std::mutex mutex_;
-  std::mutex readiness_mutex_;
-  std::condition_variable readiness_condition_;
-  std::unordered_map<std::string, size_t> active_readiness_;
-
-  friend class NonGenerativeRuntimeState;
-  friend bool UnloadNonGenerativeRuntime(ServiceContext& ctx, Model& model);
-  friend void ClearNonGenerativeRuntimes(ServiceContext& ctx);
-};
 
 class NonGenerativeRuntimeState {
  public:
@@ -55,9 +38,8 @@ class NonGenerativeRuntimeState {
   struct RuntimeEntry {
     std::string model_id;
     Model* owner;
+    std::shared_ptr<NonGenerativeAdmissionReservation> reservation;
     std::shared_future<std::shared_ptr<void>> runtime;
-    std::shared_ptr<void> reservation;
-    uint64_t resource_bytes{};
   };
 
   std::mutex mutex_;
@@ -83,5 +65,4 @@ bool UnloadNonGenerativeRuntime(ServiceContext& ctx, Model& model);
 void ClearNonGenerativeRuntimes(ServiceContext& ctx);
 
 }  // namespace fl
-#include <condition_variable>
 #include <cstdint>
