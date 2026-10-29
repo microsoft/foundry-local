@@ -32,9 +32,9 @@ stages:
         architecture: x64
 
     - task: PipAuthenticate@1
-      displayName: 'Authenticate AIFoundryLocal_PublicPackages for pip'
+      displayName: 'Authenticate Lotus for pip'
       inputs:
-        artifactFeeds: 'AIFoundryLocal/AIFoundryLocal_PublicPackages'
+        artifactFeeds: 'Lotus'
 
     - template: steps-prefetch-nuget.yml
       parameters:

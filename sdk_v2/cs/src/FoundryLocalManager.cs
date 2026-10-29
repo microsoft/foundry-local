@@ -71,10 +71,17 @@ public class FoundryLocalManager : IDisposable
     }
 
     /// <summary>
-    /// Bound Urls if the web service has been started. Null otherwise.
-    /// See <see cref="StartWebServiceAsync"/>.
+    /// Observe native listening Urls without starting the service or acquiring shared-host ownership.
+    /// Null when no listener is running.
     /// </summary>
-    public string[]? Urls { get; private set; }
+    public string[]? Urls
+    {
+        get
+        {
+            var urls = WithNativeManager(manager => manager.GetServiceUrls());
+            return urls.Length == 0 ? null : urls;
+        }
+    }
 
     /// <summary>
     /// Create the <see cref="FoundryLocalManager"/> singleton instance.
@@ -331,6 +338,8 @@ public class FoundryLocalManager : IDisposable
                 }
             }
 
+            _nativeConfig.SetUseSharedHost(_config.UseSharedHost);
+
             // Create the native manager
             _nativeManager = new NativeManager(_nativeConfig);
 #pragma warning restore IDISP003
@@ -469,7 +478,6 @@ public class FoundryLocalManager : IDisposable
         await Task.Run(() => WithNativeManager(manager => manager.StartService()),
                    ct ?? CancellationToken.None).ConfigureAwait(false);
 
-        Urls = WithNativeManager(manager => manager.GetServiceUrls());
     }
 
     private async Task StopWebServiceImplAsync(CancellationToken? ct = null)
@@ -484,7 +492,6 @@ public class FoundryLocalManager : IDisposable
 
         await Task.Run(() => _nativeManager.StopService(), ct ?? CancellationToken.None).ConfigureAwait(false);
 
-        Urls = null;
     }
 
     protected virtual void Dispose(bool disposing)
@@ -511,7 +518,6 @@ public class FoundryLocalManager : IDisposable
                 }
             }
 
-            Urls = null;
             _nativeLifetime.DisposeSessions();
             _nativeLifetime.WaitForLeases();
             _nativeManager?.Dispose();

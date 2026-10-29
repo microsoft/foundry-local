@@ -87,6 +87,9 @@ where = ["src"]
     "*/*.so",
     "*/*.so.*",
     "*/*.dylib",
+    "*/foundry-local-host",
+    "*/foundry-local-host.exe",
+    "*/foundry-local-runtime.json",
 ]
 
 [tool.pytest.ini_options]

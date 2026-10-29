@@ -6,7 +6,9 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "inferencing/execution_provider.h"
@@ -28,8 +30,7 @@ class ModelLoadManager;
 // Model leaves that share the same alias and delegates all operations
 // to a selected variant. Additional variants are added via AddVariant.
 //
-// The C API exposes this through the unrelated opaque flModel handle type;
-// c_api_types.h provides the internal pointer conversions.
+// The C API's embedded backend adapts this object behind its opaque flModel handles.
 // -----------------------------------------------------------------------
 
 class Model {
@@ -74,8 +75,8 @@ class Model {
   /// container has its full variant set.
   void AddVariant(Model variant);
 
-  /// Reconcile this container with a fresh authoritative container while preserving leaves with the same model ID and
-  /// normalized local path. Returns false without changing either container when unregister is in progress.
+  /// Reconcile with a fresh authoritative container while preserving leaves with matching metadata and local path.
+  /// Returns false without changing either container when unregister is in progress.
   /// Removed/replaced leaves are deactivated but retained in container-owned storage for outstanding handle safety.
   bool TryReconcileVariants(Model& incoming);
 
@@ -151,9 +152,17 @@ class Model {
   /// FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED.
   void Download(std::function<int(float)> progress_cb = nullptr);
   const std::string& GetPath() const;
-  void Load(ExecutionProvider ep = ExecutionProvider::kDefault);
+  /// Own the selected active leaf's execution metadata/path while admitted work uses it.
+  Model CaptureExecutionModel() const;
+  /// Observe a completed shared-cache download without downloading or changing an already selected artifact.
+  void RefreshCachedState();
+
+  /// Forget this client's cache publication after an authoritative remote removal; never delete files.
+  void ForgetCachedState();
+  void Load(ExecutionProvider ep = ExecutionProvider::kDefault,
+            std::optional<std::string_view> expected_path = std::nullopt);
   void Unload();
-  void RemoveFromCache();
+  void RemoveFromCache(std::optional<std::string_view> expected_path = std::nullopt);
 
   /// Mark this model and its variants inactive while retaining pointer validity.
   void Deactivate();

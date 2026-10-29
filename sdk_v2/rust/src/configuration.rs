@@ -60,6 +60,7 @@ pub struct FoundryLocalConfig {
     catalog_region: Option<String>,
     web_service_urls: Option<String>,
     service_endpoint: Option<String>,
+    use_shared_host: bool,
     library_path: Option<String>,
     additional_settings: Option<HashMap<String, String>>,
     logger: Option<Box<dyn Logger>>,
@@ -77,6 +78,7 @@ impl Default for FoundryLocalConfig {
             catalog_region: None,
             web_service_urls: None,
             service_endpoint: None,
+            use_shared_host: false,
             library_path: None,
             additional_settings: Some(HashMap::from([(
                 "UserAgent".into(),
@@ -99,6 +101,7 @@ impl fmt::Debug for FoundryLocalConfig {
             .field("catalog_region", &self.catalog_region)
             .field("web_service_urls", &self.web_service_urls)
             .field("service_endpoint", &self.service_endpoint)
+            .field("use_shared_host", &self.use_shared_host)
             .field("library_path", &self.library_path)
             .field("additional_settings", &self.additional_settings)
             .field("logger", &self.logger.as_ref().map(|_| ".."))
@@ -109,8 +112,8 @@ impl fmt::Debug for FoundryLocalConfig {
 impl FoundryLocalConfig {
     /// Create a new configuration with the given application name.
     ///
-    /// All other fields default to `None`. Use the builder methods to
-    /// customise:
+    /// Hosted execution is disabled by default; optional fields are unset.
+    /// Use the builder methods to customise:
     ///
     /// ```ignore
     /// let config = FoundryLocalConfig::new("my_app")
@@ -193,6 +196,16 @@ impl FoundryLocalConfig {
         self
     }
 
+    /// Route execution through the packaged native shared host. Defaults to false.
+    ///
+    /// Discovery does not start the host. Execution starts or joins a compatible host;
+    /// manager disposal releases only this client. Cannot be combined with
+    /// [`service_endpoint`](Self::service_endpoint).
+    pub fn use_shared_host(mut self, enabled: bool) -> Self {
+        self.use_shared_host = enabled;
+        self
+    }
+
     /// Override the path to the native Foundry Local Core library.
     pub fn library_path(mut self, path: impl Into<String>) -> Self {
         self.library_path = Some(path.into());
@@ -231,6 +244,19 @@ impl FoundryLocalConfig {
         self.library_path.as_deref()
     }
 
+    pub(crate) fn shared_host_enabled(&self) -> bool {
+        self.use_shared_host
+    }
+
+    pub(crate) fn validate_hosting_mode(&self) -> Result<()> {
+        if self.use_shared_host && self.service_endpoint.is_some() {
+            return Err(FoundryLocalError::InvalidConfiguration {
+                reason: "shared hosting cannot use an external service".into(),
+            });
+        }
+        Ok(())
+    }
+
     /// Take ownership of the configured logger (consumed once by the manager).
     pub(crate) fn take_logger(&mut self) -> Option<Box<dyn Logger>> {
         self.logger.take()
@@ -247,8 +273,10 @@ impl FoundryLocalConfig {
                 reason: "app_name must be set and non-empty".into(),
             });
         }
+        self.validate_hosting_mode()?;
 
         let cfg = NativeConfig::create(Arc::clone(api), app_name)?;
+        api.set_use_shared_host(cfg.ptr, self.use_shared_host)?;
         let c = api.config_api();
 
         if let Some(dir) = &self.app_data_dir {
@@ -334,6 +362,21 @@ impl Drop for NativeConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_host_cannot_be_combined_with_an_external_service() {
+        let config = FoundryLocalConfig::new("test")
+            .use_shared_host(true)
+            .service_endpoint("http://127.0.0.1:1");
+        assert!(matches!(
+            config.validate_hosting_mode(),
+            Err(FoundryLocalError::InvalidConfiguration { .. })
+        ));
+        assert!(config
+            .use_shared_host(false)
+            .validate_hosting_mode()
+            .is_ok());
+    }
 
     #[test]
     fn sdk_identity_defaults_to_rust_package_and_can_be_overridden() {

@@ -65,6 +65,9 @@ TEST(GenAIConfigModelTest, IsMultiModalTrueForKnownTypes) {
   model.type = "whisper";
   EXPECT_TRUE(model.IsMultiModal());
 
+  model.type = "parakeet_tdt";
+  EXPECT_TRUE(model.IsMultiModal());
+
   model.type = "phi4mm";
   EXPECT_TRUE(model.IsMultiModal());
 
