@@ -23,19 +23,29 @@ NonGenerativeSession::NonGenerativeSession(
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
                "model is not a non-generative package");
     provider_ = package->execution_provider;
-    if (model_->Info().task == "text-ranking") {
-      ranking_ =
-          std::make_unique<RankingRuntime>(model_->GetPath());
-    } else if (model_->Info().task == "typed-decision") {
-      decision_ =
-          std::make_unique<DecisionRuntime>(model_->GetPath());
-    } else {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-               "unsupported non-generative model task: ",
-               model_->Info().task);
+    admission_ = std::make_shared<NonGenerativeAdmissionReservation>(
+        model_->NonGenerativeAdmission(), package->estimated_resident_bytes,
+        model_id_);
+    {
+      NonGenerativeReadinessLease readiness(
+          model_->NonGenerativeAdmission(),
+          provider_.empty() ? "cpu" : provider_);
+      model_->PrepareExternalProvider(provider_);
+      if (model_->Info().task == "text-ranking") {
+        ranking_ =
+            std::make_unique<RankingRuntime>(model_->GetPath());
+      } else if (model_->Info().task == "typed-decision") {
+        decision_ =
+            std::make_unique<DecisionRuntime>(model_->GetPath());
+      } else {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                 "unsupported non-generative model task: ",
+                 model_->Info().task);
+      }
     }
     model_->MarkExternalRuntimeLoaded();
   } catch (...) {
+    admission_.reset();
     model_->ReleaseExternalSession();
     model_ = nullptr;
     throw;
@@ -45,7 +55,9 @@ NonGenerativeSession::NonGenerativeSession(
 NonGenerativeSession::~NonGenerativeSession() {
   ranking_.reset();
   decision_.reset();
+  admission_.reset();
   if (!model_) return;
+  model_->ReleaseExternalRuntime();
   model_->ReleaseExternalSession();
 }
 
