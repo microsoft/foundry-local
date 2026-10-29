@@ -328,8 +328,22 @@ target_link_libraries(sdk_integration_tests
         ${FOUNDRY_LOCAL_HTTPLIB_LIBS}
 )
 
+add_executable(non_generative_sdk_tests
+    test_main.cc
+    sdk_api/non_generative_test.cc
+)
+set_target_properties(non_generative_sdk_tests PROPERTIES CXX_STANDARD 17)
+target_compile_options(non_generative_sdk_tests PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+target_link_libraries(non_generative_sdk_tests
+    PRIVATE
+        foundry_local_cpp
+        GTest::gtest
+        nlohmann_json::nlohmann_json
+)
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_options(sdk_integration_tests PRIVATE -Wl,--disable-new-dtags)
+    target_link_options(non_generative_sdk_tests PRIVATE -Wl,--disable-new-dtags)
 endif()
 
 # On Android the ORT/GenAI prebuilts statically link libc++ but export its symbols WEAK.
@@ -337,6 +351,7 @@ endif()
 # exported GLOBAL and interpose the prebuilts' weak copies.
 if(ANDROID)
     target_link_options(sdk_integration_tests PRIVATE -Wl,--exclude-libs,ALL)
+    target_link_options(non_generative_sdk_tests PRIVATE -Wl,--exclude-libs,ALL)
 endif()
 
 add_custom_command(TARGET sdk_integration_tests POST_BUILD
@@ -371,6 +386,13 @@ add_test(
 # The integration suite loads models in SharedTestEnv (slow on CPU) and runs
 # dozens of inference tests. The default CTest --timeout (600s) is not enough.
 set_tests_properties(sdk_integration_tests PROPERTIES TIMEOUT 1200)
+
+add_test(
+    NAME non_generative_sdk_tests
+    COMMAND non_generative_sdk_tests
+    WORKING_DIRECTORY $<TARGET_FILE_DIR:non_generative_sdk_tests>
+)
+set_tests_properties(non_generative_sdk_tests PROPERTIES TIMEOUT 600)
 
 # ==========================================================================
 # Cache-only mode tests — tests external_service_url / cache-only catalog

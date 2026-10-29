@@ -1384,6 +1384,52 @@ inline std::vector<std::vector<float>> EmbeddingsSession::Embed(const std::vecto
   return results;
 }
 
+namespace detail {
+
+inline std::string ProcessNonGenerativeJson(
+    Session& session, const std::string& request_json) {
+  Request request(Item::Text(request_json,
+                             FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+  auto response = session.ProcessRequest(request);
+  if (response.GetItems().size() != 1 ||
+      response.GetItems().front().GetType() != FOUNDRY_LOCAL_ITEM_TEXT) {
+    throw Error("non-generative session returned an invalid response",
+                FOUNDRY_LOCAL_ERROR_INTERNAL);
+  }
+  const auto content = response.GetItems().front().GetText();
+  if (content.type != FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON) {
+    throw Error("non-generative session returned a non-JSON response",
+                FOUNDRY_LOCAL_ERROR_INTERNAL);
+  }
+  return std::string(content.text);
+}
+
+}  // namespace detail
+
+inline RankingSession::RankingSession(IModel& model) : Session(model) {
+  if (model.GetInfo().Task() != "text-ranking") {
+    throw std::invalid_argument(
+        "Model is not designed for text-ranking tasks");
+  }
+}
+
+inline std::string RankingSession::RankJson(
+    const std::string& request_json) {
+  return detail::ProcessNonGenerativeJson(*this, request_json);
+}
+
+inline DecisionSession::DecisionSession(IModel& model) : Session(model) {
+  if (model.GetInfo().Task() != "typed-decision") {
+    throw std::invalid_argument(
+        "Model is not designed for typed-decision tasks");
+  }
+}
+
+inline std::string DecisionSession::DecideJson(
+    const std::string& request_json) {
+  return detail::ProcessNonGenerativeJson(*this, request_json);
+}
+
 // ===========================================================================
 // RequestOptions — build a KeyValuePairs for the C ABI
 // ===========================================================================

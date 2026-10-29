@@ -307,6 +307,7 @@ set(FOUNDRY_LOCAL_SOURCES
 
 list(APPEND FOUNDRY_LOCAL_SOURCES
     src/inferencing/predictive/non_generative_admission.cc
+    src/inferencing/predictive/non_generative_session.cc
     src/inferencing/predictive/non_generative_runtime.cc
     src/service/non_generative_handlers.cc
 )
