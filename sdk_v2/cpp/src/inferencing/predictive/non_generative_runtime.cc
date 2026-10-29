@@ -163,12 +163,13 @@ nlohmann::json RankingRuntime::Rank(const RankingRequest& request) {
   const auto result = json::parse(response);
   json ranked = json::array();
   for (const auto& item : result.at("ranked")) {
-    const auto key = item.at("key").get<std::string>();
-    ranked.push_back({
-        {"rank", item.at("rank")},
-        {"candidate", request.answers.at(static_cast<size_t>(std::stoull(key)))},
-        {"prob", item.at("probability")},
-    });
+    const std::string key = item.at("key");
+    json ranked_item = json::object();
+    ranked_item["rank"] = item.at("rank");
+    ranked_item["candidate"] =
+        request.answers.at(static_cast<size_t>(std::stoull(key)));
+    ranked_item["prob"] = item.at("probability");
+    ranked.push_back(std::move(ranked_item));
   }
   return {{"model", result.at("model")}, {"ranked", std::move(ranked)}};
 }
