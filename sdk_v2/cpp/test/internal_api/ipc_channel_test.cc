@@ -509,6 +509,10 @@ TEST_F(IpcChannelTest, DescriptorExhaustionRecoversAndRemainsInterruptibleByClos
           const auto exercise = [&]() -> bool {
             Listener listener(endpoint_);
             RawPeer pending(endpoint_);
+            const auto probe_frame = SampleFrame(42, FrameKind::Data, 1);
+            const auto healthy_frame = SampleFrame(42, FrameKind::Data, 2);
+            pending.Write(WireHeader(probe_frame.payload.size()), 20);
+            pending.Write(probe_frame.payload, probe_frame.payload.size());
             rlimit original{};
             if (getrlimit(RLIMIT_NOFILE, &original) != 0) {
               return false;
@@ -534,37 +538,67 @@ TEST_F(IpcChannelTest, DescriptorExhaustionRecoversAndRemainsInterruptibleByClos
               descriptors.push_back(fd);
             }
 
-            auto accepted = std::async(std::launch::async, [&] { return listener.Accept(); });
-            ScopeGuard close_accept([&]() noexcept { listener.Close(); });
-            const auto blocked = accepted.wait_for(50ms) == std::future_status::timeout;
-            if (close_listener) {
-              listener.Close();
-            } else {
-              restore();
-            }
-
-            if (accepted.wait_for(5s) != std::future_status::ready) {
-              _exit(1);
-            }
-            if (close_listener) {
-              try {
-                static_cast<void>(accepted.get());
-              } catch (const Exception& error) {
-                return blocked && error.code() == FOUNDRY_LOCAL_ERROR_INVALID_USAGE;
-              }
-
+            if (errno != EMFILE) {
               return false;
             }
 
-            auto first = accepted.get();
-            first.first.Close();
-            RawPeer healthy(endpoint_);
-            auto next = listener.Accept();
-            const auto frame = SampleFrame(7, FrameKind::Data, 8);
-            healthy.Write(WireHeader(frame.payload.size()), 20);
-            healthy.Write(frame.payload, frame.payload.size());
-            const auto received = next.first.ReadFrame();
-            return blocked && next.second.process_id == CurrentPid() && received.payload == frame.payload;
+            auto accepted = std::async(std::launch::async, [&]() -> bool {
+              if (close_listener) {
+                static_cast<void>(listener.Accept());
+                return false;
+              }
+
+              // A failed accept may discard the queued probe; recovery must reach the new client's frame.
+              for (unsigned attempt = 0; attempt < 2; ++attempt) {
+                auto [channel, peer] = listener.Accept();
+                const auto received = channel.ReadFrame();
+                if (peer.process_id != CurrentPid() || received.invocation_id != healthy_frame.invocation_id ||
+                    received.kind != healthy_frame.kind) {
+                  return false;
+                }
+
+                if (received.payload == healthy_frame.payload) {
+                  return true;
+                }
+
+                if (attempt != 0 || received.payload != probe_frame.payload) {
+                  return false;
+                }
+              }
+
+              return false;
+            });
+            try {
+              const auto blocked = accepted.wait_for(50ms) == std::future_status::timeout;
+              std::optional<RawPeer> healthy;
+              if (close_listener) {
+                listener.Close();
+              } else {
+                restore();
+                healthy.emplace(endpoint_);
+                healthy->Write(WireHeader(healthy_frame.payload.size()), 20);
+                healthy->Write(healthy_frame.payload, healthy_frame.payload.size());
+              }
+
+              if (accepted.wait_for(5s) != std::future_status::ready) {
+                _exit(1);
+              }
+
+              if (close_listener) {
+                try {
+                  static_cast<void>(accepted.get());
+                } catch (const Exception& error) {
+                  return blocked && error.code() == FOUNDRY_LOCAL_ERROR_INVALID_USAGE;
+                }
+
+                return false;
+              }
+
+              return blocked && accepted.get();
+            } catch (...) {
+              // Exit before unwinding the future: its worker may still be blocked in Accept() or ReadFrame().
+              _exit(1);
+            }
           };
           try {
             const auto success = exercise();
