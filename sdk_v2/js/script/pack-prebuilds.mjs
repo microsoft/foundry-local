@@ -7,7 +7,7 @@
 //
 // The prepack hook separately stages sdk_v2/deps_versions.json next to
 // package.json so the tarball carries the native dependency versions.
-import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -39,6 +39,8 @@ const wanted = (() => {
 // not. The reg-free WinML 2.x runtime ships next to foundry_local.dll on Windows
 // so WinML hardware EPs work out of the box without an install-time download.
 const optional = process.platform === "win32" ? ["Microsoft.Windows.AI.MachineLearning.dll"] : [];
+const host = process.platform === "win32" ? "foundry-local-host.exe" : "foundry-local-host";
+wanted.push(host, "foundry-local-runtime.json");
 
 let copied = 0;
 const available = new Set(readdirSync(sourceDir));
@@ -50,6 +52,7 @@ for (const file of wanted) {
   const src = resolve(sourceDir, file);
   const dst = resolve(destDir, file);
   copyFileSync(src, dst);
+  if (file === "foundry-local-host") chmodSync(dst, 0o755);
   const size = statSync(dst).size;
   console.log(`[pack-prebuilds] ${file} (${size} bytes)`);
   copied += 1;

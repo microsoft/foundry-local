@@ -60,20 +60,25 @@ class NativeAsrTest {
             borrowed.load();
             System.err.println("native-test: model loaded");
             byte[] pcm = WavAudio.read(Path.of(wav)).pcm();
-            try (AudioSession session = borrowed.createAudioSession();
-                 Transcription run = session.transcribeWav(Path.of(wav), event -> callbacks.incrementAndGet())) {
-                TranscriptionResult result = run.await(Duration.ofSeconds(60));
-                assertTranscript(result.text());
-                assertNull(result.language());
-                assertEquals(pcm.length, run.timing().submittedBytes());
-                assertNotNull(run.timing().inputClosedMillis());
+            for (int iteration = 0; iteration < 2; iteration++) {
+                try (AudioSession session = borrowed.createAudioSession();
+                     Transcription run = iteration == 0
+                             ? session.transcribeWav(Path.of(wav), event -> callbacks.incrementAndGet())
+                             : session.transcribeWav(Path.of(wav), "en-US", event -> callbacks.incrementAndGet())) {
+                    TranscriptionResult result = run.await(Duration.ofSeconds(60));
+                    assertTranscript(result.text());
+                    assertNull(result.language());
+                    assertEquals(pcm.length, run.timing().submittedBytes());
+                    assertNotNull(run.timing().inputClosedMillis());
+                }
             }
             System.err.println("native-test: WAV finished and closed");
             for (int iteration = 0; iteration < 2; iteration++) {
                 try (AudioSession session = borrowed.createAudioSession()) {
                     assertThrows(IllegalStateException.class, borrowed::unload);
-                    try (Transcription run = session.streamPcm(
-                            PcmFormat.SPEECH, event -> callbacks.incrementAndGet())) {
+                    try (Transcription run = iteration == 0
+                            ? session.streamPcm(PcmFormat.SPEECH, event -> callbacks.incrementAndGet())
+                            : session.streamPcm(PcmFormat.SPEECH, "en-US", event -> callbacks.incrementAndGet())) {
                         for (int offset = 0; offset < pcm.length; offset += 3200) {
                             run.writePcm(Arrays.copyOfRange(pcm, offset, Math.min(offset + 3200, pcm.length)));
                         }
@@ -89,14 +94,14 @@ class NativeAsrTest {
                     Thread.sleep(100);
                     assertEquals(count, callbacks.get(), "No callback may outlive close");
                     try (Transcription run = session.streamPcm(
-                            PcmFormat.SPEECH, event -> callbacks.incrementAndGet())) {
+                            PcmFormat.SPEECH, "en-US", event -> callbacks.incrementAndGet())) {
                         run.writePcm(Arrays.copyOf(pcm, Math.min(3200, pcm.length)));
                         run.cancel();
                         assertTrue(run.await(Duration.ofSeconds(30)).cancelled());
                         assertTrue(run.isCancelled());
                     }
                     System.err.println("native-test: cancellation acknowledged and closed " + iteration);
-                    try (Transcription run = session.streamPcm(PcmFormat.SPEECH, event -> {
+                    try (Transcription run = session.streamPcm(PcmFormat.SPEECH, "en-US", event -> {
                         throw new IllegalStateException("listener failure");
                     })) {
                         for (int offset = 0; offset < Math.min(pcm.length, 64000); offset += 3200) {

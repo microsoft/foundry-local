@@ -54,6 +54,7 @@ npm run dev        # Using npm
 | `bun run check` / `npm run check` | Run Svelte type checking |
 | `bun run check:watch` / `npm run check:watch` | Run type checking in watch mode |
 | `bun run test:cli` / `npm run test:cli` | Verify latest CLI release selection and platform download links |
+| `bun run test:privacy` / `npm run test:privacy` | Verify cookie consent and analytics gating |
 | `bun run format` / `npm run format` | Format code with Prettier |
 | `bun run lint` / `npm run lint` | Check code formatting |
 
@@ -172,6 +173,23 @@ This site is configured to deploy automatically to Vercel using `@sveltejs/adapt
 ### Environment Variables
 
 No environment variables are required for basic functionality. The site fetches model data from a public Azure Function endpoint.
+
+### Cookie Consent
+
+The root layout loads Microsoft's [WCP consent library](https://wcpstatic.microsoft.com/mscc/lib/v2/wcp-consent.js)
+on every page. It displays the Microsoft consent banner for visitors without a saved choice and
+persists preferences in the library-managed `MSCC` cookie. The **Manage Cookies** footer button on
+the homepage, model catalog, and error pages reopens the preferences dialog.
+
+Vercel Analytics is not injected until the library reports Analytics consent. Its `beforeSend`
+callback checks current consent for each event, so rejecting Analytics later stops further events
+without requiring a page reload. If the consent script fails to load or initialize, optional
+analytics stay disabled and an accessible error message offers a retry.
+
+After deployment, verify the banner in a fresh browser session, test Accept and Reject, and use
+**Manage Cookies** to change a saved choice. Check that no Vercel Analytics script or events load
+before consent or after rejection (an already-loaded script remains after withdrawal, but events
+are blocked). Repeat on `/models` and request a new ComplianceWeb scan of the deployed site.
 
 ## About Foundry Local
 

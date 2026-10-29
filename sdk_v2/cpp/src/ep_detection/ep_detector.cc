@@ -34,7 +34,7 @@ EpDetector::EpDetector(const OrtApi& ort_api, OrtEnv& ort_env,
   for (const auto& bs : bootstrappers_) {
     cached_eps_.push_back(EpInfo{bs->Name(), bs->IsRegistered()});
     cached_eps_c_.push_back(flEpInfo{
-        FOUNDRY_LOCAL_API_VERSION,
+        FOUNDRY_LOCAL_DATA_VERSION,
         cached_eps_.back().name.c_str(),
         bs->IsRegistered(),
     });

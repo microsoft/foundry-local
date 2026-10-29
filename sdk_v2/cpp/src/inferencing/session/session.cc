@@ -98,9 +98,9 @@ std::unique_ptr<Session> Session::Create(const fl::Model& model) {
       FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model must be loaded before creating a session");
     }
 
-    auto* loaded = mgr.GetModelLoadManager().GetLoadedModel(model.Id(), model.GetPath());
+    auto loaded = mgr.GetModelLoadManager().AcquireSessionModel(model.Id(), model.GetPath());
     if (!loaded) {
-      FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL, "loaded model not found in load manager");
+      FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model must be loaded before creating a session");
     }
 
     tracker.SetModelId(model.Id());
@@ -218,7 +218,8 @@ void Session::ValidateRequestItems(const Request& request) const {
   }
 }
 
-void Session::ProcessRequest(const Request& request, Response& response) {
+void Session::ProcessRequest(const Request& request, Response& response,
+                             std::optional<StreamingCallback> callback) {
   // Serialize requests unless the derived class opted into concurrency.
   std::unique_lock<std::mutex> lock(*request_mutex_, std::defer_lock);
   if (!allow_concurrent_requests_) {
@@ -264,7 +265,11 @@ void Session::ProcessRequest(const Request& request, Response& response) {
       request.Cancel(Request::CancellationReason::SessionShutdown);
     }
 
-    active_requests_.insert(&request);
+    if (!callback) {
+      callback = StreamingCallback{callback_fn_, callback_user_data_};
+    }
+
+    active_requests_.emplace(&request, *callback);
     registered = true;
   }
 
@@ -325,7 +330,8 @@ void Session::ProcessRequest(const Request& request, Response& response) {
 
   const auto elapsed = std::chrono::steady_clock::now() - start;
   RecordUsage(request, response, tracker.Context(),
-              std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
+              std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
+              static_cast<bool>(callback->function));
 }
 
 InvocationContext Session::TakeInvocationContext() {
@@ -340,7 +346,7 @@ int32_t Session::TelemetryTokenCount(int64_t count) {
 }
 
 void Session::RecordUsage(const Request& request, const Response& response,
-                          const InvocationContext& context, int64_t total_time_ms) {
+                          const InvocationContext& context, int64_t total_time_ms, bool streaming) {
   // This boundary covers metric preparation as well as emission; neither may change inference results.
   try {
     if (!response.openai_json_message_count.has_value()) {
@@ -359,7 +365,7 @@ void Session::RecordUsage(const Request& request, const Response& response,
     usage.user_agent = TelemetryInternal::SanitizeTelemetryValue(context.user_agent);
     usage.correlation_id = TelemetryInternal::SanitizeTelemetryIdentifier(context.correlation_id);
     usage.indirect = context.indirect;
-    usage.stream = static_cast<bool>(callback_fn_);
+    usage.stream = streaming;
     usage.num_messages = CountTypedRequestMessages(request) + *response.openai_json_message_count;
     usage.total_time_ms = total_time_ms;
     usage.total_tokens = TelemetryTokenCount(response.usage.total_tokens);
@@ -383,7 +389,7 @@ void Session::Cancel() {
   // SessionManager holds its own lock during shutdown. Generation loops poll the flag.
   std::lock_guard<std::mutex> lock(*active_requests_mutex_);
   session_canceled_ = true;
-  for (const Request* r : active_requests_) {
+  for (const auto& [r, callback] : active_requests_) {
     r->Cancel(Request::CancellationReason::SessionShutdown);
   }
 }

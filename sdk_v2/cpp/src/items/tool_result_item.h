@@ -24,7 +24,7 @@ struct ToolResultItem : Item {
   }
 
   void GetApiData(flToolResultData& out) const {
-    out.version = FOUNDRY_LOCAL_API_VERSION;
+    out.version = FOUNDRY_LOCAL_DATA_VERSION;
     out.call_id = call_id.c_str();
     out.result = result.c_str();
   }
