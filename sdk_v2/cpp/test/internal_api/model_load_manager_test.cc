@@ -222,6 +222,16 @@ TEST(ModelLoadManagerTest, LoadRuntimeIdWithCudaConfig_CudaAvailable_PreparesCud
   EXPECT_EQ(ep.prepared_ep, "CUDAExecutionProvider");
 }
 
+TEST(ModelLoadManagerTest, SharedProviderPreparationHandlesTypedCudaLoad) {
+  GpuEpDetector ep;
+  fl::StderrLogger logger;
+  fl::ModelLoadManager mgr(ep, logger);
+
+  mgr.PrepareProviderForModelLoad("CUDAExecutionProvider", "typed-model:1");
+
+  EXPECT_EQ(ep.prepared_ep, "CUDAExecutionProvider");
+}
+
 TEST(ModelLoadManagerTest, LoadRuntimeIdWithCanonicalWinMlProvider_NotAvailable_Throws) {
   CpuOnlyDetector ep;
   fl::StderrLogger logger;

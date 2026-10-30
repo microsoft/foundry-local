@@ -159,6 +159,34 @@ strong/weak archive isolation, private transport symbols in internal tests, and 
 calls through the public fixture API.
 ELF checks inspect external definitions only: local symbols retained in `.dynsym`
 by GCC compatibility objects are not public exports.
+### Native non-generative packages
+
+When the web service is enabled, `POST /v1/rank` and `POST /v1/systemone`
+resolve the request `model` as a local-catalog ID or alias. Multi-component
+packages use the metadata described in
+[`docs/non-generative-packages.md`](docs/non-generative-packages.md). Runtime
+caches are isolated by canonical model identity and provider; active requests
+hold lifecycle ownership and block unload. Each loaded typed runtime executes
+session construction and requests on one dedicated thread so provider and
+session ownership stay on the same execution thread. Requests resolve a
+registered local-catalog model ID or alias:
+
+```bash
+curl -s http://127.0.0.1:5272/v1/rank \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"clm","context":{"text":"sample"},"question":"Select","answers":["first","second"],"temperature":1}'
+
+curl -s http://127.0.0.1:5272/v1/systemone \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"kev","state":"sample","questions":{"q":{"type":"noul","instructions":"Is this valid?"}}}'
+```
+
+Missing fallback configuration is reported as HTTP 503. Invalid contracts,
+tasks, criteria, or token bounds are HTTP 400. This bounded integration does
+not add remote catalog submission or C/Python SDK APIs.
+Until the corresponding ORT GenAI package is published, configure this branch
+with `--ort_genai_home /path/to/onnxruntime-genai` so the native
+`OgaConfig`-based `NonGenerativeSession` API is available.
 
 ## Build From Source
 
@@ -707,6 +735,7 @@ The build produces these example executables in the build output directory:
 | `tool_calling_example` | Tool definitions, tool-result turns, and streaming tool calls |
 | `embeddings_example` | Single and batch embeddings with cosine similarity |
 | `realtime_audio_example <audio_file_path>` | PCM streaming input and streaming transcription output |
+| `kev_decision_example <package_path>` | Run a typed KEV decision package through Foundry Local Core |
 
 The source for each is under [examples/](examples/). `basic_chat_example` honors
 `FOUNDRY_LOCAL_SAMPLE_CACHE_DIR` to use an existing model-cache location.
@@ -750,6 +779,18 @@ sdk_v2/cpp/
 - [Runtime loading behavior](docs/OrtRuntimeLoading.md)
 - [Item data ownership](docs/ItemDataOwnershipDesign.md)
 - [C++ port guide](docs/CppPortGuide.md)
+
+## Non-generative ranking and decisions
+
+The CLM ranking and KEV decision routes translate their existing JSON contracts
+to the public ORT GenAI `NonGenerativeSession` JSON boundary. Rendering,
+tokenization, tensor preparation, pooling, scoring, and typed result
+construction are owned by ORT GenAI; Foundry only performs contract
+translation. Runtime provider selection and provider options come from each
+package's `genai_config.json`. Package runtimes are cached per canonical
+catalog identity and evicted by model unload; bounded model-specific caches
+remain private to ORT GenAI.
+The HTTP request and response schemas are unchanged.
 
 ## License
 

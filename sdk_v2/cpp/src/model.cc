@@ -140,6 +140,8 @@ Model::Model(Model&& other) noexcept
       active_(other.active_.load()),
       local_path_(std::move(other.local_path_)),
       external_registration_(other.external_registration_),
+      external_runtime_count_(other.external_runtime_count_.load()),
+      external_session_count_(other.external_session_count_.load()),
       download_manager_(other.download_manager_),
       model_load_manager_(other.model_load_manager_),
       variants_(std::move(other.variants_)),
@@ -160,6 +162,8 @@ Model& Model::operator=(Model&& other) noexcept {
     active_.store(other.active_.load());
     local_path_ = std::move(other.local_path_);
     external_registration_ = other.external_registration_;
+    external_runtime_count_.store(other.external_runtime_count_.load());
+    external_session_count_.store(other.external_session_count_.load());
     download_manager_ = other.download_manager_;
     model_load_manager_ = other.model_load_manager_;
     variants_ = std::move(other.variants_);
@@ -415,7 +419,8 @@ bool Model::IsCached() const {
   if (external_registration_) {
     std::error_code ec;
     return std::filesystem::is_directory(local_path_, ec) &&
-           std::filesystem::is_regular_file(std::filesystem::path(local_path_) / "genai_config.json", ec);
+           (std::filesystem::is_regular_file(std::filesystem::path(local_path_) / "genai_config.json", ec) ||
+            std::filesystem::is_regular_file(std::filesystem::path(local_path_) / "component_manifest.json", ec));
   }
 
   return active_ && cached_;
@@ -433,7 +438,84 @@ bool Model::IsLoaded() const {
   // ModelLoadManager owns the authoritative loaded-instance map. The pointer is set at
   // construction and never reassigned, so querying it here stays in sync with paths that
   // bypass Model::Load/Unload (e.g., Manager::Shutdown -> ModelLoadManager::UnloadAll).
-  return model_load_manager_->GetLoadedModel(Info().model_id, LocalPathSnapshot()) != nullptr;
+  return external_runtime_count_.load() != 0 ||
+         model_load_manager_->GetLoadedModel(Info().model_id, LocalPathSnapshot()) != nullptr;
+}
+
+Model* Model::SelectedLeaf() const {
+  if (Model* sv = selected_variant_.load(std::memory_order_acquire)) {
+    return sv->SelectedLeaf();
+  }
+  return const_cast<Model*>(this);
+}
+
+Model* Model::AcquireExternalSession() {
+  if (Model* sv = selected_variant_.load(std::memory_order_acquire)) {
+    return sv->AcquireExternalSession();
+  }
+  std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+  if (!active_ || unregistering_) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
+  }
+  ++external_session_count_;
+  return this;
+}
+
+void Model::ReleaseExternalSession() noexcept {
+  if (selected_variant_.load(std::memory_order_acquire)) return;
+  external_session_count_.fetch_sub(1);
+}
+
+void Model::PrepareExternalProvider(std::string_view provider) {
+  if (Model* sv = selected_variant_.load(std::memory_order_acquire)) {
+    sv->PrepareExternalProvider(provider);
+    return;
+  }
+  const auto registration =
+      provider.empty()
+          ? std::string_view{}
+          : EPUtils::EPtoRegistrationName(EPUtils::StringtoEP(provider));
+  model_load_manager_->PrepareProviderForModelLoad(registration, Id());
+}
+
+std::shared_ptr<NonGenerativeAdmissionCoordinator>
+Model::NonGenerativeAdmission() const {
+  if (Model* sv = selected_variant_.load(std::memory_order_acquire))
+    return sv->NonGenerativeAdmission();
+  return model_load_manager_->NonGenerativeAdmission();
+}
+
+void Model::MarkExternalRuntimeLoaded() {
+  if (Model* sv = selected_variant_.load(std::memory_order_acquire)) {
+    sv->MarkExternalRuntimeLoaded();
+    return;
+  }
+  std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+  if (!active_ || unregistering_)
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "model is no longer registered");
+  external_runtime_count_.fetch_add(1);
+}
+
+void Model::ReleaseExternalRuntime() noexcept {
+  if (Model* sv = selected_variant_.load(std::memory_order_acquire)) {
+    sv->ReleaseExternalRuntime();
+    return;
+  }
+  external_runtime_count_.fetch_sub(1);
+}
+
+void Model::UnloadExternalRuntime() {
+  if (Model* sv = selected_variant_.load(std::memory_order_acquire)) {
+    sv->UnloadExternalRuntime();
+    return;
+  }
+  std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+  if (external_session_count_.load() != 0) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "cannot unload model while non-generative sessions are active");
+  }
+  ReleaseExternalRuntime();
 }
 
 // ---------------------------------------------------------------------------
@@ -599,6 +681,17 @@ void Model::Unload() {
   }
 
   std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+  if (Info().task == "text-ranking" || Info().task == "typed-decision") {
+    FL_THROW(
+        FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+        "non-generative models must be unloaded through the service model-unload route");
+  }
+
+  if (external_session_count_.load() != 0) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "cannot unload model while non-generative sessions are active");
+  }
+  external_runtime_count_.store(0);
 
   // Path qualification lets a retired handle clean up its own instance without unloading a later registration that
   // reused the same model ID at a different path. UnloadModel is idempotent when no matching instance is loaded.
@@ -694,6 +787,11 @@ void Model::BeginUnregister() {
   if (!active_ || unregistering_) {
     lifecycle_mutex_.unlock();
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
+  }
+  if (external_session_count_.load() != 0) {
+    lifecycle_mutex_.unlock();
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "cannot unregister model while non-generative sessions are active");
   }
 
   unregistering_ = true;

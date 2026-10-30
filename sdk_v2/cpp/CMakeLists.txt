@@ -231,6 +231,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/catalog/catalog_client.cc
     src/catalog/local_model_catalog.cc
     src/catalog/local_model_scanner.cc
+    src/catalog/non_generative_package.cc
     src/inferencing/generative/audio/audio_generator.cc
     src/inferencing/generative/audio/audio_session.cc
     src/inferencing/generative/audio/onnx_audio_generator.cc
@@ -286,6 +287,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/contracts/tool_definitions.cc
     src/contracts/audio_transcriptions.cc
     src/contracts/embeddings.cc
+    src/contracts/non_generative.cc
     src/service/audio_transcriptions_handler.cc
     src/service/embeddings_handler.cc
     src/service/chat_completions_handler.cc
@@ -312,6 +314,12 @@ set(FOUNDRY_LOCAL_SOURCES
     src/util/zip_extract.cc
     ${FOUNDRY_LOCAL_PLATFORM_SOURCES}
     ${FOUNDRY_LOCAL_INTERNAL_HEADERS}
+)
+
+list(APPEND FOUNDRY_LOCAL_SOURCES
+    src/inferencing/predictive/non_generative_admission.cc
+    src/inferencing/predictive/non_generative_runtime.cc
+    src/service/non_generative_handlers.cc
 )
 
 list(APPEND FOUNDRY_LOCAL_SOURCES
@@ -621,13 +629,23 @@ if(TARGET OnnxRuntime::OnnxRuntime)
                 $<TARGET_FILE_DIR:foundry_local>
         )
 
-        if(EXISTS "${ORT_DLL_DIR}/onnxruntime_providers_shared.dll")
+        if(EXISTS "${ORT_GENAI_LIB_DIR}/onnxruntime-genai-cuda.dll")
             add_custom_command(TARGET foundry_local POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${ORT_DLL_DIR}/onnxruntime_providers_shared.dll"
+                    "${ORT_GENAI_LIB_DIR}/onnxruntime-genai-cuda.dll"
                     $<TARGET_FILE_DIR:foundry_local>
             )
         endif()
+
+        foreach(_ORT_PROVIDER shared cuda tensorrt)
+            if(EXISTS "${ORT_DLL_DIR}/onnxruntime_providers_${_ORT_PROVIDER}.dll")
+                add_custom_command(TARGET foundry_local POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${ORT_DLL_DIR}/onnxruntime_providers_${_ORT_PROVIDER}.dll"
+                        $<TARGET_FILE_DIR:foundry_local>
+                )
+            endif()
+        endforeach()
 
         # Copy WinML EP Catalog DLL for runtime EP discovery
         if(WinMLEpCatalog_FOUND AND EXISTS "${WINML_EP_CATALOG_DLL_DIR}/Microsoft.Windows.AI.MachineLearning.dll")
@@ -675,6 +693,20 @@ if(TARGET OnnxRuntime::OnnxRuntime)
                     $<TARGET_FILE_DIR:foundry_local>
             )
         endif()
+        if(EXISTS "${ORT_GENAI_LIB_DIR}/libonnxruntime-genai-cuda.so")
+            add_custom_command(TARGET foundry_local POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${ORT_GENAI_LIB_DIR}/libonnxruntime-genai-cuda.so"
+                    $<TARGET_FILE_DIR:foundry_local>
+            )
+        endif()
+        if(EXISTS "${ORT_LIB_DIR}/libonnxruntime_providers_cuda.so")
+            add_custom_command(TARGET foundry_local POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${ORT_LIB_DIR}/libonnxruntime_providers_cuda.so"
+                    $<TARGET_FILE_DIR:foundry_local>
+            )
+        endif()
     endif()
 endif()
 
@@ -715,6 +747,8 @@ if(FOUNDRY_LOCAL_BUILD_EXAMPLES)
     set_target_properties(tool_calling_example PROPERTIES FOLDER "Examples")
     set_target_properties(realtime_audio_example PROPERTIES FOLDER "Examples")
     set_target_properties(embeddings_example PROPERTIES FOLDER "Examples")
+    add_subdirectory(examples/kev_decision)
+    set_target_properties(kev_decision_example PROPERTIES FOLDER "Examples")
 
     # On Linux, GenAI does dlopen("libonnxruntime.so") internally. Modern GCC
     # emits RUNPATH which doesn't propagate to transitive dlopen calls.
@@ -724,5 +758,6 @@ if(FOUNDRY_LOCAL_BUILD_EXAMPLES)
         target_link_options(tool_calling_example PRIVATE -Wl,--disable-new-dtags)
         target_link_options(realtime_audio_example PRIVATE -Wl,--disable-new-dtags)
         target_link_options(embeddings_example PRIVATE -Wl,--disable-new-dtags)
+        target_link_options(kev_decision_example PRIVATE -Wl,--disable-new-dtags)
     endif()
 endif()

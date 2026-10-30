@@ -7,12 +7,14 @@
 
 #include "exception.h"
 #include "inferencing/generative/openresponses/response_store.h"
+#include "inferencing/model_load_manager.h"
 #include "inferencing/session/session_manager.h"
 #include "service/audio_transcriptions_handler.h"
 #include "service/chat_completions_handler.h"
 #include "service/embeddings_handler.h"
 #include "service/handler_utils.h"
 #include "service/models_handlers.h"
+#include "service/non_generative_handlers.h"
 #include "service/responses_handler.h"
 
 #include <fmt/format.h>
@@ -218,6 +220,8 @@ void RegisterOpenAIRoutes(const std::shared_ptr<oatpp::web::server::HttpRouter>&
   Route(router, "POST", prefix + "/v1/chat/completions", CreateChatCompletionsHandler(ctx), lifetime);
   Route(router, "POST", prefix + "/v1/audio/transcriptions", CreateAudioTranscriptionsHandler(ctx), lifetime);
   Route(router, "POST", prefix + "/v1/embeddings", CreateEmbeddingsHandler(ctx), lifetime);
+  Route(router, "POST", prefix + "/v1/systemone", CreateSystemOneHandler(ctx), lifetime);
+  Route(router, "POST", prefix + "/v1/rank", CreateRankHandler(ctx), lifetime);
   Route(router, "POST", prefix + "/v1/responses", CreateResponsesHandler(ctx), lifetime);
   Route(router, "GET", prefix + "/v1/responses", CreateListResponsesHandler(ctx), lifetime);
   Route(router, "GET", prefix + "/v1/responses/{id}", CreateGetResponseHandler(ctx), lifetime);
@@ -256,6 +260,8 @@ struct WebService::Impl {
   ResponseStore local_response_store;
   StreamingThreadTracker thread_tracker;
   std::function<void()> shutdown_callback;
+  std::shared_ptr<NonGenerativeAdmissionCoordinator>
+      non_generative_admission;
   std::shared_ptr<hosting::HostLifetime> shared_host_lifetime;
   std::unique_ptr<ServiceContext> public_context;
   std::unique_ptr<ServiceContext> local_context;
@@ -286,6 +292,8 @@ struct WebService::Impl {
         public_response_store(ResponseStore::kDefaultCapacity, &session_cache),
         local_response_store(ResponseStore::kDefaultCapacity, &session_cache),
         shutdown_callback(std::move(shutdown_callback)),
+        non_generative_admission(
+            model_load_manager.NonGenerativeAdmission()),
         shared_host_lifetime(std::move(shared_lifetime)),
         public_context(std::make_unique<ServiceContext>(
             ServiceContext{public_catalog,
@@ -296,7 +304,10 @@ struct WebService::Impl {
                            session_manager,
                            public_response_store,
                            telemetry,
-                           thread_tracker})),
+                           thread_tracker,
+                           CreateNonGenerativeRuntimeState(
+                               non_generative_admission)
+            })),
         local_context(std::make_unique<ServiceContext>(
             ServiceContext{local_catalog,
                            logger,
@@ -306,7 +317,11 @@ struct WebService::Impl {
                            session_manager,
                            local_response_store,
                            telemetry,
-                           thread_tracker})) {}
+                           thread_tracker,
+                           CreateNonGenerativeRuntimeState(
+                               non_generative_admission)
+            })) {
+  }
 };
 
 WebService::WebService(ICatalog& public_catalog, ICatalog& local_catalog, ILogger& logger, std::string model_cache_dir,
@@ -468,6 +483,8 @@ void WebService::Stop() {
     }
   }
 
+  ClearNonGenerativeRuntimes(*impl_->public_context);
+  ClearNonGenerativeRuntimes(*impl_->local_context);
   impl_->servers.clear();
   impl_->listener_threads.clear();
   impl_->providers.clear();

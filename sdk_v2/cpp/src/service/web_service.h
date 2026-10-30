@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -21,6 +22,7 @@ namespace fl {
 class ICatalog;
 class ITelemetry;
 class ModelLoadManager;
+class NonGenerativeRuntimeState;
 class SessionManager;
 class ResponseStore;
 
@@ -92,6 +94,7 @@ struct ServiceContext {
   ResponseStore& response_store;
   ITelemetry& telemetry;
   StreamingThreadTracker& thread_tracker;
+  std::shared_ptr<NonGenerativeRuntimeState> non_generative_runtimes;
 };
 
 /// HTTP web service wrapping oatpp.

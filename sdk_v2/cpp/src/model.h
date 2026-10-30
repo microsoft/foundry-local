@@ -16,6 +16,8 @@
 
 namespace fl {
 
+class NonGenerativeAdmissionCoordinator;
+
 class DownloadManager;
 struct Item;
 class ModelLoadManager;
@@ -125,6 +127,7 @@ class Model {
 
   bool IsCached() const;
   bool IsLoaded() const;
+  Model* SelectedLeaf() const;
 
   /// Get the supported input and output item types for this model, based on its task.
   /// Returns arrays of Item pointers (type-tag-only descriptors) from static storage.
@@ -160,6 +163,16 @@ class Model {
   void Load(ExecutionProvider ep = ExecutionProvider::kDefault,
             std::optional<std::string_view> expected_path = std::nullopt);
   void Unload();
+  /// Acquire the currently selected exact leaf and return it. Release must be
+  /// called on the returned leaf, not on an alias container.
+  Model* AcquireExternalSession();
+  void ReleaseExternalSession() noexcept;
+  void PrepareExternalProvider(std::string_view provider);
+  std::shared_ptr<NonGenerativeAdmissionCoordinator>
+  NonGenerativeAdmission() const;
+  void MarkExternalRuntimeLoaded();
+  void ReleaseExternalRuntime() noexcept;
+  void UnloadExternalRuntime();
   void RemoveFromCache(std::optional<std::string_view> expected_path = std::nullopt);
 
   /// Mark this model and its variants inactive while retaining pointer validity.
@@ -215,6 +228,8 @@ class Model {
   std::atomic<bool> active_{true};
   std::string local_path_;
   bool external_registration_ = false;
+  std::atomic<size_t> external_runtime_count_{0};
+  std::atomic<size_t> external_session_count_{0};
 
   // Non-owning service bindings for leaf operations. Set once at construction and never
   // reassigned; guaranteed non-null because FromModelInfo takes them by reference.
