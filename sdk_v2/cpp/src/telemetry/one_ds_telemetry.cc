@@ -144,6 +144,7 @@ void SetCommonContext(MatILogger* mat_logger, const TelemetryMetadata& m, std::s
 TelemetryInternal::BoundedEventProperties MakeEvent(
     const char* name, double sample_rate_percent = TelemetryInternal::kTelemetrySampleRatePercent) {
   TelemetryInternal::BoundedEventProperties ev(name);
+  ev.SetProperty("TelemetryLayer", "foundry_local");
   ev.SetPriority(EventPriority::EventPriority_Normal);
   ev.SetPolicyBitFlags(kCriticalData);
   ev.SetPopsample(sample_rate_percent);
@@ -210,11 +211,15 @@ OneDsTelemetry::OneDsTelemetry(const std::string& app_name,
                                bool disable_nonessential_telemetry)
     : local_log_(app_name, logger),
       metadata_(BuildTelemetryMetadata(app_name)),
-      hard_disabled_(TelemetryEnvironment::IsCiEnvironment()),
+      hard_disabled_(TelemetryEnvironment::IsTelemetryFullyDisabled() ||
+                     TelemetryEnvironment::IsCiEnvironment()),
       logger_(logger) {
   if (hard_disabled_) {
     logger_.Log(LogLevel::Information,
-                "[Telemetry] CI environment detected; 1DS upload disabled (events still logged locally)");
+                TelemetryEnvironment::IsTelemetryFullyDisabled()
+                    ? "[Telemetry] Disabled via ORT_DISABLE_TELEMETRY; all 1DS upload disabled "
+                      "(events still logged locally)"
+                    : "[Telemetry] CI environment detected; 1DS upload disabled (events still logged locally)");
     return;
   }
   const bool disabled_by_environment = TelemetryEnvironment::IsTelemetryDisabledByEnvVar();
@@ -413,9 +418,7 @@ void OneDsTelemetry::RecordModelUsage(const ModelUsageInfo& info) {
   ev.SetProperty("TotalTokens", static_cast<int64_t>(info.total_tokens));
   ev.SetProperty("InputTokenCount", static_cast<int64_t>(info.input_token_count));
   ev.SetProperty("NumMessages", static_cast<int64_t>(info.num_messages));
-  ev.SetProperty("MemoryUsedMB", info.memory_used_mb);
-  ev.SetProperty("CpuTimeMs", info.cpu_time_ms);
-  ev.SetProperty("GpuMemoryUsedMB", info.gpu_memory_used_mb);
+  ev.SetProperty("TimingScope", "foundry_request");
   SafeLog(impl_->logger, ev);
 }
 
@@ -430,6 +433,7 @@ void OneDsTelemetry::RecordAudioUsage(const AudioUsageInfo& info) {
     return;
   }
   auto ev = MakeEvent("AudioModel", sample_rate_percent);
+  ev.SetProperty("TimingScope", "foundry_request");
   ev.SetProperty("ModelId", info.model_id);
   ev.SetProperty("ExecutionProvider", info.execution_provider);
   ev.SetProperty("UserAgent", info.user_agent);

@@ -45,20 +45,20 @@ void TelemetryLogger::RecordModelUsage(const ModelUsageInfo& info) {
   logger_.Log(LogLevel::Debug,
               fmt::format("[Telemetry] Model AppName={} UserAgent={} CorrelationId={} ModelId={} EP={} "
                           "Stream={} Direct={} TimeToFirstTokenMs={} "
-                          "TotalTimeMs={} TotalTokens={} InputTokenCount={} NumMessages={} MemoryUsedMB={} "
-                          "CpuTimeMs={} GpuMemoryUsedMB={}",
+                          "TotalTimeMs={} TotalTokens={} InputTokenCount={} NumMessages={} "
+                          "TelemetryLayer=foundry_local TimingScope=foundry_request",
                           app_name_, Text(info.user_agent), Id(info.correlation_id), Id(info.model_id),
                           Id(info.execution_provider), info.stream, !info.indirect,
                           info.time_to_first_token_ms, info.total_time_ms, info.total_tokens,
-                          info.input_token_count, info.num_messages, info.memory_used_mb,
-                          info.cpu_time_ms, info.gpu_memory_used_mb));
+                          info.input_token_count, info.num_messages));
 }
 
 void TelemetryLogger::RecordAudioUsage(const AudioUsageInfo& info) {
   logger_.Log(LogLevel::Debug,
               fmt::format("[Telemetry] AudioModel AppName={} UserAgent={} CorrelationId={} ModelId={} EP={} "
                           "AudioSource={} Language={} Stream={} Direct={} TotalTimeMs={} TotalTokens={} "
-                          "InputTokenCount={} CompletionTokenCount={} AudioDurationMs={} SampleRate={} Channels={}",
+                          "InputTokenCount={} CompletionTokenCount={} AudioDurationMs={} SampleRate={} Channels={} "
+                          "TelemetryLayer=foundry_local TimingScope=foundry_request",
                           app_name_, Text(info.user_agent), Id(info.correlation_id), Id(info.model_id),
                           Id(info.execution_provider), Text(info.audio_source), Text(info.language),
                           info.stream, !info.indirect, info.total_time_ms,
@@ -132,7 +132,8 @@ void TelemetryLogger::RecordProcessInfo(const ProcessInfo& info) {
 void TelemetryLogger::RecordHardwareInfo(const HardwareInfo& info) {
   logger_.Log(LogLevel::Debug,
               fmt::format("[Telemetry] HardwareInfo AppName={} DeviceTypes={} ExecutionProviders={} "
-                          "DeviceTypeCount={} ExecutionProviderCount={} HasCPU={} HasGPU={} HasNPU={}",
+                          "DeviceTypeCount={} ExecutionProviderCount={} HasCPU={} HasGPU={} HasNPU={} "
+                          "TelemetryLayer=foundry_local",
                           app_name_, Text(info.device_types), Text(info.execution_providers), info.device_type_count,
                           info.execution_provider_count, info.has_cpu, info.has_gpu, info.has_npu));
 }

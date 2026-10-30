@@ -106,7 +106,7 @@ struct EpDownloadAndRegisterInfo {
   int64_t register_duration_ms = 0;
 };
 
-/// Payload for the Model event — emitted once per inference completion with token / memory metrics.
+/// Payload for the Model event — emitted once per inference completion with request timing and token metrics.
 struct ModelUsageInfo {
   std::string model_id;
   std::string execution_provider;
@@ -119,9 +119,6 @@ struct ModelUsageInfo {
   int32_t total_tokens = 0;
   int32_t input_token_count = 0;
   uint64_t num_messages = 0;
-  int64_t memory_used_mb = -1;      // -1 if not measured
-  int64_t cpu_time_ms = -1;         // -1 if not measured
-  int64_t gpu_memory_used_mb = -1;  // -1 if not measured
 };
 
 /// Payload for the AudioModel event — emitted once per successful audio inference with audio-specific metrics.

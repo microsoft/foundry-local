@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <cstdlib>
 
@@ -130,7 +131,28 @@ bool TelemetryEnvironment::IsCiEnvironment() {
 }
 
 bool TelemetryEnvironment::IsTelemetryDisabledByEnvVar() {
-  return IsTruthyEnvironmentValue("ORT_TELEMETRY_DISABLED");
+  return IsTruthyEnvironmentValue("ORT_TELEMETRY_DISABLED") || IsTelemetryFullyDisabledByEnvVar();
+}
+
+bool TelemetryEnvironment::IsTelemetryFullyDisabledByEnvVar() {
+  const auto value = TryGetEnv("ORT_DISABLE_TELEMETRY");
+  if (!value) {
+    return true;
+  }
+
+  const auto trimmed = Trim(*value);
+  return EqualsIgnoreCase(trimmed, "1") || EqualsIgnoreCase(trimmed, "true") ||
+         EqualsIgnoreCase(trimmed, "yes") || EqualsIgnoreCase(trimmed, "y") ||
+         EqualsIgnoreCase(trimmed, "on");
+}
+
+bool TelemetryEnvironment::IsTelemetryFullyDisabled() {
+  static std::atomic<bool> disabled{false};
+  if (IsTelemetryFullyDisabledByEnvVar()) {
+    disabled.store(true, std::memory_order_release);
+  }
+
+  return disabled.load(std::memory_order_acquire);
 }
 
 }  // namespace fl

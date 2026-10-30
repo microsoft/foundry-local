@@ -223,8 +223,14 @@ class TelemetryEnvironment {
   /// In CI, OneDsTelemetry skips Initialize entirely — no 1DS events emitted.
   static bool IsCiEnvironment();
 
-  /// Returns true when ORT_TELEMETRY_DISABLED requests suppression of non-essential telemetry.
+  /// Returns true when either shared ORT opt-out requests suppression of non-essential telemetry.
   static bool IsTelemetryDisabledByEnvVar();
+
+  /// ORT_DISABLE_TELEMETRY accepts 1/true/yes/on and disables all upload, including ProcessInfo.
+  static bool IsTelemetryFullyDisabledByEnvVar();
+
+  /// Latches a full environment opt-out for the process lifetime; configuration and CI do not latch.
+  static bool IsTelemetryFullyDisabled();
 
   /// Truthy-value semantics: a non-empty, non-whitespace string whose trimmed
   /// value is not "0", "false", "no", or "off" (case-insensitive).

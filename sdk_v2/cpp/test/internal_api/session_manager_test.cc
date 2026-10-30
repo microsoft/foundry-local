@@ -1069,7 +1069,6 @@ TEST_F(SessionTelemetryTest, DirectCallsHaveDistinctContextsAndCurrentTurnMetric
     EXPECT_EQ(usage.input_token_count, 7);
     EXPECT_EQ(usage.num_messages, 0u);
     EXPECT_EQ(usage.time_to_first_token_ms, -1);
-    EXPECT_EQ(usage.memory_used_mb, -1);
     EXPECT_GE(usage.total_time_ms, 0);
   }
 }

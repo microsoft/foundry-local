@@ -222,6 +222,16 @@ Manager::Manager(const Configuration& config) : config_(config) {
   logger_ = std::make_unique<SpdlogLogger>(logger_level, config_.logs_dir.value_or(""));
   s_ort_logger.store(logger_.get(), std::memory_order_release);
 
+  const bool disable_nonessential_telemetry =
+      config_.disable_nonessential_telemetry || IsAdditionalOptionEnabled(config_, "DisableNonessentialTelemetry") ||
+      TelemetryEnvironment::IsTelemetryDisabledByEnvVar();
+  const bool telemetry_hard_disabled =
+      TelemetryEnvironment::IsTelemetryFullyDisabled() || TelemetryEnvironment::IsCiEnvironment();
+  if (disable_nonessential_telemetry || telemetry_hard_disabled) {
+    // GenAI's control is process-wide. Never re-enable telemetry that another consumer has disabled.
+    OgaSetTelemetryEnabled(false);
+  }
+
   if (genai_verbose_logging) {
     SetOgaLogCallback(logger_.get());
   }
@@ -312,10 +322,6 @@ Manager::Manager(const Configuration& config) : config_(config) {
   }
 #endif
 
-  const bool disable_nonessential_telemetry =
-      config_.disable_nonessential_telemetry || IsAdditionalOptionEnabled(config_, "DisableNonessentialTelemetry") ||
-      TelemetryEnvironment::IsTelemetryDisabledByEnvVar();
-  const bool telemetry_hard_disabled = TelemetryEnvironment::IsCiEnvironment();
   auto telemetry = std::make_unique<OneDsTelemetry>(config_.app_name, *logger_, disable_nonessential_telemetry);
   try {
     telemetry->RecordProcessInfo(config_);

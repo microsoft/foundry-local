@@ -15,7 +15,7 @@
 namespace fl {
 
 /// 1DS-backed ITelemetry implementation. Manager config can suppress non-essential uploads while still allowing
-/// ProcessInfo; CI and unit-test processes suppress upload entirely.
+/// ProcessInfo; CI and ORT_DISABLE_TELEMETRY suppress upload entirely.
 class OneDsTelemetry : public ITelemetry {
  public:
   /// @param app_name      Configuration::app_name; stamped as AppName on every event.

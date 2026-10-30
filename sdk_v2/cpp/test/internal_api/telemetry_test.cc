@@ -171,6 +171,25 @@ TEST(TelemetryEnvironmentTest, DetectsSharedOrtTelemetryOptOut) {
   EXPECT_TRUE(TelemetryEnvironment::IsTelemetryDisabledByEnvVar());
 }
 
+TEST(TelemetryEnvironmentTest, GenAiFullOptOutHonorsAffirmativeTokensAndLegacyPrecedence) {
+  ScopedEnvVar legacy("ORT_TELEMETRY_DISABLED", "false");
+  for (const auto* value : {"1", " true ", "YES", "y", " Y ", "On"}) {
+    ScopedEnvVar disabled("ORT_DISABLE_TELEMETRY", value);
+    EXPECT_TRUE(TelemetryEnvironment::IsTelemetryFullyDisabledByEnvVar()) << value;
+    EXPECT_TRUE(TelemetryEnvironment::IsTelemetryDisabledByEnvVar()) << value;
+  }
+  for (const auto* value : {"", "0", "false", "no", "off", "anything"}) {
+    ScopedEnvVar disabled("ORT_DISABLE_TELEMETRY", value);
+    EXPECT_FALSE(TelemetryEnvironment::IsTelemetryFullyDisabledByEnvVar()) << value;
+    EXPECT_FALSE(TelemetryEnvironment::IsTelemetryDisabledByEnvVar()) << value;
+  }
+
+  ScopedEnvVar disabled("ORT_DISABLE_TELEMETRY", "false");
+  ScopedEnvVar legacy_enabled("ORT_TELEMETRY_DISABLED", "anything");
+  EXPECT_TRUE(TelemetryEnvironment::IsTelemetryDisabledByEnvVar());
+  EXPECT_FALSE(TelemetryEnvironment::IsTelemetryFullyDisabledByEnvVar());
+}
+
 TEST(TelemetryEnvironmentTest, ClassifiesContainersAndVirtualMachines) {
   using TelemetryInternal::ClassifyHostEnvironment;
   using TelemetryInternal::HostEnvironmentEvidence;
@@ -234,8 +253,9 @@ TEST(TelemetryEnvironmentTest, ClassifiesEmulatorAndUndetectedHostWithoutClaimin
 }
 
 TEST(OneDsTelemetryTest, DisableNonessentialTelemetrySuppressesUpload) {
-  constexpr std::array<const char*, 14> environment_variables = {
+  constexpr std::array<const char*, 15> environment_variables = {
       "ORT_TELEMETRY_DISABLED",
+      "ORT_DISABLE_TELEMETRY",
       "CI",
       "TF_BUILD",
       "GITHUB_ACTIONS",
@@ -273,6 +293,7 @@ TEST(OneDsTelemetryTest, DisableNonessentialTelemetrySuppressesUpload) {
 }
 
 TEST(OneDsTelemetryTest, OrtEnvironmentVariableSuppressesOnlyNonessentialUpload) {
+  ScopedEnvVar full_opt_out("ORT_DISABLE_TELEMETRY", nullptr);
   constexpr std::array<const char*, 13> ci_environment_variables = {
       "CI",
       "TF_BUILD",
@@ -421,6 +442,10 @@ TEST(TelemetryLoggerTest, RecordExceptionAndModelEventsIncludeSpecificValues) {
   EXPECT_NE(logger.entries[1].message.find("InputTokenCount=17"), std::string::npos);
   EXPECT_NE(logger.entries[1].message.find("TotalTokens=31"), std::string::npos);
   EXPECT_NE(logger.entries[1].message.find("TotalTimeMs=250"), std::string::npos);
+  EXPECT_NE(logger.entries[1].message.find("TelemetryLayer=foundry_local TimingScope=foundry_request"),
+            std::string::npos);
+  EXPECT_EQ(logger.entries[1].message.find("MemoryUsedMB"), std::string::npos);
+  EXPECT_EQ(logger.entries[1].message.find("CpuTimeMs"), std::string::npos);
 
   EXPECT_NE(logger.entries[2].message.find("Action=ModelLoad"), std::string::npos);
   EXPECT_NE(logger.entries[2].message.find("ModelId=phi-3-mini"), std::string::npos);

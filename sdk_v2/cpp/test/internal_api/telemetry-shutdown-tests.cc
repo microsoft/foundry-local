@@ -269,12 +269,12 @@ int main(int argc, char* argv[]) {
   }
   const std::string_view mode{argv[1]};
   if (mode != "retained" && mode != "threaded" && mode != "recreated" && mode != "explicit" &&
-      mode != "prime-only" && mode != "optout" && mode != "ci-disabled" &&
+      mode != "prime-only" && mode != "optout" && mode != "full-optout" && mode != "ci-disabled" &&
       mode != "enabled-after-ci" && mode != "late-create" && mode != "upload-after-ci") {
     Fail(32, "unknown shutdown regression mode");
   }
   auto& state = GetState();
-  state.no_worker_expected = mode == "prime-only" || mode == "ci-disabled";
+  state.no_worker_expected = mode == "prime-only" || mode == "ci-disabled" || mode == "full-optout";
   state.essential_only = mode == "optout";
   state.late_create_expected = mode == "late-create";
   state.upload_at_exit = mode == "upload-after-ci";
@@ -288,6 +288,16 @@ int main(int argc, char* argv[]) {
   } else {
     CreateManager();
   }
+  if (mode == "full-optout") {
+#ifdef _WIN32
+    if (_putenv_s("ORT_DISABLE_TELEMETRY", "0") != 0) Fail(32, "cannot clear full opt-out variable");
+#else
+    if (setenv("ORT_DISABLE_TELEMETRY", "0", 1) != 0) Fail(32, "cannot clear full opt-out variable");
+#endif
+    fl::Manager::Destroy();
+    CreateManager();
+  }
+
   if (state.no_worker_expected) return 0;
 
   if (mode == "enabled-after-ci" || state.upload_at_exit) {

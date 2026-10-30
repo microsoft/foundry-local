@@ -16,6 +16,17 @@ Foundry Local uses the cross-platform 1DS SDK (cpp_client_telemetry) to send tra
 
 Prompts, model outputs, audio contents, raw device identifiers, and secrets are not collected.
 
+Foundry Local collects a lightweight startup baseline (OS, architecture, processor count and total system RAM),
+coarse CPU/GPU/NPU and execution-provider availability, and SDK/service diagnostics such as model selection,
+downloads, catalogs, cache activity and request timing/token counts. Detailed hardware specifications and inference
+resource measurements belong to ONNX Runtime GenAI rather than a second collector in Foundry Local. Availability
+of those diagnostics depends on the GenAI runtime version and its telemetry controls.
+
+Foundry events are labeled `TelemetryLayer=foundry_local`; model usage timing is labeled
+`TimingScope=foundry_request`. GenAI generation timings have a different scope and must not be added to Foundry
+request timings as independent work. Existing Foundry request correlation IDs remain separate from GenAI's
+model/generator IDs; the layer label does not establish a cross-layer request join.
+
 Non-essential telemetry can be disabled as follows.
 
 - **Disable via manager config.** Set the disable-nonessential-telemetry option before creating the manager:
@@ -26,3 +37,14 @@ Non-essential telemetry can be disabled as follows.
   - Rust: `FoundryLocalConfig::new("my_app").additional_setting("DisableNonessentialTelemetry", "true")`
   - Native additional option: `DisableNonessentialTelemetry=true`
 - **Disable via environment.** Set `ORT_TELEMETRY_DISABLED=1` before creating the manager.
+
+The configuration opt-out also disables non-essential GenAI telemetry through its process-wide API. Foundry Local
+never automatically re-enables GenAI telemetry, including when a later manager enables Foundry telemetry.
+`ORT_TELEMETRY_DISABLED` retains its existing Foundry behavior: non-essential upload is disabled, but `ProcessInfo`
+may still upload. Updated GenAI runtimes also recognize that variable as a full GenAI opt-out.
+
+For a full opt-out in both libraries, set `ORT_DISABLE_TELEMETRY=1` before either library initializes.
+Foundry Local then creates no telemetry uploader or persistent telemetry identifier and uploads no events,
+including `ProcessInfo`; local diagnostic logging remains available. The canonical variable accepts `1`, `true`,
+`yes`, `y`, or `on`, ignoring case and surrounding whitespace. Both libraries retain a full opt-out for the process
+lifetime, even if the variable is later cleared; GenAI's runtime API cannot reverse it.
