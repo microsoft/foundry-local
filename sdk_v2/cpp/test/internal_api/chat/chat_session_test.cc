@@ -4879,6 +4879,21 @@ TEST_F(QwenNativeProductionIntegrationTest,
   }
 }
 
+TEST(ChatSessionInternalTest, ExplicitCatalogToolSupportOverridesInference) {
+  EXPECT_TRUE(chat_session_internal::ResolveToolCallingSupport(
+      std::nullopt, /*inferred_support=*/true));
+  EXPECT_FALSE(chat_session_internal::ResolveToolCallingSupport(
+      std::nullopt, /*inferred_support=*/false));
+  EXPECT_TRUE(chat_session_internal::ResolveToolCallingSupport(
+      -1, /*inferred_support=*/true));
+  EXPECT_FALSE(chat_session_internal::ResolveToolCallingSupport(
+      -1, /*inferred_support=*/false));
+  EXPECT_TRUE(chat_session_internal::ResolveToolCallingSupport(
+      1, /*inferred_support=*/false));
+  EXPECT_FALSE(chat_session_internal::ResolveToolCallingSupport(
+      0, /*inferred_support=*/true));
+}
+
 TEST_F(QwenNativeProductionIntegrationTest,
        MixedRawEnvelopeKeepsCanonicalFunctionPromptAndBothCallFormats) {
   const std::string patch = "*** Begin Patch\n*** Add File: note.txt\n+literal <think>text</think>\n*** End Patch";

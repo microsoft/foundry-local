@@ -22,7 +22,8 @@ class ToolCallPlan;
 struct ToolCallContext {
   static constexpr std::string_view kAssistantTextPrefix = "MESSAGE\n";
 
-  /// Whether the model supports tool calling (controlled by catalog metadata and/or request option)
+  /// Whether the model supports tool calling, using explicit catalog metadata when present
+  /// and otherwise the loaded model's rendered-template probe.
   bool supports_tool_calling = false;
 
   /// The special token that marks the start of a tool call in generated text.

@@ -24,7 +24,10 @@ namespace fl {
 
 class OnnxChatEngine;
 
+// Capabilities proven from rendered chat-template probes for the loaded model package.
+// Probe failures and ambiguous projections leave the corresponding capability disabled.
 struct ModelCapabilities {
+  bool supports_tool_calling = false;
   bool native_qwen_xml_tool_calls = false;
   bool positional_tool_results = false;
   bool supports_reasoning_history = false;
@@ -37,6 +40,8 @@ namespace model_capabilities_internal {
 ModelCapabilities ResolveRenderedProbes(std::string_view model_type,
                                         std::string_view tool_call_projection,
                                         std::string_view tool_result_projection,
+                                        std::string_view tool_call_start = {},
+                                        std::string_view tool_call_end = {},
                                         std::string_view reasoning_projection = {},
                                         std::string_view no_preserve_reasoning_projection = {},
                                         std::string_view reasoning_start = {},
@@ -62,6 +67,7 @@ class GenAIModelInstance {
   ExecutionProvider EP() const { return ep_; }
   bool IsMultiModal() const;
   const std::string& ModelType() const { return model_type_; }
+  bool SupportsToolCalling() const { return capabilities_.supports_tool_calling; }
   bool HasNativeQwenXmlToolCalls() const { return capabilities_.native_qwen_xml_tool_calls; }
   bool HasPositionalToolResults() const { return capabilities_.positional_tool_results; }
   bool SupportsReasoningHistory() const { return capabilities_.supports_reasoning_history; }
