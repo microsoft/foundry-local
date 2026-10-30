@@ -9,7 +9,8 @@
 #include <optional>
 #include <string>
 #include <thread>
-#include <unordered_set>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <foundry_local/foundry_local_c.h>
@@ -17,6 +18,7 @@
 #include "inferencing/session/callback_handler.h"
 #include "inferencing/session/request.h"
 #include "inferencing/session/response.h"
+#include "inferencing/session/streaming_callback.h"
 #include "inferencing/session/tool_registry.h"
 #include "inferencing/session/types.h"
 #include "inferencing/generative/chat/search_options.h"
@@ -72,7 +74,9 @@ class Session {
   /// class, then waits for all async streaming callbacks to complete.
   /// Waiting here keeps the Request reference valid for the lifetime of any
   /// in-flight callbacks and ensures the Response is fully populated on return.
-  void ProcessRequest(const Request& request, Response& response);
+  /// Returns the completed turn count before releasing the request serialization lock.
+  size_t ProcessRequest(const Request& request, Response& response,
+                        std::optional<StreamingCallback> callback = std::nullopt);
 
   /// Capture a chat request and session state under the same serialization boundary as generation and undo.
   std::unique_ptr<RequestPreflightOperation> CreateRequestPreflight(const Request& request) const;
@@ -114,8 +118,9 @@ class Session {
   virtual size_t TurnCount() const { return 0; }
 
   /// Undo the last `count` turns. Only meaningful for chat sessions.
+  /// Returns the remaining turn count before releasing the request serialization lock.
   /// @throws fl::Exception if the session type does not support turn management or count > TurnCount().
-  virtual void UndoTurns(size_t count);
+  virtual size_t UndoTurns(size_t count);
 
   /// Session-level parameters overlaid onto each request.
   void SetSessionOptions(const KeyValuePairs& options) {
@@ -124,10 +129,14 @@ class Session {
     SetSessionOptionsImpl(session_options_);
   }
 
-  using StreamingCallbackFn = std::function<int(flStreamingCallbackData, void*)>;
+  using StreamingCallbackFn = StreamingCallback::Function;
   void SetStreamingCallback(StreamingCallbackFn callback, void* user_data = nullptr) {
-    callback_fn_ = std::move(callback);
-    callback_user_data_ = user_data;
+    StreamingCallbackFn previous;
+    {
+      std::lock_guard<std::mutex> lock(*active_requests_mutex_);
+      previous = std::exchange(callback_fn_, std::move(callback));
+      callback_user_data_ = user_data;
+    }
   }
 
   /// Stage telemetry context for the next operation (including a cached session's next turn).
@@ -173,11 +182,17 @@ class Session {
   /// Create a per-request callback handler. Returns nullptr if no callback is set.
   /// The handler is owned by the caller (unique_ptr) and drains+joins on destruction.
   std::unique_ptr<CallbackHandler> CreateCallbackHandler(const Request& request) {
-    if (!callback_fn_) {
+    StreamingCallback callback;
+    {
+      std::lock_guard<std::mutex> lock(*active_requests_mutex_);
+      callback = active_requests_.at(&request);
+    }
+
+    if (!callback.function) {
       return nullptr;
     }
 
-    return std::make_unique<CallbackHandler>(request, callback_fn_, logger_, callback_user_data_);
+    return std::make_unique<CallbackHandler>(request, std::move(callback.function), logger_, callback.user_data);
   }
 
   const KeyValuePairs& SessionOptions() const { return session_options_; }
@@ -193,7 +208,7 @@ class Session {
   void ValidateRequestItems(const Request& request) const;
   InvocationContext TakeInvocationContext();
   void RecordUsage(const Request& request, const Response& response,
-                   const InvocationContext& context, int64_t total_time_ms);
+                   const InvocationContext& context, int64_t total_time_ms, bool streaming);
 
   const fl::Model& catalog_model_;
   ILogger& logger_;
@@ -208,10 +223,10 @@ class Session {
   mutable std::unique_ptr<std::mutex> request_mutex_ = std::make_unique<std::mutex>();
 
   // In-flight requests tracked so Cancel() can transition their lifecycle state from another thread. Guarded by its
-  // own mutex (not request_mutex_) because concurrent sessions (e.g. audio) may hold several at once, and Cancel()
+  // own mutex (not request_mutex_) because concurrent sessions (e.g. embeddings) may hold several at once, and Cancel()
   // must run without waiting on an active generation holding request_mutex_.
   // unique_ptr<mutex> keeps Session movable (std::mutex is not movable), matching request_mutex_.
-  std::unordered_set<const Request*> active_requests_;
+  std::unordered_map<const Request*, StreamingCallback> active_requests_;
   mutable std::unique_ptr<std::mutex> active_requests_mutex_ = std::make_unique<std::mutex>();
   std::thread::id processing_thread_;
 

@@ -8,6 +8,13 @@ if(NOT CMAKE_CROSSCOMPILING AND NOT ANDROID AND NOT IOS)
     target_include_directories(sdk-dependency-probe PRIVATE ../include)
     target_compile_options(sdk-dependency-probe PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
     target_link_libraries(sdk-dependency-probe PRIVATE ${CMAKE_DL_LIBS})
+
+    add_executable(cpp-api-v2-compatibility cpp-api-v2-compatibility.cc)
+    target_include_directories(cpp-api-v2-compatibility PRIVATE ../include)
+    target_compile_definitions(cpp-api-v2-compatibility PRIVATE FL_STATIC_LIBRARY)
+    target_compile_options(cpp-api-v2-compatibility PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+    set_target_properties(cpp-api-v2-compatibility PROPERTIES CXX_STANDARD 17)
+    add_test(NAME cpp-api-v2-compatibility COMMAND cpp-api-v2-compatibility)
 endif()
 
 if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux" OR
@@ -79,6 +86,8 @@ endif()
 # ==========================================================================
 add_executable(foundry_local_tests
     test_main.cc
+    internal_api/api_backend_test.cc
+    internal_api/request_admission_test.cc
     internal_api/audio/audio_session_test.cc
     internal_api/audio/audio_transcription_contract_test.cc
     internal_api/audio/pcm_utils_test.cc
@@ -114,7 +123,11 @@ add_executable(foundry_local_tests
     internal_api/http_ca_bundle_test.cc
     internal_api/http_download_test.cc
     internal_api/http_retry_test.cc
+    internal_api/host_lifetime_test.cc
+    internal_api/host_profile_test.cc
     internal_api/item_test.cc
+    internal_api/item_codec_test.cc
+    internal_api/sdk_values_test.cc
     internal_api/local_model_catalog_test.cc
     internal_api/local_model_scanner_test.cc
     internal_api/model_info_test.cc
@@ -172,11 +185,39 @@ if(FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS)
     )
 endif()
 
+if(FOUNDRY_LOCAL_HAS_SHARED_HOST)
+    target_sources(foundry_local_tests PRIVATE
+        internal_api/host_server_test.cc
+        internal_api/host_state_test.cc
+        internal_api/child_host_role_test.cc
+        internal_api/bootstrap_descriptor_test.cc
+        internal_api/ipc_channel_test.cc
+        internal_api/process_watch_test.cc
+        internal_api/sdk_connection_test.cc
+        internal_api/sdk_session_test.cc
+    )
+    add_executable(hosting_process_fixture
+        hosting_process_fixture.cc
+        "${PROJECT_SOURCE_DIR}/${FOUNDRY_LOCAL_PROCESS_WATCH_SOURCE}"
+    )
+    target_include_directories(hosting_process_fixture PRIVATE ../src)
+    target_compile_options(hosting_process_fixture PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+    target_compile_definitions(foundry_local_tests PRIVATE
+        FOUNDRY_PROCESS_FIXTURE_PATH="$<TARGET_FILE:hosting_process_fixture>"
+    )
+    set_source_files_properties(internal_api/bootstrap_descriptor_test.cc PROPERTIES COMPILE_DEFINITIONS
+        "FOUNDRY_HOST_EXECUTABLE=\"$<TARGET_FILE:foundry-local-host>\";FOUNDRY_NATIVE_RUNTIME_DIR=\"$<TARGET_FILE_DIR:foundry_local>\"")
+    add_dependencies(foundry_local_tests hosting_process_fixture foundry-local-runtime-manifest)
+endif()
+
 target_sources(foundry_local_tests PRIVATE
     internal_api/chat/dynamic_engine_chat_test.cc
 )
 
 target_compile_options(foundry_local_tests PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+target_compile_definitions(foundry_local_tests PRIVATE
+    FOUNDRY_LOCAL_TEST_SCRATCH_DIR="${PROJECT_SOURCE_DIR}/build/TestResults"
+)
 if(MSVC)
     target_compile_options(foundry_local_tests PRIVATE /bigobj)
 endif()
@@ -275,6 +316,15 @@ add_test(
         -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/cmake/version_configure_twice
         -DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/version_configure_twice
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/version_configure_twice.cmake
+)
+
+add_test(
+    NAME NativeBuildIdentityIncremental
+    COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/cmake/native_build_identity
+        -DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/native_build_identity
+        "-DGENERATOR=${CMAKE_GENERATOR}"
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/native_build_identity.cmake
 )
 
 # ==========================================================================

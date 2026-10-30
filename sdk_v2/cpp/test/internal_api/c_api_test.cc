@@ -48,14 +48,16 @@ TEST(CApiTest, SupportedVersionsReturnSameExpandedApiTables) {
   ASSERT_NE(v0, nullptr);
   ASSERT_NE(v1, nullptr);
   ASSERT_NE(v2, nullptr);
-  ASSERT_EQ(v3, nullptr);
+  ASSERT_NE(v3, nullptr);
 
   EXPECT_EQ(v0, v2);
   EXPECT_EQ(v1, v2);
+  EXPECT_EQ(v2, v3);
   EXPECT_EQ(v1->GetCatalogApi(), v2->GetCatalogApi());
   EXPECT_EQ(v1->GetModelApi(), v2->GetModelApi());
   EXPECT_NE(v1->GetCatalogApi()->RegisterModel, nullptr);
   EXPECT_NE(v1->GetModelApi()->CreateModelInfo, nullptr);
+  EXPECT_NE(v3->GetConfigurationApi()->SetUseSharedHost, nullptr);
 }
 
 TEST(CApiTest, VersionReturnsNonNull) {
@@ -212,6 +214,22 @@ TEST(CApiTest, CppConfigurationAutomaticallySetsSdkIdentity) {
   EXPECT_EQ(default_user_agent->second, std::string("foundry-local-cpp/") + foundry_local::Version());
 }
 
+TEST(CApiTest, HostedConfigurationRejectsExternalServiceBeforeManagerInitialization) {
+  foundry_local::Configuration config("hosted-config-test");
+  config.SetUseSharedHost(true).SetExternalServiceUrl("http://127.0.0.1:1234");
+  const auto* api = GetApi();
+  flManager* manager = nullptr;
+  StatusGuard status{api->Manager_Create(config.native_handle(), &manager), api};
+  ASSERT_NE(status.s, nullptr);
+  EXPECT_EQ(api->Status_GetErrorCode(status.s), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  EXPECT_NE(std::string(api->Status_GetErrorMessage(status.s)).find("external service"), std::string::npos);
+  EXPECT_EQ(manager, nullptr);
+
+  config.SetUseSharedHost(false);
+  auto embedded = *AsImpl(config.native_handle());
+  EXPECT_NO_THROW(embedded.Validate());
+}
+
 // ========================================================================
 // Manager API
 // ========================================================================
@@ -253,6 +271,72 @@ TEST(CApiTest, ManagerReleaseNullIsNoOp) {
   ASSERT_NE(api, nullptr);
   api->Manager_Release(nullptr);
 }
+
+#ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
+TEST(CApiTest, ServiceUrlSnapshotsSurviveQueriesAndListenerChanges) {
+  const auto* api = GetApi();
+  foundry_local::Configuration config("url-snapshot-test");
+  config.AddWebServiceEndpoint("http://127.0.0.1:0");
+  flManager* native = nullptr;
+  ASSERT_FL_OK(api, api->Manager_Create(config.native_handle(), &native));
+  const std::unique_ptr<flManager, decltype(api->Manager_Release)> manager(native, api->Manager_Release);
+  ASSERT_FL_OK(api, api->Manager_WebServiceStart(native));
+
+  const char* const* original = nullptr;
+  size_t count = 0;
+  ASSERT_FL_OK(api, api->Manager_WebServiceUrls(native, &original, &count));
+  ASSERT_EQ(count, 1u);
+  const std::string expected = original[0];
+
+  ASSERT_FL_OK(api, api->Manager_WebServiceStop(native));
+  const char* const* stopped = nullptr;
+  ASSERT_FL_OK(api, api->Manager_WebServiceUrls(native, &stopped, &count));
+  EXPECT_EQ(count, 0u);
+  EXPECT_STREQ(original[0], expected.c_str());
+
+  ASSERT_FL_OK(api, api->Manager_WebServiceStart(native));
+  const char* const* restarted = nullptr;
+  ASSERT_FL_OK(api, api->Manager_WebServiceUrls(native, &restarted, &count));
+  ASSERT_EQ(count, 1u);
+  EXPECT_STREQ(original[0], expected.c_str());
+  ASSERT_FL_OK(api, api->Manager_Shutdown(native));
+  EXPECT_STREQ(original[0], expected.c_str());
+}
+
+TEST(CApiTest, ConcurrentServiceUrlReadersCanCopyDuringListenerChanges) {
+  const auto* api = GetApi();
+  foundry_local::Configuration config("url-reader-test");
+  config.AddWebServiceEndpoint("http://127.0.0.1:0");
+  flManager* native = nullptr;
+  ASSERT_FL_OK(api, api->Manager_Create(config.native_handle(), &native));
+  const std::unique_ptr<flManager, decltype(api->Manager_Release)> manager(native, api->Manager_Release);
+  ASSERT_FL_OK(api, api->Manager_WebServiceStart(native));
+
+  std::vector<std::jthread> readers;
+  for (size_t i = 0; i < 4; ++i) {
+    readers.emplace_back([&](std::stop_token stop) {
+      while (!stop.stop_requested()) {
+        const char* const* urls = nullptr;
+        size_t count = 0;
+        ASSERT_FL_OK(api, api->Manager_WebServiceUrls(native, &urls, &count));
+        ASSERT_LE(count, 1u);
+        for (size_t j = 0; j < count; ++j) {
+          const std::string url = urls[j];
+          EXPECT_EQ(url.find("http://127.0.0.1:"), 0u);
+          EXPECT_GT(url.size(), std::strlen("http://127.0.0.1:"));
+        }
+      }
+    });
+  }
+
+  for (size_t i = 0; i < 3; ++i) {
+    ASSERT_FL_OK(api, api->Manager_WebServiceStop(native));
+    ASSERT_FL_OK(api, api->Manager_WebServiceStart(native));
+  }
+
+  ASSERT_FL_OK(api, api->Manager_Shutdown(native));
+}
+#endif
 
 TEST(CApiTest, ManagerCreateNullConfigFails) {
   const flApi* api = GetApi();
@@ -1162,13 +1246,13 @@ TEST(CApiTest, ItemCreateTextAndRelease) {
   // DEFAULT type round-trip.
   {
     flTextData in{};
-    in.version = FOUNDRY_LOCAL_API_VERSION;
+    in.version = FOUNDRY_LOCAL_DATA_VERSION;
     in.text = "hello world";
     in.type = FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT;
     EXPECT_TRUE(IsOk(item_api->SetText(item, &in)));
 
     flTextData out{};
-    out.version = FOUNDRY_LOCAL_API_VERSION;
+    out.version = FOUNDRY_LOCAL_DATA_VERSION;
     EXPECT_TRUE(IsOk(item_api->GetText(item, &out)));
     EXPECT_STREQ(out.text, "hello world");
     EXPECT_EQ(out.type, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT);
@@ -1177,13 +1261,13 @@ TEST(CApiTest, ItemCreateTextAndRelease) {
   // REASONING type round-trip.
   {
     flTextData in{};
-    in.version = FOUNDRY_LOCAL_API_VERSION;
+    in.version = FOUNDRY_LOCAL_DATA_VERSION;
     in.text = "let me think...";
     in.type = FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING;
     EXPECT_TRUE(IsOk(item_api->SetText(item, &in)));
 
     flTextData out{};
-    out.version = FOUNDRY_LOCAL_API_VERSION;
+    out.version = FOUNDRY_LOCAL_DATA_VERSION;
     EXPECT_TRUE(IsOk(item_api->GetText(item, &out)));
     EXPECT_STREQ(out.text, "let me think...");
     EXPECT_EQ(out.type, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING);
@@ -1202,7 +1286,7 @@ TEST(CApiTest, ItemTextTypeMismatch) {
 
   // SetText / GetText on a non-TEXT item must fail.
   flTextData in{};
-  in.version = FOUNDRY_LOCAL_API_VERSION;
+  in.version = FOUNDRY_LOCAL_DATA_VERSION;
   in.text = "bad";
   flStatus* status = item_api->SetText(item, &in);
   ASSERT_NE(status, nullptr);
@@ -1210,7 +1294,7 @@ TEST(CApiTest, ItemTextTypeMismatch) {
   api->Status_Release(status);
 
   flTextData out{};
-  out.version = FOUNDRY_LOCAL_API_VERSION;
+  out.version = FOUNDRY_LOCAL_DATA_VERSION;
   status = item_api->GetText(item, &out);
   ASSERT_NE(status, nullptr);
   EXPECT_EQ(api->Status_GetErrorCode(status), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
@@ -1229,21 +1313,21 @@ TEST(CApiTest, ItemCreateMessage) {
 
   flItem* text = nullptr;
   ASSERT_TRUE(IsOk(item_api->Create(FOUNDRY_LOCAL_ITEM_TEXT, &text)));
-  flTextData text_in{FOUNDRY_LOCAL_API_VERSION, "Hello!", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT};
+  flTextData text_in{FOUNDRY_LOCAL_DATA_VERSION, "Hello!", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT};
   ASSERT_TRUE(IsOk(item_api->SetText(text, &text_in)));
 
   const flItem* parts[] = {text};
-  flMessageData msg_in{FOUNDRY_LOCAL_API_VERSION, FOUNDRY_LOCAL_ROLE_USER, parts, 1, nullptr};
+  flMessageData msg_in{FOUNDRY_LOCAL_DATA_VERSION, FOUNDRY_LOCAL_ROLE_USER, parts, 1, nullptr};
   EXPECT_TRUE(IsOk(item_api->SetMessage(item, &msg_in)));
 
   flMessageData msg_out{};
-  msg_out.version = FOUNDRY_LOCAL_API_VERSION;
+  msg_out.version = FOUNDRY_LOCAL_DATA_VERSION;
   EXPECT_TRUE(IsOk(item_api->GetMessage(item, &msg_out)));
   EXPECT_EQ(msg_out.role, FOUNDRY_LOCAL_ROLE_USER);
   ASSERT_EQ(msg_out.content_items_count, 1u);
   ASSERT_NE(msg_out.content_items[0], nullptr);
   flTextData part_out{};
-  part_out.version = FOUNDRY_LOCAL_API_VERSION;
+  part_out.version = FOUNDRY_LOCAL_DATA_VERSION;
   EXPECT_TRUE(IsOk(item_api->GetText(msg_out.content_items[0], &part_out)));
   EXPECT_STREQ(part_out.text, "Hello!");
   EXPECT_EQ(msg_out.name, nullptr);
@@ -1260,12 +1344,12 @@ TEST(CApiTest, ItemCreateToolCall) {
   ASSERT_TRUE(IsOk(item_api->Create(FOUNDRY_LOCAL_ITEM_TOOL_CALL, &item)));
   ASSERT_NE(item, nullptr);
 
-  flToolCallData tc_in{FOUNDRY_LOCAL_API_VERSION, "call_1", "get_weather",
+  flToolCallData tc_in{FOUNDRY_LOCAL_DATA_VERSION, "call_1", "get_weather",
                        R"({"city":"Seattle"})"};
   EXPECT_TRUE(IsOk(item_api->SetToolCall(item, &tc_in)));
 
   flToolCallData tc_out{};
-  tc_out.version = FOUNDRY_LOCAL_API_VERSION;
+  tc_out.version = FOUNDRY_LOCAL_DATA_VERSION;
   EXPECT_TRUE(IsOk(item_api->GetToolCall(item, &tc_out)));
   EXPECT_STREQ(tc_out.call_id, "call_1");
   EXPECT_STREQ(tc_out.name, "get_weather");
@@ -1281,7 +1365,7 @@ TEST(CApiTest, ItemSetToolCallRejectsInvalidUtf8Arguments) {
   ASSERT_TRUE(IsOk(item_api->Create(FOUNDRY_LOCAL_ITEM_TOOL_CALL, &item)));
 
   const char invalid_utf8[] = {'\xC3', '\x28', '\0'};
-  flToolCallData data{FOUNDRY_LOCAL_API_VERSION, "call_1", "custom", invalid_utf8};
+  flToolCallData data{FOUNDRY_LOCAL_DATA_VERSION, "call_1", "custom", invalid_utf8};
   StatusGuard status{item_api->SetToolCall(item, &data), api};
   ASSERT_NE(status.s, nullptr);
   EXPECT_EQ(api->Status_GetErrorCode(status.s), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
@@ -1296,11 +1380,11 @@ TEST(CApiTest, ItemSetToolCallObservesOnlyTheNulTerminatedPrefix) {
   ASSERT_TRUE(IsOk(item_api->Create(FOUNDRY_LOCAL_ITEM_TOOL_CALL, &item)));
 
   const char arguments[] = {'o', 'k', '\0', '\xC3', '\x28', '\0'};
-  flToolCallData data{FOUNDRY_LOCAL_API_VERSION, "call_1", "custom", arguments};
+  flToolCallData data{FOUNDRY_LOCAL_DATA_VERSION, "call_1", "custom", arguments};
   EXPECT_TRUE(IsOk(item_api->SetToolCall(item, &data)));
 
   flToolCallData output{};
-  output.version = FOUNDRY_LOCAL_API_VERSION;
+  output.version = FOUNDRY_LOCAL_DATA_VERSION;
   ASSERT_TRUE(IsOk(item_api->GetToolCall(item, &output)));
   EXPECT_STREQ(output.arguments, "ok");
 
@@ -1312,7 +1396,7 @@ TEST(CApiTest, ItemGetToolCallRejectsInternalEmbeddedNulWithoutTruncating) {
   const flItemApi* item_api = api->GetItemApi();
   fl::ToolCallItem item("call_1", "custom", std::string{"before\0after", 12});
   flToolCallData output{};
-  output.version = FOUNDRY_LOCAL_API_VERSION;
+  output.version = FOUNDRY_LOCAL_DATA_VERSION;
 
   StatusGuard status{item_api->GetToolCall(item.AsApiType(), &output), api};
   ASSERT_NE(status.s, nullptr);
@@ -1328,11 +1412,11 @@ TEST(CApiTest, ItemCreateToolResult) {
   ASSERT_TRUE(IsOk(item_api->Create(FOUNDRY_LOCAL_ITEM_TOOL_RESULT, &item)));
   ASSERT_NE(item, nullptr);
 
-  flToolResultData tr_in{FOUNDRY_LOCAL_API_VERSION, "call_1", "72°F and sunny"};
+  flToolResultData tr_in{FOUNDRY_LOCAL_DATA_VERSION, "call_1", "72°F and sunny"};
   EXPECT_TRUE(IsOk(item_api->SetToolResult(item, &tr_in)));
 
   flToolResultData tr_out{};
-  tr_out.version = FOUNDRY_LOCAL_API_VERSION;
+  tr_out.version = FOUNDRY_LOCAL_DATA_VERSION;
   EXPECT_TRUE(IsOk(item_api->GetToolResult(item, &tr_out)));
   EXPECT_STREQ(tr_out.call_id, "call_1");
   EXPECT_STREQ(tr_out.result, "72°F and sunny");
@@ -1392,10 +1476,10 @@ TEST(CApiTest, RequestCreateAddItemAndRelease) {
   ASSERT_TRUE(IsOk(item_api->Create(FOUNDRY_LOCAL_ITEM_MESSAGE, &item)));
   flItem* text = nullptr;
   ASSERT_TRUE(IsOk(item_api->Create(FOUNDRY_LOCAL_ITEM_TEXT, &text)));
-  flTextData hi_data{FOUNDRY_LOCAL_API_VERSION, "Hi", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT};
+  flTextData hi_data{FOUNDRY_LOCAL_DATA_VERSION, "Hi", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT};
   ASSERT_TRUE(IsOk(item_api->SetText(text, &hi_data)));
   const flItem* parts[] = {text};
-  flMessageData msg{FOUNDRY_LOCAL_API_VERSION, FOUNDRY_LOCAL_ROLE_USER, parts, 1, nullptr};
+  flMessageData msg{FOUNDRY_LOCAL_DATA_VERSION, FOUNDRY_LOCAL_ROLE_USER, parts, 1, nullptr};
   ASSERT_TRUE(IsOk(item_api->SetMessage(item, &msg)));
   item_api->Item_Release(text);  // message has internalized a copy of the part
   EXPECT_TRUE(IsOk(inf_api->Request_AddItem(req, item, /*take_ownership*/ false)));
@@ -1429,7 +1513,7 @@ TEST(CApiTest, ResponseCreateAndRelease) {
   EXPECT_EQ(inf_api->Response_GetFinishReason(resp), FOUNDRY_LOCAL_FINISH_NONE);
 
   flUsage usage{};
-  usage.version = FOUNDRY_LOCAL_API_VERSION;
+  usage.version = FOUNDRY_LOCAL_DATA_VERSION;
   EXPECT_TRUE(IsOk(inf_api->Response_GetUsage(resp, &usage)));
   EXPECT_EQ(usage.total_tokens, 0);
 
@@ -1465,14 +1549,14 @@ TEST(CApiTest, ItemCreateBytesRoundTrip) {
 
   uint8_t data[] = {0xDE, 0xAD, 0xBE, 0xEF};
   flBytesData bytes_in{};
-  bytes_in.version = FOUNDRY_LOCAL_API_VERSION;
+  bytes_in.version = FOUNDRY_LOCAL_DATA_VERSION;
   bytes_in.item_type = FOUNDRY_LOCAL_ITEM_AUDIO;
   bytes_in.data = data;
   bytes_in.data_size = sizeof(data);
   EXPECT_TRUE(IsOk(item_api->SetBytes(item, &bytes_in)));
 
   flBytesData bytes_out{};
-  bytes_out.version = FOUNDRY_LOCAL_API_VERSION;
+  bytes_out.version = FOUNDRY_LOCAL_DATA_VERSION;
   EXPECT_TRUE(IsOk(item_api->GetBytes(item, &bytes_out)));
   EXPECT_EQ(bytes_out.item_type, FOUNDRY_LOCAL_ITEM_AUDIO);
   EXPECT_EQ(bytes_out.data_size, sizeof(data));
@@ -1492,7 +1576,7 @@ TEST(CApiTest, ItemCreateTensorRoundTrip) {
   float data[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
   int64_t shape[] = {2, 3};
   flTensorData tensor_in{};
-  tensor_in.version = FOUNDRY_LOCAL_API_VERSION;
+  tensor_in.version = FOUNDRY_LOCAL_DATA_VERSION;
   tensor_in.data_type = FOUNDRY_LOCAL_TENSOR_FLOAT;
   tensor_in.data = data;
   tensor_in.shape = shape;
@@ -1500,7 +1584,7 @@ TEST(CApiTest, ItemCreateTensorRoundTrip) {
   EXPECT_TRUE(IsOk(item_api->SetTensor(item, &tensor_in)));
 
   flTensorData tensor_out{};
-  tensor_out.version = FOUNDRY_LOCAL_API_VERSION;
+  tensor_out.version = FOUNDRY_LOCAL_DATA_VERSION;
   EXPECT_TRUE(IsOk(item_api->GetTensor(item, &tensor_out)));
   EXPECT_EQ(tensor_out.data_type, FOUNDRY_LOCAL_TENSOR_FLOAT);
   EXPECT_EQ(tensor_out.rank, 2u);
@@ -1520,14 +1604,14 @@ TEST(CApiTest, ItemCreateImageBytesRoundTrip) {
 
   uint8_t pixels[] = {0xFF, 0x00, 0xFF};
   flImageData image_in{};
-  image_in.version = FOUNDRY_LOCAL_API_VERSION;
+  image_in.version = FOUNDRY_LOCAL_DATA_VERSION;
   image_in.data = pixels;
   image_in.data_size = sizeof(pixels);
   image_in.format = "png";
   EXPECT_TRUE(IsOk(item_api->SetImage(item, &image_in)));
 
   flImageData image_out{};
-  image_out.version = FOUNDRY_LOCAL_API_VERSION;
+  image_out.version = FOUNDRY_LOCAL_DATA_VERSION;
   EXPECT_TRUE(IsOk(item_api->GetImage(item, &image_out)));
   EXPECT_EQ(image_out.data_size, sizeof(pixels));
   EXPECT_STREQ(image_out.format, "png");
@@ -1545,13 +1629,13 @@ TEST(CApiTest, ItemCreateImageUriRoundTrip) {
   ASSERT_NE(item, nullptr);
 
   flImageData image_in{};
-  image_in.version = FOUNDRY_LOCAL_API_VERSION;
+  image_in.version = FOUNDRY_LOCAL_DATA_VERSION;
   image_in.format = "jpeg";
   image_in.uri = "https://example.com/img.jpg";
   EXPECT_TRUE(IsOk(item_api->SetImage(item, &image_in)));
 
   flImageData image_out{};
-  image_out.version = FOUNDRY_LOCAL_API_VERSION;
+  image_out.version = FOUNDRY_LOCAL_DATA_VERSION;
   EXPECT_TRUE(IsOk(item_api->GetImage(item, &image_out)));
   EXPECT_STREQ(image_out.uri, "https://example.com/img.jpg");
   EXPECT_STREQ(image_out.format, "jpeg");
@@ -1571,14 +1655,14 @@ TEST(CApiTest, ItemCreateAudioRoundTrip) {
 
   uint8_t data[] = {0x01, 0x02, 0x03};
   flAudioData audio_in{};
-  audio_in.version = FOUNDRY_LOCAL_API_VERSION;
+  audio_in.version = FOUNDRY_LOCAL_DATA_VERSION;
   audio_in.data = data;
   audio_in.data_size = sizeof(data);
   audio_in.format = "mp3";
   EXPECT_TRUE(IsOk(item_api->SetAudio(item, &audio_in)));
 
   flAudioData audio_out{};
-  audio_out.version = FOUNDRY_LOCAL_API_VERSION;
+  audio_out.version = FOUNDRY_LOCAL_DATA_VERSION;
   EXPECT_TRUE(IsOk(item_api->GetAudio(item, &audio_out)));
   EXPECT_EQ(audio_out.data_size, sizeof(data));
   EXPECT_STREQ(audio_out.format, "mp3");
@@ -1595,7 +1679,7 @@ TEST(CApiTest, ItemSetBytesNullDataWithNonZeroSizeFails) {
   ASSERT_TRUE(IsOk(item_api->Create(FOUNDRY_LOCAL_ITEM_BYTES, &item)));
 
   flBytesData bytes_in{};
-  bytes_in.version = FOUNDRY_LOCAL_API_VERSION;
+  bytes_in.version = FOUNDRY_LOCAL_DATA_VERSION;
   bytes_in.item_type = FOUNDRY_LOCAL_ITEM_AUDIO;
   bytes_in.data = nullptr;
   bytes_in.mutable_data = nullptr;
@@ -1617,7 +1701,7 @@ TEST(CApiTest, ItemSetImageNullDataWithNonZeroSizeFails) {
   ASSERT_TRUE(IsOk(item_api->Create(FOUNDRY_LOCAL_ITEM_IMAGE, &item)));
 
   flImageData image_in{};
-  image_in.version = FOUNDRY_LOCAL_API_VERSION;
+  image_in.version = FOUNDRY_LOCAL_DATA_VERSION;
   image_in.data = nullptr;
   image_in.mutable_data = nullptr;
   image_in.data_size = 32;
@@ -1639,7 +1723,7 @@ TEST(CApiTest, ItemSetAudioNullDataWithNonZeroSizeFails) {
   ASSERT_TRUE(IsOk(item_api->Create(FOUNDRY_LOCAL_ITEM_AUDIO, &item)));
 
   flAudioData audio_in{};
-  audio_in.version = FOUNDRY_LOCAL_API_VERSION;
+  audio_in.version = FOUNDRY_LOCAL_DATA_VERSION;
   audio_in.data = nullptr;
   audio_in.mutable_data = nullptr;
   audio_in.data_size = 64;
@@ -1663,19 +1747,19 @@ TEST(CApiTest, ItemCreateMessageWithName) {
 
   flItem* text = nullptr;
   ASSERT_TRUE(IsOk(item_api->Create(FOUNDRY_LOCAL_ITEM_TEXT, &text)));
-  flTextData hello_in{FOUNDRY_LOCAL_API_VERSION, "Hello!", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT};
+  flTextData hello_in{FOUNDRY_LOCAL_DATA_VERSION, "Hello!", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT};
   ASSERT_TRUE(IsOk(item_api->SetText(text, &hello_in)));
   const flItem* parts[] = {text};
-  flMessageData msg_in{FOUNDRY_LOCAL_API_VERSION, FOUNDRY_LOCAL_ROLE_ASSISTANT, parts, 1, "Alice"};
+  flMessageData msg_in{FOUNDRY_LOCAL_DATA_VERSION, FOUNDRY_LOCAL_ROLE_ASSISTANT, parts, 1, "Alice"};
   EXPECT_TRUE(IsOk(item_api->SetMessage(item, &msg_in)));
 
   flMessageData msg_out{};
-  msg_out.version = FOUNDRY_LOCAL_API_VERSION;
+  msg_out.version = FOUNDRY_LOCAL_DATA_VERSION;
   EXPECT_TRUE(IsOk(item_api->GetMessage(item, &msg_out)));
   EXPECT_EQ(msg_out.role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
   ASSERT_EQ(msg_out.content_items_count, 1u);
   flTextData part_out{};
-  part_out.version = FOUNDRY_LOCAL_API_VERSION;
+  part_out.version = FOUNDRY_LOCAL_DATA_VERSION;
   EXPECT_TRUE(IsOk(item_api->GetText(msg_out.content_items[0], &part_out)));
   EXPECT_STREQ(part_out.text, "Hello!");
   EXPECT_STREQ(msg_out.name, "Alice");
@@ -1712,13 +1796,13 @@ TEST(CApiTest, ItemQueuePushPopAndFinish) {
   // Push two text items
   flItem* item1 = nullptr;
   ASSERT_TRUE(IsOk(item_api->Create(FOUNDRY_LOCAL_ITEM_TEXT, &item1)));
-  flTextData first_in{FOUNDRY_LOCAL_API_VERSION, "first", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT};
+  flTextData first_in{FOUNDRY_LOCAL_DATA_VERSION, "first", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT};
   ASSERT_TRUE(IsOk(item_api->SetText(item1, &first_in)));
   EXPECT_TRUE(IsOk(item_api->ItemQueue_Push(queue, item1)));
 
   flItem* item2 = nullptr;
   ASSERT_TRUE(IsOk(item_api->Create(FOUNDRY_LOCAL_ITEM_TEXT, &item2)));
-  flTextData second_in{FOUNDRY_LOCAL_API_VERSION, "second", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT};
+  flTextData second_in{FOUNDRY_LOCAL_DATA_VERSION, "second", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT};
   ASSERT_TRUE(IsOk(item_api->SetText(item2, &second_in)));
   EXPECT_TRUE(IsOk(item_api->ItemQueue_Push(queue, item2)));
 
@@ -1729,7 +1813,7 @@ TEST(CApiTest, ItemQueuePushPopAndFinish) {
   EXPECT_TRUE(item_api->ItemQueue_TryPop(queue, &popped));
   ASSERT_NE(popped, nullptr);
   flTextData popped_out{};
-  popped_out.version = FOUNDRY_LOCAL_API_VERSION;
+  popped_out.version = FOUNDRY_LOCAL_DATA_VERSION;
   ASSERT_TRUE(IsOk(item_api->GetText(popped, &popped_out)));
   EXPECT_STREQ(popped_out.text, "first");
   item_api->Item_Release(popped);
@@ -1744,7 +1828,7 @@ TEST(CApiTest, ItemQueuePushPopAndFinish) {
   EXPECT_TRUE(item_api->ItemQueue_TryPop(queue, &popped));
   ASSERT_NE(popped, nullptr);
   popped_out = {};
-  popped_out.version = FOUNDRY_LOCAL_API_VERSION;
+  popped_out.version = FOUNDRY_LOCAL_DATA_VERSION;
   ASSERT_TRUE(IsOk(item_api->GetText(popped, &popped_out)));
   EXPECT_STREQ(popped_out.text, "second");
   item_api->Item_Release(popped);
@@ -1846,7 +1930,7 @@ TEST(CApiTest, TensorDeleterFiredOnRelease) {
   };
 
   flTensorData td{};
-  td.version = FOUNDRY_LOCAL_API_VERSION;
+  td.version = FOUNDRY_LOCAL_DATA_VERSION;
   td.data_type = FOUNDRY_LOCAL_TENSOR_FLOAT;
   td.data = buf;
   td.mutable_data = buf;
@@ -1883,7 +1967,7 @@ TEST(CApiTest, ItemGetQueueFromQueueItem) {
   // Push an item through the embedded queue
   flItem* text_item = nullptr;
   ASSERT_TRUE(IsOk(item_api->Create(FOUNDRY_LOCAL_ITEM_TEXT, &text_item)));
-  flTextData via_in{FOUNDRY_LOCAL_API_VERSION, "via-queue-item", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT};
+  flTextData via_in{FOUNDRY_LOCAL_DATA_VERSION, "via-queue-item", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT};
   ASSERT_TRUE(IsOk(item_api->SetText(text_item, &via_in)));
   EXPECT_TRUE(IsOk(item_api->ItemQueue_Push(queue, text_item)));
 
@@ -1892,7 +1976,7 @@ TEST(CApiTest, ItemGetQueueFromQueueItem) {
   flItem* popped = nullptr;
   EXPECT_TRUE(item_api->ItemQueue_TryPop(queue, &popped));
   flTextData via_out{};
-  via_out.version = FOUNDRY_LOCAL_API_VERSION;
+  via_out.version = FOUNDRY_LOCAL_DATA_VERSION;
   ASSERT_TRUE(IsOk(item_api->GetText(popped, &via_out)));
   EXPECT_STREQ(via_out.text, "via-queue-item");
   item_api->Item_Release(popped);
@@ -1934,7 +2018,7 @@ TEST(CApiTest, RequestAddOwnedItem) {
   // Create an item and add it with ownership transfer
   flItem* item = nullptr;
   ASSERT_TRUE(IsOk(item_api->Create(FOUNDRY_LOCAL_ITEM_TEXT, &item)));
-  flTextData owned_in{FOUNDRY_LOCAL_API_VERSION, "owned by request", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT};
+  flTextData owned_in{FOUNDRY_LOCAL_DATA_VERSION, "owned by request", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT};
   ASSERT_TRUE(IsOk(item_api->SetText(item, &owned_in)));
   EXPECT_TRUE(IsOk(inf_api->Request_AddItem(req, item, /*take_ownership*/ true)));
 
@@ -1963,10 +2047,10 @@ TEST(CApiTest, RequestMixedBorrowedAndOwned) {
   ASSERT_TRUE(IsOk(item_api->Create(FOUNDRY_LOCAL_ITEM_MESSAGE, &borrowed)));
   flItem* text_part = nullptr;
   ASSERT_TRUE(IsOk(item_api->Create(FOUNDRY_LOCAL_ITEM_TEXT, &text_part)));
-  flTextData borrowed_in{FOUNDRY_LOCAL_API_VERSION, "borrowed", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT};
+  flTextData borrowed_in{FOUNDRY_LOCAL_DATA_VERSION, "borrowed", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT};
   ASSERT_TRUE(IsOk(item_api->SetText(text_part, &borrowed_in)));
   const flItem* parts[] = {text_part};
-  flMessageData msg{FOUNDRY_LOCAL_API_VERSION, FOUNDRY_LOCAL_ROLE_USER, parts, 1, nullptr};
+  flMessageData msg{FOUNDRY_LOCAL_DATA_VERSION, FOUNDRY_LOCAL_ROLE_USER, parts, 1, nullptr};
   ASSERT_TRUE(IsOk(item_api->SetMessage(borrowed, &msg)));
   item_api->Item_Release(text_part);
   EXPECT_TRUE(IsOk(inf_api->Request_AddItem(req, borrowed, /*take_ownership*/ false)));
@@ -1974,7 +2058,7 @@ TEST(CApiTest, RequestMixedBorrowedAndOwned) {
   // Owned item — request takes ownership
   flItem* owned = nullptr;
   ASSERT_TRUE(IsOk(item_api->Create(FOUNDRY_LOCAL_ITEM_TEXT, &owned)));
-  flTextData owned2_in{FOUNDRY_LOCAL_API_VERSION, "owned", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT};
+  flTextData owned2_in{FOUNDRY_LOCAL_DATA_VERSION, "owned", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT};
   ASSERT_TRUE(IsOk(item_api->SetText(owned, &owned2_in)));
   EXPECT_TRUE(IsOk(inf_api->Request_AddItem(req, owned, /*take_ownership*/ true)));
 
@@ -1997,13 +2081,13 @@ TEST(CApiTest, ItemCreateAudioUriRoundTrip) {
   ASSERT_NE(item, nullptr);
 
   flAudioData audio_in{};
-  audio_in.version = FOUNDRY_LOCAL_API_VERSION;
+  audio_in.version = FOUNDRY_LOCAL_DATA_VERSION;
   audio_in.format = "wav";
   audio_in.uri = "https://example.com/audio.wav";
   EXPECT_TRUE(IsOk(item_api->SetAudio(item, &audio_in)));
 
   flAudioData audio_out{};
-  audio_out.version = FOUNDRY_LOCAL_API_VERSION;
+  audio_out.version = FOUNDRY_LOCAL_DATA_VERSION;
   EXPECT_TRUE(IsOk(item_api->GetAudio(item, &audio_out)));
   EXPECT_STREQ(audio_out.uri, "https://example.com/audio.wav");
   EXPECT_STREQ(audio_out.format, "wav");

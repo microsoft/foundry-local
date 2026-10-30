@@ -8,6 +8,15 @@ import java.nio.ByteOrder;
 import org.junit.jupiter.api.Test;
 
 class AudioValidationTest {
+    @Test void languageHintsPreserveNativeSemanticsAndRejectInvalidStrings() {
+        for (String language : new String[] {null, "en-US", "zh-CN", "auto", "future-language"}) {
+            assertDoesNotThrow(() -> AudioSession.validateLanguage(language));
+        }
+        for (String language : new String[] {"", " ", "\t\r\n", "en-US\0", "en\0US"}) {
+            assertThrows(IllegalArgumentException.class, () -> AudioSession.validateLanguage(language));
+        }
+    }
+
     @Test void pcmRejectsInvalidFormatsAndChunks() {
         assertThrows(IllegalArgumentException.class, () -> new PcmFormat(44100, 1, 16));
         assertThrows(IllegalArgumentException.class, () -> new PcmFormat(16000, 2, 16));

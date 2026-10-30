@@ -1,13 +1,19 @@
 // Copyright (c) Microsoft Corporation. Licensed under the MIT License.
 package smoke;
 
+import com.microsoft.foundry.local.AudioSession;
 import com.microsoft.foundry.local.Catalog;
 import com.microsoft.foundry.local.Configuration;
 import com.microsoft.foundry.local.FoundryLocalManager;
 import com.microsoft.foundry.local.LogLevel;
+import com.microsoft.foundry.local.PcmFormat;
+import com.microsoft.foundry.local.SpeechEvent;
+import com.microsoft.foundry.local.Transcription;
 import com.microsoft.foundry.local.TranscriptionResult;
 import com.sun.jna.Pointer;
+import java.io.IOException;
 import java.nio.file.Path;
+import java.util.function.Consumer;
 
 public final class PackagedConsumer {
     private PackagedConsumer() {}
@@ -28,6 +34,14 @@ public final class PackagedConsumer {
     }
 
     public static Class<TranscriptionResult> resultType() { return TranscriptionResult.class; }
+
+    public static Transcription stream(AudioSession session, Consumer<SpeechEvent> listener) {
+        return session.streamPcm(PcmFormat.SPEECH, "auto", listener);
+    }
+
+    public static Transcription wav(AudioSession session, Path path, Consumer<SpeechEvent> listener) throws IOException {
+        return session.transcribeWav(path, "en-US", listener);
+    }
 
     public static Pointer transitiveJnaType() { return Pointer.NULL; }
 }

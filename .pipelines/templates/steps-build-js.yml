@@ -205,10 +205,12 @@ steps:
         Write-Host "  staged $file"
       }
 
-      $nativeLibPath = Join-Path "${{ parameters.nativeArtifactDir }}" "$(nativeLib)"
-      if (-not (Test-Path $nativeLibPath)) { throw "Native lib not found: $nativeLibPath" }
-      Copy-Item $nativeLibPath -Destination $dst -Force
-      Write-Host "  staged $(nativeLib)"
+      foreach ($file in @('$(nativeLib)', 'foundry-local-host.exe', 'foundry-local-runtime.json')) {
+        $path = Join-Path "${{ parameters.nativeArtifactDir }}" $file
+        if (-not (Test-Path $path)) { throw "Native runtime payload not found: $path" }
+        Copy-Item $path -Destination $dst -Force
+        Write-Host "  staged $file"
+      }
 
       # WinML 2.x runtime ships next to foundry_local.dll so WinML EPs work out
       # of the box. It is Microsoft-signed (NuGet) — excluded from ESRP signing.
@@ -238,20 +240,24 @@ steps:
         echo "  staged $file"
       done
 
-      nativeLibPath="${{ parameters.nativeArtifactDir }}/$(nativeLib)"
-      if [ ! -f "$nativeLibPath" ]; then echo "Native lib not found: $nativeLibPath" >&2; exit 1; fi
-      cp -P "$nativeLibPath" "$dst/"
-      echo "  staged $(nativeLib)"
+      for file in "$(nativeLib)" foundry-local-host foundry-local-runtime.json; do
+        path="${{ parameters.nativeArtifactDir }}/$file"
+        if [ ! -f "$path" ]; then echo "Native runtime payload not found: $path" >&2; exit 1; fi
+        cp -P "$path" "$dst/"
+        echo "  staged $file"
+      done
+      chmod u+x "$dst/foundry-local-host"
 
       ls -la "$dst"
     displayName: 'Stage prebuild directory'
 
-# Authenticode-sign the Windows .node + .dll. Mirrors the C# DLL signing
+# Native payloads are already signed together; preserve their bytes and paired manifest.
+# Authenticode-sign only the Windows .node addons. Mirrors the C# DLL signing
 # block in steps-build-cs.yml — same ConnectedServiceName, ESRP variable
 # group (FoundryLocal-ESRP-Signing), and CP-230012 keyCode.
 - ${{ if eq(parameters.signWindows, true) }}:
   - task: SFP.build-tasks.custom-build-task-1.EsrpCodeSigning@5
-    displayName: 'Sign Windows JS addon (.node) + foundry_local.dll'
+    displayName: 'Sign Windows JS addons (.node)'
     condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
     inputs:
       ConnectedServiceName: 'OnnxrunTimeCodeSign_20240611'
@@ -265,7 +271,7 @@ steps:
       # FolderPath is recursed by the task (UseMinimatch=false default).
       # Pattern must be a plain filename, applied with SearchOption.AllDirectories.
       # Run the task once per file pattern so each gets its own signing op.
-      Pattern: '*.node;foundry_local.dll'
+      Pattern: '*.node'
       SessionTimeout: 90
       ServiceEndpointUrl: 'https://api.esrp.microsoft.com/api/v2'
       MaxConcurrency: 25

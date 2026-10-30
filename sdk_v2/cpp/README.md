@@ -362,12 +362,55 @@ The protocol gate also checks optional-property ordering through nonstreaming
 `/responses`, requiring a completed response and completed function calls.
 It checks ordinary function calls with a raw patch descriptor enabled in both
 streaming and nonstreaming Chat Completions.
+The `failed_tool_recovery_auto` case executes a genuinely failing `multiply(7,9)`
+callback, retains the identical tools and default automatic selection, and requires
+a Python final response instead of another tool call. It statically checks the
+function and expected test without executing model-generated code. Run it alone
+with `--case failed_tool_recovery_auto`; a short public-prompt pass does not qualify
+the real CLI's system prompt, and removing tools on recovery does not qualify either gate.
 Qualification applies to the model, backend, platform, and exact native binaries
 recorded for the run. Scripted Generator regressions do not substitute for a
 trained Generator model gate, and these text-only workflows do not qualify
 multimodal input. Rebuilt release artifacts must pass the same gates independently.
 
 ## Quick Start
+
+In-process execution is the default. Call `config.SetUseSharedHost(true)` before constructing `Manager` to route
+the same model/session APIs through the native host shipped beside the runtime. Metadata, discovery and model downloads
+do not start it; execution, cache removal, EP download/registration or `StartWebService()` starts or joins a compatible host.
+Cache removal always runs in the host so it cannot race a newly started host loading the same weights.
+Compatible applications must use the same Foundry native build and IPC protocol, platform, and effective catalog,
+data/cache, provider and web configuration. Logs directory/level, effective telemetry settings and additional settings
+other than `UserAgent` also separate hosts. Dependency file hashes and packaging differences do not separate clients
+into different hosts.
+The first starter selects the host's runtime; its files are verified at launch, and that runtime serves all attached
+clients. Joining a host does not replace its runtime with the joining client's local dependencies.
+
+The host inherits the first starter's environment, working directory and application identity; later clients do not
+reconfigure them. Environment-derived settings resolved into the compatibility profile, including telemetry, still
+affect sharing. Linux shared hosting requires kernel 5.3+ with `pidfd_open` permitted by the container/seccomp policy,
+and GNU build IDs in the Foundry, ORT and GenAI runtime modules.
+
+Destroying or shutting down a hosted manager releases only that client. The host drains admitted work and exits after
+the final owner and a five-second reconnect grace. Keep a manager alive while using its HTTP endpoint: HTTP connections
+are not owners. Explicit model unload remains shared and rejects in-use models; web-service Stop rejects other owners
+or active HTTP work. Hosted mode never silently falls back to in-process execution.
+
+The host admits up to 64 connected clients and 64 concurrent IPC operations across clients. Excess operations return
+an error without replay; callers may retry after work completes. Each connection allows 128 outstanding calls and
+256 MiB per encoded message and across pending initial requests. Exceeding an inbound transport limit closes that
+connection, not the host. Large live inputs should be split into streaming messages. These are admission and wire
+limits, not quotas on loaded models, decoded items or session history.
+Session and preflight disposal bypass the execution-worker limit and use a serialized reserved call slot with
+small, independently bounded requests, so saturation cannot silently orphan a client's native resources.
+
+Model selection checks the model ID, catalog metadata and canonical path, not the contents of every model file.
+Keep model files immutable while loaded. To replace weights, unload and register the replacement at a new path;
+overwriting files in place is not a supported revision mechanism.
+
+An embedded HTTP `/shutdown` request signals shutdown and returns before service teardown. Its SDK owner must
+observe `IsShutdownRequested()` and call `Shutdown()` or destroy the manager to finish releasing the service.
+Shared hosts reject this endpoint; their teardown follows SDK ownership instead.
 
 Include the C++ wrapper and link the `foundry_local` shared library. The example below
 uses a catalog model, downloading it on first use:
@@ -596,6 +639,50 @@ for (const std::string& endpoint : manager.GetWebServiceEndpoints()) {
 
 manager.StopWebService();
 ```
+
+Model management accepts exact versioned model IDs as well as legacy aliases:
+`GET /models/load/{name}` and `GET /models/unload/{name}` use the public catalog;
+`GET /catalogs/local/models/load/{name}` and `GET /catalogs/local/models/unload/{name}` use the local catalog.
+Encode the entire name as one URL path segment (for example, `publisher/model:2` becomes `publisher%2Fmodel%3A2`).
+The service percent-decodes once, preserves literal `+`, and resolves an exact ID before falling back to an alias.
+Loading an exact variant does not change its alias group's selected variant. Unload still refuses models held by
+live native sessions.
+`GET /models/loaded` and `GET /catalogs/local/models/loaded` list loaded variant IDs from their respective catalogs,
+including loaded non-selected variants. A matching ID at a different artifact path is not considered loaded.
+Adding `?details=true` to either loaded-model route instead returns an array of authoritative
+`{"model_id": "...", "model_path": "...", "context_length": 1024}` states, qualified by the selected catalog
+and artifact path. It only observes loaded instances: it does not load weights, create sessions, or fetch metadata.
+Unknown context limits are omitted. Without `details=true`, the legacy array of ID strings is unchanged.
+`GET /status` advertises `"artifact_qualified_model_management": true` when these native path-qualified management
+semantics are available. HTTP model-management clients should check this capability before relying on path-qualified
+readiness or management requests against an older native library.
+
+Load and unload requests optionally accept the `expected_model_path` query parameter. Encode the filesystem path as a
+query value (spaces may be `%20` or `+`; encode literal `+`, `%`, `&`, and `#`). The service decodes exactly once,
+canonicalizes the expected and host-resolved cached/BYOM paths, and compares them using native model-loader identity
+rules before loading, reusing, or unloading weights. Weak canonicalization permits unloading after artifact files
+or their directory have been removed. A mismatch returns HTTP 409 without changing an existing load; a malformed value
+returns HTTP 400. Callers omitting this parameter retain the legacy behavior.
+Shared-serving clients should always supply their selected native `Model::GetPath()` / SDK `Model::path()` value:
+another metadata client can unregister/re-register an ID while a running host still holds its old catalog snapshot.
+This is a path precondition, not detection of weight-file changes at the same path.
+
+Successful load responses retain `status` (`loaded` or `already_loaded`) and also return the resolved `model_id`
+and authoritative filesystem `model_path` from the loaded instance. Clients should verify both ID and path before
+binding to that host; registration metadata URI is not an artifact-path contract.
+For Generator backends, `context_length` reports the configured total input-plus-output token window used by
+inference (`model.context_length`, falling back to legacy `search.max_length`). Generator explicitly overrides
+native `max_length` per request, so a lower artifact `search.max_length` is not an additional ceiling.
+This is read from the loaded instance, qualified by model ID and artifact path, without creating a session.
+It is not a catalog maximum or an independent input/output cap: clients must reserve their requested output tokens
+within that window. For Engine backends, `context_length` comes from the existing loaded Engine's native
+`MaxRequestLength` capability, also used by session preflight. Observing this cached value creates no request or
+session. Unknown limits are omitted rather than guessed; the response does not negotiate profiles or verify changes
+to files at the same artifact path.
+
+`POST /shutdown` returns `{"status":"shutting_down"}`, rejects new loads, and cancels tracked sessions.
+The HTTP worker only requests shutdown: a standalone host must observe `Manager::IsShutdownRequested()` and release
+the manager on its owner thread, which stops the service, drains sessions, and unloads models.
 
 Streaming chat completions, Responses, and audio transcriptions cancel their active inference when the SSE client
 disconnects. The service sends SSE keepalive comments during token silence so a dropped connection can be detected

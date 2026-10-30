@@ -1,0 +1,27 @@
+Synthetic French speech fixture for Java native language-option tests.
+
+Text:
+Aujourd'hui, le soleil brille. Nous allons nous promener dans le parc et admirer les fleurs.
+
+Format: mono PCM16LE WAV, 16000 Hz, 7.4825 seconds.
+WAV SHA-256: 95fd1e4a6725a388cd3531ed74f65e899407529b7d981ac1dce2d3cee7e7917e
+
+Generation:
+Piper TTS 1.8.0, fr_FR-siwis-medium, --sentence-silence 0.7.
+Voice ONNX SHA-256: 641d1ab097da2b81128c076810edb052b385decc8be3381814802a64a73baf99
+Resampled from 22050 Hz with Python 3.12 audioop.ratecv (width 2, mono),
+then padded with 0.5 seconds of leading and 1 second of trailing silence.
+This is newly synthesized speech, not a recording copied from the training data.
+
+Voice model card:
+https://huggingface.co/rhasspy/piper-voices/blob/main/fr/fr_FR/siwis/medium/MODEL_CARD
+
+Training-data attribution:
+Yamagishi, Junichi; Honnet, Pierre-Edouard; Garner, Philip; Lazaridis, Alexandros
+(2017). The SIWIS French Speech Synthesis Database. University of Edinburgh.
+https://hdl.handle.net/10283/2353
+License: Creative Commons Attribution 4.0 International (CC BY 4.0).
+https://creativecommons.org/licenses/by/4.0/
+
+With the pinned multilingual Nemotron model, omission loses the second sentence.
+Both fr-FR and auto must include "dans le parc" in streaming and final output.
