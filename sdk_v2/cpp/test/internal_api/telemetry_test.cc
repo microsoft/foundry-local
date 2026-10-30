@@ -3,6 +3,7 @@
 #include "exception.h"
 #include "configuration.h"
 #include "logger.h"
+#include "manager.h"
 #include "platform/telemetry_device_id.h"
 #include "telemetry/telemetry_action_tracker.h"
 #include "telemetry/download_tracker.h"
@@ -17,6 +18,7 @@
 #include "telemetry/telemetry_redaction.h"
 #include "telemetry/telemetry_request_metrics.h"
 #include "telemetry/telemetry_sampling.h"
+#include "util/scope_guard.h"
 
 #include <gtest/gtest.h>
 
@@ -90,6 +92,20 @@ class ScopedEnvVar {
   std::string original_;
   bool had_original_ = false;
 };
+
+#ifdef _WIN32
+TEST(TelemetryEnvironmentTest, WindowsManagerStartupSuppressesOrtTelemetry) {
+  for (const char* initial_value : {static_cast<const char*>(nullptr), "0"}) {
+    ScopedEnvVar ort_telemetry("ORT_DISABLE_TELEMETRY", initial_value);
+    Configuration config;
+    config.app_name = "ort-telemetry-workaround-test";
+    config.app_data_dir = (std::filesystem::current_path() / "ort-telemetry-workaround-test").string();
+    Manager::Create(config);
+    ScopeGuard cleanup([]() noexcept { Manager::Destroy(); });
+    EXPECT_EQ(TelemetryEnvironment::GetEnv("ORT_DISABLE_TELEMETRY"), "1");
+  }
+}
+#endif
 
 struct LogEntry {
   LogLevel level;
