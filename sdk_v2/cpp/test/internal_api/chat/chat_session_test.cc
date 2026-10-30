@@ -414,6 +414,43 @@ TEST(ChatSessionDecisionTest, HostOutputLimitTruncatesOnlyAnUnfinishedBackendAtT
                                           /*backend_finished=*/true));
 }
 
+TEST(ChatSessionDecisionTest, FencedCompatibilityBypassesModelTokenOwnershipAndSuppressesRawBytes) {
+  ToolCallContext context;
+  context.tools_json =
+      R"([{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}])";
+  context.tool_plan = ToolCallPlan::Create(context.tools_json);
+  context.tool_output = true;
+  context.fenced_tool_call_output = true;
+  context.tool_call_start_token_id = 101;
+  context.tool_call_end_token_id = 102;
+
+  ToolCallStreamAccumulator accumulator(
+      context.GeneratedToolCallStart(), context.GeneratedToolCallEnd(), context.tools_json, "",
+      chat_session_internal::CreateToolCallPayloadParser(context), true);
+  std::vector<ToolCallStreamAccumulator::Event> events;
+  for (const auto& segment : std::vector<ReasoningStreamSplitter::Segment>{
+           {"```json\n", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT, 7},
+           {R"([{"name":"lookup","parameters":{"city":"Paris"}}])",
+            FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT, 8},
+           {"\n```", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT, 9},
+       }) {
+    auto output = chat_session_internal::PushToolOutputSegment(
+        segment, context, nullptr, accumulator);
+    events.insert(events.end(),
+                  std::make_move_iterator(output.events.begin()),
+                  std::make_move_iterator(output.events.end()));
+  }
+  auto final = chat_session_internal::FlushToolOutput(nullptr, accumulator);
+  events.insert(events.end(),
+                std::make_move_iterator(final.events.begin()),
+                std::make_move_iterator(final.events.end()));
+
+  ASSERT_EQ(events.size(), 1u);
+  const auto& call = std::get<ParsedToolCall>(events.front());
+  EXPECT_EQ(call.name, "lookup");
+  EXPECT_EQ(nlohmann::json::parse(call.arguments), nlohmann::json({{"city", "Paris"}}));
+}
+
 TEST(ChatSessionDecisionTest, JsonToolContextUsesOnlyTheCapturedSessionSnapshot) {
   ToolRegistry registry;
   const auto captured = registry.Definitions();

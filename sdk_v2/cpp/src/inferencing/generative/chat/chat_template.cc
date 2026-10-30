@@ -263,21 +263,52 @@ std::string BuildCanonicalToolMessagesJson(const std::vector<TranscriptMessage>&
 
   auto instructions =
       "Tool calling protocol for this conversation:\nAvailable tools:\n" +
-      (protect_literal ? protect_literal(tool_ctx.tools_json) : tool_ctx.tools_json) +
-      "\nTo call tools, emit " + tool_ctx.tool_call_start +
-      " followed by a JSON array of objects with exactly the keys \"name\" and \"parameters\", then " +
-      tool_ctx.tool_call_end +
-      ". \"name\" must be a declared tool name and \"parameters\" must be its argument object. "
-      "Use the dedicated tool boundary tokens, not a textual description or substitute characters. "
-      "Emit the call block itself, without quoting it or using Markdown. "
-      "Put all calls for this turn in one array inside one pair of tool boundaries. "
-      "After the closing boundary, stop and wait for the external tool results. "
+      (protect_literal ? protect_literal(tool_ctx.tools_json) : tool_ctx.tools_json);
+  if (tool_ctx.fenced_tool_call_output) {
+    instructions +=
+        "\nTo call tools, emit one JSON code fence containing an array of objects with exactly the keys "
+        "\"name\" and \"parameters\". Do not emit text before or after the fence. "
+        "After the closing fence, stop and wait for the external tool results. ";
+  } else {
+    instructions +=
+        "\nTo call tools, emit " + tool_ctx.tool_call_start +
+        " followed by a JSON array of objects with exactly the keys \"name\" and \"parameters\", then " +
+        tool_ctx.tool_call_end +
+        ". Use the dedicated tool boundary tokens, not a textual description or substitute characters. "
+        "Emit the call block itself, without quoting it or using Markdown. "
+        "Put all calls for this turn in one array inside one pair of tool boundaries. "
+        "After the closing boundary, stop and wait for the external tool results. ";
+  }
+  instructions +=
+      "\"name\" must be a declared tool name and \"parameters\" must be its argument object. "
       "Use {} for parameterless tools. Do not use XML function or parameter tags. "
       "Each argument object must satisfy its tool's complete JSON Schema. "
       "Properties may appear in any order; omit unused optional properties. "
       "Preserve argument values exactly. JSON escaping, including Unicode escapes for literal angle brackets "
-      "in strings, preserves the decoded value and is not substitution. "
-      "If no tool is needed, answer normally.";
+      "in strings, preserves the decoded value and is not substitution. ";
+  if (tool_ctx.fenced_tool_call_output) {
+    instructions +=
+        "For a tool call, emit a JSON code fence containing the call array, with this exact shape: "
+        "```json\n[{\"name\":\"tool_name\",\"parameters\":{\"argument\":\"value\"}}]\n```. "
+        "Replace the example names and values with a declared tool and its requested arguments.";
+  } else {
+    instructions +=
+        "The required wire shape is <tool_call>[{\"name\":\"tool_name\",\"parameters\":{\"argument\":\"value\"}}]"
+        "</tool_call>; replace the example names and values with a declared tool and its requested arguments.";
+  }
+  if (!tool_ctx.text_output) {
+    instructions += " You must call a declared tool for this turn. Do not answer normally.";
+    if (tool_ctx.forced_tool) {
+      instructions += " Call exactly the tool \"" + tool_ctx.forced_tool->name + "\".";
+    }
+  } else {
+    instructions +=
+        " Call a declared tool only when its capability is directly needed to fulfill the user's request; never call "
+        "a tool merely because it is available. Greetings, acknowledgements, and requests that can be answered "
+        "directly without external information or action must be answered normally. When a tool is directly needed, "
+        "emit the call rather than describing it. For example, if the user says \"Say only: hello\", reply with "
+        "\"hello\" as ordinary assistant text and do not emit tool-call syntax.";
+  }
   if (const auto* raw = tool_ctx.ActiveRawEnvelope()) {
     const auto raw_instructions =
         "\nThe custom tool \"" + raw->tool_name + "\" also accepts a raw envelope instead of a JSON call. "
@@ -298,7 +329,6 @@ std::string BuildCanonicalToolMessagesJson(const std::vector<TranscriptMessage>&
         "This framing line is not message content. For a direct tool call, start with its tool boundary instead. "
         "Never return an unframed description, JSON array, or textual imitation of a tool call.";
   }
-
   if (!projected.empty() && projected.front().at("role") == "system") {
     projected.front()["content"] = projected.front().at("content").get<std::string>() + "\n\n" + instructions;
   } else {

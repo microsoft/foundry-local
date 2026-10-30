@@ -242,11 +242,12 @@ void CheckReferences(Json& document, const std::string& context) {
 }
 
 std::string BuildGrammar(const std::vector<std::string>& names, bool parallel) {
-  std::string grammar = parallel
-                            ? "start: tool_json_ws \"[\" tool_json_ws tool_json_call "
-                              "(tool_json_comma tool_json_call)* tool_json_ws \"]\" tool_json_ws\n"
-                            : "start: tool_json_ws \"[\" tool_json_ws tool_json_call "
-                              "tool_json_ws \"]\" tool_json_ws\n";
+  std::string grammar = "start: tool_json_batch | tool_json_native_call | tool_json_tuple_call\n";
+  grammar += parallel
+                 ? "tool_json_batch: tool_json_ws \"[\" tool_json_ws tool_json_call "
+                   "(tool_json_comma tool_json_call)* tool_json_ws \"]\" tool_json_ws\n"
+                 : "tool_json_batch: tool_json_ws \"[\" tool_json_ws tool_json_call "
+                   "tool_json_ws \"]\" tool_json_ws\n";
   grammar += "tool_json_name: ";
   for (size_t i = 0; i < names.size(); ++i) {
     if (i != 0) {
@@ -262,6 +263,10 @@ std::string BuildGrammar(const std::vector<std::string>& names, bool parallel) {
   grammar += R"lark(
 tool_json_call: "{" tool_json_ws "\"name\"" tool_json_colon tool_json_name tool_json_comma )lark"
              R"lark("\"parameters\"" tool_json_colon tool_json_object tool_json_ws "}"
+tool_json_native_call: tool_json_ws "{" tool_json_ws "\"name\"" tool_json_colon tool_json_name tool_json_comma )lark"
+             R"lark("\"arguments\"" tool_json_colon tool_json_object tool_json_ws "}" tool_json_ws
+tool_json_tuple_call: tool_json_ws "[" tool_json_ws tool_json_name tool_json_comma )lark"
+             R"lark(tool_json_object tool_json_ws "]" tool_json_ws
 tool_json_value: tool_json_object | tool_json_array | TOOL_JSON_STRING | TOOL_JSON_NUMBER | "true" | "false" | "null"
 tool_json_object: "{" tool_json_ws (tool_json_member (tool_json_comma tool_json_member)*)? tool_json_ws "}"
 tool_json_member: TOOL_JSON_STRING tool_json_colon tool_json_value
@@ -403,7 +408,14 @@ std::string ToolCallPlan::Grammar(std::string_view root_rule) const {
 }
 
 std::vector<ParsedToolCall> ToolCallPlan::ParseCalls(std::string_view canonical_json) const {
-  const auto batch = ParseJson(canonical_json, kMaxBatchBytes, FOUNDRY_LOCAL_ERROR_INTERNAL, "tool call batch");
+  auto batch = ParseJson(canonical_json, kMaxBatchBytes, FOUNDRY_LOCAL_ERROR_INTERNAL, "tool call batch");
+  if (batch.is_object() && batch.size() == 2 && batch.contains("name") && batch.contains("arguments")) {
+    batch = Json::array({Json{{"name", std::move(batch["name"])},
+                              {"parameters", std::move(batch["arguments"])}}});
+  } else if (batch.is_array() && batch.size() == 2 && batch[0].is_string() && batch[1].is_object()) {
+    batch = Json::array({Json{{"name", std::move(batch[0])},
+                              {"parameters", std::move(batch[1])}}});
+  }
   if (!batch.is_array() || batch.empty() || (!impl_->parallel && batch.size() > 1)) {
     Fail(FOUNDRY_LOCAL_ERROR_INTERNAL, "tool call batch", "expected non-empty array within parallel call limit");
   }

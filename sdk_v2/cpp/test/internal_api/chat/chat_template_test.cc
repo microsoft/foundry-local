@@ -79,6 +79,48 @@ TEST(CanonicalToolPromptTest, InsertsExactlyOneSystemObjectWhenUserStartsConvers
   EXPECT_EQ(projected[1].at("content"), "unchanged user input");
 }
 
+TEST(CanonicalToolPromptTest, InstructionsReflectAutomaticRequiredAndForcedChoices) {
+  ToolCallContext context;
+  context.tools_json = R"([{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}])";
+  context.tool_call_start = "<tool_call>";
+  context.tool_call_end = "</tool_call>";
+  context.text_output = true;
+  context.tool_output = true;
+  const std::vector<TranscriptMessage> messages = {{FOUNDRY_LOCAL_ROLE_USER, "Find it."}};
+
+  const auto automatic = nlohmann::json::parse(BuildCanonicalToolMessagesJson(messages, context));
+  const auto automatic_instructions = automatic.front().at("content").get<std::string>();
+  EXPECT_NE(automatic_instructions.find("only when its capability is directly needed"), std::string::npos);
+  EXPECT_NE(automatic_instructions.find("never call a tool merely because it is available"), std::string::npos);
+  EXPECT_NE(automatic_instructions.find("Greetings, acknowledgements"), std::string::npos);
+  EXPECT_NE(automatic_instructions.find("Say only: hello"), std::string::npos);
+  EXPECT_NE(automatic_instructions.find("do not emit tool-call syntax"), std::string::npos);
+  EXPECT_NE(automatic_instructions.find(
+                R"(<tool_call>[{"name":"tool_name","parameters":{"argument":"value"}}]</tool_call>)"),
+            std::string::npos);
+  EXPECT_EQ(automatic_instructions.find("You must call"), std::string::npos);
+
+  context.text_output = false;
+  const auto required = nlohmann::json::parse(BuildCanonicalToolMessagesJson(messages, context));
+  const auto required_instructions = required.front().at("content").get<std::string>();
+  EXPECT_NE(required_instructions.find("You must call a declared tool"), std::string::npos);
+  EXPECT_EQ(required_instructions.find("If no tool is needed"), std::string::npos);
+
+  context.forced_tool = ForcedToolChoice{"lookup", ToolKind::kFunction};
+  const auto forced = nlohmann::json::parse(BuildCanonicalToolMessagesJson(messages, context));
+  EXPECT_NE(forced.front().at("content").get<std::string>().find("Call exactly the tool \"lookup\""),
+            std::string::npos);
+
+  context.fenced_tool_call_output = true;
+  const auto fenced = nlohmann::json::parse(BuildCanonicalToolMessagesJson(messages, context));
+  const auto fenced_instructions = fenced.front().at("content").get<std::string>();
+  EXPECT_NE(fenced_instructions.find("emit one JSON code fence"), std::string::npos);
+  EXPECT_NE(fenced_instructions.find(
+                "```json\n[{\"name\":\"tool_name\",\"parameters\":{\"argument\":\"value\"}}]\n```"),
+            std::string::npos);
+  EXPECT_EQ(fenced_instructions.find("dedicated tool boundary tokens"), std::string::npos);
+}
+
 TEST(CanonicalToolPromptTest, HistoricalAssistantTextRetainsAnExplicitModeWithoutReinterpretingItsBytes) {
   ToolCallContext context;
   context.tools_json = R"([{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}])";

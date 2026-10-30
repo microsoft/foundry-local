@@ -82,6 +82,18 @@ struct ToolCallContext {
   bool guidance_disabled = false;
   std::shared_ptr<const ToolCallPlan> tool_plan;
   std::optional<std::string> tool_body_grammar;
+  bool fenced_tool_call_output = false;
+  bool native_assistant_text_output = false;
+
+  const std::string& GeneratedToolCallStart() const {
+    static const std::string fence = "```json";
+    return fenced_tool_call_output ? fence : tool_call_start;
+  }
+
+  const std::string& GeneratedToolCallEnd() const {
+    static const std::string fence = "```";
+    return fenced_tool_call_output ? fence : tool_call_end;
+  }
 
   void ConfigureForGuidedToolRetry() {
     text_output = false;
@@ -140,7 +152,8 @@ struct ToolCallContext {
   }
 
   bool UsesAssistantTextFraming() const {
-    return tool_plan && text_output && tool_output && !HasAnyExplicitGuidance() && !ActiveRawEnvelope();
+    return tool_plan && text_output && tool_output && !native_assistant_text_output &&
+           !HasAnyExplicitGuidance() && !ActiveRawEnvelope();
   }
 
   /// Whether any tools were provided in the request.
@@ -155,7 +168,9 @@ struct ToolCallContext {
     return tools_json == other.tools_json && tool_kinds == other.tool_kinds &&
            custom_lark_grammars == other.custom_lark_grammars && raw_envelope == other.raw_envelope &&
            guidance_disabled == other.guidance_disabled &&
-           tool_body_grammar == other.tool_body_grammar;
+           tool_body_grammar == other.tool_body_grammar &&
+           fenced_tool_call_output == other.fenced_tool_call_output &&
+           native_assistant_text_output == other.native_assistant_text_output;
   }
 
   /// Whether the model has known tool call marker tokens.
