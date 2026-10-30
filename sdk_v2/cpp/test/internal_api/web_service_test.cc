@@ -24,6 +24,7 @@
 #include "service/non_streaming_disconnect_monitor.h"
 #include "service/web_service.h"
 #include "util/path_safety.h"
+#include "util/scope_guard.h"
 #include "utils/temp_path.h"
 
 #include <foundry_local/foundry_local_c.h>
@@ -115,6 +116,26 @@ class WebUsageTelemetry : public TelemetryLogger {
  private:
   mutable std::mutex mutex_;
   Snapshot events_;
+};
+
+class WebTestSessionManager : public SessionManager {
+ public:
+  using SessionManager::SessionManager;
+
+  void Register(Session& session) override {
+    SessionManager::Register(session);
+    std::lock_guard lock(disconnect_mutex_);
+    disconnect_client_.reset();
+  }
+
+  void ResetClientOnNextRegistration(std::shared_ptr<oatpp::network::tcp::Connection> client) {
+    std::lock_guard lock(disconnect_mutex_);
+    disconnect_client_ = std::move(client);
+  }
+
+ private:
+  std::mutex disconnect_mutex_;
+  std::shared_ptr<oatpp::network::tcp::Connection> disconnect_client_;
 };
 
 std::string TestHttpGet(const std::string& url, const std::string& user_agent = "") {
@@ -275,7 +296,7 @@ class WebServiceTest : public ::testing::Test {
     logger_ = std::make_unique<StderrLogger>();
     ep_detector_ = std::make_unique<test::CpuOnlyEpDetector>();
     model_load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
-    session_manager_ = std::make_unique<SessionManager>(*logger_);
+    session_manager_ = std::make_unique<WebTestSessionManager>(*logger_);
     telemetry_ = std::make_unique<WebUsageTelemetry>();
     public_catalog_ = std::make_unique<test::MockCatalog>();
     local_catalog_ = std::make_unique<test::MockCatalog>();
@@ -358,7 +379,7 @@ class WebServiceTest : public ::testing::Test {
   static std::unique_ptr<test::CpuOnlyEpDetector> ep_detector_;
   static std::unique_ptr<StderrLogger> logger_;
   static std::unique_ptr<ModelLoadManager> model_load_manager_;
-  static std::unique_ptr<SessionManager> session_manager_;
+  static std::unique_ptr<WebTestSessionManager> session_manager_;
   static std::unique_ptr<WebUsageTelemetry> telemetry_;
   static std::unique_ptr<WebService> service_;
   static std::string base_url_;
@@ -371,7 +392,7 @@ std::unique_ptr<test::MockCatalog> WebServiceTest::local_catalog_;
 std::unique_ptr<test::CpuOnlyEpDetector> WebServiceTest::ep_detector_;
 std::unique_ptr<StderrLogger> WebServiceTest::logger_;
 std::unique_ptr<ModelLoadManager> WebServiceTest::model_load_manager_;
-std::unique_ptr<SessionManager> WebServiceTest::session_manager_;
+std::unique_ptr<WebTestSessionManager> WebServiceTest::session_manager_;
 std::unique_ptr<WebUsageTelemetry> WebServiceTest::telemetry_;
 std::unique_ptr<WebService> WebServiceTest::service_;
 std::string WebServiceTest::base_url_;
@@ -1859,6 +1880,7 @@ TEST_F(WebServiceTest, ClosingNonStreamingChatConnectionCancelsInferenceAndRelea
 
   const int client = ::socket(AF_INET, SOCK_STREAM, 0);
   ASSERT_GE(client, 0);
+  auto connection = std::make_shared<oatpp::network::tcp::Connection>(client);
   sockaddr_in address{};
   address.sin_family = AF_INET;
   address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -1867,31 +1889,20 @@ TEST_F(WebServiceTest, ClosingNonStreamingChatConnectionCancelsInferenceAndRelea
 
   const json body = {
       {"model", std::string(kResponseStoreTestModelAlias) + ":1"},
-      {"messages", json::array({{{"role", "user"}, {"content", "Continue writing a long answer"}}})},
-      {"max_tokens", 512},
+      {"messages", json::array({{{"role", "user"}, {"content", "Hello"}}})},
+      {"max_tokens", 1},
   };
   const std::string payload = body.dump();
   const std::string message =
       "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\n"
       "Content-Type: application/json\r\nContent-Length: " +
       std::to_string(payload.size()) + "\r\nConnection: close\r\n\r\n" + payload;
-  ASSERT_EQ(::send(client, message.data(), message.size(), 0), static_cast<ssize_t>(message.size()));
-
-  const auto start_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-  while (session_manager_->ActiveCount() == 0 && std::chrono::steady_clock::now() < start_deadline) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
-  const bool started = session_manager_->ActiveCount() > 0;
   linger abortive_close{1, 0};
   ASSERT_EQ(::setsockopt(client, SOL_SOCKET, SO_LINGER, &abortive_close, sizeof(abortive_close)), 0);
-  ::close(client);
-  ASSERT_TRUE(started) << "The non-streaming request did not begin inference";
-
-  const auto stop_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while (session_manager_->ActiveCount() > 0 && std::chrono::steady_clock::now() < stop_deadline) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
-  EXPECT_EQ(session_manager_->ActiveCount(), 0u) << "Disconnected inference did not stop";
+  // Reset after HTTP parsing but before inference can finish, independently of the tiny model's generation speed.
+  session_manager_->ResetClientOnNextRegistration(std::move(connection));
+  ScopeGuard clear_disconnect([&]() noexcept { session_manager_->ResetClientOnNextRegistration(nullptr); });
+  ASSERT_EQ(::send(client, message.data(), message.size(), 0), static_cast<ssize_t>(message.size()));
 
   bool canceled = false;
   const auto telemetry_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -1905,6 +1916,12 @@ TEST_F(WebServiceTest, ClosingNonStreamingChatConnectionCancelsInferenceAndRelea
     }
   }
   EXPECT_TRUE(canceled) << "The disconnected request completed instead of being canceled";
+
+  const auto stop_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (session_manager_->ActiveCount() > 0 && std::chrono::steady_clock::now() < stop_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_EQ(session_manager_->ActiveCount(), 0u) << "Disconnected inference did not stop";
 
   const auto recovered = PostJson(base_url_ + "/v1/chat/completions",
                                   {{"model", std::string(kResponseStoreTestModelAlias) + ":1"},

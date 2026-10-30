@@ -43,6 +43,24 @@ ToolKind ForcedChoiceKind(const ChatCompletionToolChoice& choice) {
   return choice.kind == ChatCompletionToolChoice::Kind::kCustom ? ToolKind::kCustom : ToolKind::kFunction;
 }
 
+void ValidateCatalogDefault(const char* key, const char* value, const char* option) {
+  try {
+    KeyValuePairs params;
+    params.Add(option, value);
+    auto parsed = SearchOptions::FromParameters(params);
+    ResolveSamplingPlan(parsed);
+    if (parsed.max_output_tokens.has_value()) {
+      ResolveMaxOutputTokens(parsed, 1);
+    }
+  } catch (const fl::Exception& ex) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "invalid catalog model setting '", key, "': ", ex.what());
+  } catch (const std::invalid_argument& ex) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "invalid catalog model setting '", key, "': ", ex.what());
+  } catch (const std::out_of_range& ex) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "invalid catalog model setting '", key, "': ", ex.what());
+  }
+}
+
 }  // namespace
 
 std::string GenerateCompletionId() {
@@ -59,29 +77,11 @@ void ApplyCatalogDefaults(ChatCompletionRequest& req, const KeyValuePairs& model
     return;
   }
 
-  auto validate_default = [](const char* key, const char* value, const char* option) {
-    try {
-      KeyValuePairs params;
-      params.Add(option, value);
-      auto parsed = SearchOptions::FromParameters(params);
-      ResolveSamplingPlan(parsed);
-      if (parsed.max_output_tokens.has_value()) {
-        ResolveMaxOutputTokens(parsed, 1);
-      }
-    } catch (const fl::Exception& ex) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "invalid catalog model setting '", key, "': ", ex.what());
-    } catch (const std::invalid_argument& ex) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "invalid catalog model setting '", key, "': ", ex.what());
-    } catch (const std::out_of_range& ex) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "invalid catalog model setting '", key, "': ", ex.what());
-    }
-  };
-
   auto apply_default_float = [&](const char* key, std::optional<float>& field) {
     if (!field.has_value()) {
       const char* val = model_settings.Find(key);
       if (val) {
-        validate_default(key, val, key);
+        ValidateCatalogDefault(key, val, key);
         field = std::stof(val);
       }
     }
@@ -91,7 +91,7 @@ void ApplyCatalogDefaults(ChatCompletionRequest& req, const KeyValuePairs& model
     if (!field.has_value()) {
       const char* val = model_settings.Find(key);
       if (val) {
-        validate_default(key, val, option);
+        ValidateCatalogDefault(key, val, option);
         field = std::stoi(val);
       }
     }
@@ -111,7 +111,7 @@ void ApplyCatalogDefaults(ChatCompletionRequest& req, const KeyValuePairs& model
   auto apply_metadata = [&](const char* key, const char* option) {
     const char* val = model_settings.Find(key);
     if (val && req.metadata->find(key) == req.metadata->end()) {
-      validate_default(key, val, option);
+      ValidateCatalogDefault(key, val, option);
       (*req.metadata)[key] = val;
     }
   };
@@ -119,6 +119,21 @@ void ApplyCatalogDefaults(ChatCompletionRequest& req, const KeyValuePairs& model
   apply_metadata("top_k", "top_k");
   if (!req.seed.has_value()) {
     apply_metadata("random_seed", "seed");
+  }
+}
+
+void ApplyCatalogDefaults(KeyValuePairs& options, const KeyValuePairs& model_settings) {
+  for (const auto& [key, option] : {std::pair{"temperature", "temperature"}, std::pair{"top_p", "top_p"},
+                                    std::pair{"top_k", "top_k"}, std::pair{"random_seed", "seed"},
+                                    std::pair{"max_tokens", "max_output_tokens"}}) {
+    if (options.Find(option)) {
+      continue;
+    }
+
+    if (const auto* value = model_settings.Find(key)) {
+      ValidateCatalogDefault(key, value, option);
+      options.Add(option, value);
+    }
   }
 }
 
