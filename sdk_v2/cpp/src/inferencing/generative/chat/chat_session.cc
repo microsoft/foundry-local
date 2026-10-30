@@ -1799,6 +1799,10 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       }
 
       emit_visible_text(text_framer.Flush());
+      stop_sequence_matched |= text_framer.Matched();
+      if (text_framer.Matched()) {
+        break;
+      }
       text_framer.ValidateBoundary();
       semantic_output_seen = true;
       if (!turn_guard.RecordToolCall()) {
@@ -1842,6 +1846,10 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
         }
 
         emit_visible_text(text_framer.Flush());
+        stop_sequence_matched |= text_framer.Matched();
+        if (text_framer.Matched()) {
+          break;
+        }
         // REASONING goes straight through — never feed it to the tool-call accumulator.
         semantic_output_seen |= !seg.text.empty();
         AppendGeneratedSegment(generated_events, seg.text, seg.type);
@@ -1925,9 +1933,9 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
                                      host_output_limit_reached, backend_termination);
   flush_accumulator(natural_tool_output_end);
   emit_visible_text(text_framer.Flush());
+  stop_sequence_matched |= text_framer.Matched();
   if (cached_tool_ctx_.tool_plan && !cached_tool_ctx_.text_output &&
-      !cached_tool_ctx_.ActiveRawEnvelope() && !malformed_tool_output_seen &&
-      !HasGeneratedToolCalls(generated_events)) {
+      !malformed_tool_output_seen && !HasGeneratedToolCalls(generated_events)) {
     malformed_tool_output_seen = true;
     malformed_tool_error = "The model did not emit the required tool call";
   }
@@ -2193,6 +2201,10 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
       }
 
       emit_visible_text(text_framer.Flush());
+      stop_sequence_matched |= text_framer.Matched();
+      if (text_framer.Matched()) {
+        break;
+      }
       text_framer.ValidateBoundary();
       semantic_output_seen = true;
       if (!turn_guard.RecordToolCall()) {
@@ -2241,6 +2253,10 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
         }
 
         emit_visible_text(text_framer.Flush());
+        stop_sequence_matched |= text_framer.Matched();
+        if (text_framer.Matched()) {
+          break;
+        }
         semantic_output_seen |= !seg.text.empty();
         AppendGeneratedSegment(generated_events, seg.text, seg.type);
 
@@ -2319,7 +2335,8 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
   process_tool_output(chat_session_internal::FlushToolOutput(
       active_raw_detector, tool_accumulator, natural_tool_output_end));
   emit_visible_text(text_framer.Flush());
-  if (tool_ctx.tool_plan && !tool_ctx.text_output && !tool_ctx.ActiveRawEnvelope() &&
+  stop_sequence_matched |= text_framer.Matched();
+  if (tool_ctx.tool_plan && !tool_ctx.text_output &&
       !malformed_tool_output_seen && !HasGeneratedToolCalls(generated_events)) {
     malformed_tool_output_seen = true;
     malformed_tool_error = "The model did not emit the required tool call";

@@ -6019,6 +6019,68 @@ TEST_F(ChatSessionTest, ChatCompletionsForcedRawCallPreservesJsonShapedPayloadAn
   EXPECT_EQ(completion.at("choices").at(0).at("finish_reason"), "tool_calls");
 }
 
+TEST_F(QwenNativeProductionIntegrationTest, ForcedRawEnvelopeRejectsOrdinaryTextAsAMissingCall) {
+  int generator_count = 0;
+  TextChatGeneratorFactory factory =
+      [&](const auto&, const auto&, auto&, const auto&, bool) {
+        ++generator_count;
+        return std::make_unique<FixedOutputGenerator>(
+            "ordinary text", BackendTerminationCause::kNaturalEnd);
+      };
+  auto catalog_model = MakeCatalogModel();
+  ChatSession session(catalog_model, *model_, *logger_, telemetry_, {},
+                      std::move(factory));
+
+  const auto descriptor =
+      nlohmann::json{{"type", "raw_envelope"},
+                     {"tool_name", "edit"},
+                     {"start_marker", "BEGIN"},
+                     {"end_marker", "END"}}
+          .dump();
+  const auto request_json =
+      nlohmann::json{
+          {"model", model_->ModelId()},
+          {"messages", nlohmann::json::array({
+                           {{"role", "user"}, {"content", "edit the file"}},
+                       })},
+          {"tools", nlohmann::json::array({
+                        {{"type", "custom"},
+                         {"custom", {{"name", "edit"}, {"format", {{"type", "text"}}}}}},
+                    })},
+          {"tool_choice", {{"type", "custom"}, {"custom", {{"name", "edit"}}}}},
+          {"metadata", {{tools::kRawEnvelopeMetadataKey, descriptor}}}};
+  Request request;
+  request.AddOwnedItem(std::make_unique<TextItem>(
+      request_json.dump(), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+
+  Response response;
+  EXPECT_THROW(session.ProcessRequest(request, response), fl::Exception);
+  EXPECT_GE(generator_count, 1);
+  EXPECT_TRUE(response.items.empty());
+}
+
+TEST_F(QwenNativeProductionIntegrationTest, OptionalPrefixStopPreventsFollowingToolPublication) {
+  TextChatGeneratorFactory factory =
+      [](const auto&, const auto&, auto&, const ToolCallContext& context, bool) {
+        return std::make_unique<FixedOutputGenerator>(
+            "MESS" + context.tool_call_start +
+                R"([{"name":"lookup","parameters":{"city":"Paris"}}])" +
+                context.tool_call_end,
+            BackendTerminationCause::kNaturalEnd);
+      };
+  auto catalog_model = MakeCatalogModel();
+  ChatSession session(catalog_model, *model_, *logger_, telemetry_, {},
+                      std::move(factory));
+  AddFunctionTools(session);
+  auto request = MakeStatefulRequest("look up Paris");
+  StoreStopStringsOption({"MESS"}, request.options);
+
+  Response response;
+  ASSERT_NO_THROW(session.ProcessRequest(request, response));
+  EXPECT_TRUE(Calls(response).empty());
+  EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
+}
+
 TEST_F(QwenNativeProductionIntegrationTest, MediaWithDeclaredToolsIsRejectedBeforeSchemaAdmission) {
   for (const bool image : {false, true}) {
     for (const auto& choice : {"auto", "none"}) {

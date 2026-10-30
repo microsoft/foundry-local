@@ -115,6 +115,9 @@ TEST(CanonicalToolPromptTest, InstructionsReflectAutomaticRequiredAndForcedChoic
   const auto fenced = nlohmann::json::parse(BuildCanonicalToolMessagesJson(messages, context));
   const auto fenced_instructions = fenced.front().at("content").get<std::string>();
   EXPECT_NE(fenced_instructions.find("emit one JSON code fence"), std::string::npos);
+  EXPECT_NE(fenced_instructions.find(
+                "\"foundry_tool_calls\" and whose value is an array"),
+            std::string::npos);
   EXPECT_NE(fenced_instructions.find("starting at the first output byte"), std::string::npos);
   EXPECT_NE(fenced_instructions.find(
                 "```json\n{\"foundry_tool_calls\":[{\"name\":\"tool_name\",\"parameters\":{\"argument\":\"value\"}}]}\n```"),

@@ -72,6 +72,9 @@ TEST(SearchOptionsParsingTest, AutomaticEngineToolsUseDelimitedBodyGuidance) {
   context.forced_tool = ForcedToolChoice{"read", ToolKind::kFunction};
   EXPECT_FALSE(PlanDelimitedToolBodyGuidance(context, ChatBackendKind::kEngine));
   context.forced_tool.reset();
+  context.supports_reasoning = true;
+  EXPECT_FALSE(PlanDelimitedToolBodyGuidance(context, ChatBackendKind::kEngine));
+  context.supports_reasoning = false;
   context.text_output = false;
   EXPECT_FALSE(PlanDelimitedToolBodyGuidance(context, ChatBackendKind::kEngine));
   context.text_output = true;

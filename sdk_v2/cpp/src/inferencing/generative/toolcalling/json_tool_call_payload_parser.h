@@ -14,6 +14,55 @@
 
 namespace fl {
 
+inline bool HasFoundryToolCallsPrefix(std::string_view body) {
+  const auto skip_whitespace = [&](size_t& offset) {
+    while (offset < body.size() &&
+           std::string_view(" \t\r\n").find(body[offset]) != std::string_view::npos) {
+      ++offset;
+    }
+  };
+
+  size_t offset = 0;
+  skip_whitespace(offset);
+  if (offset == body.size() || body[offset++] != '{') {
+    return false;
+  }
+  skip_whitespace(offset);
+  constexpr std::string_view key = "\"foundry_tool_calls\"";
+  if (!body.substr(offset).starts_with(key)) {
+    return false;
+  }
+  offset += key.size();
+  skip_whitespace(offset);
+  return offset < body.size() && body[offset] == ':';
+}
+
+inline bool JsonNestingWithinToolCallLimit(std::string_view source) {
+  int depth = 0;
+  bool quoted = false;
+  bool escaped = false;
+  for (const auto byte : source) {
+    if (quoted) {
+      if (escaped) {
+        escaped = false;
+      } else if (byte == '\\') {
+        escaped = true;
+      } else if (byte == '"') {
+        quoted = false;
+      }
+    } else if (byte == '"') {
+      quoted = true;
+    } else if (byte == '{' || byte == '[') {
+      if (++depth > ToolCallPlan::kMaxDepth) {
+        return false;
+      }
+    } else if ((byte == '}' || byte == ']') && depth > 0) {
+      --depth;
+    }
+  }
+  return true;
+}
+
 inline ToolCallPayloadParser CreateJsonToolCallPayloadParser(std::shared_ptr<const ToolCallPlan> plan,
                                                              std::string start_marker,
                                                              std::string end_marker,
@@ -40,7 +89,16 @@ inline ToolCallPayloadParser CreateJsonToolCallPayloadParser(std::shared_ptr<con
       const auto body_start = offset + start.size();
       const auto body_end = FindMarkerOutsideJsonString(source, end, body_start);
       if (body_end == std::string_view::npos) {
-        return end_of_stream ? reject("Incomplete tool-call JSON or missing closing marker") : result;
+        if (!end_of_stream) {
+          return result;
+        }
+        if (require_foundry_wrapper && reject_non_wrapper_as_text &&
+            !HasFoundryToolCallsPrefix(source.substr(body_start))) {
+          result.disposition = ToolCallPayloadDisposition::kRejected;
+          result.consumed_size = source.size();
+          return result;
+        }
+        return reject("Incomplete tool-call JSON or missing closing marker");
       }
 
       const auto body = source.substr(body_start, body_end - body_start);
@@ -50,6 +108,11 @@ inline ToolCallPayloadParser CreateJsonToolCallPayloadParser(std::shared_ptr<con
           result.consumed_size = body_end + end.size();
           return result;
         };
+        if (!JsonNestingWithinToolCallLimit(body)) {
+          return reject_non_wrapper_as_text
+                     ? reject_as_text()
+                     : reject("Foundry tool-call envelope exceeds the JSON nesting limit");
+        }
         try {
           const auto envelope = nlohmann::json::parse(body);
           if (!envelope.is_object() || envelope.size() != 1 ||
@@ -92,6 +155,14 @@ inline ToolCallPayloadParser CreateJsonToolCallPayloadParser(std::shared_ptr<con
           result.calls.clear();
           return result;
         }
+      } else if (require_foundry_wrapper) {
+        result.calls.clear();
+        result.disposition = reject_non_wrapper_as_text
+                                 ? ToolCallPayloadDisposition::kRejected
+                                 : ToolCallPayloadDisposition::kMalformed;
+        result.consumed_size = reject_non_wrapper_as_text ? source.size() : 0;
+        result.error = "Foundry tool-call envelope must be the entire response";
+        return result;
       } else if (tail.starts_with(start)) {
         continue;
       } else if (!end_of_stream && start.starts_with(tail)) {

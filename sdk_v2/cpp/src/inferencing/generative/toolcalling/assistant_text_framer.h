@@ -15,7 +15,7 @@ class AssistantTextFramer {
   explicit AssistantTextFramer(const ToolCallContext& context)
       : enabled_(context.UsesAssistantTextFraming()),
         optional_(context.tool_plan && context.text_output && context.tool_output &&
-                  context.native_assistant_text_output),
+                  context.native_assistant_text_output && !context.HasAnyExplicitGuidance()),
         reasoning_separator_pending_(enabled_ && context.supports_reasoning) {}
 
   std::string Push(std::string_view text) {

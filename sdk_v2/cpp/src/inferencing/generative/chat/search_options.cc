@@ -173,6 +173,7 @@ std::optional<std::string> PlanDelimitedToolBodyGuidance(const ToolCallContext& 
   const auto valid_id = [](std::optional<int32_t> id) { return id && *id >= 0; };
   if (backend_kind != ChatBackendKind::kEngine ||
       !tool_ctx.text_output || !tool_ctx.tool_output || tool_ctx.forced_tool ||
+      tool_ctx.supports_reasoning ||
       tool_ctx.ActiveRawEnvelope() || tool_ctx.guidance_disabled || tool_ctx.HasAnyExplicitGuidance() ||
       !tool_ctx.tool_plan ||
       !valid_id(tool_ctx.tool_call_start_token_id) || !valid_id(tool_ctx.tool_call_end_token_id) ||

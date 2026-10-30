@@ -266,8 +266,9 @@ std::string BuildCanonicalToolMessagesJson(const std::vector<TranscriptMessage>&
       (protect_literal ? protect_literal(tool_ctx.tools_json) : tool_ctx.tools_json);
   if (tool_ctx.fenced_tool_call_output) {
     instructions +=
-        "\nTo call tools, emit one JSON code fence containing an array of objects with exactly the keys "
-        "\"name\" and \"parameters\". Do not emit text before or after the fence. "
+        "\nTo call tools, emit one JSON code fence containing exactly one object whose only key is "
+        "\"foundry_tool_calls\" and whose value is an array of objects with exactly the keys \"name\" and "
+        "\"parameters\". Do not emit text before or after the fence. "
         "After the closing fence, stop and wait for the external tool results. ";
   } else {
     instructions +=

@@ -81,6 +81,59 @@ TEST(JsonToolCallPayloadParserTest, FoundryWrapperSeparatesAutomaticExamplesFrom
             ToolCallPayloadDisposition::kMalformed);
 }
 
+TEST(JsonToolCallPayloadParserTest, FoundryCompatibilityRequiresOneCompleteResponseOnlyEnvelope) {
+  const auto plan = ToolCallPlan::Create(kTools);
+  const auto automatic = CreateJsonToolCallPayloadParser(
+      plan, "```json", "```", true, true, true);
+  const std::string call =
+      "```json\n{\"foundry_tool_calls\":[{\"name\":\"edit\",\"parameters\":{\"input\":\"ok\"}}]}\n```";
+
+  EXPECT_EQ(automatic(call, false).disposition,
+            ToolCallPayloadDisposition::kNeedMore);
+  EXPECT_EQ(automatic(call, true).disposition,
+            ToolCallPayloadDisposition::kParsed);
+
+  for (const auto& source : {call + "\nExplanation.",
+                             call + "\n" + call}) {
+    const auto rejected = automatic(source, true);
+    EXPECT_EQ(rejected.disposition, ToolCallPayloadDisposition::kRejected);
+    EXPECT_EQ(rejected.consumed_size, source.size());
+    EXPECT_TRUE(rejected.calls.empty());
+  }
+}
+
+TEST(JsonToolCallPayloadParserTest, AmbiguousInterruptedFenceRemainsTextButSelectedWrapperFailsClosed) {
+  const auto plan = ToolCallPlan::Create(kTools);
+  const auto automatic = CreateJsonToolCallPayloadParser(
+      plan, "```json", "```", true, true, true);
+
+  const std::string ordinary = "```json\n{\"example\":\"unterminated";
+  const auto rejected = automatic(ordinary, true);
+  EXPECT_EQ(rejected.disposition, ToolCallPayloadDisposition::kRejected);
+  EXPECT_EQ(rejected.consumed_size, ordinary.size());
+
+  const auto selected = automatic(
+      "```json\n{\"foundry_tool_calls\":[{\"name\":\"edit\"", true);
+  EXPECT_EQ(selected.disposition, ToolCallPayloadDisposition::kMalformed);
+}
+
+TEST(JsonToolCallPayloadParserTest, FoundryEnvelopeDepthIsBoundedBeforeParsing) {
+  const auto plan = ToolCallPlan::Create(kTools);
+  const auto automatic = CreateJsonToolCallPayloadParser(
+      plan, "```json", "```", true, true, true);
+  std::string body = R"({"foundry_tool_calls":)";
+  body.append(ToolCallPlan::kMaxDepth, '[');
+  body += "0";
+  body.append(ToolCallPlan::kMaxDepth, ']');
+  body += "}";
+  const std::string source = "```json\n" + body + "\n```";
+
+  const auto rejected = automatic(source, true);
+  EXPECT_EQ(rejected.disposition, ToolCallPayloadDisposition::kRejected);
+  EXPECT_EQ(rejected.consumed_size, source.size());
+  EXPECT_TRUE(rejected.calls.empty());
+}
+
 TEST(JsonToolCallPayloadParserTest, EveryByteSplitPreservesCodeUnicodeAndLiteralMarkers) {
   const std::string input =
       "[scratch\nprint(\"quoted\\\\path\")\n"
