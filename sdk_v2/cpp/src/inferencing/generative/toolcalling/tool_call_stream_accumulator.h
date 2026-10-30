@@ -134,7 +134,19 @@ class ToolCallStreamAccumulator {
     }
 
     if (canonical_json_payload_ && inside_tool_call_) {
-      RejectMalformedSelectedPayload(out, "Tool-call output was interrupted before the batch could be committed");
+      const auto interrupted = payload_parser_(tool_call_buffer_, /*end_of_stream=*/true);
+      if (interrupted.disposition == ToolCallPayloadDisposition::kRejected &&
+          interrupted.consumed_size == tool_call_buffer_.size()) {
+        EmitVisible(out, std::move(tool_call_buffer_));
+        EmitVisible(out, std::move(buffer_));
+        tool_call_buffer_.clear();
+        buffer_.clear();
+        inside_tool_call_ = false;
+        ResetPayloadScan();
+        ResetSelectedPayloadBoundaryScan();
+      } else {
+        RejectMalformedSelectedPayload(out, "Tool-call output was interrupted before the batch could be committed");
+      }
       return out;
     }
 

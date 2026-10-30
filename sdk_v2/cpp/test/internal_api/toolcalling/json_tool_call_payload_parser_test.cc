@@ -117,6 +117,35 @@ TEST(JsonToolCallPayloadParserTest, AmbiguousInterruptedFenceRemainsTextButSelec
   EXPECT_EQ(selected.disposition, ToolCallPayloadDisposition::kMalformed);
 }
 
+TEST(JsonToolCallPayloadParserTest, InterruptedCompatibilityPayloadClassifiesBeforeFailingClosed) {
+  const auto make_accumulator = [] {
+    auto plan = ToolCallPlan::Create(kTools);
+    return ToolCallStreamAccumulator{
+        "```json", "```", kTools, "",
+        CreateJsonToolCallPayloadParser(
+            std::move(plan), "```json", "```", true, true, true),
+        true, true};
+  };
+
+  const std::string ordinary = "```json\n{\"example\":\"unterminated";
+  auto ordinary_accumulator = make_accumulator();
+  Collected ordinary_result;
+  ordinary_result.Append(ordinary_accumulator.Push(ordinary));
+  ordinary_result.Append(ordinary_accumulator.RejectPendingSelectedPayload());
+  EXPECT_FALSE(ordinary_result.malformed);
+  EXPECT_EQ(ordinary_result.visible, ordinary);
+  EXPECT_TRUE(ordinary_result.calls.empty());
+
+  auto selected_accumulator = make_accumulator();
+  Collected selected_result;
+  selected_result.Append(selected_accumulator.Push(
+      "```json\n{\"foundry_tool_calls\":[{\"name\":\"edit\""));
+  selected_result.Append(selected_accumulator.RejectPendingSelectedPayload());
+  EXPECT_TRUE(selected_result.malformed);
+  EXPECT_TRUE(selected_result.visible.empty());
+  EXPECT_TRUE(selected_result.calls.empty());
+}
+
 TEST(JsonToolCallPayloadParserTest, FoundryEnvelopeDepthIsBoundedBeforeParsing) {
   const auto plan = ToolCallPlan::Create(kTools);
   const auto automatic = CreateJsonToolCallPayloadParser(
