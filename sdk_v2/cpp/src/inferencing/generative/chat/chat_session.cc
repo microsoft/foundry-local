@@ -1203,7 +1203,6 @@ ToolCallContext BuildToolCallContextForRequest(const Request& request,
       if (!request.raw_envelope_descriptor && !tool_ctx.forced_tool) {
         tool_ctx.raw_envelope.reset();
       }
-
     }
   }
 
@@ -1837,7 +1836,8 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
     if (chat_session_internal::PushDecodedFragment(
             token, token_id, active_stop_filter, splitter, emit_segments,
-            cached_tool_ctx_.tool_plan && inside_payload) || stop_sequence_matched) {
+            cached_tool_ctx_.tool_plan && inside_payload) ||
+        stop_sequence_matched) {
       stop_sequence_matched = true;
       break;
     }
@@ -2235,7 +2235,8 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
 
     if (chat_session_internal::PushDecodedFragment(
             token, token_id, active_stop_filter, splitter, process_segments,
-            tool_ctx.tool_plan && inside_payload) || stop_sequence_matched) {
+            tool_ctx.tool_plan && inside_payload) ||
+        stop_sequence_matched) {
       stop_sequence_matched = true;
       break;
     }
@@ -2429,11 +2430,11 @@ size_t ChatSession::TurnCount() const {
   return transcript_.TurnCount();
 }
 
-void ChatSession::UndoTurns(size_t count) {
+size_t ChatSession::UndoTurns(size_t count) {
   auto request_lock = LockRequestMutex();
 
   if (count == 0) {
-    return;
+    return transcript_.TurnCount();
   }
 
   const bool undo_all = count == transcript_.TurnCount();
@@ -2442,7 +2443,7 @@ void ChatSession::UndoTurns(size_t count) {
   auto tokens = transcript_.UndoTurns(count);
 
   if (!cached_generator_) {
-    return;
+    return transcript_.TurnCount();
   }
 
   if (chat_session_internal::ShouldInvalidateRetainedGeneratorForUndo(
@@ -2451,7 +2452,7 @@ void ChatSession::UndoTurns(size_t count) {
     // has no usable boundary matching the target state. A non-rewindable backend must likewise rebuild from the
     // already-truncated transcript.
     InvalidateCachedGenerator();
-    return;
+    return transcript_.TurnCount();
   }
 
   // The transcript is already truncated. A failed rewind would leave the KV cache describing a conversation the
@@ -2459,6 +2460,7 @@ void ChatSession::UndoTurns(size_t count) {
   ScopeGuard invalidate_on_failed_rewind([this]() noexcept { InvalidateCachedGenerator(); });
   cached_generator_->RewindTo(*tokens.pre_turn);
   invalidate_on_failed_rewind.Dismiss();
+  return transcript_.TurnCount();
 }
 
 size_t ChatSession::MessageCount() const {

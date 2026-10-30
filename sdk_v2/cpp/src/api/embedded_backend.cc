@@ -43,13 +43,13 @@ class EmbeddedSession final : public SessionBackend {
   }
 
   void SetSessionOptions(const KeyValuePairs& options) override { session_.SetSessionOptions(options); }
-  void ProcessRequest(const Request& request, Response& response, std::optional<StreamingCallback> callback) override {
-    session_.ProcessRequest(request, response, std::move(callback));
+  size_t ProcessRequest(const Request& request, Response& response, std::optional<StreamingCallback> callback) override {
+    return session_.ProcessRequest(request, response, std::move(callback));
   }
   void AddToolDefinition(ToolDefinition definition) override { session_.AddToolDefinition(std::move(definition)); }
   bool RemoveToolDefinition(const std::string& name) override { return session_.RemoveToolDefinition(name); }
   size_t TurnCount() const override { return session_.TurnCount(); }
-  void UndoTurns(size_t count) override { session_.UndoTurns(count); }
+  size_t UndoTurns(size_t count) override { return session_.UndoTurns(count); }
 
   std::unique_ptr<PreflightBackend> CreateRequestPreflight(const Request& request) const override {
     return std::make_unique<EmbeddedPreflight>(session_.CreateRequestPreflight(request), model_);

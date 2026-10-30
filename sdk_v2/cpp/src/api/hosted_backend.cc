@@ -199,9 +199,11 @@ class HostedSession final : public SessionBackend {
 
   size_t TurnCount() const override { return state_->turns.load(std::memory_order_acquire); }
 
-  void UndoTurns(size_t count) override {
+  size_t UndoTurns(size_t count) override {
     const auto state = state_;
-    state->turns.store(Call(state, Operation::UndoTurns, {{"count", count}}).get<size_t>(), std::memory_order_release);
+    const auto turns = Call(state, Operation::UndoTurns, {{"count", count}}).get<size_t>();
+    state->turns.store(turns, std::memory_order_release);
+    return turns;
   }
 
   std::unique_ptr<PreflightBackend> CreateRequestPreflight(const Request& request) const override {
@@ -212,7 +214,7 @@ class HostedSession final : public SessionBackend {
     return std::make_unique<HostedPreflight>(state->context, DecodeObjectIdentity(value), state->owner);
   }
 
-  void ProcessRequest(const Request& request, Response& response, std::optional<StreamingCallback> callback) override {
+  size_t ProcessRequest(const Request& request, Response& response, std::optional<StreamingCallback> callback) override {
     const auto state = state_;
     for (auto* scope = callback_scope; scope; scope = scope->previous) {
       if (scope->session == state.get()) {
@@ -345,6 +347,7 @@ class HostedSession final : public SessionBackend {
     response = std::move(received);
     state->turns.store(turns, std::memory_order_release);
     request.TryComplete();
+    return turns;
   }
 
  private:

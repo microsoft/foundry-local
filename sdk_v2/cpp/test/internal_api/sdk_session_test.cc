@@ -109,12 +109,12 @@ class QueueSession final : public api::SessionBackend {
   void AddToolDefinition(ToolDefinition) override {}
   bool RemoveToolDefinition(const std::string&) override { return false; }
   size_t TurnCount() const override { return 0; }
-  void UndoTurns(size_t) override { FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "queue session has no turns"); }
+  size_t UndoTurns(size_t) override { FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "queue session has no turns"); }
   std::unique_ptr<api::PreflightBackend> CreateRequestPreflight(const Request&) const override {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "queue session has no preflight");
   }
 
-  void ProcessRequest(const Request& request, Response& response, std::optional<StreamingCallback> callback) override {
+  size_t ProcessRequest(const Request& request, Response& response, std::optional<StreamingCallback> callback) override {
     if (!request.TryBegin()) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "queue request is already running");
     }
@@ -151,7 +151,34 @@ class QueueSession final : public api::SessionBackend {
     }
 
     response.items.push_back(std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_ASSISTANT, text));
+    return 0;
   }
+};
+
+class SnapshotOnlySession final : public api::SessionBackend {
+ public:
+  explicit SnapshotOnlySession(std::unique_ptr<api::SessionBackend> session)
+      : SessionBackend(api::BackendKind::Embedded), session_(std::move(session)) {}
+
+  void SetStreamingCallback(flStreamingCallback callback, void* context) override {
+    session_->SetStreamingCallback(callback, context);
+  }
+  void SetSessionOptions(const KeyValuePairs& options) override { session_->SetSessionOptions(options); }
+  size_t ProcessRequest(const Request& request, Response& response, std::optional<StreamingCallback> callback) override {
+    return session_->ProcessRequest(request, response, std::move(callback));
+  }
+  void AddToolDefinition(ToolDefinition definition) override { session_->AddToolDefinition(std::move(definition)); }
+  bool RemoveToolDefinition(const std::string& name) override { return session_->RemoveToolDefinition(name); }
+  size_t TurnCount() const override {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "turn count must be captured inside the native operation");
+  }
+  size_t UndoTurns(size_t count) override { return session_->UndoTurns(count); }
+  std::unique_ptr<api::PreflightBackend> CreateRequestPreflight(const Request& request) const override {
+    return session_->CreateRequestPreflight(request);
+  }
+
+ private:
+  std::unique_ptr<api::SessionBackend> session_;
 };
 
 class SdkSessionTest : public testing::Test {
@@ -757,6 +784,18 @@ TEST_F(SdkSessionTest, AcknowledgesOrderedStreamingBeforeTheNativeTurnCommits) {
   EXPECT_EQ(streamed, AssistantText(DecodeResponse(result.value.at("response"), {})));
 }
 
+TEST_F(SdkSessionTest, RepliesUseTurnCountsCapturedByTheNativeOperationWithoutRereadingSessionState) {
+  auto session = objects_->Session(identity_);
+  session->implementation = std::make_unique<SnapshotOnlySession>(std::move(session->implementation));
+  const auto result = Call(Operation::ProcessRequest, ProcessPayload());
+  ASSERT_EQ(result.status, 0) << result.error;
+  EXPECT_EQ(result.value.at("turns"), 1);
+
+  const auto undo = Call(Operation::UndoTurns, {{"object", EncodeObjectIdentity(identity_)}, {"count", uint64_t{1}}});
+  ASSERT_EQ(undo.status, 0) << undo.error;
+  EXPECT_EQ(undo.value, 0);
+}
+
 TEST_F(SdkSessionTest, CallbackCancellationRollsBackTheTurnAndLeavesTheSessionReusable) {
   int callbacks = 0;
   const auto canceled = Call(Operation::ProcessRequest, ProcessPayload(true), [&](auto id, const Json& event) {
@@ -880,6 +919,7 @@ TEST_F(SdkSessionTest, OverlappingRequestsPreserveNativeSessionSerializationAndS
   ASSERT_EQ(first_result.status, 0) << first_result.error;
   ASSERT_EQ(second_result.status, 0) << second_result.error;
   EXPECT_EQ(streamed, AssistantText(DecodeResponse(first_result.value.at("response"), {})));
+  EXPECT_EQ(first_result.value.at("turns"), 1);
   EXPECT_EQ(second_result.value.at("turns"), 2);
 }
 
