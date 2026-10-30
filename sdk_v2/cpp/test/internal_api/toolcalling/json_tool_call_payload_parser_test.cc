@@ -59,6 +59,28 @@ std::string Frame(const nlohmann::json& calls) {
   return "<tool_call>" + calls.dump() + "</tool_call>";
 }
 
+TEST(JsonToolCallPayloadParserTest, FoundryWrapperSeparatesAutomaticExamplesFromToolOnlyFailures) {
+  const auto plan = ToolCallPlan::Create(kTools);
+  const std::string invalid =
+      "```json\n{\"foundry_tool_calls\":[{\"name\":\"edit\",\"parameters\":{\"input\":\"\"}}]}\n```";
+  const std::string valid =
+      "```json\n{\"foundry_tool_calls\":[{\"name\":\"edit\",\"parameters\":{\"input\":\"ok\"}}]}\n```";
+
+  const auto automatic = CreateJsonToolCallPayloadParser(
+      plan, "```json", "```", true, true, true);
+  const auto rejected = automatic(invalid, true);
+  EXPECT_EQ(rejected.disposition, ToolCallPayloadDisposition::kRejected);
+  EXPECT_EQ(rejected.consumed_size, invalid.size());
+  const auto parsed = automatic(valid, true);
+  EXPECT_EQ(parsed.disposition, ToolCallPayloadDisposition::kParsed);
+  ASSERT_EQ(parsed.calls.size(), 1u);
+
+  const auto tool_only = CreateJsonToolCallPayloadParser(
+      plan, "```json", "```", true, true, false);
+  EXPECT_EQ(tool_only(invalid, true).disposition,
+            ToolCallPayloadDisposition::kMalformed);
+}
+
 TEST(JsonToolCallPayloadParserTest, EveryByteSplitPreservesCodeUnicodeAndLiteralMarkers) {
   const std::string input =
       "[scratch\nprint(\"quoted\\\\path\")\n"

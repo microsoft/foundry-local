@@ -288,18 +288,22 @@ std::string BuildCanonicalToolMessagesJson(const std::vector<TranscriptMessage>&
       "in strings, preserves the decoded value and is not substitution. ";
   if (tool_ctx.fenced_tool_call_output) {
     instructions +=
-        "For a tool call, emit a JSON code fence containing the call array, with this exact shape: "
-        "```json\n[{\"name\":\"tool_name\",\"parameters\":{\"argument\":\"value\"}}]\n```. "
+        "For a tool call, emit a JSON code fence containing the call array as the entire response, starting at the "
+        "first output byte, with this exact shape: "
+        "```json\n{\"foundry_tool_calls\":[{\"name\":\"tool_name\",\"parameters\":{\"argument\":\"value\"}}]}\n```. "
         "Replace the example names and values with a declared tool and its requested arguments.";
   } else {
-    instructions +=
-        "The required wire shape is <tool_call>[{\"name\":\"tool_name\",\"parameters\":{\"argument\":\"value\"}}]"
-        "</tool_call>; replace the example names and values with a declared tool and its requested arguments.";
+    instructions += "The required wire shape is " + tool_ctx.tool_call_start +
+                    "[{\"name\":\"tool_name\",\"parameters\":{\"argument\":\"value\"}}]" +
+                    tool_ctx.tool_call_end +
+                    "; replace the example names and values with a declared tool and its requested arguments.";
   }
   if (!tool_ctx.text_output) {
     instructions += " You must call a declared tool for this turn. Do not answer normally.";
     if (tool_ctx.forced_tool) {
-      instructions += " Call exactly the tool \"" + tool_ctx.forced_tool->name + "\".";
+      const auto forced_instruction =
+          " Call exactly the tool \"" + tool_ctx.forced_tool->name + "\".";
+      instructions += protect_literal ? protect_literal(forced_instruction) : forced_instruction;
     }
   } else {
     instructions +=

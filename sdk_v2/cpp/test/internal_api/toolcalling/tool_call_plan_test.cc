@@ -90,6 +90,7 @@ TEST(ToolCallPlanTest, NormalizesStrictNativeAndTupleEnvelopes) {
                           {"properties", {{"city", {{"type", "string"}}}}},
                           {"required", {"city"}}});
   for (const auto& payload : {
+           R"({"foundry_tool_calls":[{"name":"edit","parameters":{"city":"Paris"}}]})",
            R"({"name":"edit","arguments":{"city":"Paris"}})",
            R"(["edit",{"city":"Paris"}])",
        }) {
@@ -109,8 +110,7 @@ TEST(ToolCallPlanTest, StructuralGrammarEmbedsUnderCallerRootWithoutSchemaOrGlob
   const auto plan = Plan({{"properties", {{"input", {{"minLength", 100}}}}}});
   const auto grammar = plan->Grammar("functioncall");
   EXPECT_TRUE(grammar.starts_with(
-      "functioncall: tool_json_batch | tool_json_native_call | tool_json_tuple_call\n"
-      "tool_json_batch: tool_json_ws \"[\" tool_json_ws tool_json_call "
+      "functioncall: tool_json_ws \"[\" tool_json_ws tool_json_call "
       "(tool_json_comma tool_json_call)* tool_json_ws \"]\" tool_json_ws\n"));
   const std::string envelope =
       R"(tool_json_call: "{" tool_json_ws "\"name\"" tool_json_colon tool_json_name tool_json_comma )"
@@ -319,11 +319,9 @@ TEST(ToolCallPlanTest, EmptyBatchesFailParsingAndGrammarRequiresACallRegardlessO
       const auto choice = forced ? std::optional<ForcedToolChoice>{ForcedToolChoice{"edit"}} : std::nullopt;
       const auto plan = ToolCallPlan::Create(tools, parallel, choice);
       const auto expected = parallel
-                                ? "start: tool_json_batch | tool_json_native_call | tool_json_tuple_call\n"
-                                  "tool_json_batch: tool_json_ws \"[\" tool_json_ws tool_json_call "
+                                ? "start: tool_json_ws \"[\" tool_json_ws tool_json_call "
                                   "(tool_json_comma tool_json_call)* tool_json_ws \"]\" tool_json_ws\n"
-                                : "start: tool_json_batch | tool_json_native_call | tool_json_tuple_call\n"
-                                  "tool_json_batch: tool_json_ws \"[\" tool_json_ws tool_json_call "
+                                : "start: tool_json_ws \"[\" tool_json_ws tool_json_call "
                                   "tool_json_ws \"]\" tool_json_ws\n";
       EXPECT_TRUE(plan->Grammar().starts_with(expected));
       ExpectError([&] { plan->ParseCalls("[]"); }, FOUNDRY_LOCAL_ERROR_INTERNAL, "non-empty");

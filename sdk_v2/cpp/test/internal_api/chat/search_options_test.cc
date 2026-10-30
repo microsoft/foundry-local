@@ -415,7 +415,7 @@ TEST(EngineTurnOptionsPlanTest, NegativeSeedIsOmitted) {
   }
 }
 
-TEST(EngineTurnOptionsPlanTest, SuppressesNativeStopsOnlyForAssistantTextFraming) {
+TEST(EngineTurnOptionsPlanTest, SuppressesNativeStopsForAutomaticToolTurns) {
   SearchOptions options;
   options.stop_sequences = {"SS", "STOP"};
   ToolCallContext automatic;
@@ -460,7 +460,9 @@ TEST(EngineTurnOptionsPlanTest, SuppressesNativeStopsOnlyForAssistantTextFraming
         const auto plan = BuildEngineTurnOptionsPlan(options, turn_context, ChatBackendKind::kEngine,
                                                      prompt_opens_reasoning);
         EXPECT_EQ(turn_context.UsesAssistantTextFraming(), framed);
-        EXPECT_EQ(plan.stop_sequences, framed ? std::vector<std::string>{} : options.stop_sequences);
+        const bool automatic_tools = turn_context.text_output && turn_context.tool_output;
+        EXPECT_EQ(plan.stop_sequences,
+                  automatic_tools ? std::vector<std::string>{} : options.stop_sequences);
       }
     }
   }
@@ -523,6 +525,8 @@ TEST(EngineTurnOptionsPlanTest, GuidedRetryReplacesRegionGuidanceWithWholeTurnJs
   EXPECT_FALSE(tool_ctx.text_output);
   EXPECT_TRUE(tool_ctx.tool_output);
   EXPECT_FALSE(tool_ctx.tool_body_grammar);
+  EXPECT_FALSE(tool_ctx.fenced_tool_call_output);
+  EXPECT_FALSE(tool_ctx.guidance_disabled);
 
   const auto retry = BuildEngineTurnOptionsPlan(SearchOptions{}, tool_ctx, ChatBackendKind::kEngine, false);
   ASSERT_TRUE(retry.guidance);

@@ -265,8 +265,9 @@ EngineTurnOptionsPlan BuildEngineTurnOptionsPlan(const SearchOptions& options,
     plan.seed = *options.seed;
   }
 
-  // Native stops see hidden MESSAGE framing too; framed turns instead match ordinary visible text on the host.
-  if (ShouldForwardStopSequencesToEngine(backend_kind) && !tool_ctx.UsesAssistantTextFraming()) {
+  // Automatic tool turns match stops on visible assistant text after reasoning and tool payload classification.
+  if (ShouldForwardStopSequencesToEngine(backend_kind) &&
+      !(tool_ctx.text_output && tool_ctx.tool_output)) {
     plan.stop_sequences = options.stop_sequences;
   }
 

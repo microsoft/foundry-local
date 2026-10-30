@@ -99,6 +99,8 @@ struct ToolCallContext {
     text_output = false;
     tool_output = true;
     tool_body_grammar.reset();
+    fenced_tool_call_output = false;
+    guidance_disabled = false;
   }
 
   const RawEnvelopeDescriptor* ActiveRawEnvelope() const {
