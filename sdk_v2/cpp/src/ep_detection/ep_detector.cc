@@ -168,23 +168,24 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
   if (names != nullptr) {
     const auto trtrtx_bootstrapper =
         std::find_if(bootstrappers_.begin(), bootstrappers_.end(),
-                     [](const auto& bs) { return IsTrtRtxEp(bs->Name()); });
+                     [&](const auto& bs) {
+                       return IsTrtRtxEp(bs->Name()) &&
+                              std::find(names->begin(), names->end(), bs->Name()) != names->end();
+                     });
     const auto cuda_bootstrapper =
         std::find_if(bootstrappers_.begin(), bootstrappers_.end(),
                      [](const auto& bs) { return bs->Name() == kCudaEp; });
-    const bool trtrtx_requested =
-        std::any_of(names->begin(), names->end(), [](const auto& name) { return IsTrtRtxEp(name); });
+    const bool trtrtx_requested = trtrtx_bootstrapper != bootstrappers_.end();
     const bool cuda_requested = std::find(names->begin(), names->end(), kCudaEp) != names->end();
-    const bool has_trtrtx_bootstrapper = trtrtx_bootstrapper != bootstrappers_.end();
     const bool has_cuda_bootstrapper = cuda_bootstrapper != bootstrappers_.end();
-    if (trtrtx_requested && has_trtrtx_bootstrapper && !has_cuda_bootstrapper) {
+    if (trtrtx_requested && !has_cuda_bootstrapper) {
       expanded_names = *names;
       std::erase_if(expanded_names, [](const auto& name) { return IsTrtRtxEp(name); });
       names = &expanded_names;
       result.failed_eps.emplace_back((*trtrtx_bootstrapper)->Name());
       result.success = false;
       logger_.Log(LogLevel::Warning, "NvTensorRTRTX EP requires the CUDA EP, but CUDA is not available");
-    } else if (trtrtx_requested && has_trtrtx_bootstrapper && !cuda_requested) {
+    } else if (trtrtx_requested && !cuda_requested) {
       expanded_names = *names;
       expanded_names.emplace_back((*cuda_bootstrapper)->Name());
       names = &expanded_names;
