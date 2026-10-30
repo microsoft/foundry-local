@@ -78,6 +78,8 @@ try {
       resolve();
     };
     readline.once("line", stop);
+    readline.once("SIGINT", stop);
+    readline.once("close", stop);
     process.once("SIGINT", stop);
   });
 
