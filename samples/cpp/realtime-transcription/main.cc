@@ -144,7 +144,9 @@ void Transcribe(foundry_local::IModel& model, bool use_synthetic) {
   } catch (...) {
     request.Cancel();
     audio_input.MarkFinished();
-    response_future.wait();
+    if (response_future.valid()) {
+      response_future.wait();
+    }
     throw;
   }
 }

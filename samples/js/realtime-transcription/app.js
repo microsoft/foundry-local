@@ -81,7 +81,7 @@ try {
     process.once("SIGINT", stop);
   });
 
-  audioInput.quit();
+  await audioInput.quit();
   captureStarted = false;
   queue.markFinished();
   await transcription;
@@ -92,7 +92,7 @@ try {
   }
 } finally {
   if (captureStarted) {
-    audioInput?.quit();
+    await audioInput?.quit();
   }
   audioInput?.removeAllListeners();
   if (!queue.finished) {
