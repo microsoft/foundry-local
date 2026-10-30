@@ -1880,6 +1880,78 @@ TEST_F(QwenNativeProductionIntegrationTest,
   }
 }
 
+TEST_F(QwenNativeProductionIntegrationTest, ReasoningGeneratorsUseTurnBudgetAndRebuildForFollowup) {
+  auto catalog_model = MakeCatalogModel(/*reasoning=*/true);
+  int creations = 0;
+  TextChatGeneratorFactory factory =
+      [&](const auto&, const auto&, auto&, const auto&, bool use_full_context) {
+        EXPECT_FALSE(use_full_context);
+        ++creations;
+        return std::make_unique<FixedOutputGenerator>("answer", BackendTerminationCause::kNaturalEnd);
+      };
+  ChatSession session(catalog_model, *model_, *logger_, telemetry_, {}, std::move(factory));
+
+  for (int turn = 0; turn < 2; ++turn) {
+    auto request = MakeStatefulRequest("hello");
+    Response response;
+    session.ProcessRequest(request, response);
+    EXPECT_FALSE(response.items.empty());
+  }
+
+  EXPECT_EQ(creations, 2);
+  EXPECT_EQ(session.TurnCount(), 2u);
+}
+
+TEST_F(QwenNativeProductionIntegrationTest, TypedRequestsUseCatalogDefaultsBelowSessionAndRequestOptions) {
+  ModelInfo info;
+  info.task = "chat-completion";
+  info.model_settings.Add("temperature", "0.6");
+  info.model_settings.Add("top_p", "0.95");
+  info.model_settings.Add("top_k", "20");
+  info.model_settings.Add("random_seed", "42");
+  info.model_settings.Add("max_tokens", "64");
+  auto catalog_model = Model::FromModelInfo(
+      std::move(info), "", services_.download_manager, services_.model_load_manager);
+
+  for (int override_level = 0; override_level < 3; ++override_level) {
+    SCOPED_TRACE(override_level);
+    std::optional<SearchOptions> captured;
+    TextChatGeneratorFactory factory =
+        [&](const auto&, const SearchOptions& options, auto&, const auto&, bool use_full_context) {
+          EXPECT_TRUE(use_full_context);
+          captured = options;
+          return std::make_unique<FixedOutputGenerator>("answer", BackendTerminationCause::kNaturalEnd);
+        };
+    ChatSession session(catalog_model, *model_, *logger_, telemetry_, {}, std::move(factory));
+    KeyValuePairs session_options;
+    if (override_level > 0) {
+      session_options.Add("temperature", "0.8");
+      session_options.Add("max_output_tokens", "32");
+    }
+
+    session.SetSessionOptions(session_options);
+    Request request;
+    request.AddOwnedItem(std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_USER, "hello"));
+    if (override_level > 1) {
+      request.options.Add("temperature", "0.9");
+      request.options.Add("max_output_tokens", "16");
+    }
+
+    Response response;
+    session.ProcessRequest(request, response);
+
+    ASSERT_TRUE(captured.has_value());
+    ASSERT_TRUE(captured->temperature.has_value());
+    EXPECT_FLOAT_EQ(*captured->temperature, override_level == 0 ? 0.6f : override_level == 1 ? 0.8f
+                                                                                             : 0.9f);
+    EXPECT_EQ(captured->max_output_tokens, override_level == 0 ? 64 : override_level == 1 ? 32
+                                                                                          : 16);
+    EXPECT_EQ(captured->top_p, 0.95f);
+    EXPECT_EQ(captured->top_k, 20);
+    EXPECT_EQ(captured->seed, 42);
+  }
+}
+
 TEST_F(QwenNativeProductionIntegrationTest,
        AutomaticMessageHeaderStripsAcrossEveryHeaderSplitWithoutChangingContentAcrossBackends) {
   const std::string visible =
@@ -5689,7 +5761,7 @@ TEST_F(ChatSessionTest, ForcedBuiltInRawCallRemainsVisibleWhenPromptOpensReasoni
       "*** Begin Patch\n*** Delete File: old.txt\n*** End Patch";
   TextChatGeneratorFactory factory =
       [envelope](const auto&, const auto&, auto&, const auto&, bool use_full_context) {
-        EXPECT_TRUE(use_full_context);
+        EXPECT_FALSE(use_full_context);
         return std::make_unique<FixedOutputGenerator>(
             envelope, BackendTerminationCause::kNaturalEnd,
             /*prompt_opens_reasoning=*/true);

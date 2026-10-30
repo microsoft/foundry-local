@@ -436,6 +436,10 @@ public class FoundryLocalManager : IDisposable
         }
 
         var nameArray = names?.ToArray();
+        if (nameArray is { Length: 0 })
+        {
+            nameArray = null;
+        }
 
         await Task.Run(() =>
         {
@@ -455,12 +459,30 @@ public class FoundryLocalManager : IDisposable
 
         var afterEps = DiscoverEps();
 
-        var registered = afterEps.Where(e => e.IsRegistered && !beforeEps.Any(b => b.Name == e.Name && b.IsRegistered))
-                                  .Select(e => e.Name).ToArray();
-        var failed = afterEps.Where(e => !e.IsRegistered && (nameArray == null || nameArray.Contains(e.Name)))
-                              .Select(e => e.Name)
-                              .Except(beforeEps.Where(b => !b.IsRegistered).Select(b => b.Name))
-                              .ToArray();
+        return BuildEpDownloadResult(beforeEps, afterEps, nameArray);
+    }
+
+    internal static EpDownloadResult BuildEpDownloadResult(
+        IReadOnlyCollection<EpInfo> beforeEps,
+        IReadOnlyCollection<EpInfo> afterEps,
+        IReadOnlyCollection<string>? requestedNames)
+    {
+        var beforeByName = beforeEps.ToDictionary(ep => ep.Name, StringComparer.Ordinal);
+        var afterByName = afterEps.ToDictionary(ep => ep.Name, StringComparer.Ordinal);
+        var requested = (requestedNames == null || requestedNames.Count == 0
+                             ? beforeEps.Select(ep => ep.Name)
+                             : requestedNames)
+                        .Distinct(StringComparer.Ordinal)
+                        .ToArray();
+
+        var registered = afterEps
+            .Where(ep => ep.IsRegistered &&
+                         (!beforeByName.TryGetValue(ep.Name, out var before) || !before.IsRegistered))
+            .Select(ep => ep.Name)
+            .ToArray();
+        var failed = requested
+            .Where(name => !afterByName.TryGetValue(name, out var ep) || !ep.IsRegistered)
+            .ToArray();
 
         return new EpDownloadResult
         {

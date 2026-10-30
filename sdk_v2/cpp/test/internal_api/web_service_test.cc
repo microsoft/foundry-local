@@ -120,6 +120,26 @@ class WebUsageTelemetry : public TelemetryLogger {
   Snapshot events_;
 };
 
+class WebTestSessionManager : public SessionManager {
+ public:
+  using SessionManager::SessionManager;
+
+  void Register(Session& session) override {
+    SessionManager::Register(session);
+    std::lock_guard lock(disconnect_mutex_);
+    disconnect_client_.reset();
+  }
+
+  void ResetClientOnNextRegistration(std::shared_ptr<oatpp::network::tcp::Connection> client) {
+    std::lock_guard lock(disconnect_mutex_);
+    disconnect_client_ = std::move(client);
+  }
+
+ private:
+  std::mutex disconnect_mutex_;
+  std::shared_ptr<oatpp::network::tcp::Connection> disconnect_client_;
+};
+
 std::string TestHttpGet(const std::string& url, const std::string& user_agent = "") {
   http::HttpRequestOptions options;
   options.user_agent = user_agent;
@@ -278,7 +298,7 @@ class WebServiceTest : public ::testing::Test {
     logger_ = std::make_unique<StderrLogger>();
     ep_detector_ = std::make_unique<test::CpuOnlyEpDetector>();
     model_load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
-    session_manager_ = std::make_unique<SessionManager>(*logger_);
+    session_manager_ = std::make_unique<WebTestSessionManager>(*logger_);
     telemetry_ = std::make_unique<WebUsageTelemetry>();
     public_catalog_ = std::make_unique<test::MockCatalog>();
     local_catalog_ = std::make_unique<test::MockCatalog>();
@@ -361,7 +381,7 @@ class WebServiceTest : public ::testing::Test {
   static std::unique_ptr<test::CpuOnlyEpDetector> ep_detector_;
   static std::unique_ptr<StderrLogger> logger_;
   static std::unique_ptr<ModelLoadManager> model_load_manager_;
-  static std::unique_ptr<SessionManager> session_manager_;
+  static std::unique_ptr<WebTestSessionManager> session_manager_;
   static std::unique_ptr<WebUsageTelemetry> telemetry_;
   static std::unique_ptr<WebService> service_;
   static std::string base_url_;
@@ -374,7 +394,7 @@ std::unique_ptr<test::MockCatalog> WebServiceTest::local_catalog_;
 std::unique_ptr<test::CpuOnlyEpDetector> WebServiceTest::ep_detector_;
 std::unique_ptr<StderrLogger> WebServiceTest::logger_;
 std::unique_ptr<ModelLoadManager> WebServiceTest::model_load_manager_;
-std::unique_ptr<SessionManager> WebServiceTest::session_manager_;
+std::unique_ptr<WebTestSessionManager> WebServiceTest::session_manager_;
 std::unique_ptr<WebUsageTelemetry> WebServiceTest::telemetry_;
 std::unique_ptr<WebService> WebServiceTest::service_;
 std::string WebServiceTest::base_url_;
@@ -1857,76 +1877,35 @@ TEST_F(WebServiceTest, HalfClosedNonStreamingChatConnectionReceivesCompletion) {
 #endif
 
 TEST_F(WebServiceTest, ClosingNonStreamingChatConnectionCancelsInferenceAndReleasesSession) {
-  class PausingSessionManager : public SessionManager {
-   public:
-    using SessionManager::SessionManager;
-
-    void Register(Session& session) override {
-      SessionManager::Register(session);
-      if (pause_next_.exchange(false)) {
-        registered.release();
-        resume.acquire();
-      }
-    }
-
-    std::binary_semaphore registered{0};
-    std::binary_semaphore resume{0};
-
-   private:
-    std::atomic_bool pause_next_{true};
-  };
-
-  PausingSessionManager sessions(*logger_);
-  WebService service(*public_catalog_, *local_catalog_, *logger_, "/tmp/test-cache",
-                     *model_load_manager_, sessions, *telemetry_, []() {});
-  const auto urls = service.Start({"http://127.0.0.1:0"});
-  ASSERT_EQ(urls.size(), 1u);
-  const auto& base_url = urls.front();
-  ScopeGuard resume_on_failure([&]() noexcept { sessions.resume.release(); });
-
   const auto load_result = Get(std::string("/models/load/") + kResponseStoreTestModelAlias);
   ASSERT_EQ(load_result["status"], "loaded") << load_result.dump(2);
   const auto prior_action_count = telemetry_->Events().actions.size();
 
-  using Socket = decltype(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
-  const auto client_socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-  ASSERT_NE(client_socket, static_cast<Socket>(-1));
-  auto client = std::make_shared<oatpp::network::tcp::Connection>(client_socket);
+  const int client = ::socket(AF_INET, SOCK_STREAM, 0);
+  ASSERT_GE(client, 0);
+  auto connection = std::make_shared<oatpp::network::tcp::Connection>(client);
   sockaddr_in address{};
   address.sin_family = AF_INET;
   address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  address.sin_port = htons(static_cast<uint16_t>(std::stoi(base_url.substr(base_url.rfind(':') + 1))));
-  ASSERT_EQ(::connect(client_socket, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0);
+  address.sin_port = htons(static_cast<uint16_t>(std::stoi(base_url_.substr(base_url_.rfind(':') + 1))));
+  ASSERT_EQ(::connect(client, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0);
 
   const json body = {
       {"model", std::string(kResponseStoreTestModelAlias) + ":1"},
-      {"messages", json::array({{{"role", "user"}, {"content", "Continue writing a long answer"}}})},
-      {"max_tokens", 4},
+      {"messages", json::array({{{"role", "user"}, {"content", "Hello"}}})},
+      {"max_tokens", 1},
   };
   const std::string payload = body.dump();
   const std::string message =
       "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\n"
       "Content-Type: application/json\r\nContent-Length: " +
       std::to_string(payload.size()) + "\r\nConnection: close\r\n\r\n" + payload;
-  ASSERT_EQ(::send(client_socket, message.data(), static_cast<int>(message.size()), 0),
-            static_cast<int>(message.size()));
-
-  // Hold registration until the client resets so even the tiny model cannot finish before the disconnect.
-  ASSERT_TRUE(sessions.registered.try_acquire_for(std::chrono::seconds(10)));
-  EXPECT_EQ(sessions.ActiveCount(), 1u);
   linger abortive_close{1, 0};
-  ASSERT_EQ(::setsockopt(client_socket, SOL_SOCKET, SO_LINGER,
-                         reinterpret_cast<const char*>(&abortive_close), sizeof(abortive_close)),
-            0);
-  client.reset();
-  resume_on_failure.Dismiss();
-  sessions.resume.release();
-
-  const auto stop_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while (sessions.ActiveCount() > 0 && std::chrono::steady_clock::now() < stop_deadline) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
-  EXPECT_EQ(sessions.ActiveCount(), 0u) << "Disconnected inference did not stop";
+  ASSERT_EQ(::setsockopt(client, SOL_SOCKET, SO_LINGER, &abortive_close, sizeof(abortive_close)), 0);
+  // Reset after HTTP parsing but before inference can finish, independently of the tiny model's generation speed.
+  session_manager_->ResetClientOnNextRegistration(std::move(connection));
+  ScopeGuard clear_disconnect([&]() noexcept { session_manager_->ResetClientOnNextRegistration(nullptr); });
+  ASSERT_EQ(::send(client, message.data(), message.size(), 0), static_cast<ssize_t>(message.size()));
 
   bool canceled = false;
   const auto telemetry_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -1941,7 +1920,13 @@ TEST_F(WebServiceTest, ClosingNonStreamingChatConnectionCancelsInferenceAndRelea
   }
   EXPECT_TRUE(canceled) << "The disconnected request completed instead of being canceled";
 
-  const auto recovered = PostJson(base_url + "/v1/chat/completions",
+  const auto stop_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (session_manager_->ActiveCount() > 0 && std::chrono::steady_clock::now() < stop_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_EQ(session_manager_->ActiveCount(), 0u) << "Disconnected inference did not stop";
+
+  const auto recovered = PostJson(base_url_ + "/v1/chat/completions",
                                   {{"model", std::string(kResponseStoreTestModelAlias) + ":1"},
                                    {"messages", json::array({{{"role", "user"}, {"content", "Hello"}}})},
                                    {"max_tokens", 4}});

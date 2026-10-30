@@ -1347,7 +1347,8 @@ std::unique_ptr<PreparedChatRequest> PrepareChatRequest(
     return prepared;
   }
 
-  const auto effective_kvp = MergeKeyValuePairs(base_session_options, request.options);
+  auto effective_kvp = MergeKeyValuePairs(base_session_options, request.options);
+  chat_completions::ApplyCatalogDefaults(effective_kvp, model_info.model_settings);
   prepared->media = CollectMediaInput(request);
   const bool media_turn = !prepared->media.Empty();
   if (media_turn) {
@@ -1662,9 +1663,10 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       generator = OnnxChatGenerator::CreatePrepared(std::move(prepared->prompt), effective_options, Model(), tool_ctx,
                                                     /*use_full_context=*/false);
     } else {
+      // Reasoning generators are discarded after each turn, so reserving the full context cannot help continuation.
+      const bool use_full_context = backend_kind == ChatBackendKind::kEngine || !tool_ctx.supports_reasoning;
       generator = CreatePreparedTextChatGenerator(prepared_messages, std::move(prepared->prompt), effective_options,
-                                                  Model(), tool_ctx, /*use_full_context=*/true,
-                                                  text_generator_factory_);
+                                                  Model(), tool_ctx, use_full_context, text_generator_factory_);
     }
 
     prompt_tokens = generator->PromptTokenCount();
