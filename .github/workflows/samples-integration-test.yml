@@ -4,10 +4,12 @@ on:
   pull_request:
     paths:
       - 'samples/**'
+      - 'sdk_v2/**'
       - '.github/workflows/samples-integration-test.yml'
   push:
     paths:
       - 'samples/**'
+      - 'sdk_v2/**'
       - '.github/workflows/samples-integration-test.yml'
     branches:
       - main
@@ -17,6 +19,60 @@ permissions:
   contents: read
 
 jobs:
+  # ── C++ Samples ─────────────────────────────────────────────────────
+  cpp-samples:
+    runs-on: ${{ matrix.platform }}-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [windows, macos]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: true
+
+      - name: Setup .NET SDK for NuGet restore
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Restore C++ Runtime 2.2.1
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force samples/cpp/build | Out-Null
+          @'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup>
+              <TargetFramework>net9.0</TargetFramework>
+            </PropertyGroup>
+            <ItemGroup>
+              <PackageReference Include="Microsoft.AI.Foundry.Local.Runtime" Version="2.2.1" />
+            </ItemGroup>
+          </Project>
+          '@ | Set-Content samples/cpp/build/Runtime.csproj
+          dotnet restore samples/cpp/build/Runtime.csproj --packages samples/cpp/build/packages
+
+      - name: Compile-check C++ samples
+        shell: pwsh
+        run: |
+          $failed = @()
+          Get-ChildItem samples/cpp/*/main.cc | ForEach-Object {
+            $name = $_.Directory.Name
+            Write-Host "=== Checking: $name ==="
+            clang++ -std=c++20 -Wall -Wextra -Wpedantic -Werror `
+              '-Isamples/cpp/build/packages/microsoft.ai.foundry.local.runtime/2.2.1/build/native/include' `
+              '-I.' -fsyntax-only $_.FullName
+            if ($LASTEXITCODE -ne 0) {
+              $failed += $name
+            }
+          }
+          if ($failed.Count -gt 0) {
+            Write-Error "Failed compile checks: $($failed -join ', ')"
+            exit 1
+          }
+
   # ── Python Samples ──────────────────────────────────────────────────
   python-samples:
     runs-on: ${{ matrix.platform }}-latest
@@ -36,28 +92,17 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Configure pip for Azure Artifacts
-        run: |
-          pip config set global.index-url https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/pypi/simple/
-          pip config set global.extra-index-url https://pypi.org/simple/
-          pip config set global.pre true
-
-      - name: Build and install SDK from source
-        working-directory: sdk/python
-        shell: pwsh
-        run: |
-          python -m pip install build
-          echo '__version__ = "0.0.0-dev"' > src/version.py
-          python -m build --wheel --outdir dist/
-          $wheel = (Get-ChildItem dist/*.whl | Select-Object -First 1).FullName
-          pip install $wheel
-
       - name: Install sample dependencies
         shell: pwsh
         run: |
           Get-ChildItem samples/python/*/requirements.txt -ErrorAction SilentlyContinue | ForEach-Object {
             Write-Host "Installing dependencies for $($_.Directory.Name)..."
-            pip install -r $_.FullName
+            Push-Location $_.Directory.FullName
+            pip install -r requirements.txt
+            if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+            }
+            Pop-Location
           }
 
       - name: Syntax check Python samples
@@ -100,42 +145,6 @@ jobs:
         with:
           node-version: '20.x'
 
-      - name: Setup Python (for node-gyp)
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.x'
-
-      - name: Setup .NET SDK for NuGet authentication
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
-        with:
-          dotnet-version: '10.0.x'
-
-      - name: Remove .npmrc (use public registry)
-        working-directory: sdk/js
-        shell: pwsh
-        run: |
-          if (Test-Path .npmrc) { Remove-Item .npmrc -Force; Write-Host "Removed .npmrc" }
-
-      - name: Build Node-API addon
-        shell: pwsh
-        working-directory: sdk/js
-        run: |
-          npm install --no-save node-gyp node-api-headers --registry https://registry.npmjs.org
-          Set-Location native
-          npx node-gyp rebuild
-          $platformKey = node -e 'process.stdout.write(process.platform + "-" + process.arch)'
-          $destDir = "../prebuilds/$platformKey"
-          New-Item -ItemType Directory -Path $destDir -Force | Out-Null
-          Copy-Item "build/Release/foundry_local_napi.node" "$destDir/foundry_local_napi.node" -Force
-          Write-Host "Built addon for $platformKey -> $destDir/foundry_local_napi.node"
-
-      - name: Build SDK from source
-        working-directory: sdk/js
-        run: |
-          npm install
-          npm run build
-          npm link
-
       - name: Syntax check JS samples
         shell: pwsh
         run: |
@@ -148,14 +157,15 @@ jobs:
             $dir = if ($sample.Directory.Name -eq 'src') { $sample.Directory.Parent } else { $sample.Directory }
             $name = $dir.Name
             Write-Host "=== Checking: $name ==="
-            # Link SDK and install dependencies
             Push-Location $dir.FullName
-            npm link foundry-local-sdk 2>$null
-            if (Test-Path "package.json") { npm install 2>$null }
+            npm install --ignore-scripts --package-lock=false
+            $installExitCode = $LASTEXITCODE
+            if ($installExitCode -eq 0) {
+              npm run check
+            }
+            $checkExitCode = $LASTEXITCODE
             Pop-Location
-            # Syntax check
-            node --check $sample.FullName 2>&1
-            if ($LASTEXITCODE -ne 0) {
+            if ($installExitCode -ne 0 -or $checkExitCode -ne 0) {
               Write-Host "FAILED: $name"
               $failed += $name
             } else {
@@ -173,7 +183,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [windows, macos]
+        include:
+          - platform: windows
+            rid: win-x64
+          - platform: macos
+            rid: osx-arm64
 
     steps:
       - name: Checkout repository
@@ -184,24 +198,7 @@ jobs:
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
-          dotnet-version: |
-            8.0.x
-            10.0.x
-
-      - name: Build SDK from source
-        shell: pwsh
-        run: |
-          # Build cross-platform SDK package
-          # Note: /p:TreatWarningsAsErrors=false avoids failing on SDK doc warnings
-          dotnet pack sdk/cs/src/Microsoft.AI.Foundry.Local.csproj `
-            -o local-packages `
-            /p:Version=0.9.0-dev `
-            /p:IsPacking=true `
-            /p:TreatWarningsAsErrors=false `
-            --configuration Release
-          
-          Write-Host "Local packages:"
-          Get-ChildItem local-packages/*.nupkg | ForEach-Object { Write-Host "  $($_.Name)" }
+          dotnet-version: '9.0.x'
 
       - name: Build C# samples
         shell: pwsh
@@ -211,7 +208,14 @@ jobs:
           foreach ($proj in $projects) {
             $name = $proj.BaseName
             Write-Host "`n=== Building: $name ==="
-            dotnet build $proj.FullName --configuration Debug 2>&1
+            dotnet restore $proj.FullName --runtime ${{ matrix.rid }} `
+              --configfile samples/cs/nuget.config `
+              -p:RuntimeIdentifiers=${{ matrix.rid }} 2>&1
+            if ($LASTEXITCODE -eq 0) {
+              dotnet build $proj.FullName --configuration Debug --no-restore `
+                --runtime ${{ matrix.rid }} `
+                -p:RuntimeIdentifiers=${{ matrix.rid }} 2>&1
+            }
             if ($LASTEXITCODE -ne 0) {
               Write-Host "BUILD FAILED: $name"
               $failed += $name
@@ -241,28 +245,13 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
+          toolchain: stable
           components: clippy
 
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: samples/rust -> target
-
-      - name: Use crates.io directly
-        shell: pwsh
-        run: |
-          # Remove crates-io redirect in SDK (points to Azure Artifacts)
-          $configPath = "sdk/rust/.cargo/config.toml"
-          if (Test-Path $configPath) {
-            Remove-Item $configPath
-            Write-Host "Removed sdk/rust/.cargo/config.toml"
-          }
-          # Remove crates-io redirect in samples
-          $configPath = "samples/rust/.cargo/config.toml"
-          if (Test-Path $configPath) {
-            Remove-Item $configPath
-            Write-Host "Removed samples/rust/.cargo/config.toml"
-          }
 
       - name: Build Rust samples workspace
         working-directory: samples/rust

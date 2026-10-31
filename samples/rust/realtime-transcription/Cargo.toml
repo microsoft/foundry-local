@@ -1,0 +1,12 @@
+[package]
+name = "realtime-transcription"
+version = "0.1.0"
+edition = "2021"
+description = "In-process Foundry Local real-time transcription sample"
+
+[dependencies]
+foundry-local-sdk = "=2.2.1"
+cpal = "0.15"
+ctrlc = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+tokio-stream = "0.1"

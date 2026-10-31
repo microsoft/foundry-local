@@ -1,73 +1,59 @@
-// <complete_code>
-// <imports>
-import { FoundryLocalManager } from 'foundry-local-sdk';
-// </imports>
+import { EmbeddingsSession, FoundryLocalManager, Item, Request } from "foundry-local-sdk";
 
-// Initialize the Foundry Local SDK
-console.log('Initializing Foundry Local SDK...');
+const modelAlias = process.argv[2] ?? "qwen3-embedding-0.6b";
+const inputs = [
+  "A kitten is sleeping on a rug.",
+  "A cat rests on a mat.",
+  "Saturn has a prominent ring system.",
+];
 
-// <init>
 const manager = FoundryLocalManager.create({
-    appName: 'foundry_local_samples',
-    logLevel: 'info'
+  appName: "foundry_local_samples",
+  logLevel: "info",
 });
-// </init>
-console.log('✓ SDK initialized successfully');
 
-// <model_setup>
-// Get an embedding model
-const modelAlias = 'qwen3-embedding-0.6b';
-const model = await manager.catalog.getModel(modelAlias);
+let model;
+let session;
+let modelLoaded = false;
 
-// Download the model
-console.log(`\nDownloading model ${modelAlias}...`);
-await model.download((progress) => {
-    process.stdout.write(`\rDownloading... ${progress.toFixed(2)}%`);
-});
-console.log('\n✓ Model downloaded');
+try {
+  await manager.downloadAndRegisterEps();
+  model = await manager.catalog.getModel(modelAlias);
+  if (!model.isCached) {
+    console.log(`Downloading ${model.alias}...`);
+    await model.download();
+  }
+  await model.load();
+  modelLoaded = true;
 
-// Load the model
-console.log(`\nLoading model ${modelAlias}...`);
-await model.load();
-console.log('✓ Model loaded');
-// </model_setup>
+  session = new EmbeddingsSession(model);
+  const request = new Request();
+  for (const input of inputs) {
+    request.addItem(Item.text(input));
+  }
 
-// <single_embedding>
-// Create embedding client
-console.log('\nCreating embedding client...');
-const embeddingClient = model.createEmbeddingClient();
-console.log('✓ Embedding client created');
+  const response = await session.processRequest(request);
+  const embeddings = response.output.map((item, index) => {
+    if (item.type !== "tensor" || item.dataType !== "float") {
+      throw new Error(`Expected float tensor output at index ${index}.`);
+    }
+    const bytes = item.data.slice();
+    return new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / Float32Array.BYTES_PER_ELEMENT);
+  });
 
-// Generate a single embedding
-console.log('\n--- Single Embedding ---');
-const response = await embeddingClient.generateEmbedding(
-    'The quick brown fox jumps over the lazy dog'
-);
-
-const embedding = response.data[0].embedding;
-console.log(`Dimensions: ${embedding.length}`);
-console.log(`First 5 values: [${embedding.slice(0, 5).map(v => v.toFixed(6)).join(', ')}]`);
-// </single_embedding>
-
-// <batch_embedding>
-// Generate embeddings for multiple inputs
-console.log('\n--- Batch Embeddings ---');
-const batchResponse = await embeddingClient.generateEmbeddings([
-    'Machine learning is a subset of artificial intelligence',
-    'The capital of France is Paris',
-    'Rust is a systems programming language'
-]);
-
-console.log(`Number of embeddings: ${batchResponse.data.length}`);
-for (let i = 0; i < batchResponse.data.length; i++) {
-    console.log(`  [${i}] Dimensions: ${batchResponse.data[i].embedding.length}`);
+  // EmbeddingsSession returns L2-normalized vectors, so their dot product is cosine similarity.
+  const cosineSimilarity = (left, right) => left.reduce((sum, value, index) => sum + value * right[index], 0);
+  console.log(`Model: ${model.id}`);
+  console.log(`Dimensions: ${embeddings[0].length}`);
+  console.log(`Similarity (cat, cat): ${cosineSimilarity(embeddings[0], embeddings[1])}`);
+  console.log(`Similarity (cat, Saturn): ${cosineSimilarity(embeddings[0], embeddings[2])}`);
+} finally {
+  session?.dispose();
+  try {
+    if (model !== undefined && modelLoaded) {
+      await model.unload();
+    }
+  } finally {
+    manager.dispose();
+  }
 }
-// </batch_embedding>
-
-// <cleanup>
-// Unload the model
-console.log('\nUnloading model...');
-await model.unload();
-console.log('✓ Model unloaded');
-// </cleanup>
-// </complete_code>
