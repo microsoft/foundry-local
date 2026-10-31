@@ -6978,61 +6978,40 @@ TEST_F(ChatSessionTest, RemovingToolDefinitionsRebuildsWithTheCurrentToolSet) {
       << "removing tools must rebuild with the same prompt a fresh session sees";
 }
 
-TEST_F(ChatSessionTest, AutoModeGeneratedToolCallInvalidatesTheCachedGenerator) {
-  const ToolDefinition tool{"lookup", "Look up a value",
-                            R"({"type":"object","properties":{"key":{"type":"string"}},"required":["key"]})"};
-  const std::string first_user = "Call lookup with key alpha. Do not answer without calling the tool.";
-  const std::string second_user = "Reply with the single word done without calling a tool.";
+TEST_F(QwenNativeProductionIntegrationTest, AutoModeGeneratedToolCallInvalidatesTheCachedGenerator) {
+  auto counters = std::make_shared<GeneratorCounters>();
+  size_t creation = 0;
+  TextChatGeneratorFactory factory =
+      [&, counters](const auto&, const auto&, auto& model, const auto&, bool) {
+        auto generator = std::make_unique<FixedOutputGenerator>(
+            creation++ == 0 ? std::string(kCanonicalLookupCall) : "done",
+            BackendTerminationCause::kNaturalEnd,
+            /*prompt_opens_reasoning=*/false, counters);
+        generator->EnableAuthoritativeControls(
+            model.GetGenAIConfig().GetChatBackendKind() == ChatBackendKind::kEngine
+                ? 0
+                : kClassicControlOffset);
+        return generator;
+      };
+  auto catalog_model = MakeCatalogModel();
+  ChatSession session(catalog_model, *model_, *logger_, telemetry_, {},
+                      std::move(factory));
+  AddFunctionTools(session);
 
-  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
-  session.AddToolDefinition(tool);
-
-  Request first_request;
-  first_request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, first_user));
-  first_request.options.Add(FOUNDRY_LOCAL_PARAM_TOOL_CHOICE, "auto");
-  first_request.options.Add("max_output_tokens", "64");
-  first_request.options.Add("temperature", "0");
-
+  auto first_request = MakeStatefulRequest("Look up Paris.");
   Response first_response;
   session.ProcessRequest(first_request, first_response);
+  ASSERT_EQ(Calls(first_response).size(), 1u);
 
-  const auto generated_call = std::find_if(first_response.items.begin(), first_response.items.end(),
-                                           [](const auto& item) {
-                                             return item->type == FOUNDRY_LOCAL_ITEM_TOOL_CALL;
-                                           });
-  ASSERT_NE(generated_call, first_response.items.end()) << "the deterministic prompt must produce a tool call";
+  auto second_request = MakeStatefulRequest("Reply with the single word done.");
+  Response second_response;
+  session.ProcessRequest(second_request, second_response);
 
-  Request second_request;
-  second_request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, second_user));
-  second_request.options.Add(FOUNDRY_LOCAL_PARAM_TOOL_CHOICE, "auto");
-  second_request.options.Add("max_output_tokens", "8");
-  second_request.options.Add("temperature", "0");
-
-  Response warm_response;
-  session.ProcessRequest(second_request, warm_response);
-
-  ChatSession rebuilt_session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
-  rebuilt_session.AddToolDefinition(tool);
-
-  Request rebuilt_request;
-  rebuilt_request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, first_user));
-  for (const auto& item : first_response.items) {
-    if (item->type == FOUNDRY_LOCAL_ITEM_MESSAGE) {
-      rebuilt_request.AddOwnedItem(std::make_unique<MessageItem>(static_cast<const MessageItem&>(*item)));
-    } else if (item->type == FOUNDRY_LOCAL_ITEM_TOOL_CALL) {
-      rebuilt_request.AddOwnedItem(std::make_unique<ToolCallItem>(static_cast<const ToolCallItem&>(*item)));
-    }
-  }
-  rebuilt_request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, second_user));
-  rebuilt_request.options.Add(FOUNDRY_LOCAL_PARAM_TOOL_CHOICE, "auto");
-  rebuilt_request.options.Add("max_output_tokens", "8");
-  rebuilt_request.options.Add("temperature", "0");
-
-  Response rebuilt_response;
-  rebuilt_session.ProcessRequest(rebuilt_request, rebuilt_response);
-
-  EXPECT_EQ(warm_response.usage.prompt_tokens, rebuilt_response.usage.prompt_tokens)
-      << "a generated auto-mode call must force the next turn to rebuild from structured history";
+  EXPECT_EQ(GetAssistantText(second_response), "done");
+  EXPECT_TRUE(Calls(second_response).empty());
+  EXPECT_EQ(counters->created, 2);
+  EXPECT_EQ(counters->appended, 0)
+      << "a generated auto-mode call must invalidate rather than append to the cached generator";
 }
 
 // ===========================================================================
