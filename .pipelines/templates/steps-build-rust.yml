@@ -6,11 +6,11 @@
 #   1. Install a stable Rust toolchain (clippy + rustfmt), plus the cross target
 #      when `crossTarget` is set (win-arm64 is cross-compiled from an x64 host).
 #   2. Assemble a native runtime directory:
-#        * `foundry_local`, ONNX Runtime, and GenAI taken from the matching
-#          `cpp-native-<rid>` pipeline artifact
+#        * `foundry_local`, its native host and manifest, ONNX Runtime, and GenAI
+#          taken from the matching `cpp-native-<rid>` pipeline artifact
 #        * the reg-free WinML DLL included by the Windows native artifacts
 #      The directory is handed to build.rs via `FOUNDRY_LOCAL_NATIVE_BIN_DIR`,
-#      which copies every platform library into OUT_DIR and bakes the path into
+#      which copies the native payload into OUT_DIR and bakes the path into
 #      the crate, so both unit and integration tests resolve the native by that
 #      baked path.
 #   3. Stamp the crate version from the shared `version-info` artifact.
@@ -20,9 +20,8 @@
 #      integration suite (serialised: the native core enforces a single manager
 #      per process).
 #
-# For a cross build (`crossTarget` set) only fmt + `cargo clippy --target`
-# (check-level) run: the arm64 binaries can't execute on the x64 host, matching
-# the build-only treatment win-arm64 gets in the C# / Python matrices.
+# Cross builds check the SDK against the matching native runtime, but do not
+# execute ARM64 binaries on the x64 agent.
 
 parameters:
 - name: rid
@@ -121,6 +120,16 @@ steps:
       foreach ($f in $nativeFiles) {
         Copy-Item $f.FullName (Join-Path $assembled $f.Name) -Force
         Write-Host "  native : $($f.Name)"
+      }
+      $hostName = if ($rid.StartsWith('win')) { 'foundry-local-host.exe' } else { 'foundry-local-host' }
+      foreach ($name in @($hostName, 'foundry-local-runtime.json')) {
+        $files = @(Get-ChildItem -Path $nativeSrc -Recurse -File | Where-Object Name -eq $name)
+        if ($files.Count -ne 1) { throw "Expected one '$name' under '$nativeSrc'." }
+        Copy-Item $files[0].FullName (Join-Path $assembled $name) -Force
+      }
+      if (-not $IsWindows) {
+        & chmod +x (Join-Path $assembled $hostName)
+        if ($LASTEXITCODE -ne 0) { throw 'Failed to preserve native host executable permissions' }
       }
 
       Write-Host "Assembled native dir: $assembled"

@@ -9,6 +9,7 @@
 #include "ep_detection/ep_detector.h"
 #include "exception.h"
 #include "inferencing/generative/audio/pcm_utils.h"
+#include "inferencing/generative/genai_model_instance.h"
 #include "inferencing/model_load_manager.h"
 #include "items/audio_item.h"
 #include "items/bytes_item.h"
@@ -406,6 +407,59 @@ class AudioSessionNemotronInferenceTest : public ::testing::Test {
       ModelInfo{}, "", svc_.download_manager, svc_.model_load_manager);
   TelemetryLogger null_telemetry_{"test", fl::test::NullLog()};
   fl::test::NullSessionManager null_session_manager_;
+};
+
+class AudioSessionParakeetInferenceTest : public AudioSessionInferenceTest {
+ protected:
+  static void SetUpTestSuite() {
+    logger_ = std::make_unique<StderrLogger>();
+    ep_detector_ = std::make_unique<test::CpuOnlyEpDetector>();
+    load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
+
+    fs::path cache_dir;
+    try {
+      cache_dir = fl::test::GetTestModelCacheDir();
+    } catch (const std::runtime_error& e) {
+      GTEST_SKIP() << e.what();
+    }
+
+    for (const auto& entry : fs::directory_iterator(cache_dir)) {
+      const auto alias = entry.path().filename().string();
+      if (!entry.is_directory() || alias.find("parakeet") == std::string::npos ||
+          alias.find("cpu") == std::string::npos) {
+        continue;
+      }
+      auto model_path = fl::test::GetTestModelPath(alias);
+      auto config = GenAIConfig::LoadFromFile((model_path / "genai_config.json").string());
+      if (!config.model || config.model->type != "parakeet_tdt") {
+        continue;
+      }
+      auto result = load_manager_->LoadModel(model_path.string(), alias);
+      ASSERT_EQ(result.status, ModelLoadManager::LoadStatus::kSuccess) << model_path;
+      model_ = result.model;
+      alias_ = alias;
+      return;
+    }
+    GTEST_SKIP() << "No CPU Parakeet TDT model in the test cache";
+  }
+
+  static void TearDownTestSuite() {
+    if (load_manager_ && model_) {
+      load_manager_->UnloadModel(alias_);
+    }
+    model_ = nullptr;
+    load_manager_.reset();
+    ep_detector_.reset();
+    alias_.clear();
+  }
+
+  void SetUp() override {
+    if (!model_) {
+      GTEST_SKIP() << "Parakeet TDT model not loaded";
+    }
+  }
+
+  static inline std::string alias_;
 };
 
 // ===========================================================================
@@ -961,6 +1015,69 @@ TEST_F(AudioSessionInferenceTest, TranscribeViaOpenAIJson) {
 
   EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
   EXPECT_GT(response.usage.total_tokens, 0) << "Expected non-zero total_tokens";
+}
+
+static void ExpectBatchPcmNotImplemented(AudioSession& session) {
+  AudioItem audio(nullptr, 0, "pcm");
+  ItemQueue queue;
+  queue.MarkFinished();
+  Request request;
+  request.AddBorrowedItem(&audio);
+  request.AddBorrowedItem(&queue);
+  Response response;
+  try {
+    session.ProcessRequest(request, response);
+    FAIL() << "Expected unsupported live PCM";
+  } catch (const fl::Exception& e) {
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED);
+    EXPECT_NE(std::string(e.what()).find("file"), std::string::npos);
+  }
+}
+
+TEST_F(AudioSessionInferenceTest, StreamingPcmReturnsNotImplemented) {
+  if (!model_) {
+    GTEST_SKIP() << "Audio model not loaded";
+  }
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  ExpectBatchPcmNotImplemented(session);
+}
+
+TEST_F(AudioSessionParakeetInferenceTest, StreamingPcmReturnsNotImplemented) {
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  ExpectBatchPcmNotImplemented(session);
+}
+
+TEST_F(AudioSessionParakeetInferenceTest, TranscribeFromFileAndOpenAIJson) {
+  EXPECT_TRUE(GetModel().GetPreprocessor().HasMultiModalProcessor());
+  const auto audio_path = fl::test::GetTestDataPath("Recording.wav");
+  ASSERT_TRUE(fs::exists(audio_path));
+
+  AudioUsageTelemetry telemetry;
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, telemetry);
+  Request file_request;
+  file_request.AddOwnedItem(std::make_unique<AudioItem>(audio_path.string()));
+  Response file_response;
+  ASSERT_NO_THROW(session.ProcessRequest(file_request, file_response));
+  ASSERT_EQ(file_response.items.size(), 1u);
+  ASSERT_EQ(file_response.items[0]->type, FOUNDRY_LOCAL_ITEM_SPEECH_RESULT);
+  const auto expected = static_cast<const SpeechResultItem&>(*file_response.items[0]).text;
+  ExpectTranscriptionContent(expected);
+  EXPECT_EQ(file_response.usage.prompt_tokens, 0);
+  EXPECT_GT(file_response.usage.completion_tokens, 0);
+  EXPECT_EQ(file_response.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
+  telemetry.ExpectUsage(file_response, "file");
+
+  Request json_request;
+  json_request.AddOwnedItem(std::make_unique<TextItem>(
+      nlohmann::json{{"model", alias_}, {"filename", audio_path.string()}}.dump(),
+      FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+  Response json_response;
+  ASSERT_NO_THROW(session.ProcessRequest(json_request, json_response));
+  ASSERT_EQ(json_response.items.size(), 1u);
+  ASSERT_EQ(json_response.items[0]->type, FOUNDRY_LOCAL_ITEM_TEXT);
+  const auto json = nlohmann::json::parse(static_cast<const TextItem&>(*json_response.items[0]).text);
+  EXPECT_EQ(json.at("text").get<std::string>(), expected);
+  EXPECT_EQ(json_response.usage.total_tokens, file_response.usage.total_tokens);
 }
 
 TEST_F(AudioSessionNemotronInferenceTest, OpenAIJsonNemotronFileTranscriptionMultiChunkNotTruncated) {

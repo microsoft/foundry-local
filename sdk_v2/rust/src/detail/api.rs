@@ -78,6 +78,29 @@ fn map_error(code: flErrorCode, message: String) -> FoundryLocalError {
 
 // ── Api ──────────────────────────────────────────────────────────────────────
 
+unsafe fn negotiate_api(get_api: FoundryLocalGetApiFn) -> Result<(*const flApiVtable, u32)> {
+    for version in [FOUNDRY_LOCAL_LATEST_API_VERSION, FOUNDRY_LOCAL_API_VERSION] {
+        let root = get_api(version);
+        if !root.is_null() {
+            return Ok((root, version));
+        }
+    }
+    Err(FoundryLocalError::LibraryLoad {
+        reason: "native runtime does not support API version 3 or 2".into(),
+    })
+}
+
+unsafe fn read_shared_host_setting(
+    config: *const flConfigurationApiVtable,
+    version: u32,
+) -> Option<FlSetUseSharedHostFn> {
+    if version < 3 {
+        return None;
+    }
+    // Read only the negotiated extension, never a larger reference over the version-2 prefix.
+    std::ptr::addr_of!((*config.cast::<flConfigurationApiV3Vtable>()).SetUseSharedHost).read()
+}
+
 /// Loaded native library plus its resolved function tables.
 ///
 /// `Api` is `Send + Sync`: the underlying library is thread-safe for distinct
@@ -88,6 +111,7 @@ pub(crate) struct Api {
     root: *const flApiVtable,
     catalog: *const flCatalogApiVtable,
     config: *const flConfigurationApiVtable,
+    shared_host_setting: Option<FlSetUseSharedHostFn>,
     item: *const flItemApiVtable,
     inference: *const flInferenceApiVtable,
     model: *const flModelApiVtable,
@@ -133,21 +157,13 @@ impl Api {
         };
 
         // SAFETY: the library exports `FoundryLocalGetApi` with this signature.
-        let root = unsafe {
+        let (root, version) = unsafe {
             let get_api: libloading::Symbol<FoundryLocalGetApiFn> = foundry_lib
                 .get(FOUNDRY_LOCAL_GET_API_SYMBOL)
                 .map_err(|e| FoundryLocalError::LibraryLoad {
                     reason: format!("symbol 'FoundryLocalGetApi' not found: {e}"),
                 })?;
-            let ptr = get_api(FOUNDRY_LOCAL_API_VERSION);
-            if ptr.is_null() {
-                return Err(FoundryLocalError::LibraryLoad {
-                    reason: format!(
-                        "FoundryLocalGetApi({FOUNDRY_LOCAL_API_VERSION}) returned null (unsupported API version)"
-                    ),
-                });
-            }
-            ptr
+            negotiate_api(*get_api)?
         };
 
         // SAFETY: `root` is a valid, non-null vtable for the library's lifetime.
@@ -178,6 +194,8 @@ impl Api {
             root,
             catalog,
             config,
+            // SAFETY: config is non-null and version identifies the available table extent.
+            shared_host_setting: unsafe { read_shared_host_setting(config, version) },
             item,
             inference,
             model,
@@ -197,6 +215,25 @@ impl Api {
     pub(crate) fn config_api(&self) -> &flConfigurationApiVtable {
         unsafe { &*self.config }
     }
+
+    pub(crate) fn set_use_shared_host(
+        &self,
+        config: *mut flConfiguration,
+        enabled: bool,
+    ) -> Result<()> {
+        if !enabled {
+            return Ok(());
+        }
+        let setter = self.shared_host_setting.ok_or_else(|| {
+            map_error(
+                FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED,
+                "native shared hosting requires runtime API version 3".into(),
+            )
+        })?;
+        // SAFETY: the caller owns config and the version-negotiated setter copies the boolean.
+        self.check(unsafe { setter(config, enabled) })
+    }
+
     #[inline]
     pub(crate) fn item_api(&self) -> &flItemApiVtable {
         unsafe { &*self.item }
@@ -441,6 +478,57 @@ fn resolve_library_path(library_path: Option<&str>) -> Result<(PathBuf, Option<P
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn negotiation_falls_back_to_the_legacy_runtime() {
+        unsafe extern "system" fn legacy_api(version: u32) -> *const flApiVtable {
+            if version == 2 {
+                std::ptr::NonNull::<flApiVtable>::dangling().as_ptr()
+            } else {
+                std::ptr::null()
+            }
+        }
+        // SAFETY: negotiation never dereferences the mock's identity-only pointer.
+        let (root, version) = unsafe { negotiate_api(legacy_api) }.expect("negotiate legacy API");
+        assert_eq!(version, 2);
+        assert!(!root.is_null());
+    }
+
+    #[test]
+    fn negotiation_rejects_an_unsupported_runtime() {
+        unsafe extern "system" fn unsupported_api(_: u32) -> *const flApiVtable {
+            std::ptr::null()
+        }
+        let error =
+            unsafe { negotiate_api(unsupported_api) }.expect_err("reject unsupported runtime");
+        assert!(matches!(error, FoundryLocalError::LibraryLoad { .. }));
+    }
+
+    #[test]
+    fn legacy_configuration_never_reads_the_extension() {
+        // SAFETY: version 2 must return before accessing even the first byte of this pointer.
+        assert!(unsafe { read_shared_host_setting(std::ptr::null(), 2) }.is_none());
+    }
+
+    #[test]
+    fn current_configuration_reads_the_shared_host_setter() {
+        unsafe extern "system" fn set_shared_host(
+            _: *mut flConfiguration,
+            enabled: bool,
+        ) -> flStatusPtr {
+            assert!(enabled);
+            std::ptr::null_mut()
+        }
+        let mut table = std::mem::MaybeUninit::<flConfigurationApiV3Vtable>::uninit();
+        // SAFETY: only the initialized extension is accessed; the old prefix is never borrowed.
+        unsafe {
+            std::ptr::addr_of_mut!((*table.as_mut_ptr()).SetUseSharedHost)
+                .write(Some(set_shared_host));
+            let setter = read_shared_host_setting(table.as_ptr().cast(), 3)
+                .expect("read negotiated shared-host setter");
+            assert!(setter(std::ptr::null_mut(), true).is_null());
+        }
+    }
 
     #[test]
     fn to_cstring_rejects_interior_nul() {

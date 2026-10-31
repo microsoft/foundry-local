@@ -80,9 +80,9 @@ function modelToNativeChatSession(model: IModel): NativeChatSession {
   // surfaces a `TypeError` here rather than a native `FoundryLocalError`, consistently
   // with the C# and Python bindings.
   const task = model.info.task;
-  if (task !== "chat-completion" && task !== "vision-language-chat") {
+  if (task !== "chat-completion" && task !== "coding" && task !== "vision-language-chat") {
     throw new TypeError(
-      `ChatSession requires a model with task 'chat-completion' or 'vision-language-chat', but got '${task ?? "(unset)"}'.`,
+      `ChatSession requires chat-completion, coding, or vision-language-chat; got '${task ?? "(unset)"}'.`,
     );
   }
   const nativeModel = unwrapNativeModel(model);

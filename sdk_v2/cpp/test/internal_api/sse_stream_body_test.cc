@@ -8,6 +8,8 @@
 
 #include "service/handler_utils.h"
 #include "service/web_service.h"
+#include "hosting/host_lifetime.h"
+#include "util/scope_guard.h"
 
 #include <gtest/gtest.h>
 
@@ -376,6 +378,92 @@ TEST(StreamingThreadTrackerTest, ShutdownWaitsForWorkerCaptureCleanup) {
   EXPECT_EQ(shutdown_future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
   shutdown.join();
 }
+
+namespace {
+
+struct NativeWorkCleanup {
+  std::shared_ptr<hosting::HostLifetime> lifetime;
+  std::atomic<bool>& released;
+  ~NativeWorkCleanup() {
+    EXPECT_EQ(lifetime->Poll(std::chrono::steady_clock::now()).http_work_count, 1u);
+    released.store(true, std::memory_order_release);
+  }
+};
+
+class HeldHttpWorker : public HttpRequestHandler {
+ public:
+  HeldHttpWorker(StreamingThreadTracker& tracker, std::shared_future<void> release,
+                 std::shared_ptr<hosting::HostLifetime> lifetime, std::atomic<bool>& native_released)
+      : tracker_(tracker),
+        release_(std::move(release)),
+        lifetime_(std::move(lifetime)),
+        native_released_(native_released) {}
+
+  std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest>&) override {
+    auto graph = std::make_unique<NativeWorkCleanup>(lifetime_, native_released_);
+    tracker_.Start([release = release_, graph = std::move(graph)] { release.wait(); });
+    auto response = JsonResponse(Status::CODE_200, {{"status", "ok"}});
+    response->putHeader("X-Test-Lifetime", "preserved");
+    return response;
+  }
+
+ private:
+  StreamingThreadTracker& tracker_;
+  std::shared_future<void> release_;
+  std::shared_ptr<hosting::HostLifetime> lifetime_;
+  std::atomic<bool>& native_released_;
+};
+
+class HttpAdmissionTest : public testing::TestWithParam<bool> {};
+
+TEST_P(HttpAdmissionTest, ResponseAndWorkerRetainOneAdmissionUntilBothReleaseTheirResourceGraphs) {
+  const auto now = std::chrono::steady_clock::now();
+  auto lifetime = std::make_shared<hosting::HostLifetime>(now + std::chrono::seconds(30));
+  ASSERT_TRUE(lifetime->AddOwner(1, now));
+  StreamingThreadTracker tracker;
+  std::promise<void> release;
+  std::atomic<bool> signalled{false};
+  std::atomic<bool> native_released{false};
+  ScopeGuard cleanup([&]() noexcept {
+    if (!signalled.exchange(true)) {
+      release.set_value();
+    }
+
+    tracker.JoinAll();
+  });
+  auto handler = WithSharedHostAdmission(
+      std::make_shared<HeldHttpWorker>(tracker, release.get_future().share(), lifetime, native_released), lifetime);
+  auto response = handler->handle(nullptr);
+  ASSERT_NE(response, nullptr);
+  EXPECT_EQ(response->getStatus().code, 200);
+  const auto preserved = response->getHeader("X-Test-Lifetime");
+  ASSERT_TRUE(preserved);
+  EXPECT_EQ(*preserved, "preserved");
+  EXPECT_EQ(lifetime->Poll(now).http_work_count, 1u);
+  EXPECT_FALSE(HttpRequestLifetime::CurrentWork());
+  if (GetParam()) {
+    response.reset();
+    EXPECT_EQ(lifetime->Poll(now).http_work_count, 1u);
+  }
+
+  ASSERT_TRUE(lifetime->RemoveOwner(1, now));
+  EXPECT_EQ(lifetime->Poll(now).state, hosting::HostLifetime::State::kDraining);
+  release.set_value();
+  signalled.store(true);
+  tracker.JoinAll();
+  EXPECT_TRUE(native_released.load(std::memory_order_acquire));
+  if (response) {
+    EXPECT_EQ(lifetime->Poll(now).http_work_count, 1u);
+    response.reset();
+  }
+
+  EXPECT_EQ(lifetime->Poll(now).http_work_count, 0u);
+  EXPECT_EQ(lifetime->Poll(now).state, hosting::HostLifetime::State::kGrace);
+}
+
+INSTANTIATE_TEST_SUITE_P(SharedHost, HttpAdmissionTest, testing::Bool());
+
+}  // namespace
 
 // ========================================================================
 // GenerateCompletionId — fixed-width IDs

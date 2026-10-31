@@ -52,7 +52,7 @@ struct TensorItem : Item {
   }
 
   void GetApiData(flTensorData& out) const {
-    out.version = FOUNDRY_LOCAL_API_VERSION;
+    out.version = FOUNDRY_LOCAL_DATA_VERSION;
     out.data_type = data_type;
     out.data = data;
     out.mutable_data = nullptr;

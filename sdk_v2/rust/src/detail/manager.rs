@@ -37,6 +37,7 @@ fn lock_lifecycle() -> std::sync::MutexGuard<'static, ()> {
 pub(crate) struct NativeManager {
     api: Arc<Api>,
     ptr: *mut flManager,
+    shared_host_enabled: bool,
     /// Set once the native manager has been released, so `shutdown`, explicit
     /// `teardown`, and `Drop` all coordinate to release exactly once.
     released: AtomicBool,
@@ -49,7 +50,11 @@ unsafe impl Sync for NativeManager {}
 
 impl NativeManager {
     /// Create a manager from a fully-built native configuration.
-    pub(crate) fn create(api: Arc<Api>, config: *const flConfiguration) -> Result<Self> {
+    pub(crate) fn create(
+        api: Arc<Api>,
+        config: *const flConfiguration,
+        shared_host_enabled: bool,
+    ) -> Result<Self> {
         // Serialize against any in-flight native release (see `NATIVE_LIFECYCLE`).
         let _lifecycle = lock_lifecycle();
         let mut ptr: *mut flManager = std::ptr::null_mut();
@@ -63,6 +68,7 @@ impl NativeManager {
         Ok(Self {
             api,
             ptr,
+            shared_host_enabled,
             released: AtomicBool::new(false),
         })
     }
@@ -74,6 +80,16 @@ impl NativeManager {
     /// loaded again.
     pub(crate) fn api(&self) -> Arc<Api> {
         Arc::clone(&self.api)
+    }
+
+    pub(crate) fn check_hosting_mode(&self, requested_shared_host: bool) -> Result<()> {
+        if requested_shared_host != self.shared_host_enabled {
+            return Err(FoundryLocalError::InvalidConfiguration {
+                reason: "cannot change hosting mode while a manager or derived handle is alive"
+                    .into(),
+            });
+        }
+        Ok(())
     }
 
     /// The manager-owned catalog handle.
@@ -222,6 +238,11 @@ impl NativeManager {
         // SAFETY: `ptr` is a live manager handle (not yet released — guarded above).
         let status = unsafe { (self.api.root().Manager_Shutdown)(self.ptr) };
         self.api.check(status)
+    }
+
+    pub(crate) fn is_shutdown_requested(&self) -> bool {
+        // SAFETY: the manager is retained by its caller for this observation.
+        unsafe { (self.api.root().Manager_IsShutdownRequested)(self.ptr) }
     }
 
     /// Run the prescribed teardown exactly once: `Manager_Shutdown` then

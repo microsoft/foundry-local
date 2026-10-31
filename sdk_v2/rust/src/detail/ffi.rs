@@ -14,8 +14,11 @@
 use core::ffi::c_void;
 use std::os::raw::{c_char, c_int};
 
-/// API version requested from `FoundryLocalGetApi` and stamped on versioned C structs.
+/// Minimum supported function-table version and the unchanged versioned-data baseline.
 pub const FOUNDRY_LOCAL_API_VERSION: u32 = 2;
+
+/// Latest function-table version understood by this binding; payload versions remain 2.
+pub const FOUNDRY_LOCAL_LATEST_API_VERSION: u32 = 3;
 
 // ── Opaque handle types ──────────────────────────────────────────────────────
 
@@ -699,6 +702,16 @@ pub struct flConfigurationApiVtable {
         config: *mut flConfiguration,
         options: *const flKeyValuePairs,
     ) -> flStatusPtr,
+}
+
+pub type FlSetUseSharedHostFn =
+    unsafe extern "system" fn(config: *mut flConfiguration, enabled: bool) -> flStatusPtr;
+
+/// Version-3 extension; keep the version-2 table above safe to borrow from older runtimes.
+#[repr(C)]
+pub struct flConfigurationApiV3Vtable {
+    pub prefix: flConfigurationApiVtable,
+    pub SetUseSharedHost: Option<FlSetUseSharedHostFn>,
 }
 
 /// Catalog API table (`flCatalogApi`).

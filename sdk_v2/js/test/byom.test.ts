@@ -1,15 +1,21 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { type Catalog, unwrapNativeCatalog } from "../src/catalog.js";
 import {
+  AudioSession,
   CatalogType,
+  ChatSession,
+  EmbeddingsSession,
   FoundryLocalManager,
+  Item,
   ModelInfoIntProperty,
   ModelInfoStringProperty,
   MutableModelInfo,
+  Request,
 } from "../src/index.js";
 import { Model } from "../src/model.js";
 import { unwrapMutableModelInfo } from "../src/modelInfo.js";
@@ -130,6 +136,32 @@ describeIfBuilt("BYOM local catalog", () => {
     registeredIds.delete(modelId);
     await expect(localCatalog.getModelVariant(modelId)).rejects.toThrow(modelId);
     expect(model.info.id).toBe(modelId);
+  });
+
+  it("runs a coding model through the existing chat session", async () => {
+    const modelId = "js-coding:1";
+    const source = fileURLToPath(new URL("../../cpp/test/testdata/tiny-paged-attention", import.meta.url));
+    using metadata = new MutableModelInfo().setStringProperty(ModelInfoStringProperty.Task, "coding");
+    const model = await localCatalog.registerModel(source, modelId, metadata);
+    registeredIds.add(modelId);
+    try {
+      expect(model.info.task).toBe("coding");
+      await model.load();
+      expect(() => new AudioSession(model)).toThrow(/AudioSession requires/);
+      expect(() => new EmbeddingsSession(model)).toThrow(/EmbeddingsSession requires/);
+      using session = new ChatSession(model);
+      const request = new Request()
+        .addItem(Item.userMessage("Write a function."))
+        .setOptions({ search: { maxOutputTokens: 4, temperature: 0 } });
+      const response = await session.processRequest(request);
+      expect(response.output.length).toBeGreaterThan(0);
+      expect(response.usage.completionTokens).toBeGreaterThan(0);
+      expect(session.turnCount).toBe(1);
+    } finally {
+      if (await model.isLoaded()) await model.unload();
+      await localCatalog.unregisterModel(modelId);
+      registeredIds.delete(modelId);
+    }
   });
 
   it("rejects mutation through the public catalog", async () => {

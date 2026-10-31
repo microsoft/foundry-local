@@ -160,9 +160,13 @@ std::string ExtractRegionFromResponse(const http::HttpResponse& response) {
   return ToLower(match[1].str());
 }
 
-std::vector<ModelInfo> ToModelInfos(const std::vector<CatalogLocalModel>& raw_models) {
+std::vector<ModelInfo> ToModelInfos(const std::vector<CatalogLocalModel>& raw_models,
+                                   bool uses_legacy_foundry_local_filter) {
   std::vector<ModelInfo> infos;
   for (const auto& model : raw_models) {
+    if (!uses_legacy_foundry_local_filter && (!model.foundry_local || !model.foundry_local->empty())) {
+      continue;
+    }
     if (auto info = CatalogModelToModelInfo(model)) {
       infos.push_back(std::move(*info));
     }
@@ -341,7 +345,7 @@ std::vector<CatalogLocalModel> AzureCatalogClient::FetchAllModels() {
 }
 
 std::vector<ModelInfo> AzureCatalogClient::FetchAllModelInfos() {
-  return ToModelInfos(FetchAllModels());
+  return ToModelInfos(FetchAllModels(), uses_legacy_foundry_local_filter_);
 }
 
 std::vector<ModelInfo> AzureCatalogClient::FetchModelsByIds(
@@ -355,7 +359,7 @@ std::vector<ModelInfo> AzureCatalogClient::FetchModelsByIds(
     return !MatchesConfiguredHistoricalScope(
         model, model_filter_, uses_legacy_foundry_local_filter_);
   });
-  auto model_infos = ToModelInfos(raw_models);
+  auto model_infos = ToModelInfos(raw_models, uses_legacy_foundry_local_filter_);
   std::erase_if(model_infos, [&model_ids](const ModelInfo& info) {
     return std::find(model_ids.begin(), model_ids.end(), info.model_id) == model_ids.end();
   });
@@ -389,7 +393,7 @@ std::vector<ModelInfo> AzureCatalogClient::FetchAllVersionsByAlias(
       return !MatchesConfiguredHistoricalScope(
           model, model_filter_, uses_legacy_foundry_local_filter_);
     });
-    auto infos = ToModelInfos(raw_models);
+    auto infos = ToModelInfos(raw_models, uses_legacy_foundry_local_filter_);
     std::erase_if(infos, [](const ModelInfo& info) {
       const auto* minimum_version =
           info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR);

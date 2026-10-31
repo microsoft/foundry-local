@@ -1,0 +1,35 @@
+# Copyright (c) Microsoft Corporation. All rights reserved.
+# Licensed under the MIT License.
+
+cmake_minimum_required(VERSION 3.20)
+project(nanoarrow_export_regression LANGUAGES C)
+
+if(CALLER_FLATCC_FIRST)
+    add_library(flatccrt STATIC IMPORTED)
+endif()
+find_package(nanoarrow CONFIG REQUIRED)
+if(NOT CALLER_FLATCC_FIRST)
+    add_library(flatccrt STATIC IMPORTED)
+endif()
+
+if(NOT TARGET nanoarrow::flatcc_runtime)
+    message(FATAL_ERROR "nanoarrow IPC must provide its own namespaced flatcc runtime")
+endif()
+string(TOUPPER "${TEST_CONFIG}" config)
+get_target_property(runtime nanoarrow::flatcc_runtime "IMPORTED_LOCATION_${config}")
+if(TEST_CONFIG STREQUAL "Debug")
+    set(expected "/debug/lib/[^/]*flatccrt_d[.][^/]+$")
+else()
+    set(expected "/lib/[^/]*flatccrt[.][^/]+$")
+    if(runtime MATCHES "/debug/")
+        message(FATAL_ERROR "Release selected a Debug runtime: ${runtime}")
+    endif()
+endif()
+if(NOT EXISTS "${runtime}" OR NOT runtime MATCHES "${expected}")
+    message(FATAL_ERROR "Unexpected ${TEST_CONFIG} flatcc runtime: ${runtime}")
+endif()
+
+add_executable(nanoarrow-consumer main.c)
+target_link_libraries(nanoarrow-consumer PRIVATE nanoarrow::nanoarrow_ipc)
+enable_testing()
+add_test(NAME nanoarrow-ipc-runtime COMMAND nanoarrow-consumer)

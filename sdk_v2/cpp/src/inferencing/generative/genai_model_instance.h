@@ -58,6 +58,7 @@ class GenAIModelInstance {
   const std::string& ModelId() const { return model_id_; }
   const std::string& ModelPath() const { return model_path_; }
   const GenAIConfig& GetGenAIConfig() const { return genai_config_; }
+  ILogger& GetLogger() const { return logger_; }
   ExecutionProvider EP() const { return ep_; }
   bool IsMultiModal() const;
   const std::string& ModelType() const { return model_type_; }
@@ -114,6 +115,7 @@ class GenAIModelInstance {
   std::string model_path_;
   GenAIConfig genai_config_;
   ExecutionProvider ep_;
+  ILogger& logger_;
   std::unique_ptr<OgaModel> oga_model_;
   std::string model_type_;
   std::unique_ptr<Preprocessor> preprocessor_;

@@ -149,6 +149,30 @@ model
 
 Catalog access does not block on EP downloads. Call `download_and_register_eps` when you need hardware-accelerated execution providers.
 
+## Native shared serving
+
+Opt in through normal SDK configuration; no separate host installation or control API is needed:
+
+```rust
+let manager = FoundryLocalManager::create(
+    FoundryLocalConfig::new("my-app").use_shared_host(true),
+)?;
+```
+
+In-process remains the default. Metadata, discovery and model downloads do not start a host; execution, cache removal,
+EP download/registration or `start_web_service()` starts or joins it. Clients must match the Foundry native build, IPC
+protocol, platform and effective catalog, data/cache, provider, web, logs directory/level, telemetry and additional
+settings other than `UserAgent`. Dependency hashes and packaging paths do not split hosts; the first starter's verified
+runtime serves all clients. Hosted mode cannot be combined with `service_endpoint` and never falls back to in-process
+execution.
+
+Shutdown/drop is client-local. Retained handles and admitted work keep their required native lifetime.
+After the final owner, the host drains admitted work, allows a five-second reconnect grace and exits normally.
+Keep the manager alive while using HTTP: connections are not owners. Explicit model unload stays shared and
+rejects in-use models; web-service Stop rejects other owners or active HTTP work.
+
+See the [shared-host requirements](../cpp/README.md#quick-start) for inherited environment/cwd and Linux prerequisites.
+
 ## Quick Start
 
 ```rust
@@ -243,6 +267,9 @@ local_catalog.unregister_model(model.id()).await?;
 
 The existing `manager.catalog()` accessor remains the default public catalog. Use
 `manager.get_catalog(CatalogType::Public)` when explicit catalog selection is preferred.
+
+Models registered with task `coding` use the existing text-only `ChatSession` interface. See
+[coding models](../INFERENCING.md#coding-models) for capability and compatibility details.
 
 ### Model Lifecycle
 
@@ -599,6 +626,11 @@ When `FOUNDRY_LOCAL_RUNTIME_VERSION` is set, the NuGet acquisition path supports
 - **`nuget`** — runs `nuget install` once per package. Use this when authentication depends on a
   NuGet or Visual Studio credential provider that the standalone NuGet CLI can host.
 
+By default, HTTP mode tries NuGet.org first, then the Microsoft package feed proxy
+(`https://packagefeedproxy.microsoft.io/nuget/v3/index.json`), then the public ORT-Nightly Azure Artifacts feed.
+The proxy provides a fallback for networks that block direct NuGet.org access. Explicit feed overrides replace
+this list; `dotnet` and `nuget` modes receive the same default sources but control their own source selection.
+
 | Variable | Applies to | Purpose |
 |----------|------------|---------|
 | `FOUNDRY_LOCAL_NUGET_MODE` | all | `http` (default), `dotnet`, or `nuget`. |
@@ -665,16 +697,17 @@ Sample applications are available in [`samples/rust/`](../../samples/rust/):
 
 | Sample | Description |
 |--------|-------------|
-| `native-chat-completions` | Non-streaming and streaming chat completions |
-| `tool-calling-foundry-local` | Function/tool calling with multi-turn conversations |
-| `audio-transcription-example` | Audio transcription (non-streaming and streaming) |
-| `foundry-local-webserver` | Embedded OpenAI-compatible REST API server |
+| `hello-world` | Complete manager, catalog, model, inference, and cleanup lifecycle |
+| `realtime-transcription` | Native live PCM transcription |
+| `embeddings` | Native embedding generation and comparison |
+| `tool-calling` | Function/tool calling with multi-turn conversations |
+| `web-server` | Embedded OpenAI-compatible REST API server |
 
 Run a sample with:
 
 ```sh
 cd samples/rust
-cargo run -p native-chat-completions
+cargo run -p hello-world
 ```
 
 ## License

@@ -105,6 +105,10 @@ Manager::Manager(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Manager>(inf
   bool has_external_service_url = false;
   if (!read_optional_string("serviceEndpoint", external_service_url, has_external_service_url)) return;
 
+  bool use_shared_host = false;
+  bool has_use_shared_host = false;
+  if (!read_optional_bool("useSharedHost", use_shared_host, has_use_shared_host)) return;
+
   bool disable_nonessential_telemetry = false;
   bool has_disable_nonessential_telemetry = false;
   if (!read_optional_bool("disableNonessentialTelemetry", disable_nonessential_telemetry,
@@ -189,6 +193,9 @@ Manager::Manager(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Manager>(inf
     }
     if (has_external_service_url) {
       config.SetExternalServiceUrl(external_service_url);
+    }
+    if (has_use_shared_host) {
+      config.SetUseSharedHost(use_shared_host);
     }
     if (has_app_data_dir) {
       config.SetAppDataDir(app_data_dir);

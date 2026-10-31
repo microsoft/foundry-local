@@ -549,7 +549,7 @@ internal static class Utils
     // Gets the root directory of the foundry-local-sdk repository by finding the .git directory.
     // In a regular checkout `.git` is a directory; in a git worktree it's a file pointing to
     // the main repo's worktrees/ entry — accept either form.
-    private static string GetRepoRoot()
+    internal static string GetRepoRoot()
     {
         var sourceFile = GetSourceFilePath();
         var dir = new DirectoryInfo(Path.GetDirectoryName(sourceFile)!);

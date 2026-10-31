@@ -24,6 +24,7 @@ struct ToolCallPayloadParseResult {
   ToolCallPayloadDisposition disposition = ToolCallPayloadDisposition::kNeedMore;
   size_t consumed_size = 0;
   std::vector<ParsedToolCall> calls;
+  std::string error;
 };
 
 /// Parses a candidate beginning with the configured tool-call start marker.

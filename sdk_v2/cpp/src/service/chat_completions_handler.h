@@ -47,7 +47,9 @@ class ChatCompletionsHandler : public HttpRequestHandler {
                               const Model& model, Request& session_request);
 
   /// Non-streaming inference — processes request, extracts the OPENAI_JSON-tagged TEXT response.
-  std::shared_ptr<OutgoingResponse> HandleNonStreaming(ChatSession& session, Request& session_request);
+  std::shared_ptr<OutgoingResponse> HandleNonStreaming(ChatSession& session, Request& session_request,
+                                                       const std::shared_ptr<IncomingRequest>& request,
+                                                       bool& disconnected);
 
   /// Streaming inference — runs inference in a background thread with SSE output.
   /// Takes ownership of the route ActionTracker so the route action is recorded

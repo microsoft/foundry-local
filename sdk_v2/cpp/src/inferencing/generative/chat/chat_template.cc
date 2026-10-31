@@ -210,6 +210,105 @@ std::string BuildChatMessagesJson(const std::vector<TranscriptMessage>& messages
   return messages_json.dump();
 }
 
+std::string BuildCanonicalToolMessagesJson(const std::vector<TranscriptMessage>& messages,
+                                           const ToolCallContext& tool_ctx,
+                                           const std::function<std::string(std::string)>& protect_literal) {
+  auto projected = nlohmann::ordered_json::parse(
+      BuildChatMessagesJson(messages, tool_ctx.supports_reasoning_history));
+  for (auto& message : projected) {
+    if (protect_literal) {
+      message["content"] = protect_literal(message.at("content").get<std::string>());
+      if (auto reasoning = message.find("reasoning_content"); reasoning != message.end()) {
+        *reasoning = protect_literal(reasoning->get<std::string>());
+      }
+    }
+
+    if (tool_ctx.UsesAssistantTextFraming() && message.at("role") == "assistant" &&
+        !message.at("content").get_ref<const std::string&>().empty()) {
+      message["content"] = std::string(ToolCallContext::kAssistantTextPrefix) +
+                           message.at("content").get<std::string>();
+    }
+
+    const auto calls = message.find("tool_calls");
+    if (calls == message.end()) {
+      continue;
+    }
+
+    auto batch = nlohmann::ordered_json::array();
+    for (const auto& call : *calls) {
+      const auto& function = call.at("function");
+      batch.push_back({{"name", function.at("name")}, {"parameters", function.at("arguments")}});
+    }
+
+    // Template implementations inspect literal reasoning tags in content. JSON escapes protect argument data
+    // without changing decoded strings or letting the template re-encode calls into its native XML format.
+    const auto encoded = batch.dump();
+    std::string safe;
+    safe.reserve(encoded.size());
+    for (const auto byte : encoded) {
+      if (byte == '<') {
+        safe += "\\u003c";
+      } else if (byte == '>') {
+        safe += "\\u003e";
+      } else {
+        safe += byte;
+      }
+    }
+
+    message["content"] = message.at("content").get<std::string>() +
+                         tool_ctx.tool_call_start + (protect_literal ? protect_literal(std::move(safe)) : safe) +
+                         tool_ctx.tool_call_end;
+    message.erase("tool_calls");
+  }
+
+  auto instructions =
+      "Tool calling protocol for this conversation:\nAvailable tools:\n" +
+      (protect_literal ? protect_literal(tool_ctx.tools_json) : tool_ctx.tools_json) +
+      "\nTo call tools, emit " + tool_ctx.tool_call_start +
+      " followed by a JSON array of objects with exactly the keys \"name\" and \"parameters\", then " +
+      tool_ctx.tool_call_end +
+      ". \"name\" must be a declared tool name and \"parameters\" must be its argument object. "
+      "Use the dedicated tool boundary tokens, not a textual description or substitute characters. "
+      "Emit the call block itself, without quoting it or using Markdown. "
+      "Put all calls for this turn in one array inside one pair of tool boundaries. "
+      "After the closing boundary, stop and wait for the external tool results. "
+      "Use {} for parameterless tools. Do not use XML function or parameter tags. "
+      "Each argument object must satisfy its tool's complete JSON Schema. "
+      "Properties may appear in any order; omit unused optional properties. "
+      "Preserve argument values exactly. JSON escaping, including Unicode escapes for literal angle brackets "
+      "in strings, preserves the decoded value and is not substitution. "
+      "If no tool is needed, answer normally.";
+  if (const auto* raw = tool_ctx.ActiveRawEnvelope()) {
+    const auto raw_instructions =
+        "\nThe custom tool \"" + raw->tool_name + "\" also accepts a raw envelope instead of a JSON call. "
+        "To call this tool in raw form, start with \"" + raw->start_marker +
+        "\" on its own line, then the exact tool payload, and finish with \"" + raw->end_marker +
+        "\" on its own line. Include both marker lines in the raw input. "
+        "Do not wrap the raw envelope in tool boundary tokens, JSON, or Markdown. "
+        "After the closing marker, stop and wait for the external tool result. "
+        "This raw format applies only to this custom tool; ordinary functions must use the JSON tool protocol above. "
+        "For an ordinary function, always put the call object inside an outer JSON array, even for a single call. "
+        "The content between tool boundaries must start with [ and end with ]. Never emit a bare call object.";
+    instructions += protect_literal ? protect_literal(raw_instructions) : raw_instructions;
+  }
+
+  if (tool_ctx.UsesAssistantTextFraming()) {
+    instructions +=
+        "\nFor ordinary assistant text, including a brief preamble, first emit MESSAGE followed by a newline. "
+        "This framing line is not message content. For a direct tool call, start with its tool boundary instead. "
+        "Never return an unframed description, JSON array, or textual imitation of a tool call.";
+  }
+
+  if (!projected.empty() && projected.front().at("role") == "system") {
+    projected.front()["content"] = projected.front().at("content").get<std::string>() + "\n\n" + instructions;
+  } else {
+    nlohmann::ordered_json system = {{"role", "system"}, {"content", instructions}};
+    projected.insert(projected.begin(), std::move(system));
+  }
+
+  return projected.dump();
+}
+
 std::string BuildChatPrompt(const std::vector<TranscriptMessage>& messages,
                             GenAIModelInstance& model,
                             const std::string& tools_json,
@@ -242,13 +341,24 @@ std::string BuildChatPrompt(const chat_internal::PreparedChatMessages& messages,
 std::string BuildChatPrompt(const std::vector<TranscriptMessage>& messages,
                             GenAIModelInstance& model,
                             const ToolCallContext& tool_ctx) {
-  return BuildChatPrompt(messages, model, tool_ctx.tools_json, tool_ctx.template_kwargs_json,
-                         tool_ctx.supports_reasoning_history);
+  return BuildChatPrompt(chat_internal::PrepareChatMessages(messages, model.HasPositionalToolResults()), model,
+                         tool_ctx);
 }
 
 std::string BuildChatPrompt(const chat_internal::PreparedChatMessages& messages,
                             GenAIModelInstance& model,
                             const ToolCallContext& tool_ctx) {
+  if (tool_ctx.tool_plan && !tool_ctx.HasForcedRawEnvelope()) {
+    if (messages.Empty()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "messages must not be empty");
+    }
+
+    const auto messages_json = BuildCanonicalToolMessagesJson(messages.Messages(), tool_ctx);
+    const auto* kwargs = tool_ctx.template_kwargs_json.empty() ? nullptr : tool_ctx.template_kwargs_json.c_str();
+    return model.GetPreprocessor().ApplyChatTemplateWithOptions(
+        messages_json.c_str(), nullptr, kwargs, /*add_generation_prompt=*/true);
+  }
+
   return BuildChatPrompt(messages, model, tool_ctx.tools_json, tool_ctx.template_kwargs_json,
                          tool_ctx.supports_reasoning_history);
 }

@@ -31,6 +31,9 @@ inline std::string SanitizePropertyValue(std::string_view name, std::string_view
   if (IsSecretProperty(name)) {
     return "[secret]";
   }
+  if (name == "appDataDir" || name == "modelCacheDir" || name == "logsDir") {
+    return SanitizeTelemetryPath(value);
+  }
   if (name == "Format") {
     return SanitizeTelemetryCatalogFormat(value);
   }

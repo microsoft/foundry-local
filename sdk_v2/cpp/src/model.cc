@@ -7,6 +7,8 @@
 #include "inferencing/model_load_manager.h"
 #include "items/item.h"
 #include "items/text_item.h"
+#include "util/path_safety.h"
+#include "util/scope_guard.h"
 #include "util/string_utils.h"
 #include "utils.h"
 
@@ -20,6 +22,12 @@
 namespace fl {
 
 namespace {
+
+void RequireSelectedArtifact(std::string_view path, std::optional<std::string_view> expected) {
+  if (expected && (path.empty() || expected->empty() ? path != *expected : !ModelPathsEqual(path, *expected))) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model artifact changed; refresh the catalog selection");
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Model priority sort — ports C# AzureFoundryService.CompareModelsForSort.
@@ -230,8 +238,7 @@ bool Model::TryReconcileVariants(Model& incoming) {
 
   for (auto current = variants_.begin(); current != variants_.end();) {
     const auto match = std::find_if(incoming.variants_.begin(), incoming.variants_.end(), [&](const auto& candidate) {
-      return (*current)->Info().model_id == candidate->Info().model_id &&
-             (*current)->LocalPath() == candidate->LocalPath();
+      return (*current)->Info() == candidate->Info() && (*current)->LocalPath() == candidate->LocalPath();
     });
     if (match != incoming.variants_.end()) {
       incoming.variants_.erase(match);
@@ -426,7 +433,7 @@ bool Model::IsLoaded() const {
   // ModelLoadManager owns the authoritative loaded-instance map. The pointer is set at
   // construction and never reassigned, so querying it here stays in sync with paths that
   // bypass Model::Load/Unload (e.g., Manager::Shutdown -> ModelLoadManager::UnloadAll).
-  return model_load_manager_->GetLoadedModel(Info().model_id, local_path_) != nullptr;
+  return model_load_manager_->GetLoadedModel(Info().model_id, LocalPathSnapshot()) != nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -439,9 +446,18 @@ void Model::Download(std::function<int(float)> progress_cb) {
     return;
   }
 
-  if (!active_) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
+  {
+    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+    if (!active_) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
+    }
+
+    active_downloads_.fetch_add(1);
   }
+
+  // Do not hold the lifecycle mutex across progress callbacks. Removal must still reject this entire operation,
+  // including cache-hit callbacks and the gap between releasing the file lock and publishing the cached path.
+  ScopeGuard download_guard([this]() noexcept { active_downloads_.fetch_sub(1); });
 
   if (external_registration_) {
     if (progress_cb) {
@@ -485,9 +501,68 @@ const std::string& Model::GetPath() const {
   return local_path_;
 }
 
-void Model::Load(ExecutionProvider ep) {
+Model Model::CaptureExecutionModel() const {
+  if (Model* selected = selected_variant_.load(std::memory_order_acquire)) {
+    return selected->CaptureExecutionModel();
+  }
+
+  std::lock_guard lifecycle_lock(lifecycle_mutex_);
+  if (!active_ || unregistering_) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
+  }
+
+  std::lock_guard state_lock(state_mutex_);
+  Model snapshot(*info_, local_path_, *download_manager_, *model_load_manager_, external_registration_);
+  snapshot.cached_.store(cached_.load(std::memory_order_acquire), std::memory_order_release);
+  return snapshot;
+}
+
+void Model::RefreshCachedState() {
+  if (Model* selected = selected_variant_.load(std::memory_order_acquire)) {
+    selected->RefreshCachedState();
+    return;
+  }
+
+  std::lock_guard lifecycle_lock(lifecycle_mutex_);
+  if (!active_ || unregistering_) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
+  }
+  if (external_registration_ || cached_) {
+    return;
+  }
+
+  auto path = download_manager_->GetCompletedModelCachePath(*info_);
+  if (!path.empty()) {
+    std::lock_guard state_lock(state_mutex_);
+    local_path_ = std::move(path);
+    cached_.store(true, std::memory_order_release);
+  }
+}
+
+void Model::ForgetCachedState() {
+  if (Model* selected = selected_variant_.load(std::memory_order_acquire)) {
+    selected->ForgetCachedState();
+    return;
+  }
+
+  std::lock_guard lifecycle_lock(lifecycle_mutex_);
+  if (external_registration_) {
+    return;
+  }
+
+  std::lock_guard state_lock(state_mutex_);
+  cached_.store(false, std::memory_order_release);
+  local_path_.clear();
+}
+
+std::string Model::LocalPathSnapshot() const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  return local_path_;
+}
+
+void Model::Load(ExecutionProvider ep, std::optional<std::string_view> expected_path) {
   if (Model* sv = selected_variant_.load(std::memory_order_acquire)) {
-    sv->Load(ep);
+    sv->Load(ep, expected_path);
     return;
   }
 
@@ -508,10 +583,12 @@ void Model::Load(ExecutionProvider ep) {
 
   // LoadModel is idempotent — it returns kModelAlreadyLoaded if the id is already
   // in the load manager's map, so no need for a local short-circuit.
-  auto result = model_load_manager_->LoadModel(local_path_, Info().model_id, ep);
+  const auto path = LocalPathSnapshot();
+  RequireSelectedArtifact(path, expected_path);
+  auto result = model_load_manager_->LoadModel(path, Info().model_id, ep);
 
   if (result.status == ModelLoadManager::LoadStatus::kModelNotFound) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model not found at path: " + local_path_);
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model not found at path: " + path);
   }
 }
 
@@ -525,12 +602,12 @@ void Model::Unload() {
 
   // Path qualification lets a retired handle clean up its own instance without unloading a later registration that
   // reused the same model ID at a different path. UnloadModel is idempotent when no matching instance is loaded.
-  model_load_manager_->UnloadModel(Info().model_id, local_path_);
+  model_load_manager_->UnloadModel(Info().model_id, LocalPathSnapshot());
 }
 
-void Model::RemoveFromCache() {
+void Model::RemoveFromCache(std::optional<std::string_view> expected_path) {
   if (Model* sv = selected_variant_.load(std::memory_order_acquire)) {
-    sv->RemoveFromCache();
+    sv->RemoveFromCache(expected_path);
     return;
   }
 
@@ -539,22 +616,23 @@ void Model::RemoveFromCache() {
              "local registrations are not cache entries; call Catalog::UnregisterModel instead");
   }
 
-  std::string path;
-  {
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    if (!cached_ || local_path_.empty()) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is not cached locally");
-    }
-    path = local_path_;
+  std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+  if (!active_) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
   }
+
+  if (active_downloads_.load() != 0) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot remove model cache while a download is in progress");
+  }
+
+  const auto path = LocalPathSnapshot();
+  RequireSelectedArtifact(path, expected_path);
 
   if (IsLoaded()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot remove a loaded model from cache; unload it first");
   }
 
-  if (!Utils::RemoveDirectoryRecursive(path)) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "failed to remove model cache directory: " + path);
-  }
+  download_manager_->RemoveModelFromCache(Info(), path, *model_load_manager_);
 
   // Turn off the published state before tearing down the backing string (mirror of Download's ordering).
   cached_.store(false);
@@ -752,7 +830,7 @@ Model::IOInfo Model::GetInputOutputInfo() const {
 
   const auto& task = Info().task;
 
-  if (task == "chat-completion") {
+  if (task == "chat-completion" || task == "coding") {
     return IOInfoFromCache(ChatCompletionIO());
   }
 

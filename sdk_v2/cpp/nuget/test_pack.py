@@ -15,9 +15,13 @@ Run manually with:
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import sys
 import tempfile
 import unittest
+import zipfile
+from collections.abc import Callable
 from pathlib import Path
 
 # Make sure pack module can be imported from any working directory.
@@ -48,10 +52,19 @@ def _fake_args(**overrides) -> argparse.Namespace:
 
 def _make_fake_artifact(root: Path, rid_arg: str) -> Path:
     """Create a minimal fake artefact directory for *rid_arg* and return its path."""
-    _rid, lib_name = pack.RIDS[rid_arg]
+    rid, lib_name = pack.RIDS[rid_arg]
     artifact_dir = root / rid_arg
     artifact_dir.mkdir(parents=True, exist_ok=True)
     (artifact_dir / lib_name).write_bytes(b"fake-binary")
+    host_name = "foundry-local-host.exe" if rid.startswith("win-") else "foundry-local-host"
+    (artifact_dir / host_name).write_bytes(b"fake-host")
+    manifest = {"version": 1, "protocol": 1, "rid": rid, "native_build": "test-build"}
+    for role, name in (("native", lib_name), ("host", host_name)):
+        manifest[role] = {
+            "file_name": name,
+            "sha256": hashlib.sha256((artifact_dir / name).read_bytes()).hexdigest(),
+        }
+    (artifact_dir / pack.HOST_MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
     return artifact_dir
 
 
@@ -93,7 +106,9 @@ class TestRidsMapping(unittest.TestCase):
 class TestStagingLayout(unittest.TestCase):
     """Verify that stage() produces the expected runtimes/<rid>/native/ layout."""
 
-    def _run_stage(self, rid_arg: str) -> tuple[set[str], int]:
+    def _run_stage(
+        self, rid_arg: str, alter: Callable[[Path], None] | None = None
+    ) -> tuple[set[str], int]:
         """
         Run pack.stage() with a single platform artifact.
         Returns (layout, rid_count) where ``layout`` is the set of staged file
@@ -103,6 +118,8 @@ class TestStagingLayout(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)
             artifact_dir = _make_fake_artifact(tmp / "artifacts", rid_arg)
+            if alter:
+                alter(artifact_dir)
             output_dir = tmp / "out"
             staging_dir = tmp / "_staging"
             staging_dir.mkdir()
@@ -156,6 +173,32 @@ class TestStagingLayout(unittest.TestCase):
         layout, rid_count = self._run_stage("linux_arm64")
         self.assertEqual(rid_count, 1)
         self._check_native_file_present(layout, "linux-arm64", "libfoundry_local.so")
+
+    def test_missing_host_or_manifest_is_rejected(self):
+        for name in ("foundry-local-host.exe", pack.HOST_MANIFEST):
+            with self.subTest(file=name), self.assertRaises(SystemExit):
+                self._run_stage("win_x64", lambda directory, selected=name: (directory / selected).unlink())
+
+    def test_modified_host_requires_a_new_manifest(self):
+        with self.assertRaises(SystemExit):
+            self._run_stage(
+                "win_x64", lambda directory: (directory / "foundry-local-host.exe").write_bytes(b"signed-host")
+            )
+
+    def test_modified_native_library_requires_a_new_manifest(self):
+        with self.assertRaises(SystemExit):
+            self._run_stage(
+                "win_x64", lambda directory: (directory / "foundry_local.dll").write_bytes(b"signed-native")
+            )
+
+    def test_shared_host_payload_is_staged_on_every_supported_rid(self):
+        for rid_arg, (rid, _) in pack.RIDS.items():
+            with self.subTest(rid=rid):
+                layout, count = self._run_stage(rid_arg)
+                self.assertEqual(count, 1)
+                host_name = "foundry-local-host.exe" if rid.startswith("win-") else "foundry-local-host"
+                self._check_native_file_present(layout, rid, host_name)
+                self._check_native_file_present(layout, rid, pack.HOST_MANIFEST)
 
     def test_windows_import_library_is_staged(self):
         with tempfile.TemporaryDirectory() as tmp_str:
@@ -278,6 +321,35 @@ class TestStagingLayout(unittest.TestCase):
                 pack.REPO_ROOT = original_repo_root
 
             self.assertEqual(rid_count, 0)
+
+
+class TestHostPermissions(unittest.TestCase):
+    def test_unix_hosts_keep_executable_metadata_when_packed_on_windows(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            package = Path(temporary) / "runtime.nupkg"
+            names = [
+                "runtimes/linux-x64/native/foundry-local-host",
+                "runtimes/osx-arm64/native/foundry-local-host",
+                "runtimes/win-x64/native/foundry-local-host.exe",
+                "runtimes/linux-x64/native/foundry-local-runtime.json",
+            ]
+            with zipfile.ZipFile(package, "w") as archive:
+                for name in names:
+                    info = zipfile.ZipInfo(name)
+                    info.create_system = 0
+                    archive.writestr(info, name.encode())
+            pack._set_host_permissions(package)
+            with zipfile.ZipFile(package) as archive:
+                self.assertIsNone(archive.testzip())
+                for name in names:
+                    self.assertEqual(archive.read(name), name.encode())
+                for name in names[:2]:
+                    info = archive.getinfo(name)
+                    self.assertEqual(info.create_system, 3)
+                    self.assertEqual((info.external_attr >> 16) & 0o777, 0o755)
+                self.assertEqual(archive.getinfo(names[2]).create_system, 0)
+                self.assertEqual(archive.getinfo(names[3]).create_system, 0)
+            self.assertFalse(package.with_suffix(".tmp").exists())
 
 
 class TestArgParser(unittest.TestCase):

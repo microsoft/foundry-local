@@ -921,6 +921,22 @@ TEST(ResponseConverterTest, ToSessionRequest_NoToolChoice_DoesNotSetOption) {
   EXPECT_EQ(req.options.Find("tool_choice"), nullptr);
 }
 
+TEST(ResponseConverterTest, ExtractResponsesToolDefinitions_ParallelToolCallsPreservesExplicitChoice) {
+  auto params = MakeToolParams();
+  Request request;
+  (void)ExtractResponsesToolDefinitions(params, request);
+  EXPECT_EQ(request.options.Find("parallel_tool_calls"), nullptr);
+
+  params.parallel_tool_calls = false;
+  (void)ExtractResponsesToolDefinitions(params, request);
+  ASSERT_NE(request.options.Find("parallel_tool_calls"), nullptr);
+  EXPECT_STREQ(request.options.Find("parallel_tool_calls"), "false");
+
+  params.parallel_tool_calls = true;
+  (void)ExtractResponsesToolDefinitions(params, request);
+  EXPECT_STREQ(request.options.Find("parallel_tool_calls"), "true");
+}
+
 TEST(ResponseConverterTest, ExtractResponsesToolDefinitions_NoTools_ReturnsEmpty) {
   auto params = MakeToolParams();
   // No tools, no tool_choice.

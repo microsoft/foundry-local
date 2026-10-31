@@ -188,7 +188,7 @@ TEST(ToolDefinitionAbiTest, RejectsVersionZeroOnCurrentStruct) {
 TEST(ToolDefinitionAbiTest, RejectsFutureVersionBeforeReadingTheTail) {
   // The struct is only the old size, so a future version that reached `kind` would read out of
   // bounds. Rejection must happen on `version` alone.
-  LegacyDefinition legacy(FOUNDRY_LOCAL_API_VERSION + 1, "tool", "description", "{}");
+  LegacyDefinition legacy(FOUNDRY_LOCAL_TOOL_DEFINITION_VERSION + 1, "tool", "description", "{}");
   EXPECT_INVALID_ARGUMENT(ToolDefinitionFromC(legacy.AsCurrent()));
 
   LegacyDefinition far_future(0xFFFFFFFFu, "tool", "description", "{}");
@@ -216,11 +216,11 @@ TEST(ToolDefinitionAbiTest, LegacyVersionOnCurrentStructIgnoresTheTail) {
 }
 
 TEST(ToolDefinitionAbiTest, CurrentVersionReadsTheKind) {
-  auto function = CurrentDefinition(FOUNDRY_LOCAL_API_VERSION, "tool", "d", "{}",
+  auto function = CurrentDefinition(FOUNDRY_LOCAL_TOOL_DEFINITION_VERSION, "tool", "d", "{}",
                                     FOUNDRY_LOCAL_TOOL_KIND_FUNCTION);
   EXPECT_EQ(ToolDefinitionFromC(function).kind, ToolKind::kFunction);
 
-  auto custom = CurrentDefinition(FOUNDRY_LOCAL_API_VERSION, "tool", "d", nullptr,
+  auto custom = CurrentDefinition(FOUNDRY_LOCAL_TOOL_DEFINITION_VERSION, "tool", "d", nullptr,
                                   FOUNDRY_LOCAL_TOOL_KIND_CUSTOM);
   EXPECT_EQ(ToolDefinitionFromC(custom).kind, ToolKind::kCustom);
 }
@@ -238,7 +238,7 @@ TEST(ToolDefinitionAbiTest, KindIsIntroducedAtVersionTwo) {
 
 TEST(ToolDefinitionAbiTest, RejectsUnknownKind) {
   for (flToolKind kind : {2u, 0x5A5A5A5Au, 0x7FFFFFFFu, 0xFFFFFFFFu}) {
-    auto definition = CurrentDefinition(FOUNDRY_LOCAL_API_VERSION, "tool", "d", "{}", kind);
+    auto definition = CurrentDefinition(FOUNDRY_LOCAL_TOOL_DEFINITION_VERSION, "tool", "d", "{}", kind);
     EXPECT_INVALID_ARGUMENT(ToolDefinitionFromC(definition));
   }
 }
@@ -248,11 +248,11 @@ TEST(ToolDefinitionAbiTest, RejectsUnknownKind) {
 // ========================================================================
 
 TEST(ToolDefinitionAbiTest, RejectsNullNameOrDescription) {
-  auto no_name = CurrentDefinition(FOUNDRY_LOCAL_API_VERSION, nullptr, "d", "{}",
+  auto no_name = CurrentDefinition(FOUNDRY_LOCAL_TOOL_DEFINITION_VERSION, nullptr, "d", "{}",
                                    FOUNDRY_LOCAL_TOOL_KIND_FUNCTION);
   EXPECT_INVALID_ARGUMENT(ToolDefinitionFromC(no_name));
 
-  auto no_description = CurrentDefinition(FOUNDRY_LOCAL_API_VERSION, "tool", nullptr, "{}",
+  auto no_description = CurrentDefinition(FOUNDRY_LOCAL_TOOL_DEFINITION_VERSION, "tool", nullptr, "{}",
                                           FOUNDRY_LOCAL_TOOL_KIND_FUNCTION);
   EXPECT_INVALID_ARGUMENT(ToolDefinitionFromC(no_description));
 }
@@ -290,7 +290,7 @@ TEST(ToolDefinitionAbiTest, VersionOnePreSerializedArrayReachesProductionToolCon
 }
 
 TEST(ToolDefinitionAbiTest, VersionTwoRejectsEmptyPublicToolNames) {
-  auto current = CurrentDefinition(FOUNDRY_LOCAL_API_VERSION, "", "d", "{}",
+  auto current = CurrentDefinition(FOUNDRY_LOCAL_TOOL_DEFINITION_VERSION, "", "d", "{}",
                                    FOUNDRY_LOCAL_TOOL_KIND_FUNCTION);
   EXPECT_INVALID_ARGUMENT(ToolDefinitionFromC(current));
 
@@ -299,14 +299,14 @@ TEST(ToolDefinitionAbiTest, VersionTwoRejectsEmptyPublicToolNames) {
 }
 
 TEST(ToolDefinitionAbiTest, RejectsNullSchemaForAFunctionToolAndAcceptsItForACustomTool) {
-  auto function = CurrentDefinition(FOUNDRY_LOCAL_API_VERSION, "tool", "d", nullptr,
+  auto function = CurrentDefinition(FOUNDRY_LOCAL_TOOL_DEFINITION_VERSION, "tool", "d", nullptr,
                                     FOUNDRY_LOCAL_TOOL_KIND_FUNCTION);
   EXPECT_INVALID_ARGUMENT(ToolDefinitionFromC(function));
 
   LegacyDefinition legacy(1, "tool", "d", nullptr);
   EXPECT_INVALID_ARGUMENT(ToolDefinitionFromC(legacy.AsCurrent()));
 
-  auto custom = CurrentDefinition(FOUNDRY_LOCAL_API_VERSION, "tool", "d", nullptr,
+  auto custom = CurrentDefinition(FOUNDRY_LOCAL_TOOL_DEFINITION_VERSION, "tool", "d", nullptr,
                                   FOUNDRY_LOCAL_TOOL_KIND_CUSTOM);
   EXPECT_EQ(ToolDefinitionFromC(custom).json_schema, "");
 }
@@ -320,7 +320,7 @@ TEST(ToolDefinitionAbiTest, CopiesTheCallerBuffers) {
   std::vector<char> description{'d', '\0'};
   std::vector<char> schema{'{', '}', '\0'};
 
-  auto definition = CurrentDefinition(FOUNDRY_LOCAL_API_VERSION, name.data(), description.data(),
+  auto definition = CurrentDefinition(FOUNDRY_LOCAL_TOOL_DEFINITION_VERSION, name.data(), description.data(),
                                       schema.data(), FOUNDRY_LOCAL_TOOL_KIND_FUNCTION);
   auto converted = ToolDefinitionFromC(definition);
 
@@ -345,7 +345,7 @@ TEST(ToolDefinitionAbiTest, RegistryKeepsItsOwnCopyOfTheCallerBuffers) {
   {
     std::string name = "apply_patch";
     std::string description = "applies a patch";
-    auto definition = CurrentDefinition(FOUNDRY_LOCAL_API_VERSION, name.c_str(), description.c_str(),
+    auto definition = CurrentDefinition(FOUNDRY_LOCAL_TOOL_DEFINITION_VERSION, name.c_str(), description.c_str(),
                                         nullptr, FOUNDRY_LOCAL_TOOL_KIND_CUSTOM);
     registry.Add(ToolDefinitionFromC(definition));
   }

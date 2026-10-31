@@ -24,6 +24,9 @@ std::string GenerateCompletionId();
 /// Reads directly from the model's model_settings map. Invalid applied defaults raise INTERNAL, not a client error.
 void ApplyCatalogDefaults(ChatCompletionRequest& req, const KeyValuePairs& model_settings);
 
+/// Apply the same catalog defaults to unset typed-session options, using canonical inference option names.
+void ApplyCatalogDefaults(KeyValuePairs& options, const KeyValuePairs& model_settings);
+
 /// Map flFinishReason to OpenAI finish_reason string ("stop", "length", "tool_calls").
 std::string MapFinishReason(flFinishReason reason);
 

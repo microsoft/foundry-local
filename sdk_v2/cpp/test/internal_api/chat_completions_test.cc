@@ -370,6 +370,16 @@ TEST(ChatCompletionRequestTest, AllOptionalScalars) {
   EXPECT_EQ(*req.user, "test-user");
 }
 
+TEST(ChatCompletionRequestTest, RejectsNonBooleanParallelToolCalls) {
+  auto j = json::parse(R"({
+    "model": "m",
+    "messages": [{"role": "user", "content": "x"}],
+    "parallel_tool_calls": "false"
+  })");
+
+  EXPECT_THROW((void)j.get<ChatCompletionRequest>(), json::type_error);
+}
+
 TEST(ChatCompletionRequestTest, StreamOptions) {
   auto j = json::parse(R"({
     "model": "m",

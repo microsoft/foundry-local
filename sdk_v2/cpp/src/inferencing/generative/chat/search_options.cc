@@ -133,7 +133,9 @@ int64_t ResolveOutputReserve(const SearchOptions& options,
 
 std::optional<TurnGuidanceOptions> ResolveTurnGuidanceOptions(const ToolCallContext& tool_ctx,
                                                               bool prompt_opens_reasoning) {
-  if (tool_ctx.guidance_disabled) {
+  if (tool_ctx.guidance_disabled ||
+      (tool_ctx.ActiveRawEnvelope() && !tool_ctx.HasExplicitGuidance()) ||
+      (tool_ctx.tool_body_grammar && !tool_ctx.HasExplicitGuidance())) {
     return std::nullopt;
   }
 
@@ -145,12 +147,7 @@ std::optional<TurnGuidanceOptions> ResolveTurnGuidanceOptions(const ToolCallCont
     guidance_type = tool_ctx.guidance_type;
     guidance_data = tool_ctx.guidance_data;
   } else {
-    std::string json_schema;
-    if (tool_ctx.HasTools()) {
-      json_schema = BuildToolJsonSchema(tool_ctx);
-    }
-
-    guidance_data = BuildLarkGrammar(tool_ctx, json_schema, prompt_opens_reasoning);
+    guidance_data = BuildLarkGrammar(tool_ctx, prompt_opens_reasoning);
     if (!guidance_data.empty()) {
       guidance_type = "lark_grammar";
     }
@@ -158,7 +155,7 @@ std::optional<TurnGuidanceOptions> ResolveTurnGuidanceOptions(const ToolCallCont
 
   const bool tool_call_only = tool_ctx.tool_output && !tool_ctx.text_output;
   if (!guidance_type.empty() && !guidance_data.empty() &&
-      (user_specified_guidance || tool_call_only)) {
+      (user_specified_guidance || tool_call_only || tool_ctx.tool_plan)) {
     return TurnGuidanceOptions{
         std::move(guidance_type),
         std::move(guidance_data),
@@ -251,7 +248,8 @@ EngineTurnOptionsPlan BuildEngineTurnOptionsPlan(const SearchOptions& options,
     plan.seed = *options.seed;
   }
 
-  if (ShouldForwardStopSequencesToEngine(backend_kind)) {
+  // Native stops see hidden MESSAGE framing too; framed turns instead match ordinary visible text on the host.
+  if (ShouldForwardStopSequencesToEngine(backend_kind) && !tool_ctx.UsesAssistantTextFraming()) {
     plan.stop_sequences = options.stop_sequences;
   }
 

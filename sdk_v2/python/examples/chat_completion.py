@@ -35,7 +35,7 @@ SKIP_EP_REGISTRATION_ENV = "FOUNDRY_LOCAL_SKIP_EP_REGISTRATION"
 def _is_cpu_chat_model(model: IModel) -> bool:
     info = model.info
     return (
-        info.task in ("chat-completion", "vision-language-chat")
+        info.task in ("chat-completion", "coding", "vision-language-chat")
         and info.runtime is not None
         and info.runtime.device_type == DeviceType.CPU
     )

@@ -43,7 +43,8 @@ class OneDsTelemetry : public ITelemetry {
   void RecordEpDownloadAndRegister(const EpDownloadAndRegisterInfo& info) override;
   void RecordDownload(const DownloadInfo& info) override;
   void RecordCatalogFetch(const CatalogFetchInfo& info) override;
-  void RecordProcessInfo(const ProcessInfo& info) override;
+  /// Build startup diagnostics from cached process metadata and resolved configuration; configuration is not retained.
+  void RecordProcessInfo(const Configuration& configuration);
   void RecordHardwareInfo(const HardwareInfo& info) override;
   void StartSession() override;
   void EndSession() override;
@@ -61,6 +62,7 @@ class OneDsTelemetry : public ITelemetry {
 
   TelemetryLogger local_log_;
   TelemetryMetadata metadata_;  // Cached at construction.
+  const bool hard_disabled_;
   std::unique_ptr<Impl> impl_;
   std::atomic<bool> initialized_{false};
   std::atomic<bool> upload_enabled_{true};  // False when non-essential uploads are suppressed.

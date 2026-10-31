@@ -518,12 +518,12 @@ impl ChatSession {
     /// Open a chat session on a loaded model.
     ///
     /// Returns [`FoundryLocalError::Validation`] if the model's task is not
-    /// `"chat-completion"` or `"vision-language-chat"`.
+    /// `"chat-completion"`, `"coding"`, or `"vision-language-chat"`.
     pub async fn new(model: &Model) -> Result<ChatSession> {
         validate_session_task(
             model,
             "ChatSession",
-            &["chat-completion", "vision-language-chat"],
+            &["chat-completion", "coding", "vision-language-chat"],
         )?;
 
         Ok(ChatSession {
@@ -864,18 +864,11 @@ mod tests {
 
     #[test]
     fn check_task_accepts_allowed_tasks() {
-        assert!(check_task(
-            Some("chat-completion"),
-            "ChatSession",
-            &["chat-completion", "vision-language-chat"]
-        )
-        .is_ok());
-        assert!(check_task(
-            Some("vision-language-chat"),
-            "ChatSession",
-            &["chat-completion", "vision-language-chat"]
-        )
-        .is_ok());
+        let chat_tasks = ["chat-completion", "coding", "vision-language-chat"];
+        for task in chat_tasks {
+            assert!(check_task(Some(task), "ChatSession", &chat_tasks).is_ok());
+        }
+
         assert!(check_task(Some("embeddings"), "EmbeddingsSession", &["embeddings"]).is_ok());
     }
 

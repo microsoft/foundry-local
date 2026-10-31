@@ -6,8 +6,7 @@
 
 The cffi extension is compiled against the real ``foundry_local_c.h``, so these assertions are the
 Python-side half of the ABI contract: the struct this package fills in has to be the struct the
-native library reads, and the version stamped on it has to be the version requested from
-``FoundryLocalGetApi``. No model is loaded.
+native library reads. Payload schemas evolve independently of the negotiated function table. No model is loaded.
 """
 from __future__ import annotations
 
@@ -45,11 +44,9 @@ class TestToolDefinitionAbi:
         assert _TOOL_KIND_FUNCTION == 0
         assert _TOOL_KIND_CUSTOM == 1
 
-    def test_stamped_version_matches_the_requested_version(self):
-        # Stamping a version the requested API table does not support would be silently wrong: the
-        # native side reads `kind` only from a version 2 definition.
-        assert _API_VERSION == _FOUNDRY_LOCAL_API_VERSION
+    def test_payload_schema_stays_at_v2_with_newer_function_tables(self):
         assert _API_VERSION == 2
+        assert _API_VERSION <= _FOUNDRY_LOCAL_API_VERSION
 
     def test_public_custom_tool_api_encodes_definition_and_handles_duplicates_and_removal(
         self, monkeypatch

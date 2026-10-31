@@ -1,0 +1,32 @@
+diff --git a/cmake/config.cmake.in b/cmake/config.cmake.in
+index e1af6ab..5a89bf4 100644
+--- a/cmake/config.cmake.in
++++ b/cmake/config.cmake.in
+@@ -21,4 +21,26 @@
+ cmake_minimum_required(VERSION @CMAKE_MINIMUM_REQUIRED_VERSION@)
+-
++
++if(@NANOARROW_IPC@ AND NOT TARGET nanoarrow::flatcc_runtime)
++  get_filename_component(_nanoarrow_prefix "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
++  find_library(nanoarrow_FLATCCRT_LIBRARY_RELEASE NAMES flatccrt
++               PATHS "${_nanoarrow_prefix}/lib" NO_DEFAULT_PATH)
++  find_library(nanoarrow_FLATCCRT_LIBRARY_DEBUG NAMES flatccrt_d
++               PATHS "${_nanoarrow_prefix}/debug/lib" NO_DEFAULT_PATH)
++  if(NOT nanoarrow_FLATCCRT_LIBRARY_RELEASE AND NOT nanoarrow_FLATCCRT_LIBRARY_DEBUG)
++    message(FATAL_ERROR "nanoarrow IPC requires the installed flatcc runtime library")
++  endif()
++  add_library(nanoarrow::flatcc_runtime UNKNOWN IMPORTED GLOBAL)
++  if(nanoarrow_FLATCCRT_LIBRARY_RELEASE)
++    set_property(TARGET nanoarrow::flatcc_runtime APPEND PROPERTY IMPORTED_CONFIGURATIONS RELEASE)
++    set_property(TARGET nanoarrow::flatcc_runtime PROPERTY IMPORTED_LOCATION_RELEASE
++                 "${nanoarrow_FLATCCRT_LIBRARY_RELEASE}")
++  endif()
++  if(nanoarrow_FLATCCRT_LIBRARY_DEBUG)
++    set_property(TARGET nanoarrow::flatcc_runtime APPEND PROPERTY IMPORTED_CONFIGURATIONS DEBUG)
++    set_property(TARGET nanoarrow::flatcc_runtime PROPERTY IMPORTED_LOCATION_DEBUG
++                 "${nanoarrow_FLATCCRT_LIBRARY_DEBUG}")
++  endif()
++endif()
++
+ include("${CMAKE_CURRENT_LIST_DIR}/nanoarrow-targets.cmake" REQUIRED)
+ include("${CMAKE_CURRENT_LIST_DIR}/nanoarrow-config-version.cmake" REQUIRED)

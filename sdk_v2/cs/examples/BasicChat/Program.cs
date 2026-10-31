@@ -104,6 +104,7 @@ internal static class Program
     {
         var info = model.Info;
         var isChat = string.Equals(info.Task, "chat-completion", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(info.Task, "coding", StringComparison.OrdinalIgnoreCase)
             || string.Equals(info.Task, "vision-language-chat", StringComparison.OrdinalIgnoreCase);
         var isCpu = info.Runtime?.DeviceType == DeviceType.CPU
             || string.Equals(

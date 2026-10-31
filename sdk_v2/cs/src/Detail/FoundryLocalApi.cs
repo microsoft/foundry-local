@@ -30,6 +30,7 @@ internal static class Api
     internal static FlItemApi Item;
     internal static FlInferenceApi Inference;
     internal static FlConfigurationApi Config;
+    internal static FlConfig_SetUseSharedHostDelegate? SetUseSharedHost;
     internal static FlCatalogApi Catalog;
     internal static FlModelApi Model;
     private static volatile bool _initialized;
@@ -49,7 +50,14 @@ internal static class Api
                 return;
             }
 
-            var apiPtr = NativeMethods.FoundryLocalGetApi(NativeMethods.ApiVersion);
+            var version = NativeMethods.LatestApiVersion;
+            var apiPtr = NativeMethods.FoundryLocalGetApi(version);
+            if (apiPtr == IntPtr.Zero)
+            {
+                version = NativeMethods.ApiVersion;
+                apiPtr = NativeMethods.FoundryLocalGetApi(version);
+            }
+
             if (apiPtr == IntPtr.Zero)
             {
                 var loadedRuntimeVersion = FoundryLocal.GetVersionString();
@@ -74,6 +82,7 @@ internal static class Api
             if (p != IntPtr.Zero)
             {
                 Config = Marshal.PtrToStructure<FlConfigurationApi>(p);
+                SetUseSharedHost = ReadSharedHostSetting(p, version);
             }
 
             p = Root.GetCatalogApi();
@@ -90,6 +99,22 @@ internal static class Api
 
             _initialized = true;
         }
+    }
+
+    internal static FlConfig_SetUseSharedHostDelegate? ReadSharedHostSetting(IntPtr configApi, uint version)
+    {
+        if (version < 3)
+        {
+            return null;
+        }
+
+        var setter = Marshal.ReadIntPtr(configApi, Marshal.SizeOf<FlConfigurationApi>());
+        if (setter == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("The native runtime returned an incomplete v3 configuration API.");
+        }
+
+        return Marshal.GetDelegateForFunctionPointer<FlConfig_SetUseSharedHostDelegate>(setter);
     }
 
     internal static string CreateIncompatibleRuntimeMessage(string loadedRuntimeVersion)
@@ -214,6 +239,24 @@ public sealed class Configuration : IDisposable
     public Configuration SetExternalServiceUrl(string url)
     {
         Api.CheckStatus(Api.Config.SetExternalServiceUrl(Ptr, url));
+        return this;
+    }
+
+    public Configuration SetUseSharedHost(bool enabled)
+    {
+        var setter = Api.SetUseSharedHost;
+        if (setter == null)
+        {
+            if (enabled)
+            {
+                throw new FoundryLocalException("Shared hosting requires an API v3 Foundry Local runtime.",
+                                                FoundryLocalErrorCode.NotImplemented);
+            }
+
+            return this;
+        }
+
+        Api.CheckStatus(setter(Ptr, enabled));
         return this;
     }
 

@@ -16,7 +16,7 @@ function isCpuChatModel(model) {
   const executionProvider = info.runtime?.executionProvider ?? info.executionProvider;
 
   return (
-    ["chat-completion", "vision-language-chat"].includes(info.task?.toLowerCase()) &&
+    ["chat-completion", "coding", "vision-language-chat"].includes(info.task?.toLowerCase()) &&
     (info.deviceType === "CPU" ||
       info.runtime?.deviceType === "CPU" ||
       executionProvider?.toLowerCase() === "cpuexecutionprovider")

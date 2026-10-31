@@ -39,6 +39,11 @@ void ThrowBCryptError(const char* call, NTSTATUS status) {
 }  // namespace
 
 std::string Sha256File(const std::filesystem::path& file_path) {
+  std::error_code error;
+  if (!std::filesystem::is_regular_file(file_path, error)) {
+    return {};
+  }
+
   std::ifstream file(file_path, std::ios::binary);
   if (!file) {
     return {};
@@ -66,6 +71,12 @@ std::string Sha256File(const std::filesystem::path& file_path) {
       BCryptCloseAlgorithmProvider(alg, 0);
       ThrowBCryptError("BCryptHashData", status);
     }
+  }
+
+  if (file.bad() || !file.eof()) {
+    BCryptDestroyHash(hash);
+    BCryptCloseAlgorithmProvider(alg, 0);
+    return {};
   }
 
   UCHAR digest[32];
@@ -146,6 +157,11 @@ std::string HexEncode(const unsigned char* digest, size_t digest_len) {
 }  // namespace
 
 std::string Sha256File(const std::filesystem::path& file_path) {
+  std::error_code error;
+  if (!std::filesystem::is_regular_file(file_path, error)) {
+    return {};
+  }
+
   std::ifstream file(file_path, std::ios::binary);
   if (!file) {
     return {};
@@ -167,6 +183,11 @@ std::string Sha256File(const std::filesystem::path& file_path) {
       EVP_MD_CTX_free(ctx);
       FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "EVP_DigestUpdate failed");
     }
+  }
+
+  if (file.bad() || !file.eof()) {
+    EVP_MD_CTX_free(ctx);
+    return {};
   }
 
   unsigned char digest[EVP_MAX_MD_SIZE];

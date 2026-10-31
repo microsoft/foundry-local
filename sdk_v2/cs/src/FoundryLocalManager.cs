@@ -71,10 +71,17 @@ public class FoundryLocalManager : IDisposable
     }
 
     /// <summary>
-    /// Bound Urls if the web service has been started. Null otherwise.
-    /// See <see cref="StartWebServiceAsync"/>.
+    /// Observe native listening Urls without starting the service or acquiring shared-host ownership.
+    /// Null when no listener is running.
     /// </summary>
-    public string[]? Urls { get; private set; }
+    public string[]? Urls
+    {
+        get
+        {
+            var urls = WithNativeManager(manager => manager.GetServiceUrls());
+            return urls.Length == 0 ? null : urls;
+        }
+    }
 
     /// <summary>
     /// Create the <see cref="FoundryLocalManager"/> singleton instance.
@@ -246,7 +253,7 @@ public class FoundryLocalManager : IDisposable
         _config.Validate();
 
         // Ensure the native DLL resolver is registered before any P/Invoke calls.
-        DllLoader.Initialize();
+        DllLoader.Initialize(_logger);
 
         await Task.Run(() =>
         {
@@ -330,6 +337,8 @@ public class FoundryLocalManager : IDisposable
                     _nativeConfig.AddCatalogUrl(url, filter);
                 }
             }
+
+            _nativeConfig.SetUseSharedHost(_config.UseSharedHost);
 
             // Create the native manager
             _nativeManager = new NativeManager(_nativeConfig);
@@ -427,6 +436,10 @@ public class FoundryLocalManager : IDisposable
         }
 
         var nameArray = names?.ToArray();
+        if (nameArray is { Length: 0 })
+        {
+            nameArray = null;
+        }
 
         await Task.Run(() =>
         {
@@ -446,12 +459,30 @@ public class FoundryLocalManager : IDisposable
 
         var afterEps = DiscoverEps();
 
-        var registered = afterEps.Where(e => e.IsRegistered && !beforeEps.Any(b => b.Name == e.Name && b.IsRegistered))
-                                  .Select(e => e.Name).ToArray();
-        var failed = afterEps.Where(e => !e.IsRegistered && (nameArray == null || nameArray.Contains(e.Name)))
-                              .Select(e => e.Name)
-                              .Except(beforeEps.Where(b => !b.IsRegistered).Select(b => b.Name))
-                              .ToArray();
+        return BuildEpDownloadResult(beforeEps, afterEps, nameArray);
+    }
+
+    internal static EpDownloadResult BuildEpDownloadResult(
+        IReadOnlyCollection<EpInfo> beforeEps,
+        IReadOnlyCollection<EpInfo> afterEps,
+        IReadOnlyCollection<string>? requestedNames)
+    {
+        var beforeByName = beforeEps.ToDictionary(ep => ep.Name, StringComparer.Ordinal);
+        var afterByName = afterEps.ToDictionary(ep => ep.Name, StringComparer.Ordinal);
+        var requested = (requestedNames == null || requestedNames.Count == 0
+                             ? beforeEps.Select(ep => ep.Name)
+                             : requestedNames)
+                        .Distinct(StringComparer.Ordinal)
+                        .ToArray();
+
+        var registered = afterEps
+            .Where(ep => ep.IsRegistered &&
+                         (!beforeByName.TryGetValue(ep.Name, out var before) || !before.IsRegistered))
+            .Select(ep => ep.Name)
+            .ToArray();
+        var failed = requested
+            .Where(name => !afterByName.TryGetValue(name, out var ep) || !ep.IsRegistered)
+            .ToArray();
 
         return new EpDownloadResult
         {
@@ -469,7 +500,6 @@ public class FoundryLocalManager : IDisposable
         await Task.Run(() => WithNativeManager(manager => manager.StartService()),
                    ct ?? CancellationToken.None).ConfigureAwait(false);
 
-        Urls = WithNativeManager(manager => manager.GetServiceUrls());
     }
 
     private async Task StopWebServiceImplAsync(CancellationToken? ct = null)
@@ -484,7 +514,6 @@ public class FoundryLocalManager : IDisposable
 
         await Task.Run(() => _nativeManager.StopService(), ct ?? CancellationToken.None).ConfigureAwait(false);
 
-        Urls = null;
     }
 
     protected virtual void Dispose(bool disposing)
@@ -511,7 +540,6 @@ public class FoundryLocalManager : IDisposable
                 }
             }
 
-            Urls = null;
             _nativeLifetime.DisposeSessions();
             _nativeLifetime.WaitForLeases();
             _nativeManager?.Dispose();

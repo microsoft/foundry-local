@@ -51,7 +51,7 @@ struct BytesItem : Item {
   }
 
   void GetApiData(flBytesData& out) const {
-    out.version = FOUNDRY_LOCAL_API_VERSION;
+    out.version = FOUNDRY_LOCAL_DATA_VERSION;
     out.item_type = item_type;
     out.data = data;
     out.mutable_data = nullptr;

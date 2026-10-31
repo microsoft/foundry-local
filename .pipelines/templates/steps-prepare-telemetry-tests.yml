@@ -1,0 +1,20 @@
+# Instrument exactly the sources used by the static telemetry package, including Foundry's patches.
+steps:
+- task: PowerShell@2
+  displayName: 'Prepare matching telemetry shutdown regression sources'
+  inputs:
+    targetType: inline
+    pwsh: true
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $source = "$(Build.BinariesDirectory)/telemetry-source"
+      git -c core.autocrlf=false clone --depth 1 --branch v3.10.281.1 https://github.com/microsoft/cpp_client_telemetry.git $source
+      if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch telemetry regression sources' }
+      $commit = git -C $source rev-parse HEAD
+      if ($commit -ne '29d0083644f6450fec037f8afc1ad8d8a3b3c830') { throw "Unexpected telemetry source: $commit" }
+      foreach ($patch in @('apple-system-libraries.patch', 'sdk-version-lifetime.patch')) {
+        git -C $source apply --ignore-whitespace "$(Build.SourcesDirectory)/sdk_v2/cpp/ports/cpp-client-telemetry/$patch"
+        if ($LASTEXITCODE -ne 0) { throw "Cannot apply $patch" }
+      }
+      $defines = '$(cmakeFetchDefines)' + " `"TELEMETRY_SHUTDOWN_SDK_SOURCE_DIR=$source`""
+      Write-Host "##vso[task.setvariable variable=cmakeFetchDefines]$defines"

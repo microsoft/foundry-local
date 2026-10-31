@@ -35,7 +35,7 @@ fn extract_package_inner<R: Read + Seek>(
             .by_index(index)
             .map_err(|error| format!("read zip entry: {error}"))?;
         let entry = file.name().to_string();
-        if !entry.ends_with(&format!(".{extension}")) {
+        if !crate::build_support::is_native_payload(Path::new(&entry), extension) {
             continue;
         }
         let direct = entry
@@ -52,6 +52,7 @@ fn extract_package_inner<R: Read + Seek>(
             .map_err(|error| format!("create {}: {error}", destination.display()))?;
         io::copy(&mut file, &mut output)
             .map_err(|error| format!("write {}: {error}", destination.display()))?;
+        make_host_executable(&destination)?;
         extracted.push(destination);
     }
 
@@ -74,7 +75,23 @@ pub fn stage_files(files: &[PathBuf], out_dir: &Path) -> Result<(), String> {
             .ok_or_else(|| format!("native file has no file name: {}", file.display()))?;
         fs::copy(file, out_dir.join(file_name))
             .map_err(|error| format!("stage {}: {error}", file.display()))?;
+        make_host_executable(&out_dir.join(file_name))?;
     }
+    Ok(())
+}
+
+pub fn make_host_executable(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    if path
+        .file_name()
+        .is_some_and(|name| name == "foundry-local-host")
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+            .map_err(|error| format!("make shared host executable: {error}"))?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
     Ok(())
 }
 
