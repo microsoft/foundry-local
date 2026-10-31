@@ -38,8 +38,8 @@ parameters:
 
 variables:
 - group: FoundryLocal-ESRP-Signing
-- name: AGENT_RESTRICT_EOL_NODE_VERSIONS
-  value: 'false'
+- name: AGENT_USE_NODE24
+  value: 'true'
 # .NET 10.0.13 validates TMPDIR when creating Unix named mutexes.
 # Shared macOS agents may export an empty value (dotnet/android#13136).
 - name: TMPDIR
