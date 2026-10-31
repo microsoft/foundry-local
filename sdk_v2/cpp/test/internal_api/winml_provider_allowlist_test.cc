@@ -11,7 +11,9 @@ using namespace fl;
 
 TEST(WinMLProviderAllowlistTest, AcceptsKnownProvidersCaseInsensitively) {
   constexpr std::string_view trusted_providers[] = {
-      "MIGraphXExecutionProvider",
+      "AMDGPUExecutionProvider",
+      "amdgpuexecutionprovider",
+      "AmDgPuExecutionProvider",
       "NvTensorRtRtxExecutionProvider",
       "NvTensorRTRTXExecutionProvider",
       "OpenVINOExecutionProvider",
@@ -34,6 +36,10 @@ TEST(WinMLProviderAllowlistTest, RejectsUnapprovedProviders) {
       "CPUExecutionProvider",
       "DmlExecutionProvider",
       "FutureExecutionProvider",
+      "MIGraphXExecutionProvider",
+      "migraphxexecutionprovider",
+      "MiGrApHxExecutionProvider",
+      "AMDGPU",
   };
 
   for (const auto provider : unapproved_providers) {

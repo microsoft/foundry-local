@@ -250,6 +250,68 @@ TEST_F(LocalModelCatalogTest, RegistrationDerivesModalitiesForEveryTask) {
   EXPECT_EQ(coding_model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, std::string{}), "coding");
 }
 
+TEST_F(LocalModelCatalogTest, AmdGpuRuntimeSelectionSurvivesRegistrationAndRestoreAndGuardsLoad) {
+  for (const auto provider : {"AMDGPU", "amdgpu", "AMDGPUExecutionProvider"}) {
+    SCOPED_TRACE(provider);
+    auto metadata = MakeMetadata();
+    metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR, provider);
+    metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_DEVICE_TYPE_STR, "GPU");
+    const auto id = std::string("caller-") + provider + ":1";
+    auto* model = catalog_.RegisterModel(model_dir_.string(), id, metadata);
+    ASSERT_NE(model, nullptr);
+    EXPECT_EQ(model->Info().execution_provider, provider);
+    EXPECT_EQ(model->Info().device_type, DeviceType::kGPU);
+
+    auto restored = MakeCatalog();
+    auto* restored_model = restored.GetModelVariant(id);
+    ASSERT_NE(restored_model, nullptr);
+    EXPECT_EQ(restored_model->Info().execution_provider, provider);
+    for (auto* selected : {model, restored_model}) {
+      try {
+        selected->Load();
+        FAIL() << "Expected unavailable AMDGPU guard";
+      } catch (const Exception& ex) {
+        EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+        EXPECT_NE(std::string(ex.what()).find("AMDGPUExecutionProvider"), std::string::npos);
+      }
+    }
+  }
+}
+
+TEST_F(LocalModelCatalogTest, LegacyMigraphxRuntimeSelectionIsRejectedOnLoad) {
+  auto metadata = MakeMetadata();
+  metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR, "MIGraphXExecutionProvider");
+  auto* model = catalog_.RegisterModel(model_dir_.string(), "legacy-provider:1", metadata);
+  ASSERT_NE(model, nullptr);
+  try {
+    model->Load();
+    FAIL() << "Expected unsupported provider";
+  } catch (const Exception& ex) {
+    EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  }
+}
+
+TEST_F(LocalModelCatalogTest, AmdGpuArtifactProviderGuardsLoadWithoutCallerRuntimeMetadata) {
+  std::ofstream(model_dir_ / "genai_config.json")
+      << R"({"model":{"decoder":{"session_options":{"provider_options":[{"AMDGPUExecutionProvider":{}}]}}}})";
+  auto* model = catalog_.RegisterModel(model_dir_.string(), "artifact-amdgpu:1", MakeMetadata());
+  ASSERT_NE(model, nullptr);
+  EXPECT_TRUE(model->Info().execution_provider.empty());
+
+  auto restored = MakeCatalog();
+  auto* restored_model = restored.GetModelVariant("artifact-amdgpu:1");
+  ASSERT_NE(restored_model, nullptr);
+  for (auto* selected : {model, restored_model}) {
+    try {
+      selected->Load();
+      FAIL() << "Expected unavailable AMDGPU guard";
+    } catch (const Exception& ex) {
+      EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+      EXPECT_NE(std::string(ex.what()).find("AMDGPUExecutionProvider"), std::string::npos);
+    }
+  }
+}
+
 TEST_F(LocalModelCatalogTest, CodingModalityOverridesDoNotChangeInputCapabilities) {
   auto metadata = MakeMetadata("coding");
   metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, "text,image,audio");
