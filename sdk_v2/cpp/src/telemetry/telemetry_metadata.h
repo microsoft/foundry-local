@@ -29,6 +29,9 @@ struct TelemetryMetadata {
   /// Best-effort host application version from platform metadata. Falls back to `version`.
   std::string app_version;
 
+  /// Best-effort Windows host executable CompanyName, not a verified signer. Empty when unavailable.
+  std::string publisher;
+
   /// Configured app name (from Configuration::app_name).
   std::string app_name;
 

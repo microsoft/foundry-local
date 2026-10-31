@@ -33,11 +33,13 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <filesystem>
 #include <mutex>
 #include <optional>
+#include <semaphore>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -1872,14 +1874,16 @@ TEST_F(WebServiceTest, HalfClosedNonStreamingChatConnectionReceivesCompletion) {
   const auto unload_result = Get(std::string("/models/unload/") + kResponseStoreTestModelAlias);
   EXPECT_EQ(unload_result["status"], "unloaded") << unload_result.dump(2);
 }
+#endif
 
 TEST_F(WebServiceTest, ClosingNonStreamingChatConnectionCancelsInferenceAndReleasesSession) {
   const auto load_result = Get(std::string("/models/load/") + kResponseStoreTestModelAlias);
   ASSERT_EQ(load_result["status"], "loaded") << load_result.dump(2);
   const auto prior_action_count = telemetry_->Events().actions.size();
 
-  const int client = ::socket(AF_INET, SOCK_STREAM, 0);
-  ASSERT_GE(client, 0);
+  using Socket = decltype(::socket(AF_INET, SOCK_STREAM, 0));
+  const Socket client = ::socket(AF_INET, SOCK_STREAM, 0);
+  ASSERT_NE(client, static_cast<Socket>(-1));
   auto connection = std::make_shared<oatpp::network::tcp::Connection>(client);
   sockaddr_in address{};
   address.sin_family = AF_INET;
@@ -1898,11 +1902,13 @@ TEST_F(WebServiceTest, ClosingNonStreamingChatConnectionCancelsInferenceAndRelea
       "Content-Type: application/json\r\nContent-Length: " +
       std::to_string(payload.size()) + "\r\nConnection: close\r\n\r\n" + payload;
   linger abortive_close{1, 0};
-  ASSERT_EQ(::setsockopt(client, SOL_SOCKET, SO_LINGER, &abortive_close, sizeof(abortive_close)), 0);
+  ASSERT_EQ(::setsockopt(client, SOL_SOCKET, SO_LINGER, reinterpret_cast<const char*>(&abortive_close),
+                         sizeof(abortive_close)),
+            0);
   // Reset after HTTP parsing but before inference can finish, independently of the tiny model's generation speed.
   session_manager_->ResetClientOnNextRegistration(std::move(connection));
   ScopeGuard clear_disconnect([&]() noexcept { session_manager_->ResetClientOnNextRegistration(nullptr); });
-  ASSERT_EQ(::send(client, message.data(), message.size(), 0), static_cast<ssize_t>(message.size()));
+  ASSERT_EQ(::send(client, message.data(), static_cast<int>(message.size()), 0), static_cast<int>(message.size()));
 
   bool canceled = false;
   const auto telemetry_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -1931,7 +1937,6 @@ TEST_F(WebServiceTest, ClosingNonStreamingChatConnectionCancelsInferenceAndRelea
   const auto unload_result = Get(std::string("/models/unload/") + kResponseStoreTestModelAlias);
   EXPECT_EQ(unload_result["status"], "unloaded") << unload_result.dump(2);
 }
-#endif
 
 TEST_F(WebServiceTest, ClosingResponsesStreamCancelsInferenceAndPreservesConversation) {
   const auto load_result = Get(std::string("/models/load/") + kResponseStoreTestModelAlias);

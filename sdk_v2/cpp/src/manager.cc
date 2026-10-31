@@ -212,6 +212,16 @@ struct Manager::InstanceOwner {
 
 Manager::Manager(const Configuration& config) : config_(config) {
   config_.Validate();
+
+#ifdef _WIN32
+  // Temporary workaround until our ORT core and EP bundles include microsoft/onnxruntime#33291.
+  // Suppress uploader initialization before any ORT/GenAI calls, including in subsequently loaded EP libraries.
+  if (!::SetEnvironmentVariableW(L"ORT_DISABLE_TELEMETRY", L"1")) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+             fmt::format("Failed to disable ORT telemetry (Windows error {}).", ::GetLastError()));
+  }
+#endif
+
   const auto user_agent = config_.additional_options.find("UserAgent");
   SetDefaultUserAgent(user_agent == config_.additional_options.end() ? std::string_view{}
                                                                      : std::string_view(user_agent->second));

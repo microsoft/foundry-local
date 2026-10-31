@@ -539,6 +539,7 @@ void OneDsTelemetry::RecordProcessInfo(const Configuration& configuration) {
   }
   auto ev = MakeEvent("ProcessInfo");
   ev.SetProperty("appVersion", info.app_version);
+  ev.SetProperty("publisher", info.publisher);
   ev.SetProperty("osName", info.os_name);
   ev.SetProperty("osVersion", info.os_version);
   ev.SetProperty("architecture", info.cpu_arch);
