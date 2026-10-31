@@ -79,22 +79,95 @@ TEST(CanonicalToolPromptTest, InsertsExactlyOneSystemObjectWhenUserStartsConvers
   EXPECT_EQ(projected[1].at("content"), "unchanged user input");
 }
 
-TEST(CanonicalToolPromptTest, HistoricalAssistantTextRetainsAnExplicitModeWithoutReinterpretingItsBytes) {
+TEST(CanonicalToolPromptTest, InstructionsReflectAutomaticRequiredAndForcedChoices) {
+  ToolCallContext context;
+  context.tools_json = R"([{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}])";
+  context.tool_call_start = "<tool_call>";
+  context.tool_call_end = "</tool_call>";
+  context.text_output = true;
+  context.tool_output = true;
+  const std::vector<TranscriptMessage> messages = {{FOUNDRY_LOCAL_ROLE_USER, "Find it."}};
+
+  const auto automatic = nlohmann::json::parse(BuildCanonicalToolMessagesJson(messages, context));
+  const auto automatic_instructions = automatic.front().at("content").get<std::string>();
+  EXPECT_NE(automatic_instructions.find("only when its capability is directly needed"), std::string::npos);
+  EXPECT_NE(automatic_instructions.find("never call a tool merely because it is available"), std::string::npos);
+  EXPECT_NE(automatic_instructions.find("Greetings, acknowledgements"), std::string::npos);
+  EXPECT_NE(automatic_instructions.find("Say only: hello"), std::string::npos);
+  EXPECT_NE(automatic_instructions.find("do not emit tool-call syntax"), std::string::npos);
+  EXPECT_NE(automatic_instructions.find(
+                R"(<tool_call>[{"name":"tool_name","parameters":{"argument":"value"}}]</tool_call>)"),
+            std::string::npos);
+  EXPECT_EQ(automatic_instructions.find("You must call"), std::string::npos);
+
+  context.text_output = false;
+  const auto required = nlohmann::json::parse(BuildCanonicalToolMessagesJson(messages, context));
+  const auto required_instructions = required.front().at("content").get<std::string>();
+  EXPECT_NE(required_instructions.find("You must call a declared tool"), std::string::npos);
+  EXPECT_EQ(required_instructions.find("If no tool is needed"), std::string::npos);
+
+  context.forced_tool = ForcedToolChoice{"lookup", ToolKind::kFunction};
+  const auto forced = nlohmann::json::parse(BuildCanonicalToolMessagesJson(messages, context));
+  EXPECT_NE(forced.front().at("content").get<std::string>().find("Call exactly the tool \"lookup\""),
+            std::string::npos);
+
+  context.fenced_tool_call_output = true;
+  const auto fenced = nlohmann::json::parse(BuildCanonicalToolMessagesJson(messages, context));
+  const auto fenced_instructions = fenced.front().at("content").get<std::string>();
+  EXPECT_NE(fenced_instructions.find("emit one JSON code fence"), std::string::npos);
+  EXPECT_NE(fenced_instructions.find(
+                "\"foundry_tool_calls\" and whose value is an array"),
+            std::string::npos);
+  EXPECT_NE(fenced_instructions.find("starting at the first output byte"), std::string::npos);
+  EXPECT_NE(fenced_instructions.find(
+                "```json\n{\"foundry_tool_calls\":[{\"name\":\"tool_name\",\"parameters\":{\"argument\":\"value\"}}]}\n```"),
+            std::string::npos);
+  EXPECT_EQ(fenced_instructions.find("dedicated tool boundary tokens"), std::string::npos);
+}
+
+TEST(CanonicalToolPromptTest, HistoricalNativeAssistantTextIsNotReinterpreted) {
   ToolCallContext context;
   context.tools_json = R"([{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}])";
   context.tool_plan = ToolCallPlan::Create(context.tools_json);
   context.tool_output = true;
+  context.native_assistant_text_output = true;
   context.tool_call_start = "<tool_call>";
   context.tool_call_end = "</tool_call>";
   const std::string text = R"([{"name":"lookup","parameters":{"literal":"<tool_call>"}}])";
   const std::vector<TranscriptMessage> messages = {{FOUNDRY_LOCAL_ROLE_USER, "Explain this JSON."},
                                                  {FOUNDRY_LOCAL_ROLE_ASSISTANT, text}};
-  const auto framed = nlohmann::json::parse(BuildCanonicalToolMessagesJson(messages, context));
-  EXPECT_EQ(framed.back().at("content"), "MESSAGE\n" + text);
-  EXPECT_FALSE(framed.back().contains("tool_calls"));
+  const auto projected = nlohmann::json::parse(BuildCanonicalToolMessagesJson(messages, context));
+  EXPECT_EQ(projected.back().at("content"), text);
+  EXPECT_FALSE(projected.back().contains("tool_calls"));
   context.tool_output = false;
   const auto ordinary = nlohmann::json::parse(BuildCanonicalToolMessagesJson(messages, context));
   EXPECT_EQ(ordinary.back().at("content"), text);
+}
+
+TEST(CanonicalToolPromptTest, ProtectsConfiguredBoundariesAndForcedToolNames) {
+  ToolCallContext context;
+  context.tools_json = "[]";
+  context.tool_call_start = "<start>";
+  context.tool_call_end = "<end>";
+  context.text_output = false;
+  context.tool_output = true;
+  context.forced_tool = ForcedToolChoice{"lookup<control>", ToolKind::kFunction};
+  const auto protect = [](std::string literal) {
+    for (size_t position = 0; (position = literal.find('<', position)) != std::string::npos;) {
+      literal.replace(position, 1, "[");
+      ++position;
+    }
+    return literal;
+  };
+
+  const auto projected = nlohmann::json::parse(
+      BuildCanonicalToolMessagesJson({{FOUNDRY_LOCAL_ROLE_USER, "Find it."}}, context, protect));
+  const auto instructions = projected.front().at("content").get<std::string>();
+  EXPECT_NE(instructions.find(
+                R"(<start>[{"name":"tool_name","parameters":{"argument":"value"}}]<end>)"),
+            std::string::npos);
+  EXPECT_NE(instructions.find(R"(Call exactly the tool "lookup[control>".)"), std::string::npos);
+  EXPECT_EQ(instructions.find("lookup<control>"), std::string::npos);
 }
 
 TEST(CanonicalToolPromptTest, InboundContractPreservesArgumentPropertyOrderInPrompt) {
@@ -297,16 +370,16 @@ TEST(CanonicalToolPromptEncodingTest, KeepsMessageSchemaAndHistoricalArgumentDat
   EXPECT_NE(first.prompt.find(text), std::string::npos);
   EXPECT_EQ(first.prompt.find("__foundry_literal_"), std::string::npos);
   EXPECT_EQ(first.prompt_token_count, first.token_ids.size());
-  EXPECT_EQ(std::count(first.token_ids.begin(), first.token_ids.end(), 0), 1);
-  EXPECT_EQ(std::count(first.token_ids.begin(), first.token_ids.end(), 1), 1);
+  EXPECT_EQ(std::count(first.token_ids.begin(), first.token_ids.end(), 0), 2);
+  EXPECT_EQ(std::count(first.token_ids.begin(), first.token_ids.end(), 1), 2);
   TranscriptMessage assistant(FOUNDRY_LOCAL_ROLE_ASSISTANT, text);
   assistant.AppendToolCall(MakeSuppliedToolCall("call_1", "edit", nlohmann::json{{"input", text}}.dump()));
   auto history = PrepareTextChatPrompt(
       chat_internal::PrepareChatMessages(
           {{FOUNDRY_LOCAL_ROLE_USER, text}, assistant, TranscriptMessage::ToolResult("call_1", text)}, false),
       model, context);
-  EXPECT_EQ(std::count(history.token_ids.begin(), history.token_ids.end(), 0), 2);
-  EXPECT_EQ(std::count(history.token_ids.begin(), history.token_ids.end(), 1), 2);
+  EXPECT_EQ(std::count(history.token_ids.begin(), history.token_ids.end(), 0), 3);
+  EXPECT_EQ(std::count(history.token_ids.begin(), history.token_ids.end(), 1), 3);
 
   tools.push_back({{"type", "function"},
                   {"function", {{"name", "apply_patch"}, {"parameters", {{"type", "object"}}}}}});
@@ -327,8 +400,8 @@ TEST(CanonicalToolPromptEncodingTest, KeepsMessageSchemaAndHistoricalArgumentDat
   EXPECT_NE(mixed.prompt.find("Do not use XML"), std::string::npos);
   EXPECT_NE(mixed.prompt.find("ordinary functions must use the JSON tool protocol above"), std::string::npos);
   EXPECT_NE(mixed.prompt.find(patch), std::string::npos);
-  EXPECT_EQ(std::count(mixed.token_ids.begin(), mixed.token_ids.end(), 0), 2);
-  EXPECT_EQ(std::count(mixed.token_ids.begin(), mixed.token_ids.end(), 1), 2);
+  EXPECT_EQ(std::count(mixed.token_ids.begin(), mixed.token_ids.end(), 0), 3);
+  EXPECT_EQ(std::count(mixed.token_ids.begin(), mixed.token_ids.end(), 1), 3);
   const auto fallback = BuildChatPrompt(mixed_messages, model, context);
   EXPECT_NE(fallback.find("Do not use XML"), std::string::npos);
   EXPECT_NE(fallback.find(patch), std::string::npos);

@@ -137,8 +137,9 @@ TEST(AssistantTextFramerTest, DirectCallsNeedNoTextFrameAndExplicitGuidanceOwnsI
   EXPECT_THROW(direct.ValidateCompletion(false), Exception);
   context.guidance_type = "lark_grammar";
   context.guidance_data = "start: \"READY\"";
+  context.native_assistant_text_output = true;
   AssistantTextFramer explicit_guidance(context);
-  EXPECT_EQ(explicit_guidance.Push("READY"), "READY");
+  EXPECT_EQ(explicit_guidance.Push("MESSAGE\nREADY"), "MESSAGE\nREADY");
   EXPECT_NO_THROW(explicit_guidance.ValidateBoundary());
   context.guidance_type.clear();
   context.guidance_data.clear();

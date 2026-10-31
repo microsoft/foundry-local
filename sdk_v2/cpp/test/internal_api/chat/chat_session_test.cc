@@ -414,6 +414,75 @@ TEST(ChatSessionDecisionTest, HostOutputLimitTruncatesOnlyAnUnfinishedBackendAtT
                                           /*backend_finished=*/true));
 }
 
+TEST(ChatSessionDecisionTest, FencedCompatibilityBypassesModelTokenOwnershipAndSuppressesRawBytes) {
+  ToolCallContext context;
+  context.tools_json =
+      R"([{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}])";
+  context.tool_plan = ToolCallPlan::Create(context.tools_json);
+  context.tool_output = true;
+  context.fenced_tool_call_output = true;
+  context.tool_call_start = "<tool_call>";
+  context.tool_call_end = "</tool_call>";
+  context.tool_call_start_token_id = 101;
+  context.tool_call_end_token_id = 102;
+
+  ToolCallStreamAccumulator accumulator(
+      context.GeneratedToolCallStart(), context.GeneratedToolCallEnd(), context.tools_json, "",
+      chat_session_internal::CreateToolCallPayloadParser(context), true, true);
+  ASSERT_TRUE(accumulator.HasPayloadParser());
+  std::vector<ToolCallStreamAccumulator::Event> events;
+  for (const auto& segment : std::vector<ReasoningStreamSplitter::Segment>{
+           {"```json\n", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT, 7},
+           {R"({"foundry_tool_calls":[{"name":"lookup","parameters":{"city":"Paris"}}]})",
+            FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT, 8},
+           {"\n```", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT, 9},
+       }) {
+    auto output = chat_session_internal::PushToolOutputSegment(
+        segment, context, nullptr, accumulator);
+    events.insert(events.end(),
+                  std::make_move_iterator(output.events.begin()),
+                  std::make_move_iterator(output.events.end()));
+  }
+  auto final = chat_session_internal::FlushToolOutput(nullptr, accumulator);
+  events.insert(events.end(),
+                std::make_move_iterator(final.events.begin()),
+                std::make_move_iterator(final.events.end()));
+
+  ASSERT_EQ(events.size(), 1u);
+  const auto& call = std::get<ParsedToolCall>(events.front());
+  EXPECT_EQ(call.name, "lookup");
+  EXPECT_EQ(nlohmann::json::parse(call.arguments), nlohmann::json({{"city", "Paris"}}));
+}
+
+TEST(ChatSessionDecisionTest, OrdinaryJsonCodeFenceRemainsVisibleText) {
+  ToolCallContext context;
+  context.tools_json =
+      R"([{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}])";
+  context.tool_plan = ToolCallPlan::Create(context.tools_json);
+  context.tool_output = true;
+  context.fenced_tool_call_output = true;
+  context.tool_call_start = "<tool_call>";
+  context.tool_call_end = "</tool_call>";
+
+  ToolCallStreamAccumulator accumulator(
+      context.GeneratedToolCallStart(), context.GeneratedToolCallEnd(), context.tools_json, "",
+      chat_session_internal::CreateToolCallPayloadParser(context), true, true);
+  const std::string example =
+      "For example:\n```json\n[{\"name\":\"lookup\",\"parameters\":{}}]\n```";
+  auto output = accumulator.Push(example);
+  auto final = accumulator.Flush();
+  output.events.insert(output.events.end(),
+                       std::make_move_iterator(final.events.begin()),
+                       std::make_move_iterator(final.events.end()));
+
+  std::string visible;
+  for (const auto& event : output.events) {
+    ASSERT_TRUE(std::holds_alternative<std::string>(event));
+    visible += std::get<std::string>(event);
+  }
+  EXPECT_EQ(visible, example);
+}
+
 TEST(ChatSessionDecisionTest, JsonToolContextUsesOnlyTheCapturedSessionSnapshot) {
   ToolRegistry registry;
   const auto captured = registry.Definitions();
@@ -2201,47 +2270,52 @@ TEST_F(QwenNativeProductionIntegrationTest,
 }
 
 TEST_F(QwenNativeProductionIntegrationTest,
-       AutomaticUnframedTextAndIncompleteHeadersFailWithoutPublicationOrToolReinterpretationAcrossBackends) {
-  const std::vector<std::string> invalid_outputs{
-      "",
-      "ordinary answer",
-      R"([{"name":"lookup","parameters":{"city":"Paris"}}])",
-      "MESS",
-      "MESSAGE",
-      "MESSAGE\n",
-      "MESSAGE\r\nanswer",
-      "MESS" + std::string(kCanonicalLookupCall),
-      "MESSAGE\n" + std::string(kCanonicalLookupCall),
+       AutomaticNativeTextAcceptsOptionalLegacyHeaderWithoutReinterpretingUnmarkedJsonAcrossBackends) {
+  struct Case {
+    std::string wire;
+    std::string visible;
+    size_t call_count;
   };
-  const auto expect_framing_failure = [](auto&& operation) {
-    try {
-      operation();
-      FAIL() << "automatic framing violation must fail explicitly";
-    } catch (const fl::Exception& error) {
-      EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_INTERNAL);
-    }
+  const std::vector<Case> cases{
+      {"", "", 0},
+      {"ordinary answer", "ordinary answer", 0},
+      {R"([{"name":"lookup","parameters":{"city":"Paris"}}])",
+       R"([{"name":"lookup","parameters":{"city":"Paris"}}])", 0},
+      {"MESS", "MESS", 0},
+      {"MESSAGE", "MESSAGE", 0},
+      {"MESSAGE\n", "", 0},
+      {"MESSAGE\r\nanswer", "MESSAGE\r\nanswer", 0},
+      {"MESS" + std::string(kCanonicalLookupCall), "MESS", 1},
+      {"MESSAGE\n" + std::string(kCanonicalLookupCall), "", 1},
   };
   for (auto* native_model : {engine_model_, model_}) {
     SCOPED_TRACE(native_model == model_ ? "classic Generator" : "Engine");
-    for (const auto& wire : invalid_outputs) {
-      SCOPED_TRACE(wire);
+    for (const auto& test_case : cases) {
+      SCOPED_TRACE(test_case.wire);
       for (const bool json_request : {false, true}) {
         SCOPED_TRACE(json_request ? "chat completions" : "stateful");
         auto counters = std::make_shared<GeneratorCounters>();
         auto catalog_model = MakeCatalogModel();
         ChatSession session(catalog_model, *native_model, *logger_, telemetry_, {},
-                            OutputFactory(wire, counters, BackendTerminationCause::kNaturalEnd, /*chunk_size=*/1));
+                            OutputFactory(test_case.wire, counters, BackendTerminationCause::kNaturalEnd,
+                                          /*chunk_size=*/1));
         if (json_request) {
           std::vector<nlohmann::json> chunks;
-          expect_framing_failure([&] { RunChatCompletions(session, "auto", &chunks); });
+          const auto completion = RunChatCompletions(session, "auto", &chunks);
+          std::string streamed;
+          size_t streamed_calls = 0;
           for (const auto& chunk : chunks) {
             const auto& choice = chunk.at("choices").at(0);
             const auto& delta = choice.at("delta");
-            EXPECT_EQ(delta.value("content", ""), "");
-            EXPECT_EQ(delta.value("reasoning_content", ""), "");
-            EXPECT_FALSE(delta.contains("tool_calls"));
-            EXPECT_TRUE(choice.at("finish_reason").is_null());
+            streamed += delta.value("content", "");
+            streamed_calls += delta.value("tool_calls", nlohmann::json::array()).size();
           }
+          EXPECT_EQ(streamed, test_case.visible);
+          EXPECT_EQ(streamed_calls, test_case.call_count);
+          const auto& message = completion.at("choices").at(0).at("message");
+          EXPECT_EQ(message.value("content", ""), test_case.visible);
+          EXPECT_EQ(message.value("tool_calls", nlohmann::json::array()).size(),
+                    test_case.call_count);
         } else {
           AddFunctionTools(session);
           size_t streamed_items = 0;
@@ -2254,14 +2328,14 @@ TEST_F(QwenNativeProductionIntegrationTest,
           });
           auto request = MakeStatefulRequest("route this");
           Response response;
-          expect_framing_failure([&] { session.ProcessRequest(request, response); });
-          EXPECT_EQ(streamed_items, 0u);
-          EXPECT_TRUE(response.items.empty());
-          EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
+          session.ProcessRequest(request, response);
+          EXPECT_EQ(streamed_items, (test_case.visible.empty() ? 0u : 1u) + test_case.call_count);
+          EXPECT_EQ(session.Transcript().Messages().back().VisibleText(), test_case.visible);
+          EXPECT_EQ(Calls(response).size(), test_case.call_count);
         }
         EXPECT_EQ(counters->created, 1);
-        EXPECT_EQ(session.TurnCount(), 0u);
-        EXPECT_TRUE(session.Transcript().Empty());
+        EXPECT_EQ(session.TurnCount(), json_request ? 0u : 1u);
+        EXPECT_EQ(session.Transcript().Empty(), json_request);
       }
     }
   }
@@ -2946,6 +3020,51 @@ TEST_F(QwenNativeProductionIntegrationTest,
 }
 
 TEST_F(QwenNativeProductionIntegrationTest,
+       CanonicalToolOnlyTextNeverPublishesAndTruncationFailsClosedAcrossBackends) {
+  for (auto* native_model : {engine_model_, model_}) {
+    SCOPED_TRACE(native_model == model_ ? "classic Generator" : "Engine");
+    for (const auto termination : {BackendTerminationCause::kNaturalEnd,
+                                   BackendTerminationCause::kOutputTokenLimit}) {
+      SCOPED_TRACE(static_cast<int>(termination));
+      for (const bool forced : {false, true}) {
+        SCOPED_TRACE(forced ? "forced" : "required");
+        auto counters = std::make_shared<GeneratorCounters>();
+        auto catalog_model = MakeCatalogModel();
+        ChatSession session(
+            catalog_model, *native_model, *logger_, telemetry_, {},
+            OutputFactory("ordinary answer", counters, termination, /*chunk_size=*/1));
+        AddFunctionTools(session);
+        size_t streamed_items = 0;
+        session.SetStreamingCallback([&](flStreamingCallbackData event, void*) {
+          auto* queue = reinterpret_cast<fl::ItemQueue*>(event.item_queue);
+          while (queue->TryPop()) {
+            ++streamed_items;
+          }
+          return 0;
+        });
+        auto request = MakeStatefulRequest("route this");
+        if (forced) {
+          request.options.Remove(FOUNDRY_LOCAL_PARAM_TOOL_CHOICE);
+          request.forced_tool_choice = ForcedToolChoice{"lookup", ToolKind::kFunction};
+        } else {
+          request.options[FOUNDRY_LOCAL_PARAM_TOOL_CHOICE] = "required";
+        }
+
+        Response response;
+        EXPECT_THROW(session.ProcessRequest(request, response), fl::Exception);
+        EXPECT_EQ(streamed_items, 0u);
+        EXPECT_TRUE(response.items.empty());
+        EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
+        EXPECT_EQ(session.TurnCount(), 0u);
+        EXPECT_TRUE(session.Transcript().Empty());
+        EXPECT_EQ(counters->created,
+                  termination == BackendTerminationCause::kNaturalEnd ? 2 : 1);
+      }
+    }
+  }
+}
+
+TEST_F(QwenNativeProductionIntegrationTest,
        CanonicalRequiredExplicitGuidanceWithoutCallFailsWithoutRetryAcrossBackends) {
   for (auto* native_model : {engine_model_, model_}) {
     SCOPED_TRACE(native_model == model_ ? "classic Generator" : "Engine");
@@ -3121,9 +3240,10 @@ TEST_F(QwenNativeProductionIntegrationTest,
   EXPECT_TRUE(contexts[0].text_output);
   EXPECT_TRUE(contexts[0].tool_output);
   ASSERT_NE(contexts[0].tool_plan, nullptr);
-  EXPECT_FALSE(contexts[0].tool_body_grammar.has_value());
+  EXPECT_TRUE(contexts[0].tool_body_grammar.has_value());
   EXPECT_FALSE(contexts[1].text_output);
   EXPECT_TRUE(contexts[1].tool_output);
+  EXPECT_FALSE(contexts[1].tool_body_grammar.has_value());
   EXPECT_EQ(contexts[0].tools_json, contexts[1].tools_json);
 
   const auto calls = Calls(response);
@@ -5899,6 +6019,68 @@ TEST_F(ChatSessionTest, ChatCompletionsForcedRawCallPreservesJsonShapedPayloadAn
   EXPECT_EQ(completion.at("choices").at(0).at("finish_reason"), "tool_calls");
 }
 
+TEST_F(QwenNativeProductionIntegrationTest, ForcedRawEnvelopeRejectsOrdinaryTextAsAMissingCall) {
+  int generator_count = 0;
+  TextChatGeneratorFactory factory =
+      [&](const auto&, const auto&, auto&, const auto&, bool) {
+        ++generator_count;
+        return std::make_unique<FixedOutputGenerator>(
+            "ordinary text", BackendTerminationCause::kNaturalEnd);
+      };
+  auto catalog_model = MakeCatalogModel();
+  ChatSession session(catalog_model, *model_, *logger_, telemetry_, {},
+                      std::move(factory));
+
+  const auto descriptor =
+      nlohmann::json{{"type", "raw_envelope"},
+                     {"tool_name", "edit"},
+                     {"start_marker", "BEGIN"},
+                     {"end_marker", "END"}}
+          .dump();
+  const auto request_json =
+      nlohmann::json{
+          {"model", model_->ModelId()},
+          {"messages", nlohmann::json::array({
+                           {{"role", "user"}, {"content", "edit the file"}},
+                       })},
+          {"tools", nlohmann::json::array({
+                        {{"type", "custom"},
+                         {"custom", {{"name", "edit"}, {"format", {{"type", "text"}}}}}},
+                    })},
+          {"tool_choice", {{"type", "custom"}, {"custom", {{"name", "edit"}}}}},
+          {"metadata", {{tools::kRawEnvelopeMetadataKey, descriptor}}}};
+  Request request;
+  request.AddOwnedItem(std::make_unique<TextItem>(
+      request_json.dump(), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+
+  Response response;
+  EXPECT_THROW(session.ProcessRequest(request, response), fl::Exception);
+  EXPECT_GE(generator_count, 1);
+  EXPECT_TRUE(response.items.empty());
+}
+
+TEST_F(QwenNativeProductionIntegrationTest, OptionalPrefixStopPreventsFollowingToolPublication) {
+  TextChatGeneratorFactory factory =
+      [](const auto&, const auto&, auto&, const ToolCallContext& context, bool) {
+        return std::make_unique<FixedOutputGenerator>(
+            "MESS" + context.tool_call_start +
+                R"([{"name":"lookup","parameters":{"city":"Paris"}}])" +
+                context.tool_call_end,
+            BackendTerminationCause::kNaturalEnd);
+      };
+  auto catalog_model = MakeCatalogModel();
+  ChatSession session(catalog_model, *model_, *logger_, telemetry_, {},
+                      std::move(factory));
+  AddFunctionTools(session);
+  auto request = MakeStatefulRequest("look up Paris");
+  StoreStopStringsOption({"MESS"}, request.options);
+
+  Response response;
+  ASSERT_NO_THROW(session.ProcessRequest(request, response));
+  EXPECT_TRUE(Calls(response).empty());
+  EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
+}
+
 TEST_F(QwenNativeProductionIntegrationTest, MediaWithDeclaredToolsIsRejectedBeforeSchemaAdmission) {
   for (const bool image : {false, true}) {
     for (const auto& choice : {"auto", "none"}) {
@@ -6796,61 +6978,40 @@ TEST_F(ChatSessionTest, RemovingToolDefinitionsRebuildsWithTheCurrentToolSet) {
       << "removing tools must rebuild with the same prompt a fresh session sees";
 }
 
-TEST_F(ChatSessionTest, AutoModeGeneratedToolCallInvalidatesTheCachedGenerator) {
-  const ToolDefinition tool{"lookup", "Look up a value",
-                            R"({"type":"object","properties":{"key":{"type":"string"}},"required":["key"]})"};
-  const std::string first_user = "Call lookup with key alpha. Do not answer without calling the tool.";
-  const std::string second_user = "Reply with the single word done without calling a tool.";
+TEST_F(QwenNativeProductionIntegrationTest, AutoModeGeneratedToolCallInvalidatesTheCachedGenerator) {
+  auto counters = std::make_shared<GeneratorCounters>();
+  size_t creation = 0;
+  TextChatGeneratorFactory factory =
+      [&, counters](const auto&, const auto&, auto& model, const auto&, bool) {
+        auto generator = std::make_unique<FixedOutputGenerator>(
+            creation++ == 0 ? std::string(kCanonicalLookupCall) : "done",
+            BackendTerminationCause::kNaturalEnd,
+            /*prompt_opens_reasoning=*/false, counters);
+        generator->EnableAuthoritativeControls(
+            model.GetGenAIConfig().GetChatBackendKind() == ChatBackendKind::kEngine
+                ? 0
+                : kClassicControlOffset);
+        return generator;
+      };
+  auto catalog_model = MakeCatalogModel();
+  ChatSession session(catalog_model, *model_, *logger_, telemetry_, {},
+                      std::move(factory));
+  AddFunctionTools(session);
 
-  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
-  session.AddToolDefinition(tool);
-
-  Request first_request;
-  first_request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, first_user));
-  first_request.options.Add(FOUNDRY_LOCAL_PARAM_TOOL_CHOICE, "auto");
-  first_request.options.Add("max_output_tokens", "64");
-  first_request.options.Add("temperature", "0");
-
+  auto first_request = MakeStatefulRequest("Look up Paris.");
   Response first_response;
   session.ProcessRequest(first_request, first_response);
+  ASSERT_EQ(Calls(first_response).size(), 1u);
 
-  const auto generated_call = std::find_if(first_response.items.begin(), first_response.items.end(),
-                                           [](const auto& item) {
-                                             return item->type == FOUNDRY_LOCAL_ITEM_TOOL_CALL;
-                                           });
-  ASSERT_NE(generated_call, first_response.items.end()) << "the deterministic prompt must produce a tool call";
+  auto second_request = MakeStatefulRequest("Reply with the single word done.");
+  Response second_response;
+  session.ProcessRequest(second_request, second_response);
 
-  Request second_request;
-  second_request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, second_user));
-  second_request.options.Add(FOUNDRY_LOCAL_PARAM_TOOL_CHOICE, "auto");
-  second_request.options.Add("max_output_tokens", "8");
-  second_request.options.Add("temperature", "0");
-
-  Response warm_response;
-  session.ProcessRequest(second_request, warm_response);
-
-  ChatSession rebuilt_session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
-  rebuilt_session.AddToolDefinition(tool);
-
-  Request rebuilt_request;
-  rebuilt_request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, first_user));
-  for (const auto& item : first_response.items) {
-    if (item->type == FOUNDRY_LOCAL_ITEM_MESSAGE) {
-      rebuilt_request.AddOwnedItem(std::make_unique<MessageItem>(static_cast<const MessageItem&>(*item)));
-    } else if (item->type == FOUNDRY_LOCAL_ITEM_TOOL_CALL) {
-      rebuilt_request.AddOwnedItem(std::make_unique<ToolCallItem>(static_cast<const ToolCallItem&>(*item)));
-    }
-  }
-  rebuilt_request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, second_user));
-  rebuilt_request.options.Add(FOUNDRY_LOCAL_PARAM_TOOL_CHOICE, "auto");
-  rebuilt_request.options.Add("max_output_tokens", "8");
-  rebuilt_request.options.Add("temperature", "0");
-
-  Response rebuilt_response;
-  rebuilt_session.ProcessRequest(rebuilt_request, rebuilt_response);
-
-  EXPECT_EQ(warm_response.usage.prompt_tokens, rebuilt_response.usage.prompt_tokens)
-      << "a generated auto-mode call must force the next turn to rebuild from structured history";
+  EXPECT_EQ(GetAssistantText(second_response), "done");
+  EXPECT_TRUE(Calls(second_response).empty());
+  EXPECT_EQ(counters->created, 2);
+  EXPECT_EQ(counters->appended, 0)
+      << "a generated auto-mode call must invalidate rather than append to the cached generator";
 }
 
 // ===========================================================================

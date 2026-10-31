@@ -520,7 +520,7 @@ TEST_F(DynamicEngineChatTest, CanonicalAutomaticWholeTurnCannotTreatAnOpeningIdA
   engine.Close(conversation);
 }
 
-TEST_F(DynamicEngineChatTest, AutomaticWholeTurnRequiresAnExplicitTextOrToolModeBeforeAnyBody) {
+TEST_F(DynamicEngineChatTest, AutomaticUnguidedTurnCanBeginWithNativeAssistantText) {
   const auto prompt = EncodeUserPrompt("Choose a response.", ModelInstance());
   const auto baseline = ReferenceTokens(prompt, 1);
   ASSERT_EQ(baseline.size(), 1u);
@@ -533,9 +533,6 @@ TEST_F(DynamicEngineChatTest, AutomaticWholeTurnRequiresAnExplicitTextOrToolMode
   context.tool_call_start_token_id = EncodeLiteral("~", ModelInstance()).front();
   context.tool_call_end_token_id = EncodeLiteral("!", ModelInstance()).front();
   context.eos_token_ids = ModelInstance().GetPreprocessor().GetEosTokenIds();
-  const auto message_prefix = EncodeLiteral("M", ModelInstance());
-  ASSERT_EQ(message_prefix.size(), 1u);
-  ASSERT_NE(baseline.front(), message_prefix.front());
   ASSERT_NE(baseline.front(), *context.tool_call_start_token_id);
   SearchOptions options;
   options.max_output_tokens = 1;
@@ -545,7 +542,7 @@ TEST_F(DynamicEngineChatTest, AutomaticWholeTurnRequiresAnExplicitTextOrToolMode
   engine.BeginTurn(conversation, prompt, options, context, false);
   const auto output = FinishConversation(engine, conversation);
   ASSERT_FALSE(output.empty());
-  EXPECT_TRUE(output.front() == message_prefix.front() || output.front() == *context.tool_call_start_token_id);
+  EXPECT_EQ(output.front(), baseline.front());
   engine.Close(conversation);
 }
 

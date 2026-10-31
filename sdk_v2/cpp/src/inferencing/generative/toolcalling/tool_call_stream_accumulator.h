@@ -53,13 +53,15 @@ class ToolCallStreamAccumulator {
                             std::string tools_json = {},
                             std::string reasoning_end_marker = {},
                             ToolCallPayloadParser payload_parser = {},
-                            bool canonical_json_payload = false)
+                            bool canonical_json_payload = false,
+                            bool require_start_marker_at_stream_start = false)
       : start_marker_(std::move(start_marker)),
         end_marker_(std::move(end_marker)),
         tools_json_(std::move(tools_json)),
         reasoning_end_marker_(std::move(reasoning_end_marker)),
         payload_parser_(std::move(payload_parser)),
-        canonical_json_payload_(canonical_json_payload) {}
+        canonical_json_payload_(canonical_json_payload),
+        require_start_marker_at_stream_start_(require_start_marker_at_stream_start) {}
 
   /// Feed a chunk into the accumulator. Returns ordered visible-text and completed-tool-call events.
   Output Push(const std::string& chunk) {
@@ -132,7 +134,19 @@ class ToolCallStreamAccumulator {
     }
 
     if (canonical_json_payload_ && inside_tool_call_) {
-      RejectMalformedSelectedPayload(out, "Tool-call output was interrupted before the batch could be committed");
+      const auto interrupted = payload_parser_(tool_call_buffer_, /*end_of_stream=*/true);
+      if (interrupted.disposition == ToolCallPayloadDisposition::kRejected &&
+          interrupted.consumed_size == tool_call_buffer_.size()) {
+        EmitVisible(out, std::move(tool_call_buffer_));
+        EmitVisible(out, std::move(buffer_));
+        tool_call_buffer_.clear();
+        buffer_.clear();
+        inside_tool_call_ = false;
+        ResetPayloadScan();
+        ResetSelectedPayloadBoundaryScan();
+      } else {
+        RejectMalformedSelectedPayload(out, "Tool-call output was interrupted before the batch could be committed");
+      }
       return out;
     }
 
@@ -268,6 +282,7 @@ class ToolCallStreamAccumulator {
     if (text.empty()) {
       return;
     }
+    visible_text_emitted_ = true;
 
     if (payload_parser_) {
       markdown_fence_tracker_.Push(text);
@@ -376,6 +391,14 @@ class ToolCallStreamAccumulator {
 
       const auto found = buffer_.find(start_marker_);
       if (found != std::string::npos) {
+        if (require_start_marker_at_stream_start_ &&
+            (visible_text_emitted_ || found != 0)) {
+          const auto visible_size = found + start_marker_.size();
+          EmitVisible(out, buffer_.substr(0, visible_size));
+          buffer_.erase(0, visible_size);
+          continue;
+        }
+
         if (found > 0) {
           EmitVisible(out, buffer_.substr(0, found));
           buffer_.erase(0, found);
@@ -801,6 +824,8 @@ class ToolCallStreamAccumulator {
   std::string reasoning_end_marker_;
   ToolCallPayloadParser payload_parser_;
   bool canonical_json_payload_ = false;
+  bool require_start_marker_at_stream_start_ = false;
+  bool visible_text_emitted_ = false;
   bool selected_json_inside_string_ = false;
   bool selected_json_escaped_ = false;
   std::string buffer_;            // pending bytes from Push() that haven't yet been routed

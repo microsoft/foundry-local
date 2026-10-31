@@ -59,6 +59,158 @@ std::string Frame(const nlohmann::json& calls) {
   return "<tool_call>" + calls.dump() + "</tool_call>";
 }
 
+TEST(JsonToolCallPayloadParserTest, FoundryWrapperSeparatesAutomaticExamplesFromToolOnlyFailures) {
+  const auto plan = ToolCallPlan::Create(kTools);
+  const std::string invalid =
+      "```json\n{\"foundry_tool_calls\":[{\"name\":\"edit\",\"parameters\":{\"input\":\"\"}}]}\n```";
+  const std::string valid =
+      "```json\n{\"foundry_tool_calls\":[{\"name\":\"edit\",\"parameters\":{\"input\":\"ok\"}}]}\n```";
+
+  const auto automatic = CreateJsonToolCallPayloadParser(
+      plan, "```json", "```", true, true, true);
+  const auto rejected = automatic(invalid, true);
+  EXPECT_EQ(rejected.disposition, ToolCallPayloadDisposition::kRejected);
+  EXPECT_EQ(rejected.consumed_size, invalid.size());
+  const auto parsed = automatic(valid, true);
+  EXPECT_EQ(parsed.disposition, ToolCallPayloadDisposition::kParsed);
+  ASSERT_EQ(parsed.calls.size(), 1u);
+
+  const auto tool_only = CreateJsonToolCallPayloadParser(
+      plan, "```json", "```", true, true, false);
+  EXPECT_EQ(tool_only(invalid, true).disposition,
+            ToolCallPayloadDisposition::kMalformed);
+}
+
+TEST(JsonToolCallPayloadParserTest, FoundryCompatibilityRequiresOneCompleteResponseOnlyEnvelope) {
+  const auto plan = ToolCallPlan::Create(kTools);
+  const auto automatic = CreateJsonToolCallPayloadParser(
+      plan, "```json", "```", true, true, true);
+  const std::string call =
+      "```json\n{\"foundry_tool_calls\":[{\"name\":\"edit\",\"parameters\":{\"input\":\"ok\"}}]}\n```";
+
+  EXPECT_EQ(automatic(call, false).disposition,
+            ToolCallPayloadDisposition::kNeedMore);
+  EXPECT_EQ(automatic(call, true).disposition,
+            ToolCallPayloadDisposition::kParsed);
+
+  for (const auto& source : {call + "\nExplanation.",
+                             call + "\n" + call}) {
+    const auto rejected = automatic(source, true);
+    EXPECT_EQ(rejected.disposition, ToolCallPayloadDisposition::kRejected);
+    EXPECT_EQ(rejected.consumed_size, source.size());
+    EXPECT_TRUE(rejected.calls.empty());
+  }
+}
+
+TEST(JsonToolCallPayloadParserTest, FoundryCompatibilityIsStableAcrossEveryByteSplit) {
+  const auto make_accumulator = [] {
+    auto plan = ToolCallPlan::Create(kTools);
+    return ToolCallStreamAccumulator{
+        "```json", "```", kTools, "",
+        CreateJsonToolCallPayloadParser(
+            std::move(plan), "```json", "```", true, true, true),
+        true, true};
+  };
+  const std::string call =
+      "```json\n{\"foundry_tool_calls\":[{\"name\":\"edit\",\"parameters\":{\"input\":\"ok\"}}]}\n```";
+
+  for (size_t split = 0; split <= call.size(); ++split) {
+    auto accumulator = make_accumulator();
+    Collected result;
+    result.Append(accumulator.Push(call.substr(0, split)));
+    result.Append(accumulator.Push(call.substr(split)));
+    EXPECT_TRUE(result.calls.empty()) << split;
+    result.Append(accumulator.Flush());
+
+    ASSERT_FALSE(result.malformed) << split << ": " << result.error;
+    EXPECT_TRUE(result.visible.empty()) << split;
+    ASSERT_EQ(result.calls.size(), 1u) << split;
+    EXPECT_EQ(result.calls.front().name, "edit") << split;
+  }
+
+  const auto with_suffix = call + "\nThis is only an example.";
+  for (size_t split = 0; split <= with_suffix.size(); ++split) {
+    auto accumulator = make_accumulator();
+    Collected result;
+    result.Append(accumulator.Push(with_suffix.substr(0, split)));
+    result.Append(accumulator.Push(with_suffix.substr(split)));
+    result.Append(accumulator.Flush());
+
+    ASSERT_FALSE(result.malformed) << split << ": " << result.error;
+    EXPECT_EQ(result.visible, with_suffix) << split;
+    EXPECT_TRUE(result.calls.empty()) << split;
+  }
+}
+
+TEST(JsonToolCallPayloadParserTest, AmbiguousInterruptedFenceRemainsTextButSelectedWrapperFailsClosed) {
+  const auto plan = ToolCallPlan::Create(kTools);
+  const auto automatic = CreateJsonToolCallPayloadParser(
+      plan, "```json", "```", true, true, true);
+
+  const std::string ordinary = "```json\n{\"example\":\"unterminated";
+  const auto rejected = automatic(ordinary, true);
+  EXPECT_EQ(rejected.disposition, ToolCallPayloadDisposition::kRejected);
+  EXPECT_EQ(rejected.consumed_size, ordinary.size());
+
+  const auto selected = automatic(
+      "```json\n{\"foundry_tool_calls\":[{\"name\":\"edit\"", true);
+  EXPECT_EQ(selected.disposition, ToolCallPayloadDisposition::kMalformed);
+}
+
+TEST(JsonToolCallPayloadParserTest, InterruptedCompatibilityPayloadClassifiesBeforeFailingClosed) {
+  const auto make_accumulator = [] {
+    auto plan = ToolCallPlan::Create(kTools);
+    return ToolCallStreamAccumulator{
+        "```json", "```", kTools, "",
+        CreateJsonToolCallPayloadParser(
+            std::move(plan), "```json", "```", true, true, true),
+        true, true};
+  };
+
+  const std::string ordinary = "```json\n{\"example\":\"unterminated";
+  auto ordinary_accumulator = make_accumulator();
+  Collected ordinary_result;
+  ordinary_result.Append(ordinary_accumulator.Push(ordinary));
+  ordinary_result.Append(ordinary_accumulator.RejectPendingSelectedPayload());
+  EXPECT_FALSE(ordinary_result.malformed);
+  EXPECT_EQ(ordinary_result.visible, ordinary);
+  EXPECT_TRUE(ordinary_result.calls.empty());
+
+  auto selected_accumulator = make_accumulator();
+  for (const auto selected : {
+           "```json\n{\"foundry_tool_calls\"",
+           "```json\n{\"foundry_tool_calls\"  ",
+           "```json\n{\"foundry_tool_calls\":[{\"name\":\"edit\"",
+           "```json\n{\"foundry_tool\\u005fcalls\"",
+           "```json\n{\"foundry_tool\\u005fcalls\":[{\"name\":\"edit\"",
+       }) {
+    selected_accumulator = make_accumulator();
+    Collected selected_result;
+    selected_result.Append(selected_accumulator.Push(selected));
+    selected_result.Append(selected_accumulator.RejectPendingSelectedPayload());
+    EXPECT_TRUE(selected_result.malformed) << selected;
+    EXPECT_TRUE(selected_result.visible.empty()) << selected;
+    EXPECT_TRUE(selected_result.calls.empty()) << selected;
+  }
+}
+
+TEST(JsonToolCallPayloadParserTest, FoundryEnvelopeDepthIsBoundedBeforeParsing) {
+  const auto plan = ToolCallPlan::Create(kTools);
+  const auto automatic = CreateJsonToolCallPayloadParser(
+      plan, "```json", "```", true, true, true);
+  std::string body = R"({"foundry_tool_calls":)";
+  body.append(ToolCallPlan::kMaxDepth, '[');
+  body += "0";
+  body.append(ToolCallPlan::kMaxDepth, ']');
+  body += "}";
+  const std::string source = "```json\n" + body + "\n```";
+
+  const auto rejected = automatic(source, true);
+  EXPECT_EQ(rejected.disposition, ToolCallPayloadDisposition::kRejected);
+  EXPECT_EQ(rejected.consumed_size, source.size());
+  EXPECT_TRUE(rejected.calls.empty());
+}
+
 TEST(JsonToolCallPayloadParserTest, EveryByteSplitPreservesCodeUnicodeAndLiteralMarkers) {
   const std::string input =
       "[scratch\nprint(\"quoted\\\\path\")\n"

@@ -85,6 +85,27 @@ TEST(ToolCallPlanTest, PreservesOptionalNullableDefaultsAndOpenAdditionalPropert
   EXPECT_EQ(plan->Grammar().find("%json"), std::string::npos);
 }
 
+TEST(ToolCallPlanTest, NormalizesStrictNativeAndTupleEnvelopes) {
+  const auto plan = Plan({{"type", "object"},
+                          {"properties", {{"city", {{"type", "string"}}}}},
+                          {"required", {"city"}}});
+  for (const auto& payload : {
+           R"({"foundry_tool_calls":[{"name":"edit","parameters":{"city":"Paris"}}]})",
+           R"({"name":"edit","arguments":{"city":"Paris"}})",
+           R"(["edit",{"city":"Paris"}])",
+       }) {
+    const auto calls = plan->ParseCalls(payload);
+    ASSERT_EQ(calls.size(), 1u);
+    EXPECT_EQ(calls[0].name, "edit");
+    EXPECT_EQ(Json::parse(calls[0].arguments), Json({{"city", "Paris"}}));
+  }
+
+  ExpectError([&] { plan->ParseCalls(R"({"name":"edit","arguments":{"city":1}})"); },
+              FOUNDRY_LOCAL_ERROR_INTERNAL, "/city");
+  ExpectError([&] { plan->ParseCalls(R"({"name":"other","arguments":{"city":"Paris"}})"); },
+              FOUNDRY_LOCAL_ERROR_INTERNAL, "unknown or disallowed");
+}
+
 TEST(ToolCallPlanTest, StructuralGrammarEmbedsUnderCallerRootWithoutSchemaOrGlobalWhitespaceDirectives) {
   const auto plan = Plan({{"properties", {{"input", {{"minLength", 100}}}}}});
   const auto grammar = plan->Grammar("functioncall");

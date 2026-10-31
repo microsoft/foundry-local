@@ -403,7 +403,16 @@ std::string ToolCallPlan::Grammar(std::string_view root_rule) const {
 }
 
 std::vector<ParsedToolCall> ToolCallPlan::ParseCalls(std::string_view canonical_json) const {
-  const auto batch = ParseJson(canonical_json, kMaxBatchBytes, FOUNDRY_LOCAL_ERROR_INTERNAL, "tool call batch");
+  auto batch = ParseJson(canonical_json, kMaxBatchBytes, FOUNDRY_LOCAL_ERROR_INTERNAL, "tool call batch");
+  if (batch.is_object() && batch.size() == 1 && batch.contains("foundry_tool_calls")) {
+    batch = std::move(batch["foundry_tool_calls"]);
+  } else if (batch.is_object() && batch.size() == 2 && batch.contains("name") && batch.contains("arguments")) {
+    batch = Json::array({Json{{"name", std::move(batch["name"])},
+                              {"parameters", std::move(batch["arguments"])}}});
+  } else if (batch.is_array() && batch.size() == 2 && batch[0].is_string() && batch[1].is_object()) {
+    batch = Json::array({Json{{"name", std::move(batch[0])},
+                              {"parameters", std::move(batch[1])}}});
+  }
   if (!batch.is_array() || batch.empty() || (!impl_->parallel && batch.size() > 1)) {
     Fail(FOUNDRY_LOCAL_ERROR_INTERNAL, "tool call batch", "expected non-empty array within parallel call limit");
   }

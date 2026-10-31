@@ -27,7 +27,7 @@
 
 using namespace fl;
 
-TEST(SearchOptionsParsingTest, CanonicalReasoningToolsUseWholeTurnGuidanceRatherThanScratchpadRegionGuidance) {
+TEST(SearchOptionsParsingTest, AutomaticReasoningRemainsUnguidedAndToolOnlyUsesWholeTurnGuidance) {
   ToolCallContext context;
   context.tools_json = R"([{"type":"function","function":{"name":"read","parameters":{"type":"object"}}}])";
   context.tool_plan = ToolCallPlan::Create(context.tools_json);
@@ -41,14 +41,46 @@ TEST(SearchOptionsParsingTest, CanonicalReasoningToolsUseWholeTurnGuidanceRather
   context.tool_call_end_token_id = 102;
   context.reasoning_start_token_id = 103;
   context.reasoning_end_token_id = 104;
+  EXPECT_FALSE(ResolveTurnGuidanceOptions(context, /*prompt_opens_reasoning=*/true));
+
+  context.text_output = false;
   const auto whole_turn = ResolveTurnGuidanceOptions(context, /*prompt_opens_reasoning=*/true);
   ASSERT_TRUE(whole_turn.has_value());
   EXPECT_EQ(whole_turn->type, "lark_grammar");
   EXPECT_FALSE(whole_turn->user_specified);
 
+  context.text_output = true;
   context.supports_reasoning = false;
   context.tool_body_grammar = context.tool_plan->Grammar();
   EXPECT_FALSE(ResolveTurnGuidanceOptions(context, false).has_value());
+}
+
+TEST(SearchOptionsParsingTest, AutomaticEngineToolsUseDelimitedBodyGuidance) {
+  ToolCallContext context;
+  context.tools_json = R"([{"type":"function","function":{"name":"read","parameters":{"type":"object"}}}])";
+  context.tool_plan = ToolCallPlan::Create(context.tools_json);
+  context.text_output = true;
+  context.tool_output = true;
+  context.tool_call_start_token_id = 101;
+  context.tool_call_end_token_id = 102;
+
+  const auto guidance = PlanDelimitedToolBodyGuidance(context, ChatBackendKind::kEngine);
+  ASSERT_TRUE(guidance);
+  EXPECT_EQ(*guidance, context.tool_plan->Grammar());
+  EXPECT_FALSE(ResolveTurnGuidanceOptions(context, false));
+
+  context.forced_tool = ForcedToolChoice{"read", ToolKind::kFunction};
+  EXPECT_FALSE(PlanDelimitedToolBodyGuidance(context, ChatBackendKind::kEngine));
+  context.forced_tool.reset();
+  context.supports_reasoning = true;
+  EXPECT_FALSE(PlanDelimitedToolBodyGuidance(context, ChatBackendKind::kEngine));
+  context.supports_reasoning = false;
+  context.text_output = false;
+  EXPECT_FALSE(PlanDelimitedToolBodyGuidance(context, ChatBackendKind::kEngine));
+  context.text_output = true;
+  EXPECT_FALSE(PlanDelimitedToolBodyGuidance(context, ChatBackendKind::kGenerator));
+  context.tool_call_end_token_id = context.tool_call_start_token_id;
+  EXPECT_FALSE(PlanDelimitedToolBodyGuidance(context, ChatBackendKind::kEngine));
 }
 
 TEST(SearchOptionsParsingTest, TemperatureOutsideSupportedRangeThrows) {
@@ -386,7 +418,7 @@ TEST(EngineTurnOptionsPlanTest, NegativeSeedIsOmitted) {
   }
 }
 
-TEST(EngineTurnOptionsPlanTest, SuppressesNativeStopsOnlyForAssistantTextFraming) {
+TEST(EngineTurnOptionsPlanTest, SuppressesNativeStopsForAutomaticToolTurns) {
   SearchOptions options;
   options.stop_sequences = {"SS", "STOP"};
   ToolCallContext automatic;
@@ -412,10 +444,13 @@ TEST(EngineTurnOptionsPlanTest, SuppressesNativeStopsOnlyForAssistantTextFraming
   raw.raw_envelope = RawEnvelopeDescriptor{"lookup", "BEGIN", "END"};
   raw.tool_kinds.emplace("lookup", ToolKind::kCustom);
   ASSERT_NE(raw.ActiveRawEnvelope(), nullptr);
+  auto native_text = automatic;
+  native_text.native_assistant_text_output = true;
 
   const std::vector<std::pair<ToolCallContext, bool>> cases{
       {ToolCallContext{}, false}, {automatic, true}, {required, false},
-      {disabled_tools, false}, {explicit_guidance, false}, {raw, false}};
+      {disabled_tools, false}, {explicit_guidance, false}, {raw, false},
+      {native_text, false}};
   for (const auto& [context, framed] : cases) {
     for (const bool reasoning : {false, true}) {
       auto turn_context = context;
@@ -428,7 +463,9 @@ TEST(EngineTurnOptionsPlanTest, SuppressesNativeStopsOnlyForAssistantTextFraming
         const auto plan = BuildEngineTurnOptionsPlan(options, turn_context, ChatBackendKind::kEngine,
                                                      prompt_opens_reasoning);
         EXPECT_EQ(turn_context.UsesAssistantTextFraming(), framed);
-        EXPECT_EQ(plan.stop_sequences, framed ? std::vector<std::string>{} : options.stop_sequences);
+        const bool automatic_tools = turn_context.text_output && turn_context.tool_output;
+        EXPECT_EQ(plan.stop_sequences,
+                  automatic_tools ? std::vector<std::string>{} : options.stop_sequences);
       }
     }
   }
@@ -491,6 +528,8 @@ TEST(EngineTurnOptionsPlanTest, GuidedRetryReplacesRegionGuidanceWithWholeTurnJs
   EXPECT_FALSE(tool_ctx.text_output);
   EXPECT_TRUE(tool_ctx.tool_output);
   EXPECT_FALSE(tool_ctx.tool_body_grammar);
+  EXPECT_FALSE(tool_ctx.fenced_tool_call_output);
+  EXPECT_FALSE(tool_ctx.guidance_disabled);
 
   const auto retry = BuildEngineTurnOptionsPlan(SearchOptions{}, tool_ctx, ChatBackendKind::kEngine, false);
   ASSERT_TRUE(retry.guidance);

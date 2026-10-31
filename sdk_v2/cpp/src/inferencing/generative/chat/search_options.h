@@ -134,6 +134,10 @@ int64_t ResolveOutputReserve(const SearchOptions& options,
 std::optional<TurnGuidanceOptions> ResolveTurnGuidanceOptions(const ToolCallContext& tool_ctx,
                                                               bool prompt_opens_reasoning);
 
+/// Build body-only guidance for an automatic Engine turn while leaving ordinary text unrestricted.
+std::optional<std::string> PlanDelimitedToolBodyGuidance(const ToolCallContext& tool_ctx,
+                                                         ChatBackendKind backend_kind);
+
 /// Normalize caller-expressed sampling settings for one turn. See SamplingPlan.
 /// Throws fl::Exception when a value is outside the range ORT GenAI accepts for any turn.
 SamplingPlan ResolveSamplingPlan(const SearchOptions& options);

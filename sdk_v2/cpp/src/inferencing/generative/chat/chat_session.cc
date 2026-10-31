@@ -100,14 +100,26 @@ class AssistantTextOutputFilter {
  public:
   AssistantTextOutputFilter(const ToolCallContext& context, const SearchOptions& options)
       : framer_(context),
-        stop_filter_(context.UsesAssistantTextFraming() ? options.stop_sequences : std::vector<std::string>{}) {}
+        stop_filter_(context.text_output && context.tool_output
+                         ? options.stop_sequences
+                         : std::vector<std::string>{}),
+        text_output_(context.text_output) {}
 
   std::string Push(std::string_view text) {
-    return stop_filter_.Push(framer_.Push(text));
+    auto visible = stop_filter_.Push(framer_.Push(text));
+    if (!text_output_) {
+      return {};
+    }
+    return visible;
   }
 
   std::string Flush() {
-    return stop_filter_.Flush();
+    auto visible = stop_filter_.Push(framer_.Flush());
+    visible += stop_filter_.Flush();
+    if (!text_output_) {
+      return {};
+    }
+    return visible;
   }
 
   bool Matched() const {
@@ -125,6 +137,7 @@ class AssistantTextOutputFilter {
  private:
   AssistantTextFramer framer_;
   StopStringFilter stop_filter_;
+  bool text_output_;
 };
 
 /// Value of `key` in `options`, or an empty string when it is absent.
@@ -451,8 +464,11 @@ bool ShouldStartInsideReasoning(const ToolCallContext& context, bool prompt_open
 
 ToolCallPayloadParser CreateToolCallPayloadParser(const ToolCallContext& context) {
   if (context.tool_plan && context.tool_output && context.HasToolCallTokens()) {
-    return CreateJsonToolCallPayloadParser(context.tool_plan, context.tool_call_start, context.tool_call_end,
-                                           context.parallel_tool_calls);
+    return CreateJsonToolCallPayloadParser(context.tool_plan, context.GeneratedToolCallStart(),
+                                           context.GeneratedToolCallEnd(),
+                                           context.parallel_tool_calls,
+                                           context.fenced_tool_call_output,
+                                           context.fenced_tool_call_output && context.text_output);
   }
 
   return {};
@@ -639,7 +655,8 @@ ToolCallStreamAccumulator::Output PushToolOutput(
 ToolCallStreamAccumulator::Output PushToolOutputSegment(
     const ReasoningStreamSplitter::Segment& segment, const ToolCallContext& context,
     RawEnvelopeDetector* raw_detector, ToolCallStreamAccumulator& structured_accumulator) {
-  if (context.tool_plan && context.tool_call_start_token_id && context.tool_call_end_token_id &&
+  if (!context.fenced_tool_call_output && context.tool_plan &&
+      context.tool_call_start_token_id && context.tool_call_end_token_id &&
       (raw_detector == nullptr || !raw_detector->InsideEnvelope() || structured_accumulator.InsideToolCall())) {
     auto ownership = structured_accumulator.ObserveTokenBoundaries(
         segment.text, segment.token_id == context.tool_call_start_token_id,
@@ -649,7 +666,8 @@ ToolCallStreamAccumulator::Output PushToolOutputSegment(
     }
   }
 
-  if (context.tool_plan && context.tool_call_start_token_id && !structured_accumulator.InsideToolCall() &&
+  if (!context.fenced_tool_call_output && context.tool_plan &&
+      context.tool_call_start_token_id && !structured_accumulator.InsideToolCall() &&
       segment.token_id != context.tool_call_start_token_id) {
     if (raw_detector != nullptr) {
       return RouteRawToolOutput(raw_detector->Push(segment.text), *raw_detector, structured_accumulator,
@@ -1203,6 +1221,14 @@ ToolCallContext BuildToolCallContextForRequest(const Request& request,
       if (!request.raw_envelope_descriptor && !tool_ctx.forced_tool) {
         tool_ctx.raw_envelope.reset();
       }
+      tool_ctx.native_assistant_text_output = tool_ctx.text_output;
+      if (model.ModelId().starts_with("qwen2.5-coder-0.5b") && !tool_ctx.ActiveRawEnvelope() &&
+          !tool_ctx.HasAnyExplicitGuidance()) {
+        tool_ctx.fenced_tool_call_output = true;
+        tool_ctx.guidance_disabled = true;
+      }
+      tool_ctx.tool_body_grammar =
+          PlanDelimitedToolBodyGuidance(tool_ctx, model.GetGenAIConfig().GetChatBackendKind());
     }
   }
 
@@ -1686,7 +1712,10 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   int output_tokens = 0;
   StopStringFilter stop_filter(effective_options.stop_sequences);
   auto* active_stop_filter =
-      effective_options.stop_sequences.empty() || cached_tool_ctx_.UsesAssistantTextFraming() ? nullptr : &stop_filter;
+      effective_options.stop_sequences.empty() ||
+              (cached_tool_ctx_.text_output && cached_tool_ctx_.tool_output)
+          ? nullptr
+          : &stop_filter;
   bool stop_sequence_matched = false;
   bool host_output_limit_reached = false;
   std::vector<GeneratedOutputEvent> generated_events;
@@ -1709,12 +1738,13 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   // REASONING segments bypass the accumulator entirely — tool-call-shaped text inside <think>...</think> is the
   // model's scratchpad and is not a real tool call.
   ToolCallStreamAccumulator tool_accumulator(
-      cached_tool_ctx_.tool_output ? cached_tool_ctx_.tool_call_start : std::string{},
-      cached_tool_ctx_.tool_output ? cached_tool_ctx_.tool_call_end : std::string{},
+      cached_tool_ctx_.tool_output ? cached_tool_ctx_.GeneratedToolCallStart() : std::string{},
+      cached_tool_ctx_.tool_output ? cached_tool_ctx_.GeneratedToolCallEnd() : std::string{},
       cached_tool_ctx_.tools_json,
       cached_tool_ctx_.reasoning_end,
       chat_session_internal::CreateToolCallPayloadParser(cached_tool_ctx_),
-      cached_tool_ctx_.tool_plan != nullptr);
+      cached_tool_ctx_.tool_plan != nullptr,
+      cached_tool_ctx_.fenced_tool_call_output);
   std::optional<RawEnvelopeDetector> raw_detector;
   if (const auto* descriptor = cached_tool_ctx_.ActiveRawEnvelope()) {
     raw_detector.emplace(*descriptor);
@@ -1766,6 +1796,10 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       }
 
       emit_visible_text(text_framer.Flush());
+      stop_sequence_matched |= text_framer.Matched();
+      if (text_framer.Matched()) {
+        break;
+      }
       text_framer.ValidateBoundary();
       semantic_output_seen = true;
       if (!turn_guard.RecordToolCall()) {
@@ -1809,6 +1843,10 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
         }
 
         emit_visible_text(text_framer.Flush());
+        stop_sequence_matched |= text_framer.Matched();
+        if (text_framer.Matched()) {
+          break;
+        }
         // REASONING goes straight through — never feed it to the tool-call accumulator.
         semantic_output_seen |= !seg.text.empty();
         AppendGeneratedSegment(generated_events, seg.text, seg.type);
@@ -1892,9 +1930,9 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
                                      host_output_limit_reached, backend_termination);
   flush_accumulator(natural_tool_output_end);
   emit_visible_text(text_framer.Flush());
-  if (natural_tool_output_end && cached_tool_ctx_.tool_plan && !cached_tool_ctx_.text_output &&
-      !cached_tool_ctx_.ActiveRawEnvelope() && !malformed_tool_output_seen &&
-      !HasGeneratedToolCalls(generated_events)) {
+  stop_sequence_matched |= text_framer.Matched();
+  if (cached_tool_ctx_.tool_plan && !cached_tool_ctx_.text_output &&
+      !malformed_tool_output_seen && !HasGeneratedToolCalls(generated_events)) {
     malformed_tool_output_seen = true;
     malformed_tool_error = "The model did not emit the required tool call";
   }
@@ -2084,12 +2122,13 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
   // qwen tokenizer happens to emit `<tool_call>` as a single special token. Tokenizers that split the marker across
   // multiple tokens (or chat templates that produce marker-shaped text gradually) would silently fail. The shared
   // accumulator buffers across tokens and is verified by unit tests.
-  ToolCallStreamAccumulator tool_accumulator(tool_ctx.tool_output ? tool_ctx.tool_call_start : std::string{},
-                                             tool_ctx.tool_output ? tool_ctx.tool_call_end : std::string{},
+  ToolCallStreamAccumulator tool_accumulator(tool_ctx.tool_output ? tool_ctx.GeneratedToolCallStart() : std::string{},
+                                             tool_ctx.tool_output ? tool_ctx.GeneratedToolCallEnd() : std::string{},
                                              tool_ctx.tools_json,
                                              tool_ctx.reasoning_end,
                                              chat_session_internal::CreateToolCallPayloadParser(tool_ctx),
-                                             tool_ctx.tool_plan != nullptr);
+                                             tool_ctx.tool_plan != nullptr,
+                                             tool_ctx.fenced_tool_call_output);
   std::optional<RawEnvelopeDetector> raw_detector;
   if (const auto* descriptor = tool_ctx.ActiveRawEnvelope()) {
     raw_detector.emplace(*descriptor);
@@ -2159,6 +2198,10 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
       }
 
       emit_visible_text(text_framer.Flush());
+      stop_sequence_matched |= text_framer.Matched();
+      if (text_framer.Matched()) {
+        break;
+      }
       text_framer.ValidateBoundary();
       semantic_output_seen = true;
       if (!turn_guard.RecordToolCall()) {
@@ -2207,6 +2250,10 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
         }
 
         emit_visible_text(text_framer.Flush());
+        stop_sequence_matched |= text_framer.Matched();
+        if (text_framer.Matched()) {
+          break;
+        }
         semantic_output_seen |= !seg.text.empty();
         AppendGeneratedSegment(generated_events, seg.text, seg.type);
 
@@ -2226,7 +2273,9 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
   // Generate token-by-token.
   StopStringFilter stop_filter(options.stop_sequences);
   auto* active_stop_filter =
-      options.stop_sequences.empty() || tool_ctx.UsesAssistantTextFraming() ? nullptr : &stop_filter;
+      options.stop_sequences.empty() || (tool_ctx.text_output && tool_ctx.tool_output)
+          ? nullptr
+          : &stop_filter;
   while (!generator->IsDone() && !original_request.IsCancellationRequested() && !turn_guard.TurnEnded()) {
     generator->GenerateNextToken();
     const auto token_id = generator->CurrentTokenId();
@@ -2283,7 +2332,8 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
   process_tool_output(chat_session_internal::FlushToolOutput(
       active_raw_detector, tool_accumulator, natural_tool_output_end));
   emit_visible_text(text_framer.Flush());
-  if (natural_tool_output_end && tool_ctx.tool_plan && !tool_ctx.text_output && !tool_ctx.ActiveRawEnvelope() &&
+  stop_sequence_matched |= text_framer.Matched();
+  if (tool_ctx.tool_plan && !tool_ctx.text_output &&
       !malformed_tool_output_seen && !HasGeneratedToolCalls(generated_events)) {
     malformed_tool_output_seen = true;
     malformed_tool_error = "The model did not emit the required tool call";
