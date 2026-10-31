@@ -14,7 +14,7 @@
 
 namespace fl {
 
-inline bool HasFoundryToolCallsPrefix(std::string_view body) {
+inline bool HasFoundryToolCallsFirstKey(std::string_view body) {
   const auto skip_whitespace = [&](size_t& offset) {
     while (offset < body.size() &&
            std::string_view(" \t\r\n").find(body[offset]) != std::string_view::npos) {
@@ -28,13 +28,28 @@ inline bool HasFoundryToolCallsPrefix(std::string_view body) {
     return false;
   }
   skip_whitespace(offset);
-  constexpr std::string_view key = "\"foundry_tool_calls\"";
-  if (!body.substr(offset).starts_with(key)) {
+  if (offset == body.size() || body[offset] != '"') {
     return false;
   }
-  offset += key.size();
-  skip_whitespace(offset);
-  return offset < body.size() && body[offset] == ':';
+
+  const auto key_start = offset++;
+  bool escaped = false;
+  while (offset < body.size()) {
+    const auto byte = body[offset++];
+    if (escaped) {
+      escaped = false;
+    } else if (byte == '\\') {
+      escaped = true;
+    } else if (byte == '"') {
+      break;
+    }
+  }
+  if (offset > body.size() || body[offset - 1] != '"') {
+    return false;
+  }
+
+  const auto key = nlohmann::json::parse(body.substr(key_start, offset - key_start), nullptr, false);
+  return key.is_string() && key.get_ref<const std::string&>() == "foundry_tool_calls";
 }
 
 inline bool JsonNestingWithinToolCallLimit(std::string_view source) {
@@ -93,7 +108,7 @@ inline ToolCallPayloadParser CreateJsonToolCallPayloadParser(std::shared_ptr<con
           return result;
         }
         if (require_foundry_wrapper && reject_non_wrapper_as_text &&
-            !HasFoundryToolCallsPrefix(source.substr(body_start))) {
+            !HasFoundryToolCallsFirstKey(source.substr(body_start))) {
           result.disposition = ToolCallPayloadDisposition::kRejected;
           result.consumed_size = source.size();
           return result;

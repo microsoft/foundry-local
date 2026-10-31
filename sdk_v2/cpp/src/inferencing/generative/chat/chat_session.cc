@@ -108,7 +108,6 @@ class AssistantTextOutputFilter {
   std::string Push(std::string_view text) {
     auto visible = stop_filter_.Push(framer_.Push(text));
     if (!text_output_) {
-      suppressed_text_seen_ |= !visible.empty();
       return {};
     }
     return visible;
@@ -118,7 +117,6 @@ class AssistantTextOutputFilter {
     auto visible = stop_filter_.Push(framer_.Flush());
     visible += stop_filter_.Flush();
     if (!text_output_) {
-      suppressed_text_seen_ |= !visible.empty();
       return {};
     }
     return visible;
@@ -140,7 +138,6 @@ class AssistantTextOutputFilter {
   AssistantTextFramer framer_;
   StopStringFilter stop_filter_;
   bool text_output_;
-  bool suppressed_text_seen_ = false;
 };
 
 /// Value of `key` in `options`, or an empty string when it is absent.

@@ -102,6 +102,46 @@ TEST(JsonToolCallPayloadParserTest, FoundryCompatibilityRequiresOneCompleteRespo
   }
 }
 
+TEST(JsonToolCallPayloadParserTest, FoundryCompatibilityIsStableAcrossEveryByteSplit) {
+  const auto make_accumulator = [] {
+    auto plan = ToolCallPlan::Create(kTools);
+    return ToolCallStreamAccumulator{
+        "```json", "```", kTools, "",
+        CreateJsonToolCallPayloadParser(
+            std::move(plan), "```json", "```", true, true, true),
+        true, true};
+  };
+  const std::string call =
+      "```json\n{\"foundry_tool_calls\":[{\"name\":\"edit\",\"parameters\":{\"input\":\"ok\"}}]}\n```";
+
+  for (size_t split = 0; split <= call.size(); ++split) {
+    auto accumulator = make_accumulator();
+    Collected result;
+    result.Append(accumulator.Push(call.substr(0, split)));
+    result.Append(accumulator.Push(call.substr(split)));
+    EXPECT_TRUE(result.calls.empty()) << split;
+    result.Append(accumulator.Flush());
+
+    ASSERT_FALSE(result.malformed) << split << ": " << result.error;
+    EXPECT_TRUE(result.visible.empty()) << split;
+    ASSERT_EQ(result.calls.size(), 1u) << split;
+    EXPECT_EQ(result.calls.front().name, "edit") << split;
+  }
+
+  const auto with_suffix = call + "\nThis is only an example.";
+  for (size_t split = 0; split <= with_suffix.size(); ++split) {
+    auto accumulator = make_accumulator();
+    Collected result;
+    result.Append(accumulator.Push(with_suffix.substr(0, split)));
+    result.Append(accumulator.Push(with_suffix.substr(split)));
+    result.Append(accumulator.Flush());
+
+    ASSERT_FALSE(result.malformed) << split << ": " << result.error;
+    EXPECT_EQ(result.visible, with_suffix) << split;
+    EXPECT_TRUE(result.calls.empty()) << split;
+  }
+}
+
 TEST(JsonToolCallPayloadParserTest, AmbiguousInterruptedFenceRemainsTextButSelectedWrapperFailsClosed) {
   const auto plan = ToolCallPlan::Create(kTools);
   const auto automatic = CreateJsonToolCallPayloadParser(
@@ -137,13 +177,21 @@ TEST(JsonToolCallPayloadParserTest, InterruptedCompatibilityPayloadClassifiesBef
   EXPECT_TRUE(ordinary_result.calls.empty());
 
   auto selected_accumulator = make_accumulator();
-  Collected selected_result;
-  selected_result.Append(selected_accumulator.Push(
-      "```json\n{\"foundry_tool_calls\":[{\"name\":\"edit\""));
-  selected_result.Append(selected_accumulator.RejectPendingSelectedPayload());
-  EXPECT_TRUE(selected_result.malformed);
-  EXPECT_TRUE(selected_result.visible.empty());
-  EXPECT_TRUE(selected_result.calls.empty());
+  for (const auto selected : {
+           "```json\n{\"foundry_tool_calls\"",
+           "```json\n{\"foundry_tool_calls\"  ",
+           "```json\n{\"foundry_tool_calls\":[{\"name\":\"edit\"",
+           "```json\n{\"foundry_tool\\u005fcalls\"",
+           "```json\n{\"foundry_tool\\u005fcalls\":[{\"name\":\"edit\"",
+       }) {
+    selected_accumulator = make_accumulator();
+    Collected selected_result;
+    selected_result.Append(selected_accumulator.Push(selected));
+    selected_result.Append(selected_accumulator.RejectPendingSelectedPayload());
+    EXPECT_TRUE(selected_result.malformed) << selected;
+    EXPECT_TRUE(selected_result.visible.empty()) << selected;
+    EXPECT_TRUE(selected_result.calls.empty()) << selected;
+  }
 }
 
 TEST(JsonToolCallPayloadParserTest, FoundryEnvelopeDepthIsBoundedBeforeParsing) {
