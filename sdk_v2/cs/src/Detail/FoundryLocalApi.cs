@@ -933,12 +933,6 @@ public sealed class Session : IDisposable
         IntPtr responsePtr = IntPtr.Zero;
         Api.CheckStatus(Api.Inference.SessionProcessRequest(Ptr, requestPtr, ref responsePtr));
 
-        if (ct.IsCancellationRequested)
-        {
-            Api.Inference.ResponseRelease(responsePtr);
-            ct.ThrowIfCancellationRequested();
-        }
-
         return responsePtr;
     }
 

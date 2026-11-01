@@ -7,9 +7,53 @@
 namespace Microsoft.AI.Foundry.Local.Tests;
 
 using Microsoft.AI.Foundry.Local.Detail;
+using Microsoft.AI.Foundry.Local.Detail.Native;
+
+using NativeModel = Detail.Native.Model;
+using NativeSession = Detail.Native.Session;
 
 internal sealed class RequestCancellationTests
 {
+    [Test]
+    [NotInParallel]
+    public async Task TokenCancellation_AfterNativeSuccess_PreservesResponse()
+    {
+        Api.EnsureInitialized();
+        var originalInference = Api.Inference;
+        using var cts = new CancellationTokenSource();
+        var responsePtr = new IntPtr(3);
+        var responseReleases = 0;
+        try
+        {
+            Api.Inference.SessionCreate = (model, out session) =>
+            {
+                session = new IntPtr(1);
+                return IntPtr.Zero;
+            };
+            Api.Inference.SessionRelease = _ => { };
+            Api.Inference.RequestCancel = _ => IntPtr.Zero;
+            Api.Inference.ResponseRelease = _ => responseReleases++;
+            Api.Inference.SessionProcessRequest = (session, request, ref response) =>
+            {
+                response = responsePtr;
+                // Simulate cancellation after native commit, before the successful call returns.
+                cts.Cancel();
+                return IntPtr.Zero;
+            };
+
+            using var session = new NativeSession(new NativeModel(new IntPtr(2)));
+            var response = session.ProcessRequest(new IntPtr(4), cts.Token);
+
+            await Assert.That(cts.IsCancellationRequested).IsTrue();
+            await Assert.That(response).IsEqualTo(responsePtr);
+            await Assert.That(responseReleases).IsEqualTo(0);
+        }
+        finally
+        {
+            Api.Inference = originalInference;
+        }
+    }
+
     [Test]
     public async Task TokenCancellation_RetriesAcrossNativeAdmission()
     {
