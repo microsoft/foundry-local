@@ -70,6 +70,7 @@ internal sealed class ChatSessionTests
     }
 
     [Test]
+    [NotInParallel]
     [Arguments(false)]
     [Arguments(true)]
     public async Task Chat_NoStreaming_TokenCancellation_AllowsRequestReuse(bool cancelBeforeStart)
@@ -87,20 +88,38 @@ internal sealed class ChatSessionTests
         request.AddItem(MessageItem.User("Count from 1 to 10000, writing every integer on its own line."));
         request.SetOptions(new RequestOptions { Search = new SearchOptions { MaxOutputTokens = 256 } });
         using var cts = new CancellationTokenSource();
+        using var finished = new ManualResetEventSlim();
+        Task cancellationTask = Task.CompletedTask;
         if (cancelBeforeStart)
         {
             cts.Cancel();
         }
         else
         {
-            cts.CancelAfter(TimeSpan.FromMilliseconds(100));
+            // Native calls block pool threads; cancellation must not wait for the same pool.
+            cancellationTask = Task.Factory.StartNew(() =>
+            {
+                if (!finished.Wait(TimeSpan.FromMilliseconds(100)))
+                {
+                    cts.Cancel();
+                }
+            }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
         }
 
         var turnsBefore = session.TurnCount;
-        await Assert.That(async () =>
+        try
         {
-            using var response = await session.ProcessRequestAsync(request, cts.Token).ConfigureAwait(false);
-        }).Throws<OperationCanceledException>();
+            await Assert.That(async () =>
+            {
+                using var response = await session.ProcessRequestAsync(request, cts.Token).ConfigureAwait(false);
+            }).Throws<OperationCanceledException>();
+        }
+        finally
+        {
+            finished.Set();
+            await cancellationTask.ConfigureAwait(false);
+        }
+
         await Assert.That(session.TurnCount).IsEqualTo(turnsBefore);
 
         request.SetOptions(new RequestOptions { Search = new SearchOptions { MaxOutputTokens = 8 } });

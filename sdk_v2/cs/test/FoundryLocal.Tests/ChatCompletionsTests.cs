@@ -79,6 +79,7 @@ internal sealed class OpenAIChatCompletionsTests
     }
 
     [Test]
+    [NotInParallel]
     [Arguments(false)]
     [Arguments(true)]
     public async Task DirectChat_NoStreaming_TokenCancellation_AllowsSubsequentCall(bool cancelBeforeStart)
@@ -86,18 +87,35 @@ internal sealed class OpenAIChatCompletionsTests
         var chatClient = await model!.GetChatClientAsync();
         chatClient.Settings.MaxTokens = 256;
         using var cts = new CancellationTokenSource();
+        using var finished = new ManualResetEventSlim();
+        Task cancellationTask = Task.CompletedTask;
         if (cancelBeforeStart)
         {
             cts.Cancel();
         }
         else
         {
-            cts.CancelAfter(TimeSpan.FromMilliseconds(100));
+            // Native calls block pool threads; cancellation must not wait for the same pool.
+            cancellationTask = Task.Factory.StartNew(() =>
+            {
+                if (!finished.Wait(TimeSpan.FromMilliseconds(100)))
+                {
+                    cts.Cancel();
+                }
+            }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
         }
 
-        await Assert.That(async () => await chatClient.CompleteChatAsync(
-            [new ChatMessage { Role = "user", Content = "Count from 1 to 10000, writing every integer on its own line." }],
-            cts.Token).ConfigureAwait(false)).Throws<OperationCanceledException>();
+        try
+        {
+            await Assert.That(async () => await chatClient.CompleteChatAsync(
+                [new ChatMessage { Role = "user", Content = "Count from 1 to 10000, writing every integer on its own line." }],
+                cts.Token).ConfigureAwait(false)).Throws<OperationCanceledException>();
+        }
+        finally
+        {
+            finished.Set();
+            await cancellationTask.ConfigureAwait(false);
+        }
 
         chatClient.Settings.MaxTokens = 8;
         var response = await chatClient.CompleteChatAsync(
