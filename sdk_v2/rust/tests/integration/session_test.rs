@@ -53,15 +53,7 @@ fn deterministic_options() -> RequestOptions {
 
 #[tokio::test]
 async fn cancellation_drop_stops_nonstreaming_and_streaming_before_session_reuse() {
-    let logs = common::get_git_repo_root()
-        .join("sdk_v2")
-        .join("cpp")
-        .join("build")
-        .join("rust-cancellation-logs");
-    let manager = foundry_local_sdk::FoundryLocalManager::create(
-        common::test_config().logs_dir(logs.to_string_lossy().into_owned()),
-    )
-    .expect("create test manager");
+    let manager = common::get_test_manager();
     let model = manager
         .catalog()
         .get_model_variant("qwen2.5-0.5b-instruct-generic-cpu:4")
@@ -135,7 +127,22 @@ async fn cancellation_drop_stops_nonstreaming_and_streaming_before_session_reuse
     drop(session);
     model.unload().await.expect("unload should succeed");
     drop(model);
-    manager.shutdown().expect("shutdown should succeed");
+    drop(manager);
+
+    let manager = common::get_test_manager();
+    let model = manager
+        .catalog()
+        .get_model_variant("qwen2.5-0.5b-instruct-generic-cpu:4")
+        .await
+        .expect("CPU test model should remain available");
+    model
+        .load()
+        .await
+        .expect("cancellation cleanup must not shut down the shared manager");
+    model
+        .unload()
+        .await
+        .expect("follow-up unload should succeed");
 }
 
 #[tokio::test]

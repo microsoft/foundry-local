@@ -241,10 +241,11 @@ class SessionPromiseWorker : public Napi::AsyncWorker {
       worker->activity_->Start();
     }
     Napi::Promise promise = worker->deferred_.Promise();
-    worker->queued_cancellation_ = AttachQueuedCancellation(env, promise, worker->scheduler_);
+    auto queued_cancellation = AttachQueuedCancellation(env, promise, worker->scheduler_);
+    worker->queued_cancellation_ = queued_cancellation;
     try {
       if (worker->scheduler_ != nullptr) {
-        worker->queued_cancellation_->id = worker->scheduler_->Enqueue(
+        queued_cancellation->id = worker->scheduler_->Enqueue(
             [worker] { worker->Start(); }, [worker] { worker->CancelBeforeStart(); });
       } else {
         worker->Start();

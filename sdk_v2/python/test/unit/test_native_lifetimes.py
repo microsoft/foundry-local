@@ -19,6 +19,7 @@ from foundry_local_sdk._native import ffi
 from foundry_local_sdk.catalog import Catalog
 from foundry_local_sdk.foundry_local_manager import FoundryLocalManager
 from foundry_local_sdk.imodel import _ModelImpl
+from foundry_local_sdk.request import Request
 from foundry_local_sdk.session import Session
 
 
@@ -278,6 +279,7 @@ def test_manager_close_waits_for_blocked_session_process_request_before_releasin
         inference=SimpleNamespace(
             Session_ProcessRequest=process_request,
             Session_Release=release_session,
+            Request_Release=lambda _request: None,
             Response_Release=lambda _response: None,
         ),
         check_status=lambda status: assert_null(status),
@@ -293,7 +295,10 @@ def test_manager_close_waits_for_blocked_session_process_request_before_releasin
     session._stream_thread = None
     session._stream_request = None
     manager._register_session(session)
-    request = SimpleNamespace(_ptr=request_ptr)
+    request = Request.__new__(Request)
+    request._ptr = request_ptr
+    request._closed = False
+    request._lifetime_lock = threading.RLock()
 
     def close_manager() -> None:
         manager.close()
@@ -311,6 +316,7 @@ def test_manager_close_waits_for_blocked_session_process_request_before_releasin
         close_future.result(timeout=5)
 
     response._close()
+    request._close()
     assert releases == [session_ptr]
     assert session_released.is_set()
     assert close_finished.is_set()
