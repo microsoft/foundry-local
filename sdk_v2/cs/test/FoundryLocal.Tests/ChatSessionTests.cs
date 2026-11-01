@@ -75,6 +75,14 @@ internal sealed class ChatSessionTests
     public async Task Chat_NoStreaming_TokenCancellation_AllowsRequestReuse(bool cancelBeforeStart)
     {
         using var session = new ChatSession(model!);
+        // Warm the generator so the active case exercises inference, not cold model initialization.
+        using (var warmup = new Request())
+        {
+            warmup.AddItem(MessageItem.User("Say hello."));
+            warmup.SetOptions(new RequestOptions { Search = new SearchOptions { MaxOutputTokens = 1 } });
+            using var warmupResponse = await session.ProcessRequestAsync(warmup).ConfigureAwait(false);
+        }
+
         using var request = new Request();
         request.AddItem(MessageItem.User("Count from 1 to 10000, writing every integer on its own line."));
         request.SetOptions(new RequestOptions { Search = new SearchOptions { MaxOutputTokens = 256 } });
@@ -88,10 +96,12 @@ internal sealed class ChatSessionTests
             cts.CancelAfter(TimeSpan.FromMilliseconds(100));
         }
 
+        var turnsBefore = session.TurnCount;
         await Assert.That(async () =>
         {
             using var response = await session.ProcessRequestAsync(request, cts.Token).ConfigureAwait(false);
         }).Throws<OperationCanceledException>();
+        await Assert.That(session.TurnCount).IsEqualTo(turnsBefore);
 
         request.SetOptions(new RequestOptions { Search = new SearchOptions { MaxOutputTokens = 8 } });
         using var nextResponse = await session.ProcessRequestAsync(request).ConfigureAwait(false);

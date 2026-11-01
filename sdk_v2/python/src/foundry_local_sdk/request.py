@@ -54,6 +54,38 @@ class Request:
             self._check_open()
             yield self._ptr
 
+    @contextmanager
+    def _cancellation(self, cancel_event: threading.Event | None) -> Iterator[None]:
+        if cancel_event is None:
+            yield
+            return
+        if cancel_event.is_set():
+            raise FoundryLocalException("Request canceled before native processing.", error_code=5)
+
+        finished = threading.Event()
+        errors: list[Exception] = []
+
+        def cancel_until_finished() -> None:
+            try:
+                while not finished.is_set():
+                    if cancel_event.wait(timeout=0.01):
+                        self.cancel()
+                        if finished.wait(timeout=0.01):
+                            return
+            except Exception as exc:
+                errors.append(exc)
+
+        # Cancel is an idle no-op; retries cover the boundary into native processing.
+        worker = threading.Thread(target=cancel_until_finished, daemon=True)
+        worker.start()
+        try:
+            yield
+        finally:
+            finished.set()
+            worker.join()
+            if errors:
+                raise errors[0]
+
     def add_item(self, item: "Item", transfer_ownership: bool = True) -> "Request":
         """Add item to request.
 

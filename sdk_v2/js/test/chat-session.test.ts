@@ -3,8 +3,10 @@
 // streaming.test.ts.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { FlErrorCode } from "../src/detail/errors.js";
+import type { NativeChatSession } from "../src/detail/native.js";
 import { Item } from "../src/items.js";
-import { Request } from "../src/request.js";
+import { Request, unwrapNativeRequest } from "../src/request.js";
 import { ChatSession, Session } from "../src/session.js";
 
 function extractText(item: Item): string {
@@ -43,7 +45,7 @@ describe.skipIf(!haveTestModelCache)("ChatSession (real model, non-streaming)", 
   let session: ChatSession | undefined;
 
   beforeAll(async () => {
-    fixture = await setupRealModelManager();
+    fixture = await setupRealModelManager({ namePreference: "qwen2.5-0.5b-instruct-generic-cpu:4" });
   }, 5 * 60_000);
 
   afterAll(() => {
@@ -59,6 +61,71 @@ describe.skipIf(!haveTestModelCache)("ChatSession (real model, non-streaming)", 
     session?.dispose();
     session = undefined;
   });
+
+  it(
+    "aborts a queued non-streaming request without changing history and permits request reuse",
+    async () => {
+      if (session === undefined) throw new Error("fixture missing");
+      const native = (session as unknown as { native: NativeChatSession }).native;
+      const turnsBefore = session.turnCount;
+      let started!: (release: () => void) => void;
+      const workerStarted = new Promise<() => void>((resolve) => {
+        started = resolve;
+      });
+      const first = new Request()
+        .addItem(Item.userMessage("Say hello."))
+        .setOptions({ search: { maxOutputTokens: 8, temperature: 0 } });
+      const active = native.processRequest(unwrapNativeRequest(first), started);
+      const release = await workerStarted;
+      const request = new Request()
+        .addItem(Item.userMessage("Say hello."))
+        .setOptions({ search: { maxOutputTokens: 8, temperature: 0 } });
+      const controller = new AbortController();
+      try {
+        const queued = session.processRequest(request, { signal: controller.signal });
+        controller.abort();
+        await expect(queued).rejects.toMatchObject({ name: "AbortError", code: FlErrorCode.OperationCancelled });
+      } finally {
+        release();
+        await active;
+      }
+      expect(session.turnCount).toBe(turnsBefore + 1);
+      const response = await session.processRequest(request);
+      expect(response.usage.completionTokens).toBeGreaterThan(0);
+    },
+    2 * 60_000,
+  );
+
+  it.each([false, true])(
+    "non-streaming signal cancellation stops inference and allows request reuse (pre-aborted=%s)",
+    async (cancelBeforeStart) => {
+      if (session === undefined) throw new Error("fixture missing");
+      // Warm the generator so the active case exercises inference, not cold model initialization.
+      await session.processRequest(
+        new Request().addItem(Item.userMessage("Say hello.")).setOptions({ search: { maxOutputTokens: 1 } }),
+      );
+
+      const request = new Request()
+        .addItem(Item.userMessage("Count from 1 to 10000, writing every integer on its own line."))
+        .setOptions({ search: { maxOutputTokens: 256, temperature: 0 } });
+      const controller = new AbortController();
+      if (cancelBeforeStart) controller.abort();
+      const timer = cancelBeforeStart ? undefined : setTimeout(() => controller.abort(), 100);
+      const turnsBefore = session.turnCount;
+      try {
+        await expect(session.processRequest(request, { signal: controller.signal })).rejects.toMatchObject({
+          name: "AbortError",
+        });
+        expect(session.turnCount).toBe(turnsBefore);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+      request.setOptions({ search: { maxOutputTokens: 8, temperature: 0 } });
+      const response = await session.processRequest(request);
+      expect(response.usage.completionTokens).toBeGreaterThan(0);
+    },
+    2 * 60_000,
+  );
 
   it(
     "processRequest() resolves with a Response that contains at least one output item",

@@ -65,7 +65,9 @@ class StreamingResponse:
     The wrapper can be iterated at most once; a second ``iter()`` raises.
     """
 
-    def __init__(self, session: "Session", request: "Request") -> None:
+    def __init__(
+        self, session: "Session", request: "Request", cancel_event: threading.Event | None = None
+    ) -> None:
         from foundry_local_sdk._native import ffi
         from foundry_local_sdk._native.api import api
 
@@ -88,11 +90,15 @@ class StreamingResponse:
 
         def _run() -> None:
             try:
-                with session._native_lifetime() as ptr:
+                with (
+                    session._native_lifetime() as ptr,
+                    request._native_lifetime() as request_ptr,
+                    request._cancellation(cancel_event),
+                ):
                     worker_started.set()
                     out = ffi.new("flResponse**")
                     api.check_status(
-                        api.inference.Session_ProcessRequest(ptr, request._ptr, out)
+                        api.inference.Session_ProcessRequest(ptr, request_ptr, out)
                     )
                 from foundry_local_sdk.response import Response
 
@@ -389,6 +395,8 @@ class Session(abc.ABC):
     def process_streaming_request(
         self,
         request: "Request",
+        *,
+        cancel_event: threading.Event | None = None,
     ) -> "StreamingResponse":
         """Run a request and stream the items produced by the model.
 
@@ -413,6 +421,9 @@ class Session(abc.ABC):
         automatically calls ``request.cancel()`` and joins the worker so
         the session is ready for the next request. Use ``with`` on the
         returned wrapper to guarantee cleanup of the terminal Response.
+
+        Setting ``cancel_event`` cancels native processing without requiring another output item. An event already set
+        before processing starts rejects without submitting inference. Native completion can win a cancellation race.
 
         Requires ``set_streaming(True)`` to have been called first.
 
@@ -439,20 +450,29 @@ class Session(abc.ABC):
             )
 
         try:
-            return StreamingResponse(self, request)
+            return StreamingResponse(self, request, cancel_event)
         except BaseException:
             self._streaming_in_flight.release()
             raise
 
-    def process_request(self, request: "Request") -> "Response":
-        """Run the request synchronously and return the complete response."""
+    def process_request(
+        self, request: "Request", *, cancel_event: threading.Event | None = None
+    ) -> "Response":
+        """Run synchronously; setting ``cancel_event`` from another thread cancels native processing.
+
+        An event already set rejects without submitting inference. Native completion can win a cancellation race.
+        """
         from foundry_local_sdk._native import ffi
         from foundry_local_sdk._native.api import api
         from foundry_local_sdk.response import Response
 
-        with self._native_lifetime() as ptr:
+        with (
+            self._native_lifetime() as ptr,
+            request._native_lifetime() as request_ptr,
+            request._cancellation(cancel_event),
+        ):
             out = ffi.new("flResponse**")
-            api.check_status(api.inference.Session_ProcessRequest(ptr, request._ptr, out))
+            api.check_status(api.inference.Session_ProcessRequest(ptr, request_ptr, out))
             return Response(out[0])
 
     def _close(self) -> None:
@@ -471,13 +491,14 @@ class Session(abc.ABC):
         t = getattr(self, "_stream_thread", None)
         if t is not None and t.is_alive():
             req = getattr(self, "_stream_request", None)
-            if req is not None:
-                try:
-                    req.cancel()
-                except Exception:
-                    pass
             # Session_Release and the manager lease must wait until native processing exits.
-            t.join()
+            while t.is_alive():
+                if req is not None:
+                    try:
+                        req.cancel()
+                    except Exception:
+                        pass
+                t.join(timeout=0.01)
 
         with self._operation_lock:
             if self._closed or self._ptr is None:

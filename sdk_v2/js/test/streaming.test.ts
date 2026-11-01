@@ -75,7 +75,7 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
   let session: ChatSession | undefined;
 
   beforeAll(async () => {
-    fixture = await setupRealModelManager();
+    fixture = await setupRealModelManager({ namePreference: "qwen2.5-0.5b-instruct-generic-cpu:4" });
   }, 5 * 60_000);
 
   afterAll(() => {

@@ -162,11 +162,7 @@ impl AudioClient {
         let request_json = serde_json::to_string(&request)?;
         let model = self.model.clone();
 
-        let raw = spawn_blocking(move || {
-            let session = NativeSession::create(&model)?;
-            session.run_openai_json(&request_json)
-        })
-        .await?;
+        let raw = crate::detail::session::run_openai_json(model, request_json).await?;
 
         let parsed: AudioTranscriptionResponse = serde_json::from_str(&raw)?;
         Ok(parsed)
@@ -192,8 +188,8 @@ impl AudioClient {
         let model = self.model.clone();
 
         let session = spawn_blocking(move || NativeSession::create(&model)).await?;
-        let rx = run_openai_json_streaming(session, request_json, Box::new(Some));
-        Ok(AudioTranscriptionStream::new(rx))
+        let (rx, cancel_guard) = run_openai_json_streaming(session, request_json, Box::new(Some))?;
+        Ok(AudioTranscriptionStream::new(rx, cancel_guard))
     }
 
     /// Create a [`LiveAudioTranscriptionSession`] for real-time audio

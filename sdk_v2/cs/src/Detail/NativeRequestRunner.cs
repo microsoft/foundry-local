@@ -134,7 +134,7 @@ internal static class NativeRequestRunner
                     using var request = new Request();
                     request.AddItem(jsonItem);
 
-                    var responsePtr = session.ProcessRequest(request.Ptr);
+                    var responsePtr = session.ProcessRequest(request.Ptr, stopToken);
                     NativeApi.Inference.ResponseRelease(responsePtr);
 
                     channel.Writer.TryComplete();

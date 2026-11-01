@@ -266,7 +266,7 @@ public abstract class Session : IDisposable
                     try
                     {
                         using var managerLease = _managerLifetime.Acquire(this, trackReentrancy: true);
-                        var responsePtr = _session.ProcessRequest(requestLease.Ptr);
+                        var responsePtr = _session.ProcessRequest(requestLease.Ptr, cts.Token);
 
                         wasCancelled = cts.IsCancellationRequested;
                         if (wasCancelled)

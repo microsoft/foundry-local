@@ -29,11 +29,11 @@ import { Model, unwrapNativeModel } from "./model.js";
 import { type Request, type RequestOptions, unwrapNativeRequest } from "./request.js";
 import type { Response } from "./response.js";
 
-/** Options accepted by streaming Session APIs. */
+/** Cancellation options accepted by Session request APIs. */
 export interface StreamOptions {
   /**
    * Optional cancellation signal. Aborting removes work that is still waiting in the native session FIFO or cancels
-   * active native processing, and the iterator rejects with an `Error` whose `name === "AbortError"`. A signal already
+   * active native processing, and the call rejects with an `Error` whose `name === "AbortError"`. A signal already
    * aborted when this method is called rejects before native work is submitted.
    */
   readonly signal?: AbortSignal;
@@ -180,7 +180,7 @@ function streamItems(native: NativeSession, request: Request, signal: AbortSigna
   }
 
   const mapError = (err: unknown): unknown => {
-    if (signal?.aborted === true && isFoundryLocalError(err) && err.code === FlErrorCode.OperationCancelled) {
+    if (signal?.aborted && isFoundryLocalError(err) && err.code === FlErrorCode.OperationCancelled) {
       (err as { name: string }).name = "AbortError";
     }
     return err;
@@ -297,11 +297,48 @@ export abstract class Session {
    *
    * Rejects with a `FoundryLocalError` on native failure. Calling
    * `request.cancel()` from another async context causes this promise to
-   * reject with `code === FlErrorCode.OperationCancelled`.
+   * reject with `code === FlErrorCode.OperationCancelled`. Passing `{ signal }` also cancels requests waiting in the
+   * native session FIFO and maps cancellation to `AbortError`. Native completion can win a cancellation race.
    */
-  async processRequest(request: Request): Promise<Response> {
-    const nativeReq = unwrapNativeRequest(request);
-    return (await this.native.processRequest(nativeReq)) as Response;
+  async processRequest(request: Request, options?: StreamOptions): Promise<Response> {
+    const signal = options?.signal;
+    if (signal?.aborted === true) {
+      throw makeAbortError("Request aborted before start");
+    }
+
+    let done = false;
+    let cancellationRetry: ReturnType<typeof setTimeout> | undefined;
+    let cancelQueued = (): boolean => false;
+    const cancelUntilSettled = (): void => {
+      if (done || cancellationRetry !== undefined) return;
+      try {
+        request.cancel();
+      } catch {
+        // Native completion may have already released the request.
+      }
+      cancellationRetry = setTimeout(() => {
+        cancellationRetry = undefined;
+        cancelUntilSettled();
+      }, 10);
+    };
+    const onAbort = (): void => {
+      if (!cancelQueued()) cancelUntilSettled();
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      const pending = this.native.processRequest(unwrapNativeRequest(request));
+      cancelQueued = pending.cancelQueued;
+      return (await pending) as Response;
+    } catch (err) {
+      if (signal?.aborted && isFoundryLocalError(err) && err.code === FlErrorCode.OperationCancelled) {
+        (err as { name: string }).name = "AbortError";
+      }
+      throw err;
+    } finally {
+      done = true;
+      signal?.removeEventListener("abort", onAbort);
+      if (cancellationRetry !== undefined) clearTimeout(cancellationRetry);
+    }
   }
 
   /**

@@ -4,7 +4,7 @@ import { Item, type Item as ItemT, type TextItem } from "../items.js";
 import type { Model } from "../model.js";
 import { Request } from "../request.js";
 import type { Response } from "../response.js";
-import { AudioSession } from "../session.js";
+import { AudioSession, type StreamOptions } from "../session.js";
 import { LiveAudioTranscriptionSession } from "./liveAudioSession.js";
 
 // biome-ignore lint/suspicious/noExplicitAny: OpenAI request/response objects are user-shaped JSON.
@@ -71,7 +71,7 @@ export class AudioClient {
    * Transcribe an audio file. Path is forwarded to native and may be any
    * format the underlying model accepts.
    */
-  async transcribe(filePath: string): Promise<Json> {
+  async transcribe(filePath: string, options?: StreamOptions): Promise<Json> {
     this.#checkNotDisposed();
     if (typeof filePath !== "string" || filePath.trim() === "") {
       throw new Error("filePath must be a non-empty string.");
@@ -88,8 +88,9 @@ export class AudioClient {
     const session = new AudioSession(this.#model);
     let response: Response;
     try {
-      response = await session.processRequest(request);
+      response = await session.processRequest(request, options);
     } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") throw err;
       throw new Error(
         `Audio transcription failed for model '${this.modelId}': ${err instanceof Error ? err.message : String(err)}`,
         { cause: err },
@@ -100,15 +101,13 @@ export class AudioClient {
 
     const text = findOpenAiJsonText(response.output);
     if (text === undefined) {
-      throw new Error(
-        `Audio transcription for model '${this.modelId}' returned no openai-json text item.`,
-      );
+      throw new Error(`Audio transcription for model '${this.modelId}' returned no openai-json text item.`);
     }
     return JSON.parse(text);
   }
 
   /** Streaming transcribe. Yields parsed JSON chunks as the model emits them. */
-  transcribeStreaming(filePath: string): AsyncIterable<Json> {
+  transcribeStreaming(filePath: string, options?: StreamOptions): AsyncIterable<Json> {
     this.#checkNotDisposed();
     if (typeof filePath !== "string" || filePath.trim() === "") {
       throw new Error("filePath must be a non-empty string.");
@@ -129,7 +128,7 @@ export class AudioClient {
 
         const session = new AudioSession(model);
         try {
-          for await (const item of session.processStreamingRequest(request)) {
+          for await (const item of session.processStreamingRequest(request, options)) {
             if (item.type !== "text") continue;
             const t = item as TextItem;
             if (t.textType !== "openai-json" || t.text === "") continue;

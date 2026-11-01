@@ -2,7 +2,7 @@
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License.
 # --------------------------------------------------------------------------
-"""Focused tests for synchronous request preflight."""
+"""Focused tests for synchronous request preflight and cancellation."""
 
 from __future__ import annotations
 
@@ -33,6 +33,8 @@ def _fake_session() -> ChatSession:
     session._operation_lock = threading.RLock()
     session._native_call_state = threading.local()
     session._manager = None
+    session._streaming_enabled = True
+    session._streaming_in_flight = threading.Lock()
     return session
 
 
@@ -164,3 +166,87 @@ def test_preflight_capture_keeps_session_and_request_alive_during_concurrent_clo
 
 def assert_null(status) -> None:
     assert status == ffi.NULL
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_cancellation_event_retries_across_native_admission_and_stops_before_reuse(
+    monkeypatch: pytest.MonkeyPatch,
+    streaming: bool,
+) -> None:
+    entered = threading.Event()
+    first_cancel = threading.Event()
+    admitted = threading.Event()
+    canceled = threading.Event()
+    cancel_event = threading.Event()
+    cancel_calls: list[object] = []
+    canceled_status = object()
+    response = object()
+
+    def process(_session, _request, _out):
+        entered.set()
+        assert first_cancel.wait(timeout=2)
+        admitted.set()
+        assert canceled.wait(timeout=2)
+        return canceled_status
+
+    def cancel(request):
+        cancel_calls.append(request)
+        first_cancel.set()
+        if admitted.is_set():
+            canceled.set()
+        return ffi.NULL
+
+    def check_status(status):
+        if status is canceled_status:
+            raise FoundryLocalException("Request canceled.", error_code=5)
+        assert_null(status)
+
+    fake_api = SimpleNamespace(
+        inference=SimpleNamespace(
+            Session_ProcessRequest=process,
+            Request_Cancel=cancel,
+            Request_Release=lambda _ptr: None,
+            Session_Release=lambda _ptr: None,
+        ),
+        check_status=check_status,
+    )
+    _install_native(monkeypatch, fake_api)
+    response_module = importlib.import_module("foundry_local_sdk.response")
+    monkeypatch.setattr(response_module, "Response", lambda _ptr: response)
+    with _fake_session() as session, _fake_request() as request, ThreadPoolExecutor(max_workers=1) as pool:
+        def run():
+            if streaming:
+                with session.process_streaming_request(request, cancel_event=cancel_event) as stream:
+                    list(stream)
+            else:
+                session.process_request(request, cancel_event=cancel_event)
+
+        pending = pool.submit(run)
+        assert entered.wait(timeout=2)
+        cancel_event.set()
+        with pytest.raises(FoundryLocalException) as error:
+            pending.result(timeout=2)
+        assert error.value.error_code == 5
+        assert len(cancel_calls) >= 2
+
+        attempts = len(cancel_calls)
+        fake_api.inference.Session_ProcessRequest = lambda *_args: ffi.NULL
+        assert session.process_request(request) is response
+        assert len(cancel_calls) == attempts
+
+
+def test_pre_set_cancellation_event_never_submits_inference(monkeypatch: pytest.MonkeyPatch) -> None:
+    cancel_event = threading.Event()
+    cancel_event.set()
+    fake_api = SimpleNamespace(
+        inference=SimpleNamespace(
+            Session_ProcessRequest=lambda *_args: pytest.fail("Canceled request reached inference"),
+            Request_Release=lambda _ptr: None,
+            Session_Release=lambda _ptr: None,
+        ),
+    )
+    _install_native(monkeypatch, fake_api)
+    with _fake_session() as session, _fake_request() as request:
+        with pytest.raises(FoundryLocalException) as error:
+            session.process_request(request, cancel_event=cancel_event)
+        assert error.value.error_code == 5

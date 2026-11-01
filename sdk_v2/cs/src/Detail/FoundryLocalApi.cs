@@ -925,8 +925,9 @@ public sealed class Session : IDisposable
     {
         ct.ThrowIfCancellationRequested();
         using var cancellation = ct.CanBeCanceled
-            ? ct.Register(() => Api.CheckStatus(Api.Inference.RequestCancel(requestPtr)))
-            : default;
+            ? new Microsoft.AI.Foundry.Local.Detail.RequestCancellation(
+                () => Api.CheckStatus(Api.Inference.RequestCancel(requestPtr)), ct)
+            : null;
 
         ct.ThrowIfCancellationRequested();
         IntPtr responsePtr = IntPtr.Zero;
