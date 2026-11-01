@@ -79,7 +79,6 @@ internal sealed class OpenAIChatCompletionsTests
     }
 
     [Test]
-    [NotInParallel]
     [Arguments(false)]
     [Arguments(true)]
     public async Task DirectChat_NoStreaming_TokenCancellation_AllowsSubsequentCall(bool cancelBeforeStart)

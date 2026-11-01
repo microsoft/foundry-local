@@ -70,7 +70,6 @@ internal sealed class ChatSessionTests
     }
 
     [Test]
-    [NotInParallel]
     [Arguments(false)]
     [Arguments(true)]
     public async Task Chat_NoStreaming_TokenCancellation_AllowsRequestReuse(bool cancelBeforeStart)
