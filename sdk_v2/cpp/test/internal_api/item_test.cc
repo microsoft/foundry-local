@@ -242,7 +242,7 @@ TEST(SpeechSegmentItemTest, GetApiDataMapsOptionalsToSentinel) {
   item.Finalize();
 
   flSpeechSegmentData out{};
-  out.version = FOUNDRY_LOCAL_API_VERSION;
+  out.version = FOUNDRY_LOCAL_DATA_VERSION;
   item.GetApiData(out);
 
   EXPECT_EQ(out.kind, FOUNDRY_LOCAL_SPEECH_SEGMENT_FINAL);
@@ -270,7 +270,7 @@ TEST(SpeechSegmentItemTest, GetApiDataEmptyOptionalsBecomeSentinel) {
   SpeechSegmentItem item;
   item.Finalize();
   flSpeechSegmentData out{};
-  out.version = FOUNDRY_LOCAL_API_VERSION;
+  out.version = FOUNDRY_LOCAL_DATA_VERSION;
   item.GetApiData(out);
 
   EXPECT_EQ(out.start_time_ms, FOUNDRY_LOCAL_DURATION_UNSET);
@@ -298,7 +298,7 @@ TEST(SpeechResultItemTest, GetApiDataExposesSegmentsAsItemPointers) {
   result.Finalize();
 
   flSpeechResultData out{};
-  out.version = FOUNDRY_LOCAL_API_VERSION;
+  out.version = FOUNDRY_LOCAL_DATA_VERSION;
   result.GetApiData(out);
 
   EXPECT_STREQ(out.text, "the cat sat");
@@ -565,7 +565,7 @@ TEST(ItemDeleterTest, TensorDeleterCalledOnDestruction) {
   {
     auto item = std::make_unique<TensorItem>();
     flTensorData td{};
-    td.version = FOUNDRY_LOCAL_API_VERSION;
+    td.version = FOUNDRY_LOCAL_DATA_VERSION;
     td.data_type = FOUNDRY_LOCAL_TENSOR_FLOAT;
     td.data = buf;
     td.mutable_data = buf;
@@ -591,7 +591,7 @@ TEST(ItemDeleterTest, AudioDeleterReceivesUserData) {
   {
     auto item = std::make_unique<AudioItem>();
     flAudioData ad{};
-    ad.version = FOUNDRY_LOCAL_API_VERSION;
+    ad.version = FOUNDRY_LOCAL_DATA_VERSION;
     ad.data = samples;
     ad.mutable_data = samples;
     ad.data_size = sizeof(samples);
@@ -769,7 +769,7 @@ TEST(ImageItemTest, SetImageData_FromRawBytes) {
   ImageItem item;
   uint8_t pixels[] = {0xFF, 0x00, 0xAA};
   flImageData in = {};
-  in.version = FOUNDRY_LOCAL_API_VERSION;
+  in.version = FOUNDRY_LOCAL_DATA_VERSION;
   in.data = pixels;
   in.data_size = sizeof(pixels);
   in.format = "png";
@@ -786,7 +786,7 @@ TEST(ImageItemTest, SetImageData_FromRawBytes) {
 TEST(ImageItemTest, SetImageData_FromUri) {
   ImageItem item;
   flImageData in = {};
-  in.version = FOUNDRY_LOCAL_API_VERSION;
+  in.version = FOUNDRY_LOCAL_DATA_VERSION;
   in.data = nullptr;
   in.data_size = 0;
   in.format = "jpeg";
@@ -807,7 +807,7 @@ TEST(ImageItemTest, GetApiData_RoundTrip) {
   flImageData out = {};
   item.GetApiData(out);
 
-  EXPECT_EQ(out.version, FOUNDRY_LOCAL_API_VERSION);
+  EXPECT_EQ(out.version, FOUNDRY_LOCAL_DATA_VERSION);
   EXPECT_EQ(out.data, pixels);
   EXPECT_EQ(out.data_size, sizeof(pixels));
   EXPECT_STREQ(out.format, "bmp");
@@ -877,7 +877,7 @@ TEST(AudioItemTest, SetAudioData_FromRawBytes) {
   AudioItem item;
   uint8_t samples[] = {0x01, 0x02};
   flAudioData in = {};
-  in.version = FOUNDRY_LOCAL_API_VERSION;
+  in.version = FOUNDRY_LOCAL_DATA_VERSION;
   in.data = samples;
   in.data_size = sizeof(samples);
   in.format = "wav";
@@ -898,7 +898,7 @@ TEST(AudioItemTest, GetApiData_RoundTrip) {
   flAudioData out = {};
   item.GetApiData(out);
 
-  EXPECT_EQ(out.version, FOUNDRY_LOCAL_API_VERSION);
+  EXPECT_EQ(out.version, FOUNDRY_LOCAL_DATA_VERSION);
   EXPECT_EQ(out.data, samples);
   EXPECT_EQ(out.data_size, sizeof(samples));
   EXPECT_STREQ(out.format, "mp3");
@@ -926,7 +926,7 @@ TEST(TensorItemTest, SetTensorData) {
   float data[] = {1.0f, 2.0f, 3.0f, 4.0f};
   int64_t shape[] = {2, 2};
   flTensorData in = {};
-  in.version = FOUNDRY_LOCAL_API_VERSION;
+  in.version = FOUNDRY_LOCAL_DATA_VERSION;
   in.data_type = FOUNDRY_LOCAL_TENSOR_FLOAT;
   in.data = data;
   in.shape = shape;
@@ -948,7 +948,7 @@ TEST(TensorItemTest, GetApiData_RoundTrip) {
   flTensorData out = {};
   item.GetApiData(out);
 
-  EXPECT_EQ(out.version, FOUNDRY_LOCAL_API_VERSION);
+  EXPECT_EQ(out.version, FOUNDRY_LOCAL_DATA_VERSION);
   EXPECT_EQ(out.data_type, FOUNDRY_LOCAL_TENSOR_FLOAT);
   EXPECT_EQ(out.data, static_cast<void*>(data));
   ASSERT_EQ(out.rank, 2u);
@@ -964,7 +964,7 @@ TEST(BytesItemTest, SetBytesData) {
   BytesItem item;
   uint8_t raw[] = {0xDE, 0xAD};
   flBytesData in = {};
-  in.version = FOUNDRY_LOCAL_API_VERSION;
+  in.version = FOUNDRY_LOCAL_DATA_VERSION;
   in.item_type = FOUNDRY_LOCAL_ITEM_IMAGE;
   in.data = raw;
   in.data_size = sizeof(raw);
@@ -983,7 +983,7 @@ TEST(BytesItemTest, GetApiData_RoundTrip) {
   flBytesData out = {};
   item.GetApiData(out);
 
-  EXPECT_EQ(out.version, FOUNDRY_LOCAL_API_VERSION);
+  EXPECT_EQ(out.version, FOUNDRY_LOCAL_DATA_VERSION);
   EXPECT_EQ(out.item_type, FOUNDRY_LOCAL_ITEM_AUDIO);
   EXPECT_EQ(out.data, static_cast<void*>(raw));
   EXPECT_EQ(out.data_size, sizeof(raw));
@@ -1037,7 +1037,7 @@ TEST(AudioItemTest, SampleRateAndChannels_SetViaFlAudioData) {
   AudioItem item;
 
   flAudioData ad{};
-  ad.version = FOUNDRY_LOCAL_API_VERSION;
+  ad.version = FOUNDRY_LOCAL_DATA_VERSION;
   ad.format = "pcm";
   ad.sample_rate = 16000;
   ad.channels = 1;
@@ -1052,7 +1052,7 @@ TEST(AudioItemTest, SampleRateAndChannels_GetApiDataRoundTrip) {
   AudioItem item;
 
   flAudioData ad{};
-  ad.version = FOUNDRY_LOCAL_API_VERSION;
+  ad.version = FOUNDRY_LOCAL_DATA_VERSION;
   ad.format = "pcm";
   ad.sample_rate = 44100;
   ad.channels = 2;

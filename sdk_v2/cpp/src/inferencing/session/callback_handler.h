@@ -45,7 +45,7 @@ struct CallbackHandler {
         logger_(logger),
         queue_(std::make_unique<ItemQueue>()) {
     assert(fn_ && "Streaming callback cannot be null");
-    data_.version = FOUNDRY_LOCAL_API_VERSION;
+    data_.version = FOUNDRY_LOCAL_DATA_VERSION;
     data_.item_queue = queue_->AsApiType();
     worker_ = std::thread(&CallbackHandler::WorkerLoop, this);
   }

@@ -31,6 +31,11 @@ stages:
         versionSpec: '3.12'
         architecture: x64
 
+    - task: PipAuthenticate@1
+      displayName: 'Authenticate Lotus for pip'
+      inputs:
+        artifactFeeds: 'Lotus'
+
     - template: steps-prefetch-nuget.yml
       parameters:
         ortVersion: ${{ parameters.ortVersion }}
@@ -105,7 +110,8 @@ stages:
             'RetainedSuffixReadsPriorPagedAttentionState',
             'MismatchedResidentPromptIsReplacedAndMatchesFreshReplay',
             'RunsTwoConcurrentSessions',
-            'CapacityTimeoutFailsOnlyNewestWaitingConversation',
+            'CapacityWaitSurvivesProgressBeyondItsStallTimeout',
+            'CancelsCapacityWaitingConversationWithoutInterruptingResidents',
             'EvictsOldestIdleConversation',
             'EvictedSessionReplaysCommittedHistory',
             'EvictsIdleConversationWhileAnotherTurnIsGenerating',

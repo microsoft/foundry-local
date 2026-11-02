@@ -20,6 +20,7 @@
 #include "service/non_streaming_disconnect_monitor.h"
 #include "service/web_service.h"
 #include "telemetry/telemetry_action_tracker.h"
+#include "util/json_helpers.h"
 
 #include <foundry_local/foundry_local_c.h>
 
@@ -38,10 +39,10 @@ ChatCompletionsHandler::ChatCompletionsHandler(ServiceContext& ctx) : ctx_(ctx) 
 
 std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::ParseAndValidateRequest(
     const std::string& body, ChatCompletionRequest& req, Request& prepared_request) {
-  nlohmann::json req_json;
+  nlohmann::ordered_json req_json;
 
   try {
-    req_json = nlohmann::json::parse(body);
+    req_json = ParseJsonStrict(body);
   } catch (const nlohmann::json::parse_error& ex) {
     return ErrorResponse(Status::CODE_400, "Invalid JSON", ex.what());
   }

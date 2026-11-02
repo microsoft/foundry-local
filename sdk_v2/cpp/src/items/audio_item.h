@@ -78,7 +78,7 @@ struct AudioItem : Item {
   }
 
   void GetApiData(flAudioData& out) const {
-    out.version = FOUNDRY_LOCAL_API_VERSION;
+    out.version = FOUNDRY_LOCAL_DATA_VERSION;
     out.data = data;
     out.mutable_data = nullptr;
     out.data_size = data_size;

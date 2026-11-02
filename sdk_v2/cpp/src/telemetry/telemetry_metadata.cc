@@ -18,6 +18,7 @@
 #include <fstream>
 #include <thread>
 #include <set>
+#include <utility>
 #include <vector>
 
 #if defined(FOUNDRY_LOCAL_DESKTOP_WINDOWS)
@@ -38,6 +39,11 @@
 namespace fl {
 
 namespace {
+
+struct HostAppMetadata {
+  std::string version;
+  std::string publisher;
+};
 
 std::string JoinTelemetryValues(const std::set<std::string_view>& values) {
   std::string joined;
@@ -148,7 +154,7 @@ std::string FormatFixedFileVersion(const VS_FIXEDFILEINFO& info) {
   return std::string(buf);
 }
 
-std::string GetHostAppVersion() {
+HostAppMetadata GetHostAppMetadata() {
   const auto path = GetProcessPath();
   if (path.empty()) {
     return {};
@@ -174,6 +180,7 @@ std::string GetHostAppVersion() {
     WORD code_page;
   };
 
+  HostAppMetadata metadata;
   void* translations = nullptr;
   UINT translations_len = 0;
   if (::VerQueryValueW(data.data(), L"\\VarFileInfo\\Translation", &translations, &translations_len) &&
@@ -181,25 +188,31 @@ std::string GetHostAppVersion() {
     const auto* entries = static_cast<const LangAndCodePage*>(translations);
     const size_t count = translations_len / sizeof(LangAndCodePage);
     for (size_t i = 0; i < count; ++i) {
-      auto version = QueryVersionString(data, entries[i].language, entries[i].code_page, L"ProductVersion");
-      if (!version.empty()) {
-        return version;
+      if (metadata.version.empty()) {
+        metadata.version = QueryVersionString(data, entries[i].language, entries[i].code_page, L"ProductVersion");
+        if (metadata.version.empty()) {
+          metadata.version = QueryVersionString(data, entries[i].language, entries[i].code_page, L"FileVersion");
+        }
       }
-      version = QueryVersionString(data, entries[i].language, entries[i].code_page, L"FileVersion");
-      if (!version.empty()) {
-        return version;
+
+      if (metadata.publisher.empty()) {
+        metadata.publisher = QueryVersionString(data, entries[i].language, entries[i].code_page, L"CompanyName");
+      }
+
+      if (!metadata.version.empty() && !metadata.publisher.empty()) {
+        break;
       }
     }
   }
 
   void* fixed_info = nullptr;
   UINT fixed_info_len = 0;
-  if (::VerQueryValueW(data.data(), L"\\", &fixed_info, &fixed_info_len) &&
+  if (metadata.version.empty() && ::VerQueryValueW(data.data(), L"\\", &fixed_info, &fixed_info_len) &&
       fixed_info != nullptr && fixed_info_len >= sizeof(VS_FIXEDFILEINFO)) {
-    return FormatFixedFileVersion(*static_cast<const VS_FIXEDFILEINFO*>(fixed_info));
+    metadata.version = FormatFixedFileVersion(*static_cast<const VS_FIXEDFILEINFO*>(fixed_info));
   }
 
-  return {};
+  return metadata;
 }
 
 int64_t GetTotalMemoryMB() {
@@ -270,7 +283,7 @@ std::string GetProcessName() {
   return "unknown";
 }
 
-std::string GetHostAppVersion() {
+HostAppMetadata GetHostAppMetadata() {
   return {};
 }
 
@@ -427,15 +440,15 @@ std::string GetBundleString(CFStringRef key) {
   return CfStringToUtf8(static_cast<CFStringRef>(value));
 }
 
-std::string GetHostAppVersion() {
+HostAppMetadata GetHostAppMetadata() {
   auto version = GetBundleString(CFSTR("CFBundleShortVersionString"));
   if (!version.empty()) {
-    return version;
+    return {std::move(version), {}};
   }
-  return GetBundleString(kCFBundleVersionKey);
+  return {GetBundleString(kCFBundleVersionKey), {}};
 }
 #else
-std::string GetHostAppVersion() {
+HostAppMetadata GetHostAppMetadata() {
   return {};
 }
 #endif
@@ -488,7 +501,9 @@ TelemetryMetadata BuildTelemetryMetadata(std::string_view app_name) {
   TelemetryMetadata m;
   m.app_session_guid = GenerateGuidV4();
   m.version = TelemetryInternal::SanitizeTelemetryValue(FOUNDRY_LOCAL_VERSION);
-  m.app_version = GetHostAppVersion();
+  auto host_app = GetHostAppMetadata();
+  m.app_version = std::move(host_app.version);
+  m.publisher = std::move(host_app.publisher);
   if (m.app_version.empty()) {
     m.app_version = m.version;
   }
@@ -513,6 +528,7 @@ ProcessInfo BuildProcessInfo(const TelemetryMetadata& metadata, const Configurat
                              bool include_device_id_status) {
   ProcessInfo info;
   info.app_version = TelemetryInternal::SanitizeTelemetryValue(metadata.app_version);
+  info.publisher = TelemetryInternal::SanitizeTelemetryValue(metadata.publisher);
   info.os_name = TelemetryInternal::SanitizeTelemetryValue(metadata.os_name);
   info.os_version = TelemetryInternal::SanitizeTelemetryValue(metadata.os_version);
   info.cpu_arch = TelemetryInternal::SanitizeTelemetryValue(metadata.cpu_arch);

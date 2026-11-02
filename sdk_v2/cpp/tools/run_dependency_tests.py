@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 import subprocess
+import sys
 import xml.etree.ElementTree as ET
 
 
@@ -34,6 +35,13 @@ def main():
             for first in ("ON", "OFF")
         ),
     }
+    if sys.platform == "win32":
+        expected.update(
+            f"WindowsTelemetryShutdown-{component}-{mode}"
+            for component in ("manager", "telemetry")
+            for mode in ("process-exit", "normal-destruction")
+        )
+        expected.add("WindowsTelemetryShutdown-telemetry-explicit-unload")
     command = [
         args.ctest,
         "--test-dir",
@@ -41,7 +49,7 @@ def main():
         "-C",
         args.config,
         "-R",
-        "^(TelemetryShutdown-|TelemetryPortPolicy$|NanoarrowConsumer-)",
+        "^(TelemetryShutdown-|WindowsTelemetryShutdown-|TelemetryPortPolicy$|NanoarrowConsumer-)",
     ]
     discovery = subprocess.run(
         command + ["--show-only=json-v1"], capture_output=True, text=True, check=True

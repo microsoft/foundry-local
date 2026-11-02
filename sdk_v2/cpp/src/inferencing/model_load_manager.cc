@@ -3,14 +3,14 @@
 #include "inferencing/model_load_manager.h"
 
 #include "exception.h"
+#include "inferencing/generative/chat/onnx_chat_engine.h"
+#include "inferencing/generative/chat/search_options.h"
 #include "inferencing/generative/genai_config.h"
 #include "inferencing/generative/genai_model_instance.h"
-#include "platform/path.h"
 #include "util/path_safety.h"
 #include "utils.h"
 
 #include <algorithm>
-#include <cctype>
 #include <chrono>
 #include <filesystem>
 #include <fmt/format.h>
@@ -22,33 +22,6 @@ namespace {
 
 /// The expected config filename inside a model directory.
 constexpr const char* kGenAIConfigFileName = "genai_config.json";
-
-std::string NormalizeModelPath(std::string_view path) {
-  std::filesystem::path normalized;
-  std::string error_message;
-  if (!platform::GetWeaklyCanonicalPath(std::filesystem::path(std::string(path)), normalized, error_message)) {
-    std::error_code ec;
-    normalized = std::filesystem::absolute(std::filesystem::path(std::string(path)), ec);
-    if (ec) {
-      normalized = std::filesystem::path(std::string(path));
-    }
-  }
-
-  return normalized.lexically_normal().string();
-}
-
-bool ModelPathsEqual(std::string_view left, std::string_view right) {
-  const auto normalized_left = NormalizeModelPath(left);
-  const auto normalized_right = NormalizeModelPath(right);
-#ifdef _WIN32
-  return normalized_left.size() == normalized_right.size() &&
-         std::equal(normalized_left.begin(), normalized_left.end(), normalized_right.begin(), [](char lhs, char rhs) {
-           return std::tolower(static_cast<unsigned char>(lhs)) == std::tolower(static_cast<unsigned char>(rhs));
-         });
-#else
-  return normalized_left == normalized_right;
-#endif
-}
 
 /// Maps model_id substrings to their required execution provider registration name.
 /// If a model_id contains one of these keys, the corresponding EP must be registered.
@@ -257,6 +230,18 @@ bool ModelLoadManager::UnloadModel(std::string_view model_id) {
   return UnloadModel(model_id, static_cast<const std::string*>(nullptr));
 }
 
+ModelLoadManager::SessionModelReference ModelLoadManager::AcquireSessionModel(std::string_view model_id,
+                                                                            std::string_view model_path) {
+  const auto normalized_path = NormalizeModelPath(model_path);
+  std::lock_guard lock(mutex_);
+  auto* model = FindLoadedModelLocked(model_id, &normalized_path);
+  if (model) {
+    model->AcquireSession();
+  }
+
+  return SessionModelReference(model);
+}
+
 bool ModelLoadManager::UnloadModel(std::string_view model_id, std::string_view model_path) {
   const auto normalized_model_path = NormalizeModelPath(model_path);
   return UnloadModel(model_id, &normalized_model_path);
@@ -369,7 +354,11 @@ GenAIModelInstance* ModelLoadManager::GetLoadedModel(std::string_view model_id, 
 GenAIModelInstance* ModelLoadManager::GetLoadedModel(std::string_view model_id,
                                                      const std::string* normalized_model_path) {
   std::lock_guard<std::mutex> lock(mutex_);
+  return FindLoadedModelLocked(model_id, normalized_model_path);
+}
 
+GenAIModelInstance* ModelLoadManager::FindLoadedModelLocked(std::string_view model_id,
+                                                            const std::string* normalized_model_path) {
   std::string id_str(model_id);
   auto it = loaded_models_.find(id_str);
   if (it != loaded_models_.end() &&
@@ -378,6 +367,31 @@ GenAIModelInstance* ModelLoadManager::GetLoadedModel(std::string_view model_id,
   }
 
   return nullptr;
+}
+
+std::optional<ModelLoadManager::LoadedModelState> ModelLoadManager::GetLoadedModelState(
+    std::string_view model_id, std::string_view model_path) {
+  const auto normalized_model_path = NormalizeModelPath(model_path);
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto* loaded = FindLoadedModelLocked(model_id, &normalized_model_path);
+  if (!loaded) {
+    return std::nullopt;
+  }
+
+  LoadedModelState state{
+      .config = loaded->GetGenAIConfig(), .model_path = loaded->ModelPath(), .context_length = std::nullopt};
+  if (state.config.GetChatBackendKind() == ChatBackendKind::kEngine) {
+    // Model construction waits for Engine capability initialization; this cached limit is immutable afterward.
+    const auto* engine = loaded->GetChatEngine();
+    if (engine && engine->MaxRequestLength() > 0) {
+      state.context_length = engine->MaxRequestLength();
+    }
+  } else if ((state.config.model && state.config.model->context_length > 0) ||
+             (state.config.search && state.config.search->max_length > 0)) {
+    state.context_length = static_cast<uint64_t>(GetModelMaxContextLength(state.config));
+  }
+
+  return state;
 }
 
 }  // namespace fl

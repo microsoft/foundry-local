@@ -148,7 +148,7 @@ TEST(CppApiTest, ToolDefinitionDefaultsToFunctionAndStampsTheCurrentVersion) {
   EXPECT_EQ(function.kind, FOUNDRY_LOCAL_TOOL_KIND_FUNCTION);
 
   auto c_def = function.ToC();
-  EXPECT_EQ(c_def.version, static_cast<uint32_t>(FOUNDRY_LOCAL_API_VERSION));
+  EXPECT_EQ(c_def.version, static_cast<uint32_t>(FOUNDRY_LOCAL_TOOL_DEFINITION_VERSION));
   EXPECT_STREQ(c_def.name, "get_weather");
   EXPECT_STREQ(c_def.description, "Get the weather");
   EXPECT_STREQ(c_def.json_schema, R"({"type":"object"})");
@@ -161,7 +161,7 @@ TEST(CppApiTest, ToolDefinitionCustomFactoryEmitsAnExplicitKindAndNoSchema) {
   EXPECT_TRUE(custom.json_schema.empty());
 
   auto c_def = custom.ToC();
-  EXPECT_EQ(c_def.version, static_cast<uint32_t>(FOUNDRY_LOCAL_API_VERSION));
+  EXPECT_EQ(c_def.version, static_cast<uint32_t>(FOUNDRY_LOCAL_TOOL_DEFINITION_VERSION));
   EXPECT_STREQ(c_def.name, "apply_patch");
   EXPECT_STREQ(c_def.json_schema, "");
   EXPECT_EQ(c_def.kind, FOUNDRY_LOCAL_TOOL_KIND_CUSTOM);

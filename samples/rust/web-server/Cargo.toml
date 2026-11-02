@@ -1,0 +1,11 @@
+[package]
+name = "web-server"
+version = "0.1.0"
+edition = "2021"
+description = "Foundry Local built-in web service sample"
+
+[dependencies]
+foundry-local-sdk = "=2.2.1"
+reqwest = { version = "0.12", features = ["json"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

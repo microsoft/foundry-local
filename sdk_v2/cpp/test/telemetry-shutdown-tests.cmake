@@ -95,6 +95,44 @@ struct TelemetryTestSdkVersion : std::string {
     file(WRITE "${shutdown_sdk_dir}/${name}" "${instrumented}")
 endforeach()
 
+if(WIN32 AND CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    add_library(windows-telemetry-shutdown-fixture SHARED internal_api/windows-telemetry-shutdown-library.cc)
+    target_link_libraries(windows-telemetry-shutdown-fixture PRIVATE foundry_local_static MSTelemetry::mat)
+    target_compile_options(windows-telemetry-shutdown-fixture PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+    target_include_directories(windows-telemetry-shutdown-fixture PRIVATE ../src)
+    if(MSVC)
+        target_link_options(windows-telemetry-shutdown-fixture PRIVATE /guard:cf /DYNAMICBASE)
+    endif()
+    add_dependencies(windows-telemetry-shutdown-fixture foundry_local)
+    add_executable(windows-telemetry-shutdown-test windows-telemetry-shutdown-test.cc)
+    target_compile_options(windows-telemetry-shutdown-test PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+    if(MSVC)
+        target_link_options(windows-telemetry-shutdown-test PRIVATE /guard:cf /DYNAMICBASE)
+    endif()
+    add_dependencies(windows-telemetry-shutdown-test windows-telemetry-shutdown-fixture)
+    foreach(component manager telemetry)
+        set(modes process-exit normal-destruction)
+        # Active Manager runtime resources can retain the DLL; the standalone bridge tests actual FreeLibrary teardown.
+        if(component STREQUAL "telemetry")
+            list(APPEND modes explicit-unload)
+        endif()
+        foreach(mode IN LISTS modes)
+            set(name "WindowsTelemetryShutdown-${component}-${mode}")
+            set(home "${CMAKE_CURRENT_BINARY_DIR}/${name}")
+            file(MAKE_DIRECTORY "${home}")
+            add_test(NAME "${name}" COMMAND ${CMAKE_COMMAND} -E env
+                "HOME=${home}" "XDG_CACHE_HOME=${home}" "APPDATA=${home}" "LOCALAPPDATA=${home}"
+                "TELEMETRY_TEST_HOME=${home}" CI=0 TF_BUILD=0 GITHUB_ACTIONS=0 GITLAB_CI=0 CIRCLECI=0 TRAVIS=0
+                JENKINS_URL=0 CODEBUILD_BUILD_ID=0 BUILDKITE=0 TEAMCITY_VERSION=0 APPVEYOR=0
+                BITBUCKET_BUILD_NUMBER=0 SYSTEM_TEAMFOUNDATIONCOLLECTIONURI=0 ORT_RUNNING_UNIT_TESTS=0
+                ORT_DISABLE_TELEMETRY=1 ORT_TELEMETRY_DISABLED=0
+                $<TARGET_FILE:windows-telemetry-shutdown-test> $<TARGET_FILE:windows-telemetry-shutdown-fixture>
+                "${component}" "${mode}")
+            set_tests_properties("${name}" PROPERTIES TIMEOUT 20)
+        endforeach()
+    endforeach()
+endif()
+
 add_library(telemetry_shutdown_sdk OBJECT
     "${shutdown_sdk_dir}/DebugSource.cpp" "${shutdown_sdk_dir}/WorkerThread.cpp" "${shutdown_sdk_dir}/Logger.cpp"
     "${shutdown_sdk_dir}/PAL.cpp" "${shutdown_sdk_dir}/HttpRequestEncoder.cpp")

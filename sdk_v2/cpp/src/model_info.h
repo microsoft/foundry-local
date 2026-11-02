@@ -30,6 +30,8 @@ enum class DeviceType {
 std::string DeviceTypeToString(DeviceType dt);
 
 struct ModelInfo {
+  bool operator==(const ModelInfo&) const = default;
+
   std::string model_id;
   std::string name;
   int version = 0;

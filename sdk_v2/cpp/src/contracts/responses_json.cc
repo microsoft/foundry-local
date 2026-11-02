@@ -587,6 +587,20 @@ void from_json(const nlohmann::json& j, ResponseCreateParams& p) {
   }
 }
 
+void from_json(const nlohmann::ordered_json& j, ResponseCreateParams& p) {
+  from_json(nlohmann::json(j), p);
+  if (p.tools) {
+    for (size_t i = 0; i < p.tools->size(); ++i) {
+      auto& tool = p.tools->at(i);
+      if (!tool.IsCustom() && tool.function.parameters_json) {
+        const auto& declaration = j.at("tools").at(i);
+        const auto& function = declaration.contains("name") ? declaration : declaration.at("function");
+        tool.function.parameters_json = function.at("parameters").dump();
+      }
+    }
+  }
+}
+
 // ========================================================================
 // Config types to_json (for echoing in response)
 // ========================================================================

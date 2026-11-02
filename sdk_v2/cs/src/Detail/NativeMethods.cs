@@ -33,12 +33,9 @@ using System.Runtime.InteropServices;
 // -----------------------------------------------------------------------
 public static partial class NativeMethods
 {
-    // The API version this binding is built against. It is both the version requested from
-    // FoundryLocalGetApi and the version stamped on every versioned struct handed to the native
-    // library, so the two can never disagree. A runtime that does not provide this API table returns
-    // null from FoundryLocalGetApi, and the binding fails at initialization rather than silently
-    // downgrading to a table that does not understand the structs it will be given.
+    // Baseline table and payload layouts. New table-only features negotiate separately.
     public const uint ApiVersion = 2;
+    public const uint LatestApiVersion = 3;
     public const string LibraryName = "foundry_local";
 
     // The first P/Invoke through this class can come from any of several entry
@@ -755,6 +752,9 @@ public delegate IntPtr FlConfig_SetAdditionalOptionsDelegate(IntPtr config, IntP
 [UnmanagedFunctionPointer(CallingConvention.Winapi)]
 public delegate IntPtr FlConfig_SetExternalServiceUrlDelegate(IntPtr config,
     [MarshalAs((UnmanagedType)48 /* LPUTF8Str */)] string url);
+
+[UnmanagedFunctionPointer(CallingConvention.Winapi)]
+public delegate IntPtr FlConfig_SetUseSharedHostDelegate(IntPtr config, [MarshalAs(UnmanagedType.I1)] bool enabled);
 
 // --- Catalog API (flCatalogApi) delegates ---
 

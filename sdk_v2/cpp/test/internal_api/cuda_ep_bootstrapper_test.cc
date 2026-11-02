@@ -394,6 +394,80 @@ TEST(CudaEpBootstrapperTest, InstalledBundleGenAiBridgeLoadFailureSkipsRegistrat
   ASSERT_EQ(requested_paths.size(), 1u);
   EXPECT_EQ(requested_paths[0].filename().string(), kGenAiCudaLibrary);
 }
+
+TEST(CudaEpBootstrapperTest, ProviderPreloadFailureReleasesBridgeAndSkipsRegistration) {
+  auto root = test::TempPath::CreateTempDir("fl_cuda_bootstrapper_");
+  FakeDownloads downloads;
+  const auto manifest = MakeRawManifest(downloads, "bundle-v1");
+  NullLogger logger;
+  std::weak_ptr<void> bridge;
+  int load_count = 0;
+  int registration_count = 0;
+  auto loader = [&](const std::filesystem::path& path, ILogger&) -> std::shared_ptr<void> {
+    ++load_count;
+    if (path.filename() != kGenAiCudaLibrary) return {};
+    auto library = std::make_shared<int>(0);
+    bridge = library;
+    return library;
+  };
+
+  CudaEpBootstrapper bootstrapper(
+      root.string(),
+      [&](const std::string&, const std::filesystem::path&) {
+        ++registration_count;
+        return true;
+      },
+      [manifest] { return std::optional<EpBundleManifest>(manifest); }, downloads.AsFn(), loader);
+
+  EXPECT_FALSE(bootstrapper.DownloadAndRegister(false, nullptr, logger));
+  EXPECT_EQ(load_count, 2);
+  EXPECT_EQ(registration_count, 0);
+  EXPECT_TRUE(bridge.expired());
+  EXPECT_FALSE(bootstrapper.IsRegistered());
+  EXPECT_FALSE(std::filesystem::exists(root.path() / "active"));
+}
+
+TEST(CudaEpBootstrapperTest, RegistrationFailureReleasesBothPreloadsAndRetryRetainsThem) {
+  auto root = test::TempPath::CreateTempDir("fl_cuda_bootstrapper_");
+  FakeDownloads downloads;
+  const auto manifest = MakeRawManifest(downloads, "bundle-v1");
+  NullLogger logger;
+  int live_libraries = 0;
+  int load_count = 0;
+  int registration_count = 0;
+  std::vector<std::filesystem::path> requested_paths;
+  auto loader = [&](const std::filesystem::path& path, ILogger&) -> std::shared_ptr<void> {
+    requested_paths.push_back(path);
+    ++load_count;
+    ++live_libraries;
+    return std::shared_ptr<void>(new int(0), [&](void* token) {
+      --live_libraries;
+      delete static_cast<int*>(token);
+    });
+  };
+
+  {
+    CudaEpBootstrapper bootstrapper(
+        root.string(),
+        [&](const std::string&, const std::filesystem::path& path) {
+          EXPECT_EQ(live_libraries, 2);
+          EXPECT_EQ(requested_paths,
+                    (std::vector<std::filesystem::path>{path.parent_path() / kGenAiCudaLibrary, path}));
+          requested_paths.clear();
+          return ++registration_count > 1;
+        },
+        [manifest] { return std::optional<EpBundleManifest>(manifest); }, downloads.AsFn(), loader);
+
+    EXPECT_FALSE(bootstrapper.DownloadAndRegister(false, nullptr, logger));
+    EXPECT_EQ(live_libraries, 0);
+    EXPECT_TRUE(bootstrapper.DownloadAndRegister(false, nullptr, logger));
+    EXPECT_EQ(live_libraries, 2);
+    EXPECT_TRUE(bootstrapper.DownloadAndRegister(false, nullptr, logger));
+    EXPECT_EQ(load_count, 4);
+  }
+
+  EXPECT_EQ(live_libraries, 0);
+}
 #endif
 #endif
 

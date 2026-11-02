@@ -52,7 +52,7 @@ struct SpeechResultItem : Item {
     }
 
     cached_ = {};
-    cached_.version = FOUNDRY_LOCAL_API_VERSION;
+    cached_.version = FOUNDRY_LOCAL_DATA_VERSION;
     cached_.text = text.c_str();
     cached_.language = language.empty() ? nullptr : language.c_str();
     cached_.duration_ms = duration_ms.value_or(FOUNDRY_LOCAL_DURATION_UNSET);

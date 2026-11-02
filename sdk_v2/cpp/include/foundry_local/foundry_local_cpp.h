@@ -58,10 +58,14 @@ inline const char* Version() noexcept;
 
 namespace detail {
 
-/// Get the API function table (cached on first call).
-/// Returns nullptr if the library does not support the requested API version.
+inline uint32_t api_version() {
+  static const uint32_t version = FoundryLocalGetApi(FOUNDRY_LOCAL_API_VERSION) ? FOUNDRY_LOCAL_API_VERSION : 2;
+  return version;
+}
+
+/// Get the API function table (cached on first call). API v2 remains supported for non-hosted operations.
 inline const flApi* api() {
-  static const flApi* p = FoundryLocalGetApi(FOUNDRY_LOCAL_API_VERSION);
+  static const flApi* p = FoundryLocalGetApi(api_version());
   if (!p) {
     throw std::runtime_error("Foundry Local runtime does not support the API version requested by this header");
   }
@@ -269,6 +273,10 @@ class Configuration {
   /// When set, the catalog reads only from the local disk cache and local-only
   /// operations (StartWebService, session creation) return errors.
   Configuration& SetExternalServiceUrl(const std::string& url);
+
+  /// Optional. Use the packaged native shared host instead of in-process execution. Defaults to false.
+  /// Requires an API v3 runtime when enabled. Cannot be combined with SetExternalServiceUrl.
+  Configuration& SetUseSharedHost(bool enabled);
 
   /// Optional. Azure region for the model registry download endpoint.
   /// Defaults to "centralus" when not set.
@@ -955,7 +963,7 @@ struct ToolDefinition {
 
   /// Convert to the C struct for passing across the ABI boundary.
   flToolDefinition ToC() const {
-    static_assert(FOUNDRY_LOCAL_API_VERSION == 2,
+    static_assert(FOUNDRY_LOCAL_TOOL_DEFINITION_VERSION == 2,
                   "flToolDefinition may have new fields; initialize them here before updating this assertion");
     if (name.find('\0') != std::string::npos || description.find('\0') != std::string::npos ||
         json_schema.find('\0') != std::string::npos) {
@@ -967,7 +975,7 @@ struct ToolDefinition {
     // to flToolDefinition in a future version defaults to zero (the value that preserves the older
     // behavior) instead of being left uninitialized.
     flToolDefinition c_def{};
-    c_def.version = FOUNDRY_LOCAL_API_VERSION;
+    c_def.version = FOUNDRY_LOCAL_TOOL_DEFINITION_VERSION;
     c_def.name = name.c_str();
     c_def.description = description.c_str();
     c_def.json_schema = json_schema.c_str();

@@ -227,10 +227,14 @@ stages:
     - template: steps-bootstrap-maven.yml
     - task: Maven@4
       displayName: 'Maven clean verify'
+      env:
+        SYSTEM_ACCESSTOKEN: $(System.AccessToken)
       inputs:
         mavenPOMFile: 'sdk_v2/java/pom.xml'
         goals: 'clean verify'
-        options: '--batch-mode --no-transfer-progress --settings "$(foundryMavenSettings)" -Drevision=$(javaSdkVersion)-preview'
+        options: >-
+          --batch-mode --no-transfer-progress --settings "$(foundryMavenSettings)"
+          -Drevision=$(javaSdkVersion)-preview
         publishJUnitResults: true
         testResultsFiles: 'sdk_v2/java/target/surefire-reports/TEST-*.xml'
         testRunTitle: 'Java SDK package'
@@ -238,8 +242,6 @@ stages:
         jdkDirectory: '$(foundryJavaHome)'
         mavenVersionOption: Path
         mavenDirectory: '$(foundryMavenHome)'
-      env:
-        SYSTEM_ACCESSTOKEN: $(System.AccessToken)
     - task: PowerShell@2
       displayName: 'Stage and validate Maven bundle'
       inputs:
@@ -317,6 +319,8 @@ stages:
           Get-ChildItem $output -File | ForEach-Object { Write-Host "  $($_.Name)" }
     - task: PowerShell@2
       displayName: 'Compile clean Maven consumer against staged Java SDK'
+      env:
+        SYSTEM_ACCESSTOKEN: $(System.AccessToken)
       inputs:
         targetType: inline
         pwsh: true
@@ -327,5 +331,3 @@ stages:
             -MavenDirectory '$(foundryMavenHome)' `
             -MavenSettings '$(foundryMavenSettings)' `
             -JavaDirectory '$(foundryJavaHome)'
-      env:
-        SYSTEM_ACCESSTOKEN: $(System.AccessToken)

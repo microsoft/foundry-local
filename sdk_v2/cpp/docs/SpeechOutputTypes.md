@@ -145,8 +145,24 @@ Attempting to create one returns `FOUNDRY_LOCAL_ERROR_INVALID_USAGE`.
 
 ## V1 scope
 
-The current producer (`AudioSession` over ORT GenAI — Whisper, Nemotron
-streaming) emits one segment **per decoded token, all with kind `NONE`**.
+### Parakeet TDT input handling
+
+Parakeet TDT (`parakeet_tdt`, including the 0.6B v2 and v3 models) uses the
+multimodal audio processor, not the streaming processor used by Nemotron.
+File requests, including OpenAI audio-transcription JSON requests, preprocess the
+complete recording without Whisper task tokens.
+
+Whisper and Parakeet TDT do not support live PCM queue requests (`AudioItem`
+with `format="pcm"` plus an `ItemQueue`). These requests return
+`FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED`, allowing callers to select a file-based
+recording workflow instead of treating unsupported streaming as an internal
+runtime failure. Microphone clients should record a complete utterance and
+submit the resulting audio file through the existing file-transcription API.
+The SDK does not add another recording buffer. Nemotron's incremental
+processing is unchanged.
+
+The current producer (`AudioSession` over ORT GenAI — Whisper, Parakeet TDT,
+Nemotron streaming) emits one segment **per decoded token, all with kind `NONE`**.
 Today's models surface only decoded tokens with no hypothesis-revision signal,
 so `PARTIAL` / `FINAL` and `utterance_start` are part of the contract but not
 yet produced. `NONE` is the honest label until a segmenting ASR exists.

@@ -5,17 +5,15 @@
 /// @file c_api_types.h
 /// Opaque handle types for the C ABI. Each flXxx is an *opaque tag* — there
 /// is no definition anywhere; only a forward declaration. The runtime object
-/// behind a flXxx* is always an instance of the corresponding fl::Xxx (or one
-/// of its subclasses for polymorphic hierarchies like fl::Item / fl::Session).
+/// behind a flXxx* is an instance of its HandleImpl type. Model, session and
+/// preflight handles refer to API backend adapters, never directly to inference
+/// implementation objects. Value/item handles still refer to local fl:: objects.
 ///
-/// Use the AsHandle / AsImpl helpers below to convert between internal
-/// fl::Xxx* and ABI flXxx* pointers. Do NOT try to static_cast between them —
-/// the types are unrelated as far as the language is concerned, and any cast
-/// through an inheritance relationship that does not actually exist at
-/// runtime is undefined behavior. UBSan's vptr check catches it for the
-/// polymorphic types (fl::Item / fl::Session) where the runtime object is
-/// always a sibling subclass like fl::TextItem or fl::ChatSession.
+/// Use AsHandle / AsImpl to encode and decode the matching implementation
+/// base pointer. An opaque handle is not an implementation subclass and must
+/// never be downcast through an inheritance relationship that does not exist.
 
+#include "api/backend.h"
 #include "configuration.h"
 #include "inferencing/session/request.h"
 #include "inferencing/session/response.h"
@@ -41,6 +39,7 @@ struct flItemQueue;
 struct flRequest;
 struct flResponse;
 struct flSession;
+struct flRequestPreflight;
 
 namespace fl::detail {
 
@@ -62,7 +61,7 @@ struct HandleImpl<flModelInfo> {
 };
 template <>
 struct HandleImpl<flModel> {
-  using type = fl::Model;
+  using type = fl::api::ModelBackend;
 };
 template <>
 struct HandleImpl<flItem> {
@@ -82,29 +81,33 @@ struct HandleImpl<flResponse> {
 };
 template <>
 struct HandleImpl<flSession> {
-  using type = fl::Session;
+  using type = fl::api::SessionBackend;
+};
+template <>
+struct HandleImpl<flRequestPreflight> {
+  using type = fl::api::PreflightBackend;
 };
 
 }  // namespace fl::detail
 
-// Convert an internal fl::Xxx* to its opaque handle. Always pick the matching
+// Convert an implementation pointer to its opaque handle. Always pick the matching
 // handle type explicitly, e.g. AsHandle<flItem>(item_ptr).
 template <typename Handle, typename Impl>
 inline Handle* AsHandle(Impl* p) noexcept {
   static_assert(std::is_base_of_v<typename fl::detail::HandleImpl<Handle>::type, Impl>,
                 "Impl must derive from the handle's underlying fl:: type");
-  return reinterpret_cast<Handle*>(p);
+  return reinterpret_cast<Handle*>(static_cast<typename fl::detail::HandleImpl<Handle>::type*>(p));
 }
 
 template <typename Handle, typename Impl>
 inline const Handle* AsHandle(const Impl* p) noexcept {
   static_assert(std::is_base_of_v<typename fl::detail::HandleImpl<Handle>::type, Impl>,
                 "Impl must derive from the handle's underlying fl:: type");
-  return reinterpret_cast<const Handle*>(p);
+  return reinterpret_cast<const Handle*>(static_cast<const typename fl::detail::HandleImpl<Handle>::type*>(p));
 }
 
 // Convert an opaque handle to its internal type. Optionally specify a derived
-// type for polymorphic hierarchies (Item -> TextItem, Session -> ChatSession).
+// type for polymorphic hierarchies (Item -> TextItem).
 // Without an explicit Impl the result is a pointer to the base fl:: type.
 template <typename Impl = void, typename Handle>
 inline auto AsImpl(Handle* h) noexcept {

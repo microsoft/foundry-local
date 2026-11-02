@@ -89,6 +89,20 @@ public WebService Web { get; set; }
 
 [WebService](./microsoft.ai.foundry.local.configuration.webservice.md)<br>
 
+### **UseSharedHost**
+
+Route existing model/session APIs through the packaged native shared host. Defaults to `false` (in-process).
+Execution or web-service Start lazily starts or joins a compatible host; discovery does not start it.
+Manager disposal releases only this client. Cannot be combined with an external web-service URL.
+
+```csharp
+public bool UseSharedHost { get; init; }
+```
+
+#### Property Value
+
+[Boolean](https://docs.microsoft.com/en-us/dotnet/api/system.boolean)<br>
+
 ### **AdditionalSettings**
 
 Additional settings that Foundry Local Core can consume.

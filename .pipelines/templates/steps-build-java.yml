@@ -13,6 +13,9 @@ parameters:
   type: string
 - name: testModel
   type: string
+- name: languageTestModel
+  type: string
+  default: 'nemotron-3.5-asr-streaming-0.6b-generic-cpu:3'
 
 steps:
 - task: PowerShell@2
@@ -124,3 +127,52 @@ steps:
     ORT_TELEMETRY_DISABLED: '1'
     ${{ if eq(parameters.rid, 'win-x64') }}:
       FOUNDRY_TEST_LEGACY_BIN_DIR: $(foundryLegacyNativeDir)
+
+- ${{ if eq(parameters.rid, 'win-x64') }}:
+  - task: Maven@4
+    displayName: 'Prepare multilingual Java ASR model'
+    inputs:
+      mavenPOMFile: 'sdk_v2/java/pom.xml'
+      goals: 'test-compile org.codehaus.mojo:exec-maven-plugin:3.5.0:exec'
+      options: >-
+        --batch-mode --no-transfer-progress --settings "$(foundryMavenSettings)"
+        -Drevision=$(javaSdkVersion)-preview
+        "-Dexec.executable=$(foundryJavaHome)\bin\java.exe"
+        -Dexec.classpathScope=test
+        "-Dexec.args=-classpath %classpath com.microsoft.foundry.local.PrepareAudioLanguageModel"
+      publishJUnitResults: false
+      javaHomeOption: Path
+      jdkDirectory: '$(foundryJavaHome)'
+      mavenVersionOption: Path
+      mavenDirectory: '$(foundryMavenHome)'
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+      FOUNDRY_LOCAL_NATIVE_BIN_DIR: $(flNativeDir)
+      FOUNDRY_TEST_DATA_DIR: '${{ parameters.testDataSharedDir }}'
+      FOUNDRY_TEST_APP_DATA_DIR: '$(Build.BinariesDirectory)/java-language-model-app'
+      FOUNDRY_TEST_MODEL: '${{ parameters.languageTestModel }}'
+      ORT_TELEMETRY_DISABLED: '1'
+
+  - task: Maven@4
+    displayName: 'Verify fixed language and auto with multilingual speech'
+    inputs:
+      mavenPOMFile: 'sdk_v2/java/pom.xml'
+      goals: 'test'
+      options: >-
+        --batch-mode --no-transfer-progress --settings "$(foundryMavenSettings)"
+        -Drevision=$(javaSdkVersion)-preview
+        -Dtest=NativeAudioLanguageTest
+        -Dfoundry.test.language.required=true
+      publishJUnitResults: true
+      testResultsFiles: 'sdk_v2/java/target/surefire-reports/TEST-com.microsoft.foundry.local.NativeAudioLanguageTest.xml'
+      testRunTitle: 'Java SDK multilingual language selection'
+      javaHomeOption: Path
+      jdkDirectory: '$(foundryJavaHome)'
+      mavenVersionOption: Path
+      mavenDirectory: '$(foundryMavenHome)'
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+      FOUNDRY_LOCAL_NATIVE_BIN_DIR: $(flNativeDir)
+      FOUNDRY_TEST_DATA_DIR: '${{ parameters.testDataSharedDir }}'
+      FOUNDRY_TEST_MODEL: '${{ parameters.languageTestModel }}'
+      ORT_TELEMETRY_DISABLED: '1'

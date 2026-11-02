@@ -126,6 +126,7 @@ class OnnxChatEngine {
   std::unordered_map<Conversation*, std::unique_ptr<NativeConversation>> conversations_;
   uint64_t max_request_length_ = 0;
   uint64_t next_admission_sequence_ = 1;
+  std::chrono::steady_clock::time_point last_progress_at_ = std::chrono::steady_clock::now();
 };
 
 }  // namespace fl

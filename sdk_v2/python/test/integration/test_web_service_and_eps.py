@@ -20,6 +20,18 @@ from foundry_local_sdk.exception import FoundryLocalException
 # ---------------------------------------------------------------------------
 
 class TestWebServiceLifecycle:
+    def test_urls_observe_native_listener_changes(self, manager):
+        from foundry_local_sdk._native.api import api
+
+        assert manager.urls is None
+        with manager._native_call() as native_manager:
+            api.check_status(api.root.Manager_WebServiceStart(native_manager))
+            try:
+                assert manager.urls
+            finally:
+                api.check_status(api.root.Manager_WebServiceStop(native_manager))
+        assert manager.urls is None
+
     def test_start_web_service_populates_urls(self, manager):
         manager.start_web_service()
         try:

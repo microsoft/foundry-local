@@ -73,6 +73,7 @@ ToolCallPayloadParseResult RejectUndecodableToolCall(std::string_view source, bo
       .disposition = ToolCallPayloadDisposition::kMalformed,
       .consumed_size = source.size(),
       .calls = {},
+      .error = {},
   };
 }
 
@@ -1087,6 +1088,7 @@ ToolCallPayloadParseResult ParseBatch(std::string_view source, bool end_of_strea
                              : ToolCallPayloadDisposition::kRejected,
           .consumed_size = source.size(),
           .calls = {},
+          .error = {},
       };
     }
     if (block.state == ParseState::kInvalid || block.state == ParseState::kStructuralFailure ||
@@ -1104,6 +1106,7 @@ ToolCallPayloadParseResult ParseBatch(std::string_view source, bool end_of_strea
                              : ToolCallPayloadDisposition::kRejected,
           .consumed_size = rejected.end,
           .calls = {},
+          .error = {},
       };
     }
 
@@ -1138,6 +1141,7 @@ ToolCallPayloadParseResult ParseBatch(std::string_view source, bool end_of_strea
       .disposition = ToolCallPayloadDisposition::kParsed,
       .consumed_size = batch_end,
       .calls = std::move(calls),
+      .error = {},
   };
 }
 

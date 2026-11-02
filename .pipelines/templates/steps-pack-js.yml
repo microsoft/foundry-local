@@ -23,6 +23,12 @@ parameters:
 
 steps:
 
+- task: UsePythonVersion@0
+  displayName: 'Use Python 3.12'
+  inputs:
+    versionSpec: '3.12'
+    architecture: 'x64'
+
 - task: NodeTool@0
   displayName: 'Use Node.js 20'
   inputs:
@@ -85,7 +91,13 @@ steps:
       $dst = '${{ parameters.outputDir }}'
       New-Item -ItemType Directory -Force -Path $dst | Out-Null
       Set-Location "$(Build.SourcesDirectory)/sdk_v2/js"
+      python -B -m unittest discover -s script -p test_pack_npm.py -v
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       npm pack --pack-destination $dst
       if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      $packages = @(Get-ChildItem $dst -Filter '*.tgz' -File)
+      if ($packages.Count -ne 1) { throw "Expected one npm tarball, found $($packages.Count)" }
+      python script/pack_npm.py $packages[0].FullName
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       Get-ChildItem $dst | ForEach-Object { Write-Host "  $($_.Name)  $($_.Length) bytes" }
-  displayName: 'npm pack'
+  displayName: 'npm pack and validate final tarball'

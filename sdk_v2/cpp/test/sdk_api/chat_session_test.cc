@@ -332,13 +332,15 @@ TEST_F(ToolCallFixture, CustomToolRegistrationRules) {
 TEST_F(ToolCallFixture, CustomToolCallDeliversRawArguments) {
   using namespace foundry_local;
 
+  const std::string expected_payload = "hello a.txt";
   ChatSession session(tool_model());
-  session.AddToolDefinition(
-      ToolDefinition::Custom("apply_patch", "Applies a text patch. The payload is the patch text."));
+  session.AddToolDefinition(ToolDefinition::Custom(
+      "apply_patch", "A test tool that accepts an opaque string. Copy the supplied input exactly."));
 
   Request request{
-      SystemMessage("You are a helpful AI assistant. Use the provided tool to answer."),
-      UserMessage("Apply a patch that adds the line 'hello' to a.txt."),
+      SystemMessage("This is a custom-tool transport test, not a patch-writing task. Call apply_patch with the user's "
+                    "literal string as its input. Do not interpret or paraphrase the string."),
+      UserMessage("Use exactly this input string: " + expected_payload),
   };
   RequestOptions opts;
   opts.search.temperature = 0.0f;
@@ -369,8 +371,7 @@ TEST_F(ToolCallFixture, CustomToolCallDeliversRawArguments) {
     auto parsed = nlohmann::json::parse(tc.arguments, nullptr, /*allow_exceptions=*/false);
     EXPECT_FALSE(parsed.is_object() && parsed.contains("input"))
         << "custom tool arguments must be the raw payload, not the normalized wrapper: " << tc.arguments;
-    EXPECT_NE(tc.arguments.find("hello"), std::string_view::npos);
-    EXPECT_NE(tc.arguments.find("a.txt"), std::string_view::npos);
+    EXPECT_EQ(tc.arguments, expected_payload);
     std::cout << "Custom tool call: " << tc.name << "(" << tc.arguments << ")\n";
     found_tool_call = true;
     break;
