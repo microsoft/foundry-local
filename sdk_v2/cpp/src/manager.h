@@ -42,6 +42,9 @@ struct ModelInfo;
 /// Central manager for the Foundry Local SDK.
 class Manager {
  public:
+  /// Apply runtime environment policy before shared-host compatibility is captured or ORT is initialized.
+  static void PrepareOrtEnvironment();
+
   /// Create and initialize the singleton manager.
   /// The manager creates its own logger from the configuration.
   static Manager& Create(const Configuration& config);

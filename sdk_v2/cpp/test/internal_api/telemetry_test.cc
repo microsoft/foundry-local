@@ -183,7 +183,7 @@ TEST(TelemetryEnvironmentTest, DetectsCiEnvironmentFlag) {
 }
 
 TEST(TelemetryEnvironmentTest, DetectsSharedOrtTelemetryOptOut) {
-  ScopedEnvVar disabled("ORT_TELEMETRY_DISABLED", "true");
+  ScopedEnvVar disabled("ORT_DISABLE_TELEMETRY", "true");
   EXPECT_TRUE(TelemetryEnvironment::IsTelemetryDisabledByEnvVar());
 }
 
@@ -251,7 +251,7 @@ TEST(TelemetryEnvironmentTest, ClassifiesEmulatorAndUndetectedHostWithoutClaimin
 
 TEST(OneDsTelemetryTest, DisableNonessentialTelemetrySuppressesUpload) {
   constexpr std::array<const char*, 14> environment_variables = {
-      "ORT_TELEMETRY_DISABLED",
+      "ORT_DISABLE_TELEMETRY",
       "CI",
       "TF_BUILD",
       "GITHUB_ACTIONS",
@@ -308,13 +308,13 @@ TEST(OneDsTelemetryTest, OrtEnvironmentVariableSuppressesOnlyNonessentialUpload)
   for (const auto* name : ci_environment_variables) {
     unset_variables.push_back(std::make_unique<ScopedEnvVar>(name, nullptr));
   }
-  ScopedEnvVar disabled("ORT_TELEMETRY_DISABLED", "true");
+  ScopedEnvVar disabled("ORT_DISABLE_TELEMETRY", "true");
 
   RecordingLogger logger;
   OneDsTelemetry telemetry("TestApp", logger);
 
   constexpr std::string_view expected_diagnostic =
-      "[Telemetry] Disabled via ORT_TELEMETRY_DISABLED; non-essential 1DS upload disabled "
+      "[Telemetry] Disabled via ORT_DISABLE_TELEMETRY; non-essential 1DS upload disabled "
       "(ProcessInfo still uploads)";
   const auto diagnostic =
       std::find_if(logger.entries.begin(), logger.entries.end(), [expected_diagnostic](const auto& entry) {
@@ -1443,7 +1443,7 @@ TEST(TelemetryEnvironmentTest, DistinguishesUnsetAndEmptyFromRejectedValues) {
 TEST(TelemetryEnvironmentTest, RejectsOversizedFunctionalValuesAndFailsClosedForGatingFlags) {
   const std::string input(kMaxTelemetryEnvironmentLength + 1, 'x');
   ScopedEnvVar variable("FOUNDRY_TELEMETRY_LIMIT_TEST", input.c_str());
-  ScopedEnvVar disabled("ORT_TELEMETRY_DISABLED", input.c_str());
+  ScopedEnvVar disabled("ORT_DISABLE_TELEMETRY", input.c_str());
   ScopedEnvVar ci("CI", input.c_str());
   EXPECT_TRUE(TelemetryEnvironment::GetEnv("FOUNDRY_TELEMETRY_LIMIT_TEST").empty());
   EXPECT_FALSE(TelemetryEnvironment::TryGetEnv("FOUNDRY_TELEMETRY_LIMIT_TEST").has_value());

@@ -125,7 +125,7 @@ if(WIN32 AND CMAKE_SYSTEM_NAME STREQUAL "Windows")
                 "TELEMETRY_TEST_HOME=${home}" CI=0 TF_BUILD=0 GITHUB_ACTIONS=0 GITLAB_CI=0 CIRCLECI=0 TRAVIS=0
                 JENKINS_URL=0 CODEBUILD_BUILD_ID=0 BUILDKITE=0 TEAMCITY_VERSION=0 APPVEYOR=0
                 BITBUCKET_BUILD_NUMBER=0 SYSTEM_TEAMFOUNDATIONCOLLECTIONURI=0 ORT_RUNNING_UNIT_TESTS=0
-                ORT_DISABLE_TELEMETRY=1 ORT_TELEMETRY_DISABLED=0
+                ORT_DISABLE_TELEMETRY=1 ORT_DISABLE_TELEMETRY=0
                 $<TARGET_FILE:windows-telemetry-shutdown-test> $<TARGET_FILE:windows-telemetry-shutdown-fixture>
                 "${component}" "${mode}")
             set_tests_properties("${name}" PROPERTIES TIMEOUT 20)
@@ -173,7 +173,7 @@ foreach(mode retained threaded recreated explicit prime-only optout ci-disabled 
             "TELEMETRY_TEST_HOME=${home}" "CI=${ci}" TF_BUILD=0 GITHUB_ACTIONS=0 GITLAB_CI=0 CIRCLECI=0 TRAVIS=0
             JENKINS_URL=0 CODEBUILD_BUILD_ID=0 BUILDKITE=0 TEAMCITY_VERSION=0 APPVEYOR=0
             BITBUCKET_BUILD_NUMBER=0 SYSTEM_TEAMFOUNDATIONCOLLECTIONURI=0 ORT_RUNNING_UNIT_TESTS=0
-            ORT_DISABLE_TELEMETRY=1 "ORT_TELEMETRY_DISABLED=${optout}"
+            ORT_DISABLE_TELEMETRY=1 "ORT_DISABLE_TELEMETRY=${optout}"
             $<TARGET_FILE:telemetry_shutdown_tests> ${mode})
     set_tests_properties(TelemetryShutdown-${mode} PROPERTIES TIMEOUT 60)
 endforeach()

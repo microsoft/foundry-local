@@ -44,6 +44,7 @@ ManagerRoot::ManagerRoot(const Configuration& configuration) {
 
   if (effective.use_shared_host) {
 #if FOUNDRY_LOCAL_HAS_SHARED_HOST
+    Manager::PrepareOrtEnvironment();
     effective.use_shared_host = false;
     auto coordinator = std::make_shared<hosting::HostCoordinator>(effective, hosting::ResolveRuntimeAssets());
     auto metadata = CreateEmbeddedBackend(coordinator->EffectiveConfiguration());
