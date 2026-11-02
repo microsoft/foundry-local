@@ -927,3 +927,31 @@ TEST_F(SearchOptionsTest, ChunkedPrefillTreatsZeroAsUnset) {
   ApplySearchOptions(opts, 10, GetConfig(), *params, ExecutionProvider::kCPU);
   EXPECT_EQ(params->GetSearchNumber("chunk_size"), 2048);
 }
+
+TEST_F(SearchOptionsTest, Phi3DoesNotDefaultToChunkedPrefill) {
+  SearchOptions opts;
+  opts.max_output_tokens = 32;
+  auto config = GetConfig();
+  config.model->type = "phi3";
+
+  for (ExecutionProvider ep : {ExecutionProvider::kDefault, ExecutionProvider::kCPU, ExecutionProvider::kCUDA,
+                               ExecutionProvider::kTensorRT_RTX, ExecutionProvider::kWebGPU}) {
+    for (int prompt_tokens : {3901, 4531}) {
+      auto params = MakeParams();
+      ApplySearchOptions(opts, prompt_tokens, config, *params, ep);
+      EXPECT_EQ(params->GetSearchNumber("chunk_size"), 0)
+          << "EP: " << static_cast<int>(ep) << ", prompt tokens: " << prompt_tokens;
+    }
+  }
+}
+
+TEST_F(SearchOptionsTest, Phi3PreservesExplicitChunkedPrefillSetting) {
+  SearchOptions opts;
+  auto config = GetConfig();
+  config.model->type = "phi3";
+  auto params = MakeParams();
+  params->SetSearchOption("chunk_size", 1024);
+
+  ApplySearchOptions(opts, 10, config, *params, ExecutionProvider::kCUDA);
+  EXPECT_EQ(params->GetSearchNumber("chunk_size"), 1024);
+}

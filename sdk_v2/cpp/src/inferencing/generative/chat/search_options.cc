@@ -336,7 +336,10 @@ int ApplySearchOptions(const SearchOptions& options,
 
   // Preserve a positive model setting. ORT GenAI reports both an absent setting and explicit zero as zero; Foundry
   // Local intentionally treats both as unset. ORT GenAI decides whether the model consumes the resulting option.
-  if (gen_params.GetSearchNumber("chunk_size") <= 0) {
+  // Phi-3 models (including Phi-4-mini) can switch LongRoPE factors at the original context length. Chunking the
+  // prompt across that boundary mixes short- and long-factor keys in the KV cache and corrupts generation.
+  const bool use_default_chunking = !config.model || config.model->type != "phi3";
+  if (use_default_chunking && gen_params.GetSearchNumber("chunk_size") <= 0) {
     // The model's resolved EP is kDefault for the common load path, so use the provider declared in
     // genai_config.json. An empty provider means ORT's CPU fallback.
     ExecutionProvider effective_ep = ep;
