@@ -145,6 +145,8 @@ add_executable(foundry_local_tests
     internal_api/scope_guard_test.cc
     internal_api/session_manager_test.cc
     internal_api/sha256_test.cc
+    internal_api/speech_synthesis/speech_synthesis_test.cc
+    internal_api/speech_synthesis/speech_text_test.cc
     internal_api/region_fallback_test.cc
     internal_api/sse_stream_body_test.cc
     internal_api/azure_catalog_test.cc

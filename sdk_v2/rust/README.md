@@ -483,6 +483,32 @@ let batch_response = embedding_client
 // batch_response.data[0].embedding, batch_response.data[1].embedding
 ```
 
+### Text to Speech
+
+Synthesize speech with a `text-to-speech` model (for example VibeVoice-Realtime-0.5B). Each sentence streams as soon as
+it is ready:
+
+```rust
+use foundry_local_sdk::{SpeechOptions, SpeechSynthesisSession};
+use tokio_stream::StreamExt;
+
+let voices = model.speech_voices().await?; // from genai_config.json of the package, default voice first
+model.load().await?;
+
+let session = SpeechSynthesisSession::new(&model).await?;
+let options = SpeechOptions::new().voice(&voices[0].name);
+let mut stream = session.synthesize_streaming("Hello! This is Foundry Local.", options);
+while let Some(chunk) = stream.next().await {
+    let chunk = chunk?; // 24 kHz mono 16-bit PCM for one sentence
+    // play chunk.samples() ...
+}
+let complete = stream.complete_audio().await?;
+std::fs::write("speech.wav", complete.to_wav())?;
+```
+
+See [`examples/text_to_speech.rs`](examples/text_to_speech.rs) and
+[`../cpp/docs/SpeechSynthesis.md`](../cpp/docs/SpeechSynthesis.md) for the model package format.
+
 ### Audio Transcription
 
 Transcribe audio files locally using the `AudioClient`:

@@ -31,6 +31,7 @@
   - [RequestPreflightResult](#requestpreflightresult)
   - [EmbeddingsSession](#embeddingssession)
   - [AudioSession](#audiosession)
+  - [SpeechSynthesisSession](#speechsynthesissession)
   - [ItemQueue](#itemqueue)
   - [ItemStream](#itemstream)
   - [Item](#item)
@@ -205,6 +206,7 @@ pub struct Model { /* private fields */ }
 | `load` | `async fn load(&self) -> Result<(), FoundryLocalError>` | Load the selected variant into memory. |
 | `unload` | `async fn unload(&self) -> Result<(), FoundryLocalError>` | Unload the selected variant from memory. |
 | `remove_from_cache` | `async fn remove_from_cache(&self) -> Result<(), FoundryLocalError>` | Remove the selected variant from the local cache. |
+| `speech_voices` | `async fn speech_voices(&self) -> Result<Vec<SpeechVoice>, FoundryLocalError>` | Voices of a cached `text-to-speech` model, default voice first. Reads `model.voices` in the package's `genai_config.json`; the model does not need to be loaded. |
 | `create_chat_client` | `fn create_chat_client(&self) -> ChatClient` | **Deprecated** — use `ChatSession::new(&model)`. Create a ChatClient bound to the selected variant. |
 | `create_audio_client` | `fn create_audio_client(&self) -> AudioClient` | **Deprecated** — use `AudioSession::new(&model)`. Create an AudioClient bound to the selected variant. |
 
@@ -506,6 +508,33 @@ impl Deref for AudioSession { type Target = Session; }
 | `new` | `async fn new(model: &Model) -> Result<AudioSession, FoundryLocalError>` | Open an audio session on a loaded model. Returns `Validation` if the model's task is not `automatic-speech-recognition`. |
 | `transcribe` | `async fn transcribe(&self, audio: Item) -> Result<String, FoundryLocalError>` | Transcribe a single audio item, returning the recognized text. |
 | `into_session` | `fn into_session(self) -> Session` | Consume this handle, yielding the base session. |
+
+### SpeechSynthesisSession
+
+A text-to-speech session for models with task `text-to-speech` (`TEXT_TO_SPEECH_TASK`), for example
+VibeVoice-Realtime-0.5B.
+Stateless and safe to share across tasks. Dereferences to [`Session`](#session).
+
+```rust
+pub struct SpeechSynthesisSession { /* private fields */ }
+impl Deref for SpeechSynthesisSession { type Target = Session; }
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `new` | `async fn new(model: &Model) -> Result<SpeechSynthesisSession, FoundryLocalError>` | Open a session on a loaded model. Returns `Validation` if the model's task is not `text-to-speech`. |
+| `synthesize` | `async fn synthesize(&self, text: impl Into<String>, options: SpeechOptions) -> Result<SpeechAudio, FoundryLocalError>` | Synthesize the complete audio. |
+| `synthesize_streaming` | `fn synthesize_streaming(&self, text: impl Into<String>, options: SpeechOptions) -> SpeechStream` | Yield one self-contained `SpeechAudio` chunk per sentence (a sentence shorter than 24 characters joins the next one; a sentence longer than 400 characters gives one chunk per part). Dropping the stream cancels synthesis. |
+| `into_session` | `fn into_session(self) -> Session` | Consume this handle, yielding the base session. |
+
+`SpeechStream` implements `Stream<Item = Result<SpeechAudio>>`; `complete_audio(&mut self)` returns the complete audio.
+
+`SpeechOptions` fields (optional, builder methods of the same names): `voice: Option<String>` and
+`speed: Option<f32>` (default 1.0; VibeVoice accepts only 1.0).
+
+`SpeechAudio { data: Vec<u8>, sample_rate: u32 }` holds mono signed 16-bit little-endian PCM, with `samples()`,
+`to_wav()` and `from_item(&Item)`. `SpeechVoice { name, language, gender: Option<String> }`, where `language` is a
+BCP 47 tag such as `en`.
 
 ### ItemQueue
 

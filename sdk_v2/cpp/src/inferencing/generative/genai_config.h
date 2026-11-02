@@ -34,9 +34,15 @@ struct GenAIConfig {
     };
     std::optional<Decoder> decoder;
 
+    /// "model.sample_rate": the output sample rate in Hz of a speech synthesis model, or 0 when not set.
+    int sample_rate = 0;
+
     /// Returns true if the model type is multimodal (phi3v, whisper, parakeet_tdt, phi4mm, fara,
     /// qwen2_5_vl, qwen3_vl, qwen3_5, gemma4, mistral3).
     bool IsMultiModal() const;
+
+    /// Returns true if the model synthesizes speech from text (vibevoice). Its processor tokenizes the text.
+    bool IsSpeechSynthesis() const;
   };
 
   struct Search {

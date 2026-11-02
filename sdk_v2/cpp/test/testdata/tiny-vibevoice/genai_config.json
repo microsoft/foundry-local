@@ -1,0 +1,67 @@
+{
+  "model": {
+    "type": "vibevoice",
+    "context_length": 8192,
+    "vocab_size": 257,
+    "bos_token_id": 256,
+    "eos_token_id": 256,
+    "pad_token_id": 256,
+    "sample_rate": 24000,
+    "decoder": {
+      "session_options": {
+        "log_id": "onnxruntime-genai",
+        "session.intra_op.allow_spinning": "0",
+        "provider_options": []
+      }
+    },
+    "default_voice": "Alpha",
+    "voices": [
+      {
+        "name": "Alpha",
+        "file": "voices/alpha.onnx",
+        "language": "en",
+        "gender": "female"
+      },
+      {
+        "name": "Beta",
+        "file": "voices/beta.onnx",
+        "language": "en-in",
+        "gender": "male"
+      }
+    ],
+    "vibevoice": {
+      "text_lm": {
+        "filename": "text_lm.onnx"
+      },
+      "tts_lm": {
+        "filename": "tts_lm.onnx"
+      },
+      "diffusion_head": {
+        "filename": "diffusion_head.onnx"
+      },
+      "acoustic_connector": {
+        "filename": "acoustic_connector.onnx"
+      },
+      "vocoder": {
+        "filename": "vocoder.onnx"
+      },
+      "speech_scaling_factor": 0.5,
+      "speech_bias_factor": 0.1,
+      "text_window_size": 5,
+      "speech_window_size": 6,
+      "cfg_scale": 2.0,
+      "diffusion": {
+        "timesteps": [
+          500
+        ],
+        "sigmas": [
+          1.0,
+          0.0
+        ]
+      }
+    }
+  },
+  "search": {
+    "random_seed": 24301
+  }
+}

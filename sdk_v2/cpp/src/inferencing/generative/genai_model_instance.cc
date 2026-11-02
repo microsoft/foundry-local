@@ -219,7 +219,9 @@ GenAIModelInstance::GenAIModelInstance(std::string model_id,
   }
 
   try {
-    preprocessor_ = Preprocessor::Create(*oga_model_, IsMultiModal());
+    // A speech synthesis model tokenizes its text with the processor, which also applies the model's text prep.
+    const bool speech_synthesis = genai_config_.model.has_value() && genai_config_.model->IsSpeechSynthesis();
+    preprocessor_ = Preprocessor::Create(*oga_model_, IsMultiModal() || speech_synthesis);
   } catch (const std::runtime_error& e) {
     FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,
                      "failed to create preprocessor for model ", model_id_, ": ", e.what());

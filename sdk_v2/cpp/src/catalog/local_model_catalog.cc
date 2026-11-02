@@ -39,6 +39,7 @@ const std::unordered_set<std::string> kSupportedTasks = {
     "chat-completion",
     "coding",
     "embeddings",
+    "text-to-speech",
     "vision-language-chat",
 };
 
@@ -79,6 +80,13 @@ void ApplyTaskDefaults(ModelInfo& info) {
     }
     if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR)) {
       info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, "embeddings");
+    }
+  } else if (info.task == "text-to-speech") {
+    if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR)) {
+      info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, "text");
+    }
+    if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR)) {
+      info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, "audio");
     }
   }
 }

@@ -190,6 +190,8 @@ pub const FOUNDRY_LOCAL_PARAM_SEED: &str = "seed";
 pub const FOUNDRY_LOCAL_PARAM_EARLY_STOPPING: &str = "early_stopping";
 pub const FOUNDRY_LOCAL_PARAM_DO_SAMPLE: &str = "do_sample";
 pub const FOUNDRY_LOCAL_PARAM_TOOL_CHOICE: &str = "tool_choice";
+pub const FOUNDRY_LOCAL_PARAM_VOICE: &str = "voice";
+pub const FOUNDRY_LOCAL_PARAM_SPEED: &str = "speed";
 
 // ── Versioned data structs ───────────────────────────────────────────────────
 

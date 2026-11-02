@@ -57,6 +57,10 @@ bool GenAIConfig::OnnxModel::IsMultiModal() const {
          type == "mistral3";
 }
 
+bool GenAIConfig::OnnxModel::IsSpeechSynthesis() const {
+  return type == "vibevoice";
+}
+
 std::string GenAIConfig::DefaultProvider() const {
   return std::string(DefaultProviderView());
 }
@@ -136,6 +140,11 @@ GenAIConfig GenAIConfig::LoadFromFile(const std::string& path) {
           model.prompt_templates[key] = val.get<std::string>();
         }
       }
+    }
+
+    if (jm.contains("sample_rate") && jm["sample_rate"].is_number_integer() && jm["sample_rate"].get<int64_t>() > 0 &&
+        jm["sample_rate"].get<int64_t>() <= std::numeric_limits<int>::max()) {
+      model.sample_rate = jm["sample_rate"].get<int>();
     }
 
     if (jm.contains("decoder") && jm["decoder"].is_object()) {

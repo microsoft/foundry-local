@@ -69,5 +69,9 @@ path = "examples/interactive_chat.rs"
 name = "low_level_inference"
 path = "examples/low_level_inference.rs"
 
+[[example]]
+name = "text_to_speech"
+path = "examples/text_to_speech.rs"
+
 [lints.clippy]
 all = { level = "warn", priority = -1 }

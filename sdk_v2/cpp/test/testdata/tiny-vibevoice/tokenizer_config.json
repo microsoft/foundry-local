@@ -1,0 +1,1 @@
+{"add_bos_token": false, "add_prefix_space": false, "bos_token": null, "eos_token": "<|endoftext|>", "pad_token": "<|endoftext|>", "unk_token": null, "model_max_length": 8192, "tokenizer_class": "Qwen2Tokenizer", "added_tokens_decoder": {"256": {"content": "<|endoftext|>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}}}

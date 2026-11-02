@@ -1,8 +1,8 @@
 # Inference with the Foundry Local SDK (v2)
 
 The Foundry Local SDK runs inference in your application, using a locally loaded model.
-Whether you are building a chat assistant, generating embeddings, or transcribing audio,
-the same small set of concepts describes the work:
+Whether you are building a chat assistant, generating embeddings, transcribing audio, or
+synthesizing speech, the same small set of concepts describes the work:
 
 ```text
 Model
@@ -65,6 +65,7 @@ Choose a session and input items that the model supports:
 | `ChatSession` | Messages; tool results when using tools | Assistant messages and/or tool calls | Text items; complete tool-call items when using tools |
 | `EmbeddingsSession` | Text items, one per input | Tensor items containing embedding vectors, one per input | Use the complete response, not token streaming |
 | `AudioSession` | An audio item, or an audio format descriptor followed by an input queue to provide streamed audio chunks. | A speech-result item with the transcript and segment details | Speech-segment items |
+| `SpeechSynthesisSession` | Text items (task `text-to-speech`); option `voice` | One audio item: mono 16-bit PCM at 24 kHz | One audio item per sentence |
 
 ### Coding models
 
@@ -96,10 +97,10 @@ distinguished below.
 | `UNKNOWN` | Unspecified type sentinel, not a usable data item. | None. |
 | `BYTES` | Raw binary data. | `AudioSession`: PCM input chunks inside an input queue, not top-level request items. |
 | `TENSOR` | A typed, multidimensional array. | `EmbeddingsSession`: output embedding vectors. |
-| `TEXT` | Ordinary text or model-generated reasoning text. | `EmbeddingsSession`: input text; `ChatSession`: message parts and streamed text. |
+| `TEXT` | Ordinary text or model-generated reasoning text. | `EmbeddingsSession` and `SpeechSynthesisSession`: input text; `ChatSession`: message parts and streamed text. |
 | `MESSAGE` | A role and typed content parts. | `ChatSession`: input messages and complete assistant-message output. |
 | `IMAGE` | Image bytes or a URI. | `ChatSession`: input message part, with a model that supports images. |
-| `AUDIO` | Audio bytes, a URI, or a streaming format descriptor. | `AudioSession`: input; `ChatSession`: input message part, with a model that supports audio. |
+| `AUDIO` | Audio bytes, a URI, or a streaming format descriptor. | `AudioSession`: input; `ChatSession`: input message part, with a model that supports audio; `SpeechSynthesisSession`: output. |
 | `SPEECH_SEGMENT` | Recognized speech text with optional timing and word details. | `AudioSession`: streamed output and segments within the final speech result; output-only. |
 | `SPEECH_RESULT` | The complete transcript and its segment details. | `AudioSession`: complete response output; output-only. |
 | `TOOL_CALL` | A tool name, call ID, and arguments. | `ChatSession`: complete or streamed output; input when supplying prior assistant tool calls. |
@@ -406,6 +407,12 @@ for (const Item& item : response.GetItems()) {
 
 Each output tensor holds one input's embedding vector. C++ also offers `Embed` helpers
 that return vectors directly; see the [embeddings example](cpp/examples/embeddings/main.cc).
+
+### Text to speech
+
+Speech synthesis uses the same flow: send TEXT items, receive one AUDIO item, or one AUDIO item per sentence with a
+streaming callback. The model package, options and measurements are in
+[SpeechSynthesis.md](cpp/docs/SpeechSynthesis.md). The Rust binding has a typed `SpeechSynthesisSession`.
 
 ## Streaming output and the final response
 

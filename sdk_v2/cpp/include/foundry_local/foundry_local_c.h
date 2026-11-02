@@ -313,6 +313,10 @@ typedef enum flTensorDataType {
 /* Request options */
 #define FOUNDRY_LOCAL_PARAM_TOOL_CHOICE "tool_choice"  ///< string: See flToolChoice for the typed enum.
 
+/* Speech synthesis options (task "text-to-speech") */
+#define FOUNDRY_LOCAL_PARAM_VOICE "voice"  ///< string. Voice name from the model package. Default per model.
+#define FOUNDRY_LOCAL_PARAM_SPEED "speed"  ///< float. Speaking rate. Default 1.0. VibeVoice accepts only 1.0.
+
 // Types supported in request input and response output
 // The Item type is opaque and supports various usages. The flItemType determines the operations that can be performed.
 // the C++ API provides the logical view of the different usages.
@@ -1167,7 +1171,8 @@ struct flModelApi {
   flDeviceType FL_API_T(Info_GetDeviceType, _In_ const flModelInfo* info);
   /// Returns nullptr if not set.
   const char* FL_API_T(Info_GetExecutionProvider, _In_ const flModelInfo* info);
-  /// Model task: "chat-completion", "coding", "vision-language-chat", "embeddings", or "automatic-speech-recognition".
+  /// Model task: "chat-completion", "coding", "vision-language-chat", "embeddings", "automatic-speech-recognition",
+  /// or "text-to-speech".
   const char* FL_API_T(Info_GetTask, _In_ const flModelInfo* info);
 
   /// Get prompt templates as key/value pairs. Returns nullptr if none.
