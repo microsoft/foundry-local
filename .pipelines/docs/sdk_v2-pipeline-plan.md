@@ -286,7 +286,7 @@ Versions are pipeline-level variables, currently:
 
 * `cppOrtVersion`     `1.31.0`   (`Microsoft.ML.OnnxRuntime`)
 * `cppGenaiVersion`   `0.18.0`   (`Microsoft.ML.OnnxRuntimeGenAI.Foundry`)
-* `cppWinmlVersion`   `2.4.89`    (`Microsoft.Windows.AI.MachineLearning`, WinML 2.x reg-free)
+* `cppWinmlVersion`   `2.5.96`    (`Microsoft.Windows.AI.MachineLearning`, WinML 2.x reg-free)
 
 These must be kept in sync with the cmake defaults and with
 `sdk_v2/deps_versions.json` (decision 8). When bumping, update both places
