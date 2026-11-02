@@ -25,4 +25,4 @@ Non-essential telemetry can be disabled as follows.
   - Python: `disable_nonessential_telemetry=True`
   - Rust: `FoundryLocalConfig::new("my_app").additional_setting("DisableNonessentialTelemetry", "true")`
   - Native additional option: `DisableNonessentialTelemetry=true`
-- **Disable via environment.** Set `ORT_TELEMETRY_DISABLED=1` before creating the manager.
+- **Disable via environment.** Set `ORT_DISABLE_TELEMETRY=1` before creating the manager.
