@@ -75,7 +75,7 @@ std::string RequiredEpForConfigProvider(std::string_view provider) {
   }
 
   // Configs may name WinML/OGA providers that are intentionally outside the public override enum, such as
-  // MIGraphXExecutionProvider and RyzenAILightExecutionProvider. Canonical registration names can still be guarded.
+  // RyzenAILightExecutionProvider. Canonical registration names can still be guarded.
   constexpr std::string_view suffix = "ExecutionProvider";
   return provider.ends_with(suffix) ? std::string(provider) : std::string{};
 }

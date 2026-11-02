@@ -71,6 +71,22 @@ class CpuOnlyDetector : public fl::IEpDetector {
   std::string prepared_ep;
 };
 
+// Stops at preparation so tests do not create an actual GPU session.
+class AmdGpuEpDetector : public fl::IEpDetector {
+ public:
+  std::map<std::string, std::vector<std::string>> GetAvailableDevicesToEPs() const override {
+    return {{"GPU", providers}};
+  }
+
+  bool PrepareForModelLoad(std::string_view ep_name) override {
+    prepared_ep = ep_name;
+    return false;
+  }
+
+  std::vector<std::string> providers{"AMDGPUExecutionProvider"};
+  std::string prepared_ep;
+};
+
 /// Creates a minimal model directory with a dummy genai_config.json.
 /// Cleans up on destruction.
 class TempModelDir {
@@ -225,7 +241,7 @@ TEST(ModelLoadManagerTest, LoadRuntimeIdWithCudaConfig_CudaAvailable_PreparesCud
 TEST(ModelLoadManagerTest, LoadRuntimeIdWithCanonicalWinMlProvider_NotAvailable_Throws) {
   CpuOnlyDetector ep;
   fl::StderrLogger logger;
-  TempModelDir dir("alias-migraphx-config", "MIGraphXExecutionProvider");
+  TempModelDir dir("alias-amdgpu-config", "AMDGPUExecutionProvider");
   fl::ModelLoadManager mgr(ep, logger);
 
   try {
@@ -233,7 +249,85 @@ TEST(ModelLoadManagerTest, LoadRuntimeIdWithCanonicalWinMlProvider_NotAvailable_
     FAIL() << "Expected exception";
   } catch (const fl::Exception& e) {
     EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
-    EXPECT_NE(std::string(e.what()).find("MIGraphXExecutionProvider"), std::string::npos);
+    EXPECT_NE(std::string(e.what()).find("AMDGPUExecutionProvider"), std::string::npos);
+  }
+}
+
+TEST(ModelLoadManagerTest, LoadAmdGpuConfigAliases_NotAvailable_ThrowsBeforePreparation) {
+  for (const auto provider : {"AMDGPU", "amdgpu", "AmDgPuExecutionProvider"}) {
+    SCOPED_TRACE(provider);
+    CpuOnlyDetector ep;
+    fl::StderrLogger logger;
+    TempModelDir dir("amdgpu-alias", provider);
+    fl::ModelLoadManager mgr(ep, logger);
+    try {
+      mgr.LoadModel(dir.path(), "local/test-registration");
+      FAIL() << "Expected EP guard failure";
+    } catch (const fl::Exception& e) {
+      EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+      EXPECT_NE(std::string(e.what()).find("AMDGPUExecutionProvider"), std::string::npos);
+    }
+    EXPECT_TRUE(ep.prepared_ep.empty());
+  }
+}
+
+TEST(ModelLoadManagerTest, LoadAmdGpuOverride_NotAvailable_Throws) {
+  CpuOnlyDetector ep;
+  fl::StderrLogger logger;
+  TempModelDir dir("amdgpu-override");
+  fl::ModelLoadManager mgr(ep, logger);
+  try {
+    mgr.LoadModel(dir.path(), "local/test-registration", fl::ExecutionProvider::kAMDGPU);
+    FAIL() << "Expected EP guard failure";
+  } catch (const fl::Exception& e) {
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+    EXPECT_NE(std::string(e.what()).find("AMDGPUExecutionProvider"), std::string::npos);
+  }
+}
+
+TEST(ModelLoadManagerTest, LoadAmdGpuConfigOrOverride_PreparesCanonicalProvider) {
+  for (const auto override_ep : {fl::ExecutionProvider::kDefault, fl::ExecutionProvider::kAMDGPU}) {
+    AmdGpuEpDetector ep;
+    fl::StderrLogger logger;
+    TempModelDir dir("amdgpu-available",
+                     override_ep == fl::ExecutionProvider::kDefault ? "AMDGPUExecutionProvider" : "cuda");
+    fl::ModelLoadManager mgr(ep, logger);
+    try {
+      mgr.LoadModel(dir.path(), "local/test-registration", override_ep);
+      FAIL() << "Expected injected preparation failure";
+    } catch (const fl::Exception& e) {
+      EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INTERNAL);
+      EXPECT_NE(std::string(e.what()).find("failed to prepare AMDGPUExecutionProvider"), std::string::npos);
+    }
+    EXPECT_EQ(ep.prepared_ep, "AMDGPUExecutionProvider");
+  }
+}
+
+TEST(ModelLoadManagerTest, GenericGpuAutoSelectionDoesNotSelectAmdGpu) {
+  AmdGpuEpDetector ep;
+  fl::StderrLogger logger;
+  TempModelDir dir("generic-gpu-amdgpu-only");
+  fl::ModelLoadManager mgr(ep, logger);
+  try {
+    mgr.LoadModel(dir.path(), "model-generic-gpu:1");
+  } catch (const fl::Exception& e) {
+    EXPECT_NE(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+  }
+  EXPECT_TRUE(ep.prepared_ep.empty());
+}
+
+TEST(ModelLoadManagerTest, GenericGpuAutoSelectionStillPrefersCudaThenWebGpuWithAmdGpuAvailable) {
+  for (const auto preferred : {"CUDAExecutionProvider", "WebGpuExecutionProvider"}) {
+    AmdGpuEpDetector ep;
+    ep.providers.push_back("WebGpuExecutionProvider");
+    if (std::string_view(preferred) == "CUDAExecutionProvider") {
+      ep.providers.push_back("CUDAExecutionProvider");
+    }
+    fl::StderrLogger logger;
+    TempModelDir dir("generic-gpu-priority");
+    fl::ModelLoadManager mgr(ep, logger);
+    EXPECT_THROW(mgr.LoadModel(dir.path(), "model-generic-gpu:1"), fl::Exception);
+    EXPECT_EQ(ep.prepared_ep, preferred);
   }
 }
 

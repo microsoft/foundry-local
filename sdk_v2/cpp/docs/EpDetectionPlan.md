@@ -254,8 +254,9 @@ static std::vector<std::unique_ptr<WinMLEpBootstrapper>>
 4. Create one `WinMLEpBootstrapper` per EP.
 5. Catalog handle released when bootstrappers are done (shared via `shared_ptr`).
 
-**MIGraphX special case:** Same as C# — treat failure as non-fatal. MIGraphX isn't
-available in retail builds yet.
+**AMDGPU:** WinML discovery trusts `AMDGPUExecutionProvider`, not the legacy
+`MIGraphXExecutionProvider`. Explicit and local-model runtime selections map to
+GenAI's `AMDGPU` provider. Generic-GPU auto-selection remains CUDA, then WebGPU only.
 
 ---
 
