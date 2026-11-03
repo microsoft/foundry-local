@@ -5,6 +5,8 @@
 #include "catalog/catalog_cache.h"
 #include "catalog/catalog_client.h"
 #include "catalog/local_model_scanner.h"
+#include "inferencing/execution_provider.h"
+#include "inferencing/generative/genai_config.h"
 #include "model.h"
 #include "model_info.h"
 #include "telemetry/telemetry.h"
@@ -15,6 +17,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <filesystem>
 #include <iterator>
 #include <mutex>
 #include <unordered_map>
@@ -205,24 +208,42 @@ void AzureModelCatalog::SetRuntimeDevices(std::map<std::string, std::vector<std:
 
 bool AzureModelCatalog::IsVariantEligibleForDefault(const Model& variant) const {
   const auto& info = variant.Info();
-  const auto provider = ToLower(info.execution_provider);
-  if (provider.empty() || provider == "cpuexecutionprovider") {
+  const auto devices = catalog_devices_->GetAvailableDevicesToEPs();
+  const auto has_provider = [&](std::string_view provider) {
+    const auto normalized = ToLower(EPUtils::NormalizeRegistrationName(provider));
+    for (const auto& [device, eps] : devices) {
+      for (const auto& ep : eps) {
+        if (ToLower(EPUtils::NormalizeRegistrationName(ep)) == normalized) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  };
+  if (info.model_id.find("generic-gpu") != std::string::npos &&
+      (has_provider("CUDAExecutionProvider") || has_provider("WebGpuExecutionProvider"))) {
     return true;
   }
 
-  const auto generic_dml = (provider == "dmlexecutionprovider" || provider == "dml") &&
-                           info.model_id.find("generic-gpu") != std::string::npos;
-  for (const auto& [device, eps] : catalog_devices_->GetAvailableDevicesToEPs()) {
-    for (const auto& ep : eps) {
-      const auto available = ToLower(ep);
-      if (provider == available ||
-          (generic_dml && (available == "cudaexecutionprovider" || available == "webgpuexecutionprovider"))) {
-        return true;
-      }
+  auto provider = info.execution_provider;
+  if (provider.empty() && !variant.LocalPath().empty()) {
+    try {
+      const auto config_path = std::filesystem::path(variant.LocalPath()) / "genai_config.json";
+      provider = GenAIConfig::LoadFromFile(config_path.string()).DefaultProvider();
+    } catch (const std::exception& ex) {
+      logger_.Log(LogLevel::Warning,
+                  fmt::format("Cannot determine execution provider for model '{}': {}", info.model_id, ex.what()));
+      return false;
     }
   }
 
-  return false;
+  if (provider.empty()) {
+    provider = EPUtils::RequiredEpForModelId(info.model_id);
+  }
+
+  provider = EPUtils::NormalizeRegistrationName(provider);
+  return provider.empty() || ToLower(provider) == "cpuexecutionprovider" || has_provider(provider);
 }
 
 std::unique_ptr<ICatalogClient> AzureModelCatalog::CreateCatalogClient(const std::string& url,

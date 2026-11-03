@@ -110,6 +110,24 @@ void BaseModelCatalog::PopulateModels(std::vector<Model> variants) const {
         }
         alias_to_model.erase(incoming);
       }
+    } else {
+      for (auto& [alias, incoming] : alias_to_model) {
+        const auto existing = existing_aliases.find(alias);
+        if (existing == existing_aliases.end()) {
+          continue;
+        }
+
+        std::unordered_set<std::string> existing_ids;
+        for (const auto* variant : existing->second->Variants()) {
+          existing_ids.insert(variant->Id());
+        }
+
+        for (auto* variant : incoming.Variants()) {
+          if (!existing_ids.contains(variant->Id())) {
+            existing->second->AddVariant(std::move(*variant));
+          }
+        }
+      }
     }
 
     for (auto& stored : models_) {
@@ -210,6 +228,8 @@ void BaseModelCatalog::IntegrateVariants(std::vector<Model> variants) const {
         it->second->AddVariant(std::move(v));
         ++added_variants;
       }
+
+      SelectDefaultVariant(*it->second, /*preserve_explicit_selection=*/true);
     } else {
       // New alias: build a container and choose default after all variants are added.
       auto first = std::move(alias_variants.front());
@@ -308,7 +328,7 @@ void BaseModelCatalog::EnsurePopulated(bool allow_refresh) const {
   // not worth the complexity to optimise.)
   std::lock_guard<std::mutex> lock(mutex_);
 
-  const bool needs_refresh = IsAuthoritativeSnapshot() ||
+  const bool needs_refresh = IsAuthoritativeSnapshot() || next_refresh_at_ == std::chrono::steady_clock::time_point{} ||
                              (allow_refresh && std::chrono::steady_clock::now() >= next_refresh_at_);
 
   if (populated_ && !needs_refresh) {

@@ -23,63 +23,6 @@ namespace {
 /// The expected config filename inside a model directory.
 constexpr const char* kGenAIConfigFileName = "genai_config.json";
 
-/// Maps model_id substrings to their required execution provider registration name.
-/// If a model_id contains one of these keys, the corresponding EP must be registered.
-struct ModelIdEpRequirement {
-  std::string_view model_id_substr;
-  std::string_view required_ep;
-};
-
-constexpr ModelIdEpRequirement kModelIdEpRequirements[] = {
-    {"cuda-gpu", "CUDAExecutionProvider"},
-    {"openvino-npu", "OpenVINOExecutionProvider"},
-    {"openvino-gpu", "OpenVINOExecutionProvider"},
-    {"qnn-npu", "QNNExecutionProvider"},
-    {"trtrtx-gpu", "NvTensorRTRTXExecutionProvider"},
-    {"vitis-npu", "VitisAIExecutionProvider"},
-};
-
-/// Returns the required EP registration name for a model_id, or empty if none required.
-std::string_view RequiredEpForModelId(std::string_view model_id) {
-  for (const auto& req : kModelIdEpRequirements) {
-    if (model_id.find(req.model_id_substr) != std::string_view::npos) {
-      return req.required_ep;
-    }
-  }
-
-  return {};
-}
-
-/// Returns whether the provider is DirectML, which is supplied by WinML rather than a downloadable EP bootstrapper.
-bool IsDmlProvider(std::string_view provider) {
-  return provider == "dml" || provider == "DML" || provider == "DmlExecutionProvider" ||
-         provider == "DMLExecutionProvider";
-}
-
-/// Returns the required EP registration name for a provider declared in genai_config.json.
-std::string RequiredEpForConfigProvider(std::string_view provider) {
-  if (provider.empty() || IsDmlProvider(provider)) {
-    return {};
-  }
-
-  auto ep = EPUtils::StringtoEP(provider);
-  if (provider == "WebGpuExecutionProvider") {
-    ep = ExecutionProvider::kWebGPU;
-  }
-
-  if (ep == ExecutionProvider::kCPU) {
-    return {};
-  }
-  if (ep != ExecutionProvider::kUnknown) {
-    return std::string(EPUtils::EPtoRegistrationName(ep));
-  }
-
-  // Configs may name WinML/OGA providers that are intentionally outside the public override enum, such as
-  // RyzenAILightExecutionProvider. Canonical registration names can still be guarded.
-  constexpr std::string_view suffix = "ExecutionProvider";
-  return provider.ends_with(suffix) ? std::string(provider) : std::string{};
-}
-
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -192,8 +135,8 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
     required_ep = EPUtils::EPtoRegistrationName(resolved_ep);
   } else {
     const auto config_provider = genai_config.DefaultProvider();
-    required_ep = config_provider.empty() ? std::string(RequiredEpForModelId(id_str))
-                                          : RequiredEpForConfigProvider(config_provider);
+    required_ep = config_provider.empty() ? std::string(EPUtils::RequiredEpForModelId(id_str))
+                                          : EPUtils::RequiredEpForConfigProvider(config_provider);
   }
 
   // OGA can crash or hang if a model is loaded with an unregistered EP.
