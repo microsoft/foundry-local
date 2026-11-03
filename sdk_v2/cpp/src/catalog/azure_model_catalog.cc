@@ -142,6 +142,39 @@ void RemoveIncompatibleModels(std::vector<ModelInfo>& model_infos) {
   });
 }
 
+void RemoveModelsWithUnavailableEps(std::vector<ModelInfo>& model_infos,
+                                    const IEpDetector& ep_detector,
+                                    ILogger& logger) {
+  std::unordered_set<std::string> available_eps{"cpuexecutionprovider"};
+  for (const auto& [device, eps] : ep_detector.GetAvailableDevicesToEPs()) {
+    for (const auto& ep : eps) {
+      available_eps.insert(ToLower(ep));
+    }
+  }
+
+  std::erase_if(model_infos, [&](const ModelInfo& info) {
+    if (info.execution_provider.empty()) {
+      return false;
+    }
+
+    const auto provider = ToLower(info.execution_provider);
+    if (available_eps.contains(provider)) {
+      return false;
+    }
+
+    // Generic GPU artifacts can use CUDA or WebGPU instead of their configured DirectML provider.
+    if ((provider == "dmlexecutionprovider" || provider == "dml") &&
+        info.model_id.find("generic-gpu") != std::string::npos &&
+        (available_eps.contains("cudaexecutionprovider") || available_eps.contains("webgpuexecutionprovider"))) {
+      return false;
+    }
+
+    logger.Log(LogLevel::Debug, fmt::format("Skipping model '{}' during automatic selection: {} is unavailable.",
+                                            info.model_id, info.execution_provider));
+    return true;
+  });
+}
+
 }  // namespace
 
 class AzureModelCatalog::CatalogDevices final : public IEpDetector {
@@ -280,14 +313,15 @@ std::vector<Model> AzureModelCatalog::FetchModels() const {
 
   auto catalog_result = GetLiveCatalogOrLocalSnapshot(cached_model_ids);
   RemoveIncompatibleModels(catalog_result.model_infos);
-  auto models = CreateModelsWithLocalPaths(catalog_result.model_infos, local_models);
-
-  logger_.Log(LogLevel::Information, fmt::format("Populated model info for {} models.", models.size()));
 
   if (catalog_result.source == CatalogSource::kLive && !catalog_result.model_infos.empty()) {
     CatalogCache cache(cache_dir_, logger_);
     cache.Save(catalog_result.model_infos);
   }
+
+  RemoveModelsWithUnavailableEps(catalog_result.model_infos, *catalog_devices_, logger_);
+  auto models = CreateModelsWithLocalPaths(catalog_result.model_infos, local_models);
+  logger_.Log(LogLevel::Information, fmt::format("Populated model info for {} models.", models.size()));
 
   return models;
 }
