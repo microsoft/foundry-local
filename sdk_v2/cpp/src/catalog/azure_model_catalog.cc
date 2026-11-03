@@ -206,44 +206,54 @@ void AzureModelCatalog::SetRuntimeDevices(std::map<std::string, std::vector<std:
   }
 }
 
-bool AzureModelCatalog::IsVariantEligibleForDefault(const Model& variant) const {
-  const auto& info = variant.Info();
-  const auto devices = catalog_devices_->GetAvailableDevicesToEPs();
-  const auto has_provider = [&](std::string_view provider) {
-    const auto normalized = ToLower(EPUtils::NormalizeRegistrationName(provider));
-    for (const auto& [device, eps] : devices) {
-      for (const auto& ep : eps) {
-        if (ToLower(EPUtils::NormalizeRegistrationName(ep)) == normalized) {
-          return true;
+BaseModelCatalog::VariantEligibility AzureModelCatalog::MakeVariantEligibility() const {
+  std::unordered_set<std::string> providers;
+  for (const auto& [device, eps] : catalog_devices_->GetAvailableDevicesToEPs()) {
+    for (const auto& ep : eps) {
+      providers.insert(ToLower(EPUtils::NormalizeRegistrationName(ep)));
+    }
+  }
+
+  // Cache config requirements only within this pass so artifact edits and provider changes are seen on refresh.
+  return [this, providers = std::move(providers),
+          configured_providers = std::unordered_map<std::string, std::optional<std::string>>{}](
+             const Model& variant) mutable {
+    const auto& info = variant.Info();
+    if (info.model_id.find("generic-gpu") != std::string::npos &&
+        (providers.contains("cudaexecutionprovider") || providers.contains("webgpuexecutionprovider"))) {
+      return true;
+    }
+
+    auto provider = info.execution_provider;
+    if (provider.empty()) {
+      const auto local_path = variant.LocalPathSnapshot();
+      if (!local_path.empty()) {
+        auto [entry, inserted] = configured_providers.try_emplace(local_path);
+        if (inserted) {
+          try {
+            const auto config_path = std::filesystem::path(local_path) / "genai_config.json";
+            entry->second = GenAIConfig::LoadFromFile(config_path.string()).DefaultProvider();
+          } catch (const std::exception& ex) {
+            logger_.Log(LogLevel::Warning,
+                        fmt::format("Cannot determine execution provider for model '{}': {}", info.model_id, ex.what()));
+          }
         }
+
+        if (!entry->second) {
+          return false;
+        }
+
+        provider = *entry->second;
       }
     }
 
-    return false;
-  };
-  if (info.model_id.find("generic-gpu") != std::string::npos &&
-      (has_provider("CUDAExecutionProvider") || has_provider("WebGpuExecutionProvider"))) {
-    return true;
-  }
-
-  auto provider = info.execution_provider;
-  if (provider.empty() && !variant.LocalPath().empty()) {
-    try {
-      const auto config_path = std::filesystem::path(variant.LocalPath()) / "genai_config.json";
-      provider = GenAIConfig::LoadFromFile(config_path.string()).DefaultProvider();
-    } catch (const std::exception& ex) {
-      logger_.Log(LogLevel::Warning,
-                  fmt::format("Cannot determine execution provider for model '{}': {}", info.model_id, ex.what()));
-      return false;
+    if (provider.empty()) {
+      provider = EPUtils::RequiredEpForModelId(info.model_id);
     }
-  }
 
-  if (provider.empty()) {
-    provider = EPUtils::RequiredEpForModelId(info.model_id);
-  }
-
-  provider = EPUtils::NormalizeRegistrationName(provider);
-  return provider.empty() || ToLower(provider) == "cpuexecutionprovider" || has_provider(provider);
+    provider = ToLower(EPUtils::NormalizeRegistrationName(provider));
+    return provider.empty() || provider == "cpuexecutionprovider" || providers.contains(provider);
+  };
 }
 
 std::unique_ptr<ICatalogClient> AzureModelCatalog::CreateCatalogClient(const std::string& url,

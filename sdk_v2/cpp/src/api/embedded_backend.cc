@@ -92,6 +92,7 @@ class EmbeddedModel final : public ModelBackend {
   const std::string& GetPath() const override { return model_.GetPath(); }
   void Download(std::function<int(float)> progress) override { model_.Download(std::move(progress)); }
   bool IsLoaded() const override { return model_.IsLoaded(); }
+  bool PreserveLoadedSelection(bool preserve) override { return model_.PreserveLoadedSelection(preserve); }
   void Load(std::optional<std::string_view> expected_path) override {
     model_.Load(ExecutionProvider::kDefault, expected_path);
   }

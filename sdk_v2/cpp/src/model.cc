@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
+#include <utility>
 
 namespace fl {
 
@@ -145,7 +146,10 @@ Model::Model(Model&& other) noexcept
       variants_(std::move(other.variants_)),
       retired_variants_(std::move(other.retired_variants_)),
       selected_variant_(other.selected_variant_.load(std::memory_order_relaxed)),
-      selection_is_explicit_(other.selection_is_explicit_) {
+      selection_is_explicit_(other.selection_is_explicit_),
+      has_eligible_default_variant_(other.has_eligible_default_variant_),
+      preserve_loaded_selection_(other.preserve_loaded_selection_),
+      default_variant_refresh_(std::move(other.default_variant_refresh_)) {
   // The mutex and unregistering state are intentionally not moved; moving while unregistering is invalid.
   // After vector move, selected_variant_ still points into the transferred buffer.
   other.download_manager_ = nullptr;
@@ -166,6 +170,9 @@ Model& Model::operator=(Model&& other) noexcept {
     retired_variants_ = std::move(other.retired_variants_);
     selected_variant_.store(other.selected_variant_.load(std::memory_order_relaxed), std::memory_order_relaxed);
     selection_is_explicit_ = other.selection_is_explicit_;
+    has_eligible_default_variant_ = other.has_eligible_default_variant_;
+    preserve_loaded_selection_ = other.preserve_loaded_selection_;
+    default_variant_refresh_ = std::move(other.default_variant_refresh_);
     unregistering_ = false;
     other.download_manager_ = nullptr;
     other.model_load_manager_ = nullptr;
@@ -234,7 +241,8 @@ bool Model::TryReconcileVariants(Model& incoming) {
   retired_variants_.reserve(retired_variants_.size() + variants_.size());
 
   auto* previous_selection = selected_variant_.load(std::memory_order_acquire);
-  const auto preserve_selection = selection_is_explicit_;
+  const bool was_explicit = selection_is_explicit_;
+  const bool preserve_selection = was_explicit || preserve_loaded_selection_ || previous_selection->IsLoaded();
 
   for (auto current = variants_.begin(); current != variants_.end();) {
     const auto match = std::find_if(incoming.variants_.begin(), incoming.variants_.end(), [&](const auto& candidate) {
@@ -269,7 +277,7 @@ bool Model::TryReconcileVariants(Model& incoming) {
   const auto selected = preserve_selection && retained_selection != variants_.end()
                             ? retained_selection
                             : (cached_selection != variants_.end() ? cached_selection : variants_.begin());
-  selection_is_explicit_ = preserve_selection && retained_selection != variants_.end();
+  selection_is_explicit_ = was_explicit && retained_selection != variants_.end();
   selected_variant_.store(selected->get(), std::memory_order_release);
   return true;
 }
@@ -337,7 +345,7 @@ bool Model::CompareBestFirst(const Model& a, const Model& b) {
   return CompareModelsForSort(a, b);
 }
 
-void Model::SelectDefaultVariant(const std::function<bool(const Model&)>& is_eligible,
+bool Model::SelectDefaultVariant(const std::function<bool(const Model&)>& is_eligible,
                                  bool preserve_explicit_selection) {
   if (!IsContainer()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
@@ -345,11 +353,12 @@ void Model::SelectDefaultVariant(const std::function<bool(const Model&)>& is_eli
   }
 
   std::lock_guard<std::mutex> lock(state_mutex_);
-  if (preserve_explicit_selection && selection_is_explicit_) {
-    return;
-  }
+  const auto* selected = selected_variant_.load(std::memory_order_acquire);
+  const bool preserve_selection =
+      preserve_explicit_selection && (selection_is_explicit_ || preserve_loaded_selection_ || selected->IsLoaded());
 
   Model* best_eligible = nullptr;
+  Model* best_cached = nullptr;
   for (auto& v : variants_) {
     if (is_eligible && !is_eligible(*v)) {
       continue;
@@ -360,14 +369,61 @@ void Model::SelectDefaultVariant(const std::function<bool(const Model&)>& is_eli
     }
 
     if (v->IsCached()) {
-      selection_is_explicit_ = false;
-      selected_variant_.store(v.get(), std::memory_order_release);
-      return;
+      best_cached = v.get();
+      break;
     }
   }
 
+  has_eligible_default_variant_ = best_eligible != nullptr;
+  if (preserve_selection) {
+    return false;
+  }
+
   selection_is_explicit_ = false;
-  selected_variant_.store(best_eligible ? best_eligible : variants_.front().get(), std::memory_order_release);
+  selected_variant_.store(best_cached ? best_cached : (best_eligible ? best_eligible : variants_.front().get()),
+                          std::memory_order_release);
+  return true;
+}
+
+bool Model::HasEligibleDefaultVariant() const {
+  std::lock_guard lock(state_mutex_);
+  return has_eligible_default_variant_;
+}
+
+void Model::SetDefaultVariantRefresh(std::function<void()> refresh) {
+  std::lock_guard lock(state_mutex_);
+  default_variant_refresh_ = std::move(refresh);
+}
+
+bool Model::PreserveLoadedSelection(bool preserve) {
+  if (preserve) {
+    RefreshDefaultVariant();
+  }
+
+  std::lock_guard lock(state_mutex_);
+  return std::exchange(preserve_loaded_selection_, preserve);
+}
+
+void Model::RefreshDefaultVariant() const {
+  if (!IsContainer()) {
+    return;
+  }
+
+  std::function<void()> refresh;
+  {
+    std::lock_guard lock(state_mutex_);
+    refresh = default_variant_refresh_;
+  }
+
+  if (refresh) {
+    refresh();
+    std::lock_guard lock(state_mutex_);
+    if (!has_eligible_default_variant_ && !selection_is_explicit_ && !preserve_loaded_selection_ &&
+        !selected_variant_.load(std::memory_order_acquire)->IsLoaded()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+               "model has no variant with an available execution provider; call DownloadAndRegisterEps first");
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -454,6 +510,7 @@ bool Model::IsLoaded() const {
 // ---------------------------------------------------------------------------
 
 void Model::Download(std::function<int(float)> progress_cb) {
+  RefreshDefaultVariant();
   if (Model* sv = selected_variant_.load(std::memory_order_acquire)) {
     sv->Download(std::move(progress_cb));
     return;
@@ -515,6 +572,7 @@ const std::string& Model::GetPath() const {
 }
 
 Model Model::CaptureExecutionModel() const {
+  RefreshDefaultVariant();
   if (Model* selected = selected_variant_.load(std::memory_order_acquire)) {
     return selected->CaptureExecutionModel();
   }
@@ -574,7 +632,10 @@ std::string Model::LocalPathSnapshot() const {
 }
 
 void Model::Load(ExecutionProvider ep, std::optional<std::string_view> expected_path) {
-  if (Model* sv = selected_variant_.load(std::memory_order_acquire)) {
+  RefreshDefaultVariant();
+  if (IsContainer()) {
+    std::lock_guard lock(state_mutex_);
+    auto* sv = selected_variant_.load(std::memory_order_acquire);
     sv->Load(ep, expected_path);
     return;
   }
@@ -606,7 +667,9 @@ void Model::Load(ExecutionProvider ep, std::optional<std::string_view> expected_
 }
 
 void Model::Unload() {
-  if (Model* sv = selected_variant_.load(std::memory_order_acquire)) {
+  if (IsContainer()) {
+    std::lock_guard lock(state_mutex_);
+    auto* sv = selected_variant_.load(std::memory_order_acquire);
     sv->Unload();
     return;
   }

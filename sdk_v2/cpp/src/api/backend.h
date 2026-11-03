@@ -91,6 +91,7 @@ class ModelBackend : public BackendObject {
   virtual const std::string& GetPath() const = 0;
   virtual void Download(std::function<int(float)> progress) = 0;
   virtual bool IsLoaded() const = 0;
+  virtual bool PreserveLoadedSelection(bool preserve) = 0;
   virtual void Load(std::optional<std::string_view> expected_path = std::nullopt) = 0;
   virtual void Unload() = 0;
   virtual void RemoveFromCache(std::optional<std::string_view> expected_path = std::nullopt) = 0;

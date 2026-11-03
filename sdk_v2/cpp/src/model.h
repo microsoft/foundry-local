@@ -93,9 +93,15 @@ class Model {
   /// Choose the default selected variant from the current sorted variant list:
   /// first eligible cached variant if any, else the best eligible variant.
   /// If none are eligible, retain the best variant for catalog display and explicit access.
+  /// Refreshes preserve explicit selections and the artifact currently loaded through an implicit selection.
   /// Requires IsContainer() to be true.
-  void SelectDefaultVariant(const std::function<bool(const Model&)>& is_eligible = {},
+  /// Returns false when an existing explicit or loaded selection is preserved.
+  bool SelectDefaultVariant(const std::function<bool(const Model&)>& is_eligible = {},
                             bool preserve_explicit_selection = false);
+  bool HasEligibleDefaultVariant() const;
+  void SetDefaultVariantRefresh(std::function<void()> refresh);
+  /// Hosted loads pin local metadata selection without loading weights into the metadata manager.
+  bool PreserveLoadedSelection(bool preserve);
 
   /// Best-first comparator: device priority asc, version desc, created-at desc, model_id asc.
   /// Exposed so callers that return Model* lists can produce consistent ordering with Variants().
@@ -188,6 +194,7 @@ class Model {
   /// one-shot operations, so callers reading the path concurrently with download
   /// or removal of the same Model are out of contract.
   const std::string& LocalPath() const { return local_path_; }
+  std::string LocalPathSnapshot() const;
 
  private:
   struct ContainerTag {};
@@ -199,7 +206,7 @@ class Model {
         bool external_registration);
   Model(ContainerTag, Model first_variant);
 
-  std::string LocalPathSnapshot() const;
+  void RefreshDefaultVariant() const;
 
   // Leaf data (empty for containers). Construction guarantees this is non-null for every leaf.
   // cached_ is atomic — flipped concurrently by the download path.
@@ -229,6 +236,9 @@ class Model {
   std::vector<std::unique_ptr<Model>> retired_variants_;
   std::atomic<Model*> selected_variant_{nullptr};  // non-null = this is a container
   bool selection_is_explicit_ = false;             // guarded by state_mutex_
+  bool has_eligible_default_variant_ = true;       // guarded by state_mutex_
+  bool preserve_loaded_selection_ = false;         // guarded by state_mutex_
+  std::function<void()> default_variant_refresh_;  // guarded by state_mutex_
 
   // Guards variants_ across reader/writer threads (catalog refresh adding variants
   // while another thread enumerates via Variants()).

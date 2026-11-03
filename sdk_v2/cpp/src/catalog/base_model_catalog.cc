@@ -21,14 +21,15 @@ BaseModelCatalog::BaseModelCatalog(std::string name, CatalogType type, ILogger& 
     : name_(std::move(name)), type_(type), logger_(logger) {}
 BaseModelCatalog::~BaseModelCatalog() = default;
 
-void BaseModelCatalog::SelectDefaultVariant(Model& model, bool preserve_explicit_selection) const {
-  bool evaluated = false;
-  bool any_eligible = false;
-  model.SelectDefaultVariant(
+void BaseModelCatalog::SelectDefaultVariant(Model& model, const VariantEligibility& is_eligible,
+                                            bool preserve_explicit_selection) const {
+  if (type_ == CatalogType::kPublic) {
+    model.SetDefaultVariantRefresh([this] { EnsurePopulated(); });
+  }
+
+  const bool selected_default = model.SelectDefaultVariant(
       [&](const Model& variant) {
-        evaluated = true;
-        if (IsVariantEligibleForDefault(variant)) {
-          any_eligible = true;
+        if (!is_eligible || is_eligible(variant)) {
           return true;
         }
 
@@ -39,11 +40,12 @@ void BaseModelCatalog::SelectDefaultVariant(Model& model, bool preserve_explicit
         return false;
       },
       preserve_explicit_selection);
-  if (!evaluated) {
-    return;
-  }
 
-  if (any_eligible) {
+  if (!selected_default) {
+    logger_.Log(LogLevel::Debug,
+                fmt::format("Catalog '{}': preserving explicit or loaded variant '{}' for alias '{}'.",
+                            name_, model.Id(), model.Alias()));
+  } else if (model.HasEligibleDefaultVariant()) {
     logger_.Log(LogLevel::Information,
                 fmt::format("Catalog '{}': selected default variant '{}' for alias '{}'.",
                             name_, model.Id(), model.Alias()));
@@ -56,6 +58,8 @@ void BaseModelCatalog::SelectDefaultVariant(Model& model, bool preserve_explicit
 }
 
 void BaseModelCatalog::PopulateModels(std::vector<Model> variants) const {
+  const auto is_eligible = MakeVariantEligibility();
+
   // Group variants by alias into Model containers.
   // Matches C# Catalog.UpdateModels() pattern:
   //   foreach (modelInfo) { find or create Model by alias, add variant }
@@ -132,14 +136,14 @@ void BaseModelCatalog::PopulateModels(std::vector<Model> variants) const {
 
     for (auto& stored : models_) {
       if (stored.active) {
-        SelectDefaultVariant(*stored.model, /*preserve_explicit_selection=*/true);
+        SelectDefaultVariant(*stored.model, is_eligible, /*preserve_explicit_selection=*/true);
       }
     }
 
     size_t new_count = 0;
     for (auto& [alias, model] : alias_to_model) {
       if (!existing_aliases.contains(alias)) {
-        SelectDefaultVariant(model);
+        SelectDefaultVariant(model, is_eligible);
         models_.push_back({std::make_unique<Model>(std::move(model)), true});
         ++new_count;
       }
@@ -158,7 +162,7 @@ void BaseModelCatalog::PopulateModels(std::vector<Model> variants) const {
     // Initial population: move all models into stable storage.
     models_.reserve(alias_to_model.size());
     for (auto& [alias, model] : alias_to_model) {
-      SelectDefaultVariant(model);
+      SelectDefaultVariant(model, is_eligible);
       models_.push_back({std::make_unique<Model>(std::move(model)), true});
     }
 
@@ -176,6 +180,8 @@ void BaseModelCatalog::IntegrateVariants(std::vector<Model> variants) const {
   if (variants.empty()) {
     return;
   }
+
+  const auto is_eligible = MakeVariantEligibility();
 
   // Build a lookup of existing aliases -> containers so we can merge new
   // variants in O(1) per incoming variant.
@@ -229,7 +235,7 @@ void BaseModelCatalog::IntegrateVariants(std::vector<Model> variants) const {
         ++added_variants;
       }
 
-      SelectDefaultVariant(*it->second, /*preserve_explicit_selection=*/true);
+      SelectDefaultVariant(*it->second, is_eligible, /*preserve_explicit_selection=*/true);
     } else {
       // New alias: build a container and choose default after all variants are added.
       auto first = std::move(alias_variants.front());
@@ -238,7 +244,7 @@ void BaseModelCatalog::IntegrateVariants(std::vector<Model> variants) const {
         container.AddVariant(std::move(alias_variants[i]));
       }
 
-      SelectDefaultVariant(container);
+      SelectDefaultVariant(container, is_eligible);
 
       models_.push_back({std::make_unique<Model>(std::move(container)), true});
       ++added_aliases;
@@ -368,9 +374,7 @@ Model* BaseModelCatalog::GetModel(const std::string& alias) const {
   auto idx = GetIndex();
   auto alias_it = idx->alias_index.find(alias);
   if (alias_it != idx->alias_index.end()) {
-    const auto variants = alias_it->second->Variants();
-    if (std::any_of(variants.begin(), variants.end(),
-                    [this](const Model* variant) { return IsVariantEligibleForDefault(*variant); })) {
+    if (alias_it->second->HasEligibleDefaultVariant()) {
       return alias_it->second;
     }
 
@@ -502,7 +506,7 @@ Model* BaseModelCatalog::AppendActiveModel(Model model) {
   EnsurePopulated();
   std::lock_guard<std::mutex> lock(mutex_);
   auto container = std::make_unique<Model>(Model::MakeContainer(std::move(model)));
-  SelectDefaultVariant(*container);
+  SelectDefaultVariant(*container, MakeVariantEligibility());
   auto* result = container.get();
   models_.push_back({std::move(container), true});
   RebuildIndex();
@@ -597,7 +601,7 @@ std::vector<Model*> BaseModelCatalog::GetModelVersions(const std::string& model_
       container.AddVariant(std::move(fetched[i]));
     }
 
-    SelectDefaultVariant(container);
+    SelectDefaultVariant(container, MakeVariantEligibility());
     version_query_models_.push_back(std::make_unique<Model>(std::move(container)));
 
     // Return variant pointers from the container (like Model_GetVariantsImpl).

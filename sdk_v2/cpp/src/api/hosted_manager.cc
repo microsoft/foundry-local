@@ -192,6 +192,7 @@ class HostedModel final : public ModelBackend {
   void Download(std::function<int(float)> progress) override {
     state_.RequireOpen();
     const auto owner = state_.metadata;
+    state_.RefreshCatalog(catalog_);
     source_.Download(std::move(progress));
   }
 
@@ -200,9 +201,18 @@ class HostedModel final : public ModelBackend {
     return context && context->Call(Operation::IsLoaded, Payload(false)).get<bool>();
   }
 
+  bool PreserveLoadedSelection(bool preserve) override { return source_.PreserveLoadedSelection(preserve); }
+
   void Load(std::optional<std::string_view> expected_path) override {
-    const auto payload = Payload(true, expected_path);
-    state_.Connect(true)->Call(Operation::Load, payload);
+    state_.RefreshCatalog(catalog_);
+    const bool previously_preserved = source_.PreserveLoadedSelection(true);
+    try {
+      const auto payload = Payload(true, expected_path);
+      state_.Connect(true)->Call(Operation::Load, payload);
+    } catch (...) {
+      source_.PreserveLoadedSelection(previously_preserved);
+      throw;
+    }
   }
 
   void Unload() override {
@@ -210,6 +220,8 @@ class HostedModel final : public ModelBackend {
     if (state_.Connect(false)) {
       state_.Connect(true)->Call(Operation::Unload, payload);
     }
+
+    source_.PreserveLoadedSelection(false);
   }
 
   void RemoveFromCache(std::optional<std::string_view> expected_path) override {
@@ -290,6 +302,10 @@ class HostedModel final : public ModelBackend {
   }
 
   Json Payload(bool capture, std::optional<std::string_view> expected_path = std::nullopt) const {
+    if (capture) {
+      state_.RefreshCatalog(catalog_);
+    }
+
     std::lock_guard lock(state_.selection_mutex);
     if (capture) {
       const auto selected = state_.metadata->CaptureModel(source_);

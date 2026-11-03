@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -90,8 +91,9 @@ class BaseModelCatalog : public ICatalog {
   /// Authoritative catalogs reconcile removals and replacements from every fetched snapshot.
   virtual bool IsAuthoritativeSnapshot() const { return false; }
 
-  /// Eligibility affects alias defaults, never variant enumeration or cached-model visibility.
-  virtual bool IsVariantEligibleForDefault(const Model& /*variant*/) const { return true; }
+  /// Each selection pass uses one provider snapshot; an empty predicate makes every variant eligible.
+  using VariantEligibility = std::function<bool(const Model&)>;
+  virtual VariantEligibility MakeVariantEligibility() const { return {}; }
 
  private:
   /// Lookup indices into the stable models_ storage.
@@ -127,7 +129,8 @@ class BaseModelCatalog : public ICatalog {
   /// Populate or refresh the catalog (under lock). Groups variants, builds indices.
   void PopulateModels(std::vector<Model> variants) const;
 
-  void SelectDefaultVariant(Model& model, bool preserve_explicit_selection = false) const;
+  void SelectDefaultVariant(Model& model, const VariantEligibility& is_eligible,
+                            bool preserve_explicit_selection = false) const;
 
   /// Merge new variants into the catalog's stable storage. For an
   /// existing alias container, appends any variants whose model_id isn't already

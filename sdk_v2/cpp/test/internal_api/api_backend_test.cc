@@ -10,6 +10,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -111,6 +112,7 @@ class RecordingModel final : public fl::api::ModelBackend {
   const std::string& GetPath() const override { return path_; }
   void Download(std::function<int(float)>) override {}
   bool IsLoaded() const override { return calls_.loads > calls_.unloads; }
+  bool PreserveLoadedSelection(bool preserve) override { return std::exchange(preserve_selection_, preserve); }
   void Load(std::optional<std::string_view> = std::nullopt) override {
     if (calls_.reject_load) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK, "host connection was lost");
@@ -133,6 +135,7 @@ class RecordingModel final : public fl::api::ModelBackend {
   Calls& calls_;
   fl::ModelInfo info_;
   std::string path_ = "hosted-model";
+  bool preserve_selection_ = false;
 };
 
 class RecordingManager final : public fl::api::ManagerBackend {
