@@ -237,6 +237,11 @@ std::vector<BlobItemInfo> AzureBlobDownloader::ListBlobs(const std::string& sas_
         info.name = blob.Name;
         info.content_length = blob.BlobSize;
         info.etag = blob.Details.ETag.ToString();
+        // List Blobs can return an unquoted XML Etag; HEAD and HTTP If-Match use the quoted form.
+        if (!info.etag.empty() && info.etag.front() != '"') {
+          info.etag = "\"" + info.etag + "\"";
+        }
+
         if (blob.Details.HttpHeaders.ContentHash.Algorithm == Azure::Storage::HashAlgorithm::Md5) {
           info.content_md5 = blob.Details.HttpHeaders.ContentHash.Value;
         }

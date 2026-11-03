@@ -2399,10 +2399,29 @@ class BlobIntegrityTransport final : public Azure::Core::Http::HttpTransport {
   bool saw_head_etag_condition = false;
   int range_requests = 0;
   std::string etag = "\"test-etag\"";
+  std::string listing_etag = "test-etag";
+  std::vector<uint8_t> listing_body;
 
   std::unique_ptr<Azure::Core::Http::RawResponse> Send(Azure::Core::Http::Request& request,
                                                        const Azure::Core::Context&) override {
     using namespace Azure::Core::Http;
+    if (request.GetUrl().GetQueryParameters().count("comp") > 0) {
+      const auto xml =
+          "<EnumerationResults ServiceEndpoint=\"https://test.blob.core.windows.net/\" ContainerName=\"container\">"
+          "<Blobs><Blob><Name>blob.bin</Name><Properties>"
+          "<Last-Modified>Wed, 14 Oct 2026 00:00:00 GMT</Last-Modified><Etag>" +
+          listing_etag +
+          "</Etag><Content-Length>" + std::to_string(payload.size()) +
+          "</Content-Length><BlobType>BlockBlob</BlobType></Properties></Blob></Blobs>"
+          "<NextMarker /></EnumerationResults>";
+      auto response = std::make_unique<RawResponse>(1, 1, HttpStatusCode::Ok, "OK");
+      response->SetHeader("content-type", "application/xml");
+      response->SetHeader("content-length", std::to_string(xml.size()));
+      listing_body.assign(xml.begin(), xml.end());
+      response->SetBodyStream(std::make_unique<Azure::Core::IO::MemoryBodyStream>(listing_body));
+      return response;
+    }
+
     const bool is_head = request.GetMethod() == HttpMethod::Head;
     auto response = std::make_unique<RawResponse>(1, 1, is_head ? HttpStatusCode::Ok : HttpStatusCode::PartialContent,
                                                   "OK");
@@ -2535,6 +2554,37 @@ TEST(AzureBlobDownloaderIntegrityTest, BindsHeadAndRangesToListingETagWithoutPub
   EXPECT_TRUE(transport->saw_head_etag_condition);
   EXPECT_TRUE(transport->saw_etag_condition);
   EXPECT_EQ(transport->range_requests, 1);
+}
+
+TEST(AzureBlobDownloaderIntegrityTest, DownloadsWithQuotedAndUnquotedServiceListingETags) {
+  for (const auto* etag : {"test-etag", "\"test-etag\""}) {
+    SCOPED_TRACE(etag);
+    auto tmpdir = TempPath::CreateTempDir();
+    auto transport = std::make_shared<BlobIntegrityTransport>();
+    transport->listing_etag = etag;
+    AzureBlobDownloader downloader(fl::test::NullLog(), transport);
+
+    ASSERT_NO_THROW(DownloadBlobsToDirectoryForTest(
+        downloader, "https://test.blob.core.windows.net/container", tmpdir.string(), {}));
+    EXPECT_TRUE(transport->saw_head_etag_condition);
+    EXPECT_TRUE(transport->saw_etag_condition);
+    EXPECT_EQ(transport->range_requests, 1);
+    EXPECT_EQ(ReadFile(tmpdir.path() / "blob.bin"), std::string(32, '*'));
+    EXPECT_TRUE(fs::exists(BlobDownloadState::GetVerifiedStateFilePath(tmpdir.path() / "blob.bin")));
+  }
+}
+
+TEST(AzureBlobDownloaderIntegrityTest, RejectsChangedUnquotedServiceListingETagBeforeWriting) {
+  auto tmpdir = TempPath::CreateTempDir();
+  auto transport = std::make_shared<BlobIntegrityTransport>();
+  transport->listing_etag = "old-etag";
+  AzureBlobDownloader downloader(fl::test::NullLog(), transport);
+
+  EXPECT_THROW(DownloadBlobsToDirectoryForTest(
+                   downloader, "https://test.blob.core.windows.net/container", tmpdir.string(), {}),
+               fl::Exception);
+  EXPECT_EQ(transport->range_requests, 0);
+  EXPECT_FALSE(fs::exists(tmpdir.path() / "blob.bin"));
 }
 
 TEST(AzureBlobDownloaderIntegrityTest, RejectsListingIdentityChangesBeforeWritingWithoutPublishedChecksum) {
