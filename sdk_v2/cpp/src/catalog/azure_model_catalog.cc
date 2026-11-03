@@ -142,39 +142,6 @@ void RemoveIncompatibleModels(std::vector<ModelInfo>& model_infos) {
   });
 }
 
-void RemoveModelsWithUnavailableEps(std::vector<ModelInfo>& model_infos,
-                                    const IEpDetector& ep_detector,
-                                    ILogger& logger) {
-  std::unordered_set<std::string> available_eps{"cpuexecutionprovider"};
-  for (const auto& [device, eps] : ep_detector.GetAvailableDevicesToEPs()) {
-    for (const auto& ep : eps) {
-      available_eps.insert(ToLower(ep));
-    }
-  }
-
-  std::erase_if(model_infos, [&](const ModelInfo& info) {
-    if (info.execution_provider.empty()) {
-      return false;
-    }
-
-    const auto provider = ToLower(info.execution_provider);
-    if (available_eps.contains(provider)) {
-      return false;
-    }
-
-    // Generic GPU artifacts can use CUDA or WebGPU instead of their configured DirectML provider.
-    if ((provider == "dmlexecutionprovider" || provider == "dml") &&
-        info.model_id.find("generic-gpu") != std::string::npos &&
-        (available_eps.contains("cudaexecutionprovider") || available_eps.contains("webgpuexecutionprovider"))) {
-      return false;
-    }
-
-    logger.Log(LogLevel::Debug, fmt::format("Skipping model '{}' during automatic selection: {} is unavailable.",
-                                            info.model_id, info.execution_provider));
-    return true;
-  });
-}
-
 }  // namespace
 
 class AzureModelCatalog::CatalogDevices final : public IEpDetector {
@@ -234,6 +201,28 @@ void AzureModelCatalog::SetRuntimeDevices(std::map<std::string, std::vector<std:
   if (catalog_devices_->Set(std::move(devices))) {
     InvalidateCache();
   }
+}
+
+bool AzureModelCatalog::IsVariantEligibleForDefault(const Model& variant) const {
+  const auto& info = variant.Info();
+  const auto provider = ToLower(info.execution_provider);
+  if (provider.empty() || provider == "cpuexecutionprovider") {
+    return true;
+  }
+
+  const auto generic_dml = (provider == "dmlexecutionprovider" || provider == "dml") &&
+                           info.model_id.find("generic-gpu") != std::string::npos;
+  for (const auto& [device, eps] : catalog_devices_->GetAvailableDevicesToEPs()) {
+    for (const auto& ep : eps) {
+      const auto available = ToLower(ep);
+      if (provider == available ||
+          (generic_dml && (available == "cudaexecutionprovider" || available == "webgpuexecutionprovider"))) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 std::unique_ptr<ICatalogClient> AzureModelCatalog::CreateCatalogClient(const std::string& url,
@@ -319,7 +308,6 @@ std::vector<Model> AzureModelCatalog::FetchModels() const {
     cache.Save(catalog_result.model_infos);
   }
 
-  RemoveModelsWithUnavailableEps(catalog_result.model_infos, *catalog_devices_, logger_);
   auto models = CreateModelsWithLocalPaths(catalog_result.model_infos, local_models);
   logger_.Log(LogLevel::Information, fmt::format("Populated model info for {} models.", models.size()));
 

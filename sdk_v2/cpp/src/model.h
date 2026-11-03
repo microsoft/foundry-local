@@ -91,9 +91,11 @@ class Model {
   bool RetireVariant(const std::string& model_id);
 
   /// Choose the default selected variant from the current sorted variant list:
-  /// first cached variant if any, else the best variant.
+  /// first eligible cached variant if any, else the best eligible variant.
+  /// If none are eligible, retain the best variant for catalog display and explicit access.
   /// Requires IsContainer() to be true.
-  void SelectDefaultVariant();
+  void SelectDefaultVariant(const std::function<bool(const Model&)>& is_eligible = {},
+                            bool preserve_explicit_selection = false);
 
   /// Best-first comparator: device priority asc, version desc, created-at desc, model_id asc.
   /// Exposed so callers that return Model* lists can produce consistent ordering with Variants().

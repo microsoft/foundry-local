@@ -21,6 +21,40 @@ BaseModelCatalog::BaseModelCatalog(std::string name, CatalogType type, ILogger& 
     : name_(std::move(name)), type_(type), logger_(logger) {}
 BaseModelCatalog::~BaseModelCatalog() = default;
 
+void BaseModelCatalog::SelectDefaultVariant(Model& model, bool preserve_explicit_selection) const {
+  bool evaluated = false;
+  bool any_eligible = false;
+  model.SelectDefaultVariant(
+      [&](const Model& variant) {
+        evaluated = true;
+        if (IsVariantEligibleForDefault(variant)) {
+          any_eligible = true;
+          return true;
+        }
+
+        logger_.Log(LogLevel::Information,
+                    fmt::format("Catalog '{}': skipping variant '{}' for default selection because "
+                                "execution provider '{}' is unavailable.",
+                                name_, variant.Id(), variant.Info().execution_provider));
+        return false;
+      },
+      preserve_explicit_selection);
+  if (!evaluated) {
+    return;
+  }
+
+  if (any_eligible) {
+    logger_.Log(LogLevel::Information,
+                fmt::format("Catalog '{}': selected default variant '{}' for alias '{}'.",
+                            name_, model.Id(), model.Alias()));
+  } else {
+    logger_.Log(LogLevel::Information,
+                fmt::format("Catalog '{}': no variant for alias '{}' has an available execution provider; "
+                            "variants remain visible for inspection and explicit selection.",
+                            name_, model.Alias()));
+  }
+}
+
 void BaseModelCatalog::PopulateModels(std::vector<Model> variants) const {
   // Group variants by alias into Model containers.
   // Matches C# Catalog.UpdateModels() pattern:
@@ -43,10 +77,6 @@ void BaseModelCatalog::PopulateModels(std::vector<Model> variants) const {
     } else {
       alias_to_model.emplace(std::move(alias), Model::MakeContainer(std::move(v)));
     }
-  }
-
-  for (auto& [alias, model] : alias_to_model) {
-    model.SelectDefaultVariant();
   }
 
   // On refresh: merge new models into stable storage. Existing models keep their addresses.
@@ -82,9 +112,16 @@ void BaseModelCatalog::PopulateModels(std::vector<Model> variants) const {
       }
     }
 
+    for (auto& stored : models_) {
+      if (stored.active) {
+        SelectDefaultVariant(*stored.model, /*preserve_explicit_selection=*/true);
+      }
+    }
+
     size_t new_count = 0;
     for (auto& [alias, model] : alias_to_model) {
       if (!existing_aliases.contains(alias)) {
+        SelectDefaultVariant(model);
         models_.push_back({std::make_unique<Model>(std::move(model)), true});
         ++new_count;
       }
@@ -103,6 +140,7 @@ void BaseModelCatalog::PopulateModels(std::vector<Model> variants) const {
     // Initial population: move all models into stable storage.
     models_.reserve(alias_to_model.size());
     for (auto& [alias, model] : alias_to_model) {
+      SelectDefaultVariant(model);
       models_.push_back({std::make_unique<Model>(std::move(model)), true});
     }
 
@@ -180,7 +218,7 @@ void BaseModelCatalog::IntegrateVariants(std::vector<Model> variants) const {
         container.AddVariant(std::move(alias_variants[i]));
       }
 
-      container.SelectDefaultVariant();
+      SelectDefaultVariant(container);
 
       models_.push_back({std::make_unique<Model>(std::move(container)), true});
       ++added_aliases;
@@ -310,7 +348,15 @@ Model* BaseModelCatalog::GetModel(const std::string& alias) const {
   auto idx = GetIndex();
   auto alias_it = idx->alias_index.find(alias);
   if (alias_it != idx->alias_index.end()) {
-    return alias_it->second;
+    const auto variants = alias_it->second->Variants();
+    if (std::any_of(variants.begin(), variants.end(),
+                    [this](const Model* variant) { return IsVariantEligibleForDefault(*variant); })) {
+      return alias_it->second;
+    }
+
+    logger_.Log(LogLevel::Information,
+                fmt::format("GetModel: '{}' has no variant with an available execution provider.", alias));
+    return nullptr;
   }
 
   logger_.Log(LogLevel::Information,
@@ -436,7 +482,7 @@ Model* BaseModelCatalog::AppendActiveModel(Model model) {
   EnsurePopulated();
   std::lock_guard<std::mutex> lock(mutex_);
   auto container = std::make_unique<Model>(Model::MakeContainer(std::move(model)));
-  container->SelectDefaultVariant();
+  SelectDefaultVariant(*container);
   auto* result = container.get();
   models_.push_back({std::move(container), true});
   RebuildIndex();
@@ -531,7 +577,7 @@ std::vector<Model*> BaseModelCatalog::GetModelVersions(const std::string& model_
       container.AddVariant(std::move(fetched[i]));
     }
 
-    container.SelectDefaultVariant();
+    SelectDefaultVariant(container);
     version_query_models_.push_back(std::make_unique<Model>(std::move(container)));
 
     // Return variant pointers from the container (like Model_GetVariantsImpl).

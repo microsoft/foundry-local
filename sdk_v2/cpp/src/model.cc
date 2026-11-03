@@ -337,15 +337,28 @@ bool Model::CompareBestFirst(const Model& a, const Model& b) {
   return CompareModelsForSort(a, b);
 }
 
-void Model::SelectDefaultVariant() {
+void Model::SelectDefaultVariant(const std::function<bool(const Model&)>& is_eligible,
+                                 bool preserve_explicit_selection) {
   if (!IsContainer()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
              "SelectDefaultVariant called on a non-container Model; use MakeContainer first");
   }
 
   std::lock_guard<std::mutex> lock(state_mutex_);
+  if (preserve_explicit_selection && selection_is_explicit_) {
+    return;
+  }
 
+  Model* best_eligible = nullptr;
   for (auto& v : variants_) {
+    if (is_eligible && !is_eligible(*v)) {
+      continue;
+    }
+
+    if (!best_eligible) {
+      best_eligible = v.get();
+    }
+
     if (v->IsCached()) {
       selection_is_explicit_ = false;
       selected_variant_.store(v.get(), std::memory_order_release);
@@ -354,7 +367,7 @@ void Model::SelectDefaultVariant() {
   }
 
   selection_is_explicit_ = false;
-  selected_variant_.store(variants_.front().get(), std::memory_order_release);
+  selected_variant_.store(best_eligible ? best_eligible : variants_.front().get(), std::memory_order_release);
 }
 
 // ---------------------------------------------------------------------------

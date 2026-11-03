@@ -47,6 +47,7 @@ class AzureModelCatalog : public BaseModelCatalog {
   std::vector<Model> FetchModelsByIds(const std::vector<std::string>& model_ids) const override;
   virtual std::unique_ptr<ICatalogClient> CreateCatalogClient(const std::string& url,
                                                               const std::string& filter) const;
+  bool IsVariantEligibleForDefault(const Model& variant) const override;
 
  private:
   using LocalModels = std::map<std::string, std::string>;
