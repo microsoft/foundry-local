@@ -217,8 +217,9 @@ struct AzureBlobDownloader::ChunkContext {
   std::string etag;
 };
 
-AzureBlobDownloader::AzureBlobDownloader(ILogger& logger, std::shared_ptr<Azure::Core::Http::HttpTransport> transport)
-    : logger_(logger), transport_(std::move(transport)) {}
+AzureBlobDownloader::AzureBlobDownloader(ILogger& logger, std::shared_ptr<Azure::Core::Http::HttpTransport> transport,
+                                         FileWriter::CloseFileFn close_file)
+    : logger_(logger), transport_(std::move(transport)), close_file_(close_file) {}
 
 std::vector<BlobItemInfo> AzureBlobDownloader::ListBlobs(const std::string& sas_uri) {
   try {
@@ -251,7 +252,12 @@ std::vector<BlobItemInfo> AzureBlobDownloader::ListBlobs(const std::string& sas_
 }
 
 int64_t AzureBlobDownloader::GetBlobSize(ChunkContext& ctx) {
-  auto props = ctx.blob_client.GetProperties({}, ctx.azure_ctx).Value;
+  Azure::Storage::Blobs::GetBlobPropertiesOptions options;
+  if (!ctx.etag.empty()) {
+    options.AccessConditions.IfMatch = Azure::ETag(ctx.etag);
+  }
+
+  auto props = ctx.blob_client.GetProperties(options, ctx.azure_ctx).Value;
   ctx.etag = props.ETag.ToString();
   return props.BlobSize;
 }
@@ -327,7 +333,8 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
                                        const std::string& local_path,
                                        int max_concurrency,
                                        BlobBytesWrittenFn bytes_written_cb,
-                                       std::atomic<bool>* cancelled) {
+                                       std::atomic<bool>* cancelled,
+                                       BlobDownloadValidation validation) {
   try {
     // Configure retry at the SDK level instead of a manual retry loop.
     // Exponential backoff: 2s initial delay, 30s cap, generous retry count.
@@ -356,10 +363,16 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
     std::atomic<bool> internal_cancel{false};
 
     ThrowIfCancelled(cancelled);
-    ChunkContext chunk_ctx{blob_client, azure_ctx, {}};
+    const auto* expected = validation.expected_blob;
+    ChunkContext chunk_ctx{blob_client, azure_ctx, expected ? expected->etag : std::string{}};
 
     int64_t blob_size = GetBlobSize(chunk_ctx);
     ThrowIfCancelled(cancelled);
+    if (expected && (blob_size != expected->content_length ||
+                     (!expected->etag.empty() && chunk_ctx.etag != expected->etag))) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK,
+               "model download identity changed for blob '" + blob_name + "'; retry download");
+    }
 
     if (blob_size == 0) {
       EnsureEmptyBlobFile(local_path);
@@ -374,12 +387,16 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
     int32_t num_chunks = static_cast<int32_t>((blob_size + kChunkSize - 1) / kChunkSize);
 
     // Resume from existing sidecar if it matches the current blob layout.
-    auto state = BlobDownloadState::LoadState(blob_name, local_path, blob_size,
-                                              static_cast<int32_t>(kChunkSize),
-                                              num_chunks, logger_);
+    auto state = std::move(validation.verified_state);
+    const bool already_verified = state != nullptr;
     if (!state) {
-      state = BlobDownloadState::LoadState(blob_name, local_path, blob_size, static_cast<int32_t>(kChunkSize),
-                                           num_chunks, logger_, true);
+      state = BlobDownloadState::LoadState(blob_name, local_path, blob_size,
+                                           static_cast<int32_t>(kChunkSize),
+                                           num_chunks, logger_);
+      if (!state) {
+        state = BlobDownloadState::LoadState(blob_name, local_path, blob_size, static_cast<int32_t>(kChunkSize),
+                                             num_chunks, logger_, true);
+      }
     }
 
     if (state) {
@@ -391,12 +408,14 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
       // stale state and start fresh.
       std::error_code data_ec;
       auto data_size = std::filesystem::file_size(local_path, data_ec);
-      if (data_ec || data_size != static_cast<uintmax_t>(blob_size) || state->etag != chunk_ctx.etag) {
+      if (data_ec || data_size != static_cast<uintmax_t>(blob_size) || state->etag != chunk_ctx.etag ||
+          state->blob_name != blob_name || state->local_file_path != local_path || state->blob_size != blob_size ||
+          state->chunk_size != kChunkSize || state->total_chunks != num_chunks) {
         logger_.Log(LogLevel::Information,
                     "Resume sidecar for '" + local_path +
                         "' has no matching data file or blob ETag; starting fresh");
         state.reset();
-      } else {
+      } else if (!already_verified) {
         VerificationCancellation verification(cancelled, [&]() {
           if (bytes_written_cb) {
             bytes_written_cb(0);
@@ -422,7 +441,7 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
 
     auto pending = state->GetPendingChunks();
     if (pending.empty()) {
-      FileWriter writer(logger_);
+      FileWriter writer(logger_, close_file_);
       writer.Open(local_path, blob_size);
       writer.Finish();
       if (bytes_written_cb) {
@@ -442,7 +461,7 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
       FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "failed to persist model download state before writing");
     }
 
-    FileWriter writer(logger_);
+    FileWriter writer(logger_, close_file_);
     writer.Open(local_path, blob_size);
 
     // Checkpoint roughly every 16 MB of completed chunks. A crash can also require re-downloading in-flight chunks.
@@ -634,7 +653,8 @@ std::string ComputeRelativePath(const std::string& prefix, const std::string& bl
 
 /// Size alone is not proof of completion: require a published checksum or a verified, ETag-matched receipt.
 bool IsDownloadNeeded(const BlobItemInfo& blob, const std::string& local_path, ILogger& logger,
-                      const std::function<void()>& check_cancelled) {
+                      const std::function<void()>& check_cancelled,
+                      std::unique_ptr<BlobDownloadState>& verified_state) {
   std::error_code ec;
   auto status = std::filesystem::status(local_path, ec);
   if (ec || !std::filesystem::exists(status) || !std::filesystem::is_regular_file(status)) {
@@ -663,7 +683,13 @@ bool IsDownloadNeeded(const BlobItemInfo& blob, const std::string& local_path, I
     }
 
     ValidateCompletedChunks(*state, logger, check_cancelled);
-    return !state->IsComplete();
+    if (state->IsComplete()) {
+      return false;
+    }
+
+    // Keep the invalidated bitmap and verified good chunks; repair must not scan the same file a second time.
+    verified_state = std::move(state);
+    return true;
   }
 
   std::ifstream file(local_path, std::ios::binary);
@@ -685,7 +711,12 @@ void DownloadBlobsToDirectory(IBlobDownloader& downloader,
   auto all_blobs = downloader.ListBlobs(sas_uri);
 
   // Step 2: Filter by path prefix
-  std::vector<std::pair<BlobItemInfo, std::string>> blobs_to_download;
+  struct BlobToDownload {
+    BlobItemInfo blob;
+    std::string local_path;
+    std::unique_ptr<BlobDownloadState> verified_state;
+  };
+  std::vector<BlobToDownload> blobs_to_download;
 
   for (auto& blob : all_blobs) {
     if (!options.path_prefix.empty() &&
@@ -712,13 +743,13 @@ void DownloadBlobsToDirectory(IBlobDownloader& downloader,
     }
 
     auto local_path = local_path_fs.string();
-    blobs_to_download.emplace_back(std::move(blob), std::move(local_path));
+    blobs_to_download.push_back({std::move(blob), std::move(local_path), nullptr});
   }
 
   // Step 3: Filter out inference_model.json (matching C# AzureBlobDownloadClientProvider filter)
   blobs_to_download.erase(std::remove_if(blobs_to_download.begin(), blobs_to_download.end(),
-                                         [](const auto& pair) {
-                                           return EndsWithIgnoreCase(pair.first.name, "inference_model.json");
+                                         [](const auto& target) {
+                                           return EndsWithIgnoreCase(target.blob.name, "inference_model.json");
                                          }),
                           blobs_to_download.end());
 
@@ -732,14 +763,14 @@ void DownloadBlobsToDirectory(IBlobDownloader& downloader,
   // Step 3.5: Sort smallest-first for faster initial perceived progress
   std::sort(blobs_to_download.begin(), blobs_to_download.end(),
             [](const auto& a, const auto& b) {
-              return a.first.content_length < b.first.content_length;
+              return a.blob.content_length < b.blob.content_length;
             });
 
   // Step 4: Calculate total size across every in-scope blob, including those
   // already present on disk.
   int64_t total_size = 0;
-  for (const auto& [blob, _] : blobs_to_download) {
-    total_size += blob.content_length;
+  for (const auto& target : blobs_to_download) {
+    total_size += target.blob.content_length;
   }
 
   stats.file_count = static_cast<int32_t>(blobs_to_download.size());
@@ -780,17 +811,19 @@ void DownloadBlobsToDirectory(IBlobDownloader& downloader,
     ThrowIfCancelled(&cancelled);
   };
   VerificationCancellation reuse_verification(&cancelled, [&]() { report_progress(skipped_bytes); });
-  blobs_to_download.erase(
-      std::remove_if(blobs_to_download.begin(), blobs_to_download.end(),
-                     [&](const auto& pair) {
-                       if (IsDownloadNeeded(pair.first, pair.second, logger, [&]() { reuse_verification.Check(); })) {
-                         return false;
-                       }
-                       skipped_bytes += pair.first.content_length;
-                       ++skipped_file_count;
-                       return true;
-                     }),
-      blobs_to_download.end());
+  auto check_reuse = [&]() { reuse_verification.Check(); };
+  std::vector<BlobToDownload> pending_blobs;
+  pending_blobs.reserve(blobs_to_download.size());
+  for (auto& target : blobs_to_download) {
+    if (IsDownloadNeeded(target.blob, target.local_path, logger, check_reuse, target.verified_state)) {
+      pending_blobs.push_back(std::move(target));
+    } else {
+      skipped_bytes += target.blob.content_length;
+      ++skipped_file_count;
+    }
+  }
+
+  blobs_to_download = std::move(pending_blobs);
 
   stats.already_cached_bytes = skipped_bytes;
   stats.skipped_file_count = skipped_file_count;
@@ -811,7 +844,7 @@ void DownloadBlobsToDirectory(IBlobDownloader& downloader,
   // overall percentage.
   std::atomic<int64_t> total_downloaded_bytes{skipped_bytes};
 
-  for (const auto& [blob, local_path] : blobs_to_download) {
+  for (auto& [blob, local_path, verified_state] : blobs_to_download) {
     // Check cancellation between blobs
     if (cancelled.load(std::memory_order_relaxed)) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "download cancelled by user callback return value");
@@ -835,18 +868,18 @@ void DownloadBlobsToDirectory(IBlobDownloader& downloader,
     }
 
     downloader.DownloadBlob(sas_uri, blob.name, local_path, options.max_concurrency,
-                            per_chunk_progress, &cancelled);
+                            per_chunk_progress, &cancelled, {&blob, std::move(verified_state)});
+
+    std::error_code ec;
+    const auto actual_size = std::filesystem::file_size(local_path, ec);
+    if (ec) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "failed to stat downloaded blob '" + blob.name + "': " + ec.message());
+    }
+    if (actual_size != static_cast<uintmax_t>(blob.content_length)) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK, "model download size changed for blob '" + blob.name + "'; retry download");
+    }
 
     if (!blob.content_md5.empty()) {
-      std::error_code ec;
-      const auto actual_size = std::filesystem::file_size(local_path, ec);
-      if (ec) {
-        FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "failed to stat downloaded blob '" + blob.name + "': " + ec.message());
-      }
-      if (actual_size != static_cast<uintmax_t>(blob.content_length)) {
-        FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK, "model download size changed for blob '" + blob.name + "'; retry download");
-      }
-
       VerificationCancellation verification(
           &cancelled, [&]() { report_progress(blob_base_bytes + blob.content_length); });
       std::ifstream file(local_path, std::ios::binary);

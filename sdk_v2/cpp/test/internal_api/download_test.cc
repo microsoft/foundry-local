@@ -12,6 +12,7 @@
 #include "download/blob_download_state.h"
 #include "download/blob_downloader.h"
 #include "platform/cross_process_file_lock.h"
+#include "platform/file_io.h"
 #include "download/download_manager.h"
 #include "download/inference_model_writer.h"
 #include "download/model_registry_client.h"
@@ -125,16 +126,25 @@ class MockBlobDownloader : public IBlobDownloader {
                     const std::string& local_path,
                     int /*max_concurrency*/,
                     BlobBytesWrittenFn bytes_written_cb = nullptr,
-                    std::atomic<bool>* /*cancelled*/ = nullptr) override {
+                    std::atomic<bool>* /*cancelled*/ = nullptr,
+                    BlobDownloadValidation = {}) override {
     downloaded_blobs.push_back(blob_name);
     // Create a file so the test can verify it exists
     auto parent = fs::path(local_path).parent_path();
     if (!parent.empty()) {
       fs::create_directories(parent);
     }
-    std::ofstream f(local_path);
+    std::ofstream f(local_path, std::ios::binary);
     if (download_content.empty()) {
-      f << "mock content for " << blob_name;
+      std::string content = "mock content for " + blob_name;
+      for (const auto& blob : blobs_to_return) {
+        if (blob.name == blob_name) {
+          content.resize(static_cast<size_t>(blob.content_length), 'X');
+          break;
+        }
+      }
+
+      f << content;
     } else {
       f << download_content;
     }
@@ -165,7 +175,8 @@ class CancellingMockDownloader : public IBlobDownloader {
   void DownloadBlob(const std::string&, const std::string&,
                     const std::string& local_path, int,
                     BlobBytesWrittenFn bytes_written_cb,
-                    std::atomic<bool>* /*cancelled*/) override {
+                    std::atomic<bool>* /*cancelled*/,
+                    BlobDownloadValidation) override {
     ++download_count;
 
     auto parent = fs::path(local_path).parent_path();
@@ -197,7 +208,8 @@ class CancelCheckingMockDownloader : public IBlobDownloader {
   void DownloadBlob(const std::string&, const std::string&,
                     const std::string& local_path, int,
                     BlobBytesWrittenFn bytes_written_cb,
-                    std::atomic<bool>* cancelled) override {
+                    std::atomic<bool>* cancelled,
+                    BlobDownloadValidation) override {
     ++download_count;
 
     auto parent = fs::path(local_path).parent_path();
@@ -230,7 +242,7 @@ class FailingTransferDownloader : public IBlobDownloader {
   std::vector<BlobItemInfo> ListBlobs(const std::string&) override { return {{"weights.bin", 100}}; }
 
   void DownloadBlob(const std::string&, const std::string&, const std::string&, int, BlobBytesWrittenFn,
-                    std::atomic<bool>*) override {
+                    std::atomic<bool>*, BlobDownloadValidation) override {
     std::this_thread::sleep_for(std::chrono::milliseconds(30));
     throw std::runtime_error("simulated transfer failure");
   }
@@ -774,6 +786,22 @@ TEST(BlobDownloadTest, RejectsDownloadedFileWithMatchingPrefixChecksumAndAppende
   EXPECT_EQ(ReadFile(tmpdir.path() / "blob.bin"), mock.download_content);
 }
 
+TEST(BlobDownloadTest, RejectsDownloadedSizeMismatchWithoutPublishedChecksum) {
+  for (const int64_t listed_size : {16, 64}) {
+    auto tmpdir = TempPath::CreateTempDir();
+    MockBlobDownloader mock;
+    mock.blobs_to_return = {{"blob.bin", listed_size}};
+    mock.download_content = std::string(32, 'X');
+
+    try {
+      DownloadBlobsToDirectoryForTest(mock, "", tmpdir.string(), {});
+      FAIL() << "Expected exact-size validation without a published checksum";
+    } catch (const fl::Exception& e) {
+      EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_NETWORK);
+    }
+  }
+}
+
 TEST(BlobDownloadTest, RejectsDownloadedFileWithIncorrectPublishedChecksum) {
   auto tmpdir = TempPath::CreateTempDir();
   MockBlobDownloader mock;
@@ -1256,7 +1284,9 @@ TEST_F(ModelCacheRemovalTest, RemovesCorruptDownloadAndCanDownloadAgain) {
   ASSERT_FALSE(progress.empty());
   EXPECT_EQ(progress.front(), 0.0f);
   EXPECT_EQ(mock->downloaded_blobs.size(), 2u);
-  EXPECT_EQ(ReadFile(root_ / "v3" / "weights.onnx"), "mock content for v3/weights.onnx");
+  std::string expected_content = "mock content for v3/weights.onnx";
+  expected_content.resize(1024, 'X');
+  EXPECT_EQ(ReadFile(root_ / "v3" / "weights.onnx"), expected_content);
 }
 
 TEST_F(ModelCacheRemovalTest, PreservesScannerDiscoveredNonstandardPath) {
@@ -1890,10 +1920,10 @@ TEST(DownloadManagerTest, ConcurrentDownloadsOfSameModelSerialize) {
       return {{"variant-cpu/weights.bin", 16}};
     }
 
-    void DownloadBlob(const std::string&, const std::string& blob_name,
+    void DownloadBlob(const std::string&, const std::string&,
                       const std::string& local_path, int,
                       BlobBytesWrittenFn bytes_written_cb,
-                      std::atomic<bool>*) override {
+                      std::atomic<bool>*, BlobDownloadValidation) override {
       ++download_calls;
 
       auto parent = fs::path(local_path).parent_path();
@@ -1901,7 +1931,7 @@ TEST(DownloadManagerTest, ConcurrentDownloadsOfSameModelSerialize) {
         fs::create_directories(parent);
       }
       std::ofstream f(local_path);
-      f << "data for " << blob_name;
+      f << std::string(16, 'X');
       if (bytes_written_cb) {
         bytes_written_cb(16);
       }
@@ -1974,10 +2004,10 @@ TEST(DownloadManagerTest, ModelDownloadsSerializeUnderGlobalLock) {
       return {{"variant-cpu/weights.bin", 16}};
     }
 
-    void DownloadBlob(const std::string&, const std::string& blob_name,
+    void DownloadBlob(const std::string&, const std::string&,
                       const std::string& local_path, int,
                       BlobBytesWrittenFn bytes_written_cb,
-                      std::atomic<bool>*) override {
+                      std::atomic<bool>*, BlobDownloadValidation) override {
       int now = ++active;
       int prev = peak.load();
       while (now > prev && !peak.compare_exchange_weak(prev, now)) {
@@ -1991,7 +2021,7 @@ TEST(DownloadManagerTest, ModelDownloadsSerializeUnderGlobalLock) {
         fs::create_directories(parent);
       }
       std::ofstream f(local_path);
-      f << "data for " << blob_name;
+      f << std::string(16, 'X');
       if (bytes_written_cb) {
         bytes_written_cb(16);
       }
@@ -2366,6 +2396,9 @@ class BlobIntegrityTransport final : public Azure::Core::Http::HttpTransport {
   bool include_checksum = true;
   bool saw_checksum_request = false;
   bool saw_etag_condition = false;
+  bool saw_head_etag_condition = false;
+  int range_requests = 0;
+  std::string etag = "\"test-etag\"";
 
   std::unique_ptr<Azure::Core::Http::RawResponse> Send(Azure::Core::Http::Request& request,
                                                        const Azure::Core::Context&) override {
@@ -2373,14 +2406,19 @@ class BlobIntegrityTransport final : public Azure::Core::Http::HttpTransport {
     const bool is_head = request.GetMethod() == HttpMethod::Head;
     auto response = std::make_unique<RawResponse>(1, 1, is_head ? HttpStatusCode::Ok : HttpStatusCode::PartialContent,
                                                   "OK");
-    response->SetHeader("etag", "\"test-etag\"");
+    response->SetHeader("etag", etag);
     response->SetHeader("last-modified", "Wed, 14 Oct 2026 00:00:00 GMT");
     response->SetHeader("x-ms-creation-time", "Wed, 14 Oct 2026 00:00:00 GMT");
     response->SetHeader("x-ms-server-encrypted", "true");
     response->SetHeader("x-ms-blob-type", "BlockBlob");
     response->SetHeader("content-length", std::to_string(payload.size()));
     response->SetBodyStream(std::make_unique<Azure::Core::IO::MemoryBodyStream>(nullptr, 0));
-    if (!is_head) {
+    if (is_head) {
+      const auto headers = request.GetHeaders();
+      const auto condition = headers.find("if-match");
+      saw_head_etag_condition = condition != headers.end() && condition->second == "\"test-etag\"";
+    } else {
+      ++range_requests;
       const auto headers = request.GetHeaders();
       const auto checksum_header = headers.find("x-ms-range-get-content-md5");
       saw_checksum_request = checksum_header != headers.end() && checksum_header->second == "true";
@@ -2396,6 +2434,14 @@ class BlobIntegrityTransport final : public Azure::Core::Http::HttpTransport {
 
     return response;
   }
+};
+
+class ListedAzureBlobDownloader : public AzureBlobDownloader {
+ public:
+  using AzureBlobDownloader::AzureBlobDownloader;
+  std::vector<BlobItemInfo> blobs;
+
+  std::vector<BlobItemInfo> ListBlobs(const std::string&) override { return blobs; }
 };
 
 /// Test double for AzureBlobDownloader. Overrides the protected virtuals so
@@ -2478,6 +2524,64 @@ TEST(AzureBlobDownloaderIntegrityTest, VerifiesServiceChecksumAndPinsRangeToETag
   EXPECT_FALSE(fs::exists(BlobDownloadState::GetStateFilePath(local)));
 }
 
+TEST(AzureBlobDownloaderIntegrityTest, BindsHeadAndRangesToListingETagWithoutPublishedChecksum) {
+  auto tmpdir = TempPath::CreateTempDir();
+  auto transport = std::make_shared<BlobIntegrityTransport>();
+  ListedAzureBlobDownloader downloader(fl::test::NullLog(), transport);
+  downloader.blobs = {{"blob.bin", 32, {}, "\"test-etag\""}};
+
+  EXPECT_NO_THROW(DownloadBlobsToDirectoryForTest(
+      downloader, "https://test.blob.core.windows.net/container", tmpdir.string(), {}));
+  EXPECT_TRUE(transport->saw_head_etag_condition);
+  EXPECT_TRUE(transport->saw_etag_condition);
+  EXPECT_EQ(transport->range_requests, 1);
+}
+
+TEST(AzureBlobDownloaderIntegrityTest, RejectsListingIdentityChangesBeforeWritingWithoutPublishedChecksum) {
+  for (const int64_t listed_size : {0, 16, 32, 64}) {
+    auto tmpdir = TempPath::CreateTempDir();
+    auto transport = std::make_shared<BlobIntegrityTransport>();
+    ListedAzureBlobDownloader downloader(fl::test::NullLog(), transport);
+    downloader.blobs = {{"blob.bin", listed_size, {}, listed_size == 32 ? "\"old-etag\"" : "\"test-etag\""}};
+
+    try {
+      DownloadBlobsToDirectoryForTest(downloader, "https://test.blob.core.windows.net/container", tmpdir.string(), {});
+      FAIL() << "Expected listing identity change to fail";
+    } catch (const fl::Exception& e) {
+      EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_NETWORK);
+    }
+
+    EXPECT_EQ(transport->range_requests, 0);
+    EXPECT_FALSE(fs::exists(tmpdir.path() / "blob.bin"));
+    EXPECT_FALSE(fs::exists(BlobDownloadState::GetVerifiedStateFilePath(tmpdir.path() / "blob.bin")));
+  }
+}
+
+TEST(AzureBlobDownloaderIntegrityTest, CloseFailureDoesNotPublishVerifiedReceipt) {
+  auto tmpdir = TempPath::CreateTempDir();
+  const auto local = tmpdir.path() / "blob.bin";
+  auto transport = std::make_shared<BlobIntegrityTransport>();
+  AzureBlobDownloader downloader(fl::test::NullLog(), transport, [](std::intptr_t handle, std::string& error) {
+    EXPECT_TRUE(platform::CloseFile(handle, error));
+    error = "injected deferred write error on close";
+    return false;
+  });
+
+  try {
+    downloader.DownloadBlob("https://test.blob.core.windows.net/container", "blob", local.string(), 1);
+    FAIL() << "Expected close failure";
+  } catch (const fl::Exception& e) {
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INTERNAL);
+    EXPECT_NE(std::string(e.what()).find("injected deferred write error on close"), std::string::npos);
+  }
+
+  EXPECT_FALSE(fs::exists(BlobDownloadState::GetVerifiedStateFilePath(local)));
+  EXPECT_TRUE(fs::exists(BlobDownloadState::GetStateFilePath(local)));
+  AzureBlobDownloader retry(fl::test::NullLog(), transport);
+  EXPECT_NO_THROW(retry.DownloadBlob("https://test.blob.core.windows.net/container", "blob", local.string(), 1));
+  EXPECT_TRUE(fs::exists(BlobDownloadState::GetVerifiedStateFilePath(local)));
+}
+
 TEST(AzureBlobDownloaderIntegrityTest, RejectsMissingAndMismatchedServiceChecksums) {
   for (const bool include_checksum : {false, true}) {
     auto tmpdir = TempPath::CreateTempDir();
@@ -2538,6 +2642,47 @@ TEST(AzureBlobDownloaderIntegrityTest, ReusesVerifiedFilesAndRepairsSameLengthCo
   EXPECT_EQ(ReadFile(local), std::string(32, '*'));
   DownloadBlobsToDirectoryForTest(listing, "", tmpdir.string(), {});
   EXPECT_TRUE(listing.downloaded_blobs.empty());
+}
+
+TEST(AzureBlobDownloaderIntegrityTest, DirectoryRepairVerifiesReceiptOnlyOnce) {
+  class ListedChunkDownloader : public FakeChunkAzureDownloader {
+   public:
+    using FakeChunkAzureDownloader::FakeChunkAzureDownloader;
+
+    std::vector<BlobItemInfo> ListBlobs(const std::string&) override { return {{"blob.bin", blob_size}}; }
+  };
+
+  auto tmpdir = TempPath::CreateTempDir();
+  const auto local = tmpdir.path() / "blob.bin";
+  CacheOperationLogger logger;
+  int mismatches = 0;
+  logger.on_log = [&](std::string_view message) {
+    if (message.find("checksum mismatch in chunk") != std::string_view::npos) {
+      ++mismatches;
+    }
+  };
+  ListedChunkDownloader downloader(logger);
+  constexpr int64_t kChunkSize = 2 * 1024 * 1024;
+  downloader.blob_size = 8 * kChunkSize + 17;
+  DownloadBlobsToDirectoryForTest(downloader, "", tmpdir.string(), {});
+  {
+    std::fstream file(local, std::ios::binary | std::ios::in | std::ios::out);
+    file.seekp(3 * kChunkSize);
+    file.put('X');
+  }
+
+  downloader.chunk_call_count = 0;
+  downloader.requested_offsets.clear();
+  BlobDownloadStats stats;
+  DownloadBlobsToDirectory(downloader, "", tmpdir.string(), {}, stats, logger);
+  EXPECT_EQ(mismatches, 1);
+  EXPECT_EQ(downloader.requested_offsets, std::vector<int64_t>{3 * kChunkSize});
+  EXPECT_EQ(ReadFile(local), std::string(static_cast<size_t>(downloader.blob_size), '\0'));
+  EXPECT_EQ(stats.skipped_file_count, 0);
+
+  DownloadBlobsToDirectory(downloader, "", tmpdir.string(), {}, stats, logger);
+  EXPECT_EQ(stats.skipped_file_count, 1);
+  EXPECT_EQ(downloader.chunk_call_count.load(), 1);
 }
 
 TEST(AzureBlobDownloaderIntegrityTest, WritesSmallReadsBeforeReportingProgress) {
@@ -2780,6 +2925,69 @@ TEST(AzureBlobDownloaderResumeTest, CancelsParallelVerificationWithoutPublishing
     EXPECT_NO_THROW(downloader.DownloadBlob("", "blob", local.string(), 4));
     EXPECT_EQ(downloader.chunk_call_count.load(), 0);
     EXPECT_TRUE(fs::exists(BlobDownloadState::GetVerifiedStateFilePath(local)));
+  }
+}
+
+TEST(AzureBlobDownloaderResumeTest, CancelsFromActiveParallelVerificationReaders) {
+  for (const bool use_flag : {false, true}) {
+    auto tmpdir = TempPath::CreateTempDir();
+    const auto local = tmpdir.path() / "blob.bin";
+    constexpr int32_t kChunkSize = 2 * 1024 * 1024;
+    constexpr int32_t kChunks = 512;
+    constexpr int64_t kBlobSize = int64_t{kChunkSize} * kChunks;
+    // Keep readers active beyond the 100 ms progress throttle without allocating a GiB-sized payload.
+    {
+      std::ofstream file(local, std::ios::binary);
+      file.seekp(kBlobSize - 1);
+      file.put('\0');
+    }
+
+    auto state = BlobDownloadState::CreateNew("blob", local, kBlobSize, kChunkSize, kChunks);
+    const auto digest = Md5(std::string(kChunkSize, '\0'));
+    for (int32_t chunk = 0; chunk < kChunks; ++chunk) {
+      std::copy(digest.begin(), digest.end(), state->chunk_md5[static_cast<size_t>(chunk)].begin());
+      state->MarkChunkComplete(chunk);
+    }
+
+    ASSERT_TRUE(state->SaveState(fl::test::NullLog()));
+    FakeChunkAzureDownloader downloader;
+    downloader.blob_size = kBlobSize;
+    std::atomic<bool> cancelled{false};
+    const auto calling_thread = std::this_thread::get_id();
+    int polls = 0;
+    auto cancel_verification = [&](int64_t bytes) {
+      EXPECT_EQ(bytes, 0);
+      if (++polls == 1) {
+        EXPECT_EQ(std::this_thread::get_id(), calling_thread);
+        return;
+      }
+
+      if (std::thread::hardware_concurrency() > 1) {
+        EXPECT_NE(std::this_thread::get_id(), calling_thread);
+      }
+
+      if (use_flag) {
+        cancelled.store(true);
+      } else {
+        throw std::runtime_error("parallel verification callback failed");
+      }
+    };
+
+    try {
+      downloader.DownloadBlob("", "blob", local.string(), 4, cancel_verification, use_flag ? &cancelled : nullptr);
+      FAIL() << "Expected cancellation from an active verification reader";
+    } catch (const fl::Exception& e) {
+      EXPECT_TRUE(use_flag);
+      EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+    } catch (const std::runtime_error& e) {
+      EXPECT_FALSE(use_flag);
+      EXPECT_STREQ(e.what(), "parallel verification callback failed");
+    }
+
+    EXPECT_EQ(polls, 2);
+    EXPECT_EQ(downloader.chunk_call_count.load(), 0);
+    EXPECT_FALSE(fs::exists(BlobDownloadState::GetVerifiedStateFilePath(local)));
+    EXPECT_TRUE(fs::exists(BlobDownloadState::GetStateFilePath(local)));
   }
 }
 

@@ -2,6 +2,9 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "download/blob_download_state.h"
+#include "download/file_writer.h"
+
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
@@ -45,6 +48,12 @@ struct BlobItemInfo {
   std::string etag{};
 };
 
+/// Listing identity and in-memory repair state validated by this download invocation.
+struct BlobDownloadValidation {
+  const BlobItemInfo* expected_blob = nullptr;
+  std::unique_ptr<BlobDownloadState> verified_state;
+};
+
 /// Interface for blob download operations. Enables testing via mock implementations.
 class IBlobDownloader {
  public:
@@ -58,12 +67,14 @@ class IBlobDownloader {
   /// If bytes_written_cb is provided, it is called after each chunk with the cumulative byte count.
   /// Verification also polls it without advancing the byte count, so callbacks can request cancellation.
   /// If cancelled is non-null, the download checks the flag and aborts promptly when set.
+  /// Validation binds HEAD/ranges to the listing and transfers already-verified repair state without rescanning.
   virtual void DownloadBlob(const std::string& sas_uri,
                             const std::string& blob_name,
                             const std::string& local_path,
                             int max_concurrency,
                             BlobBytesWrittenFn bytes_written_cb = nullptr,
-                            std::atomic<bool>* cancelled = nullptr) = 0;
+                            std::atomic<bool>* cancelled = nullptr,
+                            BlobDownloadValidation validation = {}) = 0;
 };
 
 /// Azure Storage Blobs SDK-based implementation of IBlobDownloader.
@@ -84,7 +95,8 @@ class AzureBlobDownloader : public IBlobDownloader {
  public:
   /// `logger` receives diagnostics only (state-file save/load events). It is required:
   /// the orchestrator always has a logger, so there is no optional/null case to handle.
-  explicit AzureBlobDownloader(ILogger& logger, std::shared_ptr<Azure::Core::Http::HttpTransport> transport = nullptr);
+  explicit AzureBlobDownloader(ILogger& logger, std::shared_ptr<Azure::Core::Http::HttpTransport> transport = nullptr,
+                               FileWriter::CloseFileFn close_file = nullptr);
 
   std::vector<BlobItemInfo> ListBlobs(const std::string& sas_uri) override;
 
@@ -93,7 +105,8 @@ class AzureBlobDownloader : public IBlobDownloader {
                     const std::string& local_path,
                     int max_concurrency,
                     BlobBytesWrittenFn bytes_written_cb = nullptr,
-                    std::atomic<bool>* cancelled = nullptr) override;
+                    std::atomic<bool>* cancelled = nullptr,
+                    BlobDownloadValidation validation = {}) override;
 
  protected:
   /// Opaque per-blob context. Defined in `blob_downloader.cc`; holds the Azure
@@ -128,6 +141,7 @@ class AzureBlobDownloader : public IBlobDownloader {
  private:
   ILogger& logger_;
   std::shared_ptr<Azure::Core::Http::HttpTransport> transport_;
+  FileWriter::CloseFileFn close_file_;
 };
 
 /// Aggregate statistics from one DownloadBlobsToDirectory call. Used by callers to

@@ -7,6 +7,7 @@
 
 #include "download/file_writer.h"
 #include "exception.h"
+#include "platform/file_io.h"
 #include "test_helpers.h"
 #include <gtest/gtest.h>
 
@@ -68,6 +69,29 @@ TEST(FileWriterTest, OpenPreservesExistingFileAtSameSize) {
 TEST(FileWriterTest, FinishReportsInvalidHandle) {
   FileWriter writer(fl::test::NullLog());
   EXPECT_THROW(writer.Finish(), fl::Exception);
+}
+
+TEST(FileWriterTest, FinishPropagatesCloseFailureWithoutClosingTwice) {
+  auto p = TempPath::CreateTempFile();
+  static int close_calls;
+  close_calls = 0;
+  {
+    FileWriter writer(fl::test::NullLog(), [](std::intptr_t handle, std::string& error) {
+      ++close_calls;
+      EXPECT_TRUE(platform::CloseFile(handle, error));
+      error = "injected close failure";
+      return false;
+    });
+    writer.Open(p.path(), 32);
+    try {
+      writer.Finish();
+      FAIL() << "Expected close failure";
+    } catch (const fl::Exception& e) {
+      EXPECT_NE(std::string(e.what()).find("injected close failure"), std::string::npos);
+    }
+  }
+
+  EXPECT_EQ(close_calls, 1);
 }
 
 TEST(FileWriterTest, OpenRecreatesFileWhenSizeDiffers) {
