@@ -148,7 +148,7 @@ public abstract class Session : IDisposable
     public async Task<Response> ProcessRequestAsync(Request request, CancellationToken ct = default)
     {
         Detail.Throw.IfNull(request);
-        var requestLease = request.AcquireLease();
+        var requestLease = request.AcquireProcessingLease();
         var operation = AcquireOperation(requestLease);
 
         return await Task.Run(() =>
@@ -160,7 +160,7 @@ public abstract class Session : IDisposable
                 {
                     ct.ThrowIfCancellationRequested();
                     using var managerLease = _managerLifetime.Acquire(this, trackReentrancy: true);
-                    var responsePtr = _session.ProcessRequest(requestLease.Ptr, ct);
+                    var responsePtr = _session.ProcessRequest(requestLease, ct);
                     return new Response(responsePtr);
                 }
                 finally
@@ -214,16 +214,26 @@ public abstract class Session : IDisposable
                                                             CancellationToken ct = default)
     {
         Detail.Throw.IfNull(request);
-        var requestLease = request.AcquireLease();
+        var requestLease = request.AcquireProcessingLease();
 
 #pragma warning disable IDISP001 // Ownership transfers to StreamingOperation and then StreamingResponse.
 #pragma warning disable IDISP016 // The operation is disposed only on the throwing precondition branch.
-    var operation = _operationGate.TryAcquire(this, assignCurrentThread: false);
-    if (operation == null)
-    {
-        requestLease.Dispose();
-        throw new InvalidOperationException("Concurrent streaming requests on the same session are not supported.");
-    }
+        SessionOperationGate.Operation? operation;
+        try
+        {
+            operation = _operationGate.TryAcquire(this, assignCurrentThread: false);
+        }
+        catch
+        {
+            requestLease.Dispose();
+            throw;
+        }
+
+        if (operation == null)
+        {
+            requestLease.Dispose();
+            throw new InvalidOperationException("Concurrent streaming requests on the same session are not supported.");
+        }
 
         if (_nativeStreamingCallback == null)
         {
@@ -266,7 +276,7 @@ public abstract class Session : IDisposable
                     try
                     {
                         using var managerLease = _managerLifetime.Acquire(this, trackReentrancy: true);
-                        var responsePtr = _session.ProcessRequest(requestLease.Ptr, cts.Token);
+                        var responsePtr = _session.ProcessRequest(requestLease, cts.Token);
 
                         wasCancelled = cts.IsCancellationRequested;
                         if (wasCancelled)

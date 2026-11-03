@@ -182,7 +182,7 @@ public sealed class LiveAudioTranscriptionSession : IAsyncDisposable
 
             _processingTask = RunProducerAsync(() =>
             {
-                var responsePtr = _session.ProcessRequest(request.Ptr);
+                var responsePtr = _session.ProcessRequest(request);
 
                 // Drain the final Response: it carries the aggregated transcription as a SpeechResultItem
                 using (var response = new Response(responsePtr))

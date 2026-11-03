@@ -31,6 +31,12 @@ internal sealed class RequestCancellationTests
                 return IntPtr.Zero;
             };
             Api.Inference.SessionRelease = _ => { };
+            Api.Inference.RequestCreate = (out request) =>
+            {
+                request = new IntPtr(4);
+                return IntPtr.Zero;
+            };
+            Api.Inference.RequestRelease = _ => { };
             Api.Inference.RequestCancel = _ => IntPtr.Zero;
             Api.Inference.ResponseRelease = _ => responseReleases++;
             Api.Inference.SessionProcessRequest = (session, request, ref response) =>
@@ -42,11 +48,209 @@ internal sealed class RequestCancellationTests
             };
 
             using var session = new NativeSession(new NativeModel(new IntPtr(2)));
-            var response = session.ProcessRequest(new IntPtr(4), cts.Token);
+            using var request = new Request();
+            var response = session.ProcessRequest(request, cts.Token);
 
             await Assert.That(cts.IsCancellationRequested).IsTrue();
             await Assert.That(response).IsEqualTo(responsePtr);
             await Assert.That(responseReleases).IsEqualTo(0);
+        }
+        finally
+        {
+            Api.Inference = originalInference;
+        }
+    }
+
+    [Test]
+    [NotInParallel]
+    public async Task Cancellation_WithOnePoolWorker_RetriesAndDisposesWithoutDeadlock()
+    {
+        var completed = await Task.Factory.StartNew(() =>
+        {
+            ThreadPool.GetMinThreads(out var minWorkers, out var minIo);
+            ThreadPool.GetMaxThreads(out var maxWorkers, out var maxIo);
+            using var cts = new CancellationTokenSource();
+            using var canceled = new ManualResetEventSlim();
+            using var entered = new ManualResetEventSlim();
+            using var start = new ManualResetEventSlim();
+            var admitted = 0;
+            Task? inference = null;
+            bool completedBeforeRestore;
+            try
+            {
+                inference = Task.Run(() =>
+                {
+                    entered.Set();
+                    start.Wait(TimeSpan.FromSeconds(5));
+                    using var cancellation = new RequestCancellation(() =>
+                    {
+                        if (Volatile.Read(ref admitted) != 0)
+                        {
+                            canceled.Set();
+                        }
+                    }, cts.Token);
+
+                    cts.Cancel();
+                    Volatile.Write(ref admitted, 1);
+                    canceled.Wait(TimeSpan.FromSeconds(2));
+                });
+
+                if (!entered.Wait(TimeSpan.FromSeconds(5)))
+                {
+                    throw new InvalidOperationException("Inference worker did not start.");
+                }
+
+                if (!ThreadPool.SetMinThreads(1, minIo) || !ThreadPool.SetMaxThreads(1, maxIo))
+                {
+                    throw new InvalidOperationException("Cannot cap the thread pool for this regression.");
+                }
+
+                start.Set();
+                completedBeforeRestore = inference.Wait(TimeSpan.FromSeconds(3));
+            }
+            finally
+            {
+                ThreadPool.SetMaxThreads(maxWorkers, maxIo);
+                ThreadPool.SetMinThreads(minWorkers, minIo);
+                start.Set();
+                inference?.GetAwaiter().GetResult();
+            }
+
+            return completedBeforeRestore && canceled.IsSet;
+        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default).ConfigureAwait(false);
+
+        await Assert.That(completed).IsTrue();
+    }
+
+    [Test]
+    [NotInParallel]
+    public async Task CompetingRequestToken_DoesNotCancelExistingCall()
+    {
+        Api.EnsureInitialized();
+        var originalInference = Api.Inference;
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        using var cts = new CancellationTokenSource();
+        var cancelCalls = 0;
+        var processCalls = 0;
+        Task<IntPtr>? active = null;
+        try
+        {
+            Api.Inference.SessionCreate = (model, out session) =>
+            {
+                session = new IntPtr(1);
+                return IntPtr.Zero;
+            };
+            Api.Inference.SessionRelease = _ => { };
+            Api.Inference.RequestCreate = (out request) =>
+            {
+                request = new IntPtr(4);
+                return IntPtr.Zero;
+            };
+            Api.Inference.RequestRelease = _ => { };
+            Api.Inference.RequestCancel = _ =>
+            {
+                Interlocked.Increment(ref cancelCalls);
+                return IntPtr.Zero;
+            };
+            Api.Inference.SessionProcessRequest = (session, request, ref response) =>
+            {
+                Interlocked.Increment(ref processCalls);
+                entered.Set();
+                release.Wait(TimeSpan.FromSeconds(5));
+                response = new IntPtr(3);
+                return IntPtr.Zero;
+            };
+
+            using var first = new NativeSession(new NativeModel(new IntPtr(2)));
+            using var second = new NativeSession(new NativeModel(new IntPtr(2)));
+            using var request = new Request();
+            active = Task.Run(() => first.ProcessRequest(request));
+            try
+            {
+                await Assert.That(entered.Wait(TimeSpan.FromSeconds(2))).IsTrue();
+                await Assert.ThrowsAsync<InvalidOperationException>(
+                    () => Task.FromResult(second.ProcessRequest(request, cts.Token)));
+                cts.Cancel();
+                await Assert.That(Volatile.Read(ref cancelCalls)).IsEqualTo(0);
+                await Assert.That(Volatile.Read(ref processCalls)).IsEqualTo(1);
+            }
+            finally
+            {
+                release.Set();
+                await active.ConfigureAwait(false);
+            }
+
+            await Assert.That(second.ProcessRequest(request)).IsEqualTo(new IntPtr(3));
+        }
+        finally
+        {
+            Api.Inference = originalInference;
+        }
+    }
+
+    [Test]
+    [NotInParallel]
+    public async Task ProcessingOwnership_IsHeldThroughCancellationCleanup()
+    {
+        Api.EnsureInitialized();
+        var originalInference = Api.Inference;
+        using var nativeReturned = new ManualResetEventSlim();
+        using var cancelEntered = new ManualResetEventSlim();
+        using var releaseCancel = new ManualResetEventSlim();
+        using var cts = new CancellationTokenSource();
+        Task? cancelTask = null;
+        try
+        {
+            Api.Inference.SessionCreate = (model, out session) =>
+            {
+                session = new IntPtr(1);
+                return IntPtr.Zero;
+            };
+            Api.Inference.SessionRelease = _ => { };
+            Api.Inference.RequestCreate = (out request) =>
+            {
+                request = new IntPtr(4);
+                return IntPtr.Zero;
+            };
+            Api.Inference.RequestRelease = _ => { };
+            Api.Inference.RequestCancel = _ =>
+            {
+                cancelEntered.Set();
+                releaseCancel.Wait(TimeSpan.FromSeconds(5));
+                return IntPtr.Zero;
+            };
+            Api.Inference.SessionProcessRequest = (session, request, ref response) =>
+            {
+                cancelTask = Task.Run(cts.Cancel);
+                cancelEntered.Wait(TimeSpan.FromSeconds(2));
+                response = new IntPtr(3);
+                nativeReturned.Set();
+                return IntPtr.Zero;
+            };
+
+            using var session = new NativeSession(new NativeModel(new IntPtr(2)));
+            using var request = new Request();
+            var active = Task.Run(() => session.ProcessRequest(request, cts.Token));
+            try
+            {
+                await Assert.That(nativeReturned.Wait(TimeSpan.FromSeconds(2))).IsTrue();
+                await Assert.That(active.IsCompleted).IsFalse();
+                await Assert.ThrowsAsync<InvalidOperationException>(
+                    () => Task.FromResult(session.ProcessRequest(request)));
+            }
+            finally
+            {
+                releaseCancel.Set();
+                await active.ConfigureAwait(false);
+                if (cancelTask != null)
+                {
+                    await cancelTask.ConfigureAwait(false);
+                }
+            }
+
+            using var reuse = request.AcquireProcessingLease();
+            await Assert.That(reuse.Ptr).IsEqualTo(new IntPtr(4));
         }
         finally
         {

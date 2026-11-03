@@ -6,32 +6,48 @@
 
 namespace Microsoft.AI.Foundry.Local.Detail;
 
+using System.Runtime.ExceptionServices;
+
 internal sealed class RequestCancellation : IDisposable
 {
-    private readonly CancellationTokenSource _finished = new();
+    private readonly ManualResetEventSlim _finished = new();
     private readonly CancellationTokenRegistration _registration;
-    private Task? _cancelTask;
+    private Thread? _cancelThread;
+    private ExceptionDispatchInfo? _error;
     private int _disposed;
 
     internal RequestCancellation(Action cancel, CancellationToken ct)
     {
-        _registration = ct.Register(() => _cancelTask = CancelUntilFinishedAsync(cancel));
-    }
-
-    private async Task CancelUntilFinishedAsync(Action cancel)
-    {
-        // Native cancellation is an idle no-op. Keep retrying across admission, but never outlive the request lease.
-        while (!_finished.IsCancellationRequested)
+        _registration = ct.Register(() =>
         {
-            cancel();
             try
             {
-                await Task.Delay(10, _finished.Token).ConfigureAwait(false);
+                cancel();
             }
-            catch (OperationCanceledException) when (_finished.IsCancellationRequested)
+            catch (Exception ex)
             {
-                break;
+                _error = ExceptionDispatchInfo.Capture(ex);
+                return;
             }
+
+            _cancelThread = new Thread(() => CancelUntilFinished(cancel)) { IsBackground = true };
+            _cancelThread.Start();
+        });
+    }
+
+    private void CancelUntilFinished(Action cancel)
+    {
+        // Retry idle cancellation across admission without depending on the inference thread pool.
+        try
+        {
+            while (!_finished.Wait(10))
+            {
+                cancel();
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = ExceptionDispatchInfo.Capture(ex);
         }
     }
 
@@ -43,10 +59,11 @@ internal sealed class RequestCancellation : IDisposable
         }
 
         _registration.Dispose();
-        _finished.Cancel();
+        _finished.Set();
         try
         {
-            _cancelTask?.GetAwaiter().GetResult();
+            _cancelThread?.Join();
+            _error?.Throw();
         }
         finally
         {

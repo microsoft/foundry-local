@@ -68,10 +68,10 @@ class Request:
         def cancel_until_finished() -> None:
             try:
                 while not finished.is_set():
-                    if cancel_event.wait(timeout=0.01):
+                    if cancel_event.is_set():
                         self.cancel()
-                        if finished.wait(timeout=0.01):
-                            return
+                    if finished.wait(timeout=0.01):
+                        return
             except Exception as exc:
                 errors.append(exc)
 

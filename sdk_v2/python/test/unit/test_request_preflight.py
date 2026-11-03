@@ -250,3 +250,36 @@ def test_pre_set_cancellation_event_never_submits_inference(monkeypatch: pytest.
         with pytest.raises(FoundryLocalException) as error:
             session.process_request(request, cancel_event=cancel_event)
         assert error.value.error_code == 5
+
+
+def test_completed_request_wakes_cancellation_cleanup_without_waiting_for_cancel_event() -> None:
+    helper_started = threading.Event()
+    release_cancel_wait = threading.Event()
+    processing_thread: threading.Thread | None = None
+
+    class UnsetCancelEvent(threading.Event):
+        def is_set(self) -> bool:
+            if threading.current_thread() is not processing_thread:
+                helper_started.set()
+            return False
+
+        def wait(self, timeout: float | None = None) -> bool:
+            helper_started.set()
+            release_cancel_wait.wait(timeout=2)
+            return False
+
+    request = _fake_request()
+    request._closed = True
+
+    def complete_request() -> None:
+        nonlocal processing_thread
+        processing_thread = threading.current_thread()
+        with request._cancellation(UnsetCancelEvent()):
+            assert helper_started.wait(timeout=1)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        completed = pool.submit(complete_request)
+        try:
+            completed.result(timeout=1)
+        finally:
+            release_cancel_wait.set()
