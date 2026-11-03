@@ -254,6 +254,14 @@ target_include_directories(foundry_local_tests
         ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
+if(NOT CMAKE_CROSSCOMPILING)
+    add_executable(benchmark-download ../tools/benchmark-download.cc)
+    target_include_directories(benchmark-download PRIVATE ../src)
+    target_compile_options(benchmark-download PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+    target_link_libraries(benchmark-download PRIVATE foundry_local_static)
+    add_dependencies(benchmark-download foundry_local)
+endif()
+
 add_custom_command(TARGET foundry_local_tests POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_CURRENT_SOURCE_DIR}/testdata

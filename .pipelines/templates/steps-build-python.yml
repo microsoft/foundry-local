@@ -217,9 +217,16 @@ steps:
                   '--includeRecommended'
               )
 
-              $process = Start-Process -FilePath $bootstrapper -ArgumentList $arguments -Wait -PassThru
-              if ($process.ExitCode -ne 0) {
-                  throw "Visual Studio Build Tools install failed with exit code $($process.ExitCode)."
+              for ($attempt = 1; $attempt -le 10; ++$attempt) {
+                  $process = Start-Process -FilePath $bootstrapper -ArgumentList $arguments -Wait -PassThru
+                  if ($process.ExitCode -in @(0, 3010)) {
+                      break
+                  }
+                  if ($process.ExitCode -ne 1618 -or $attempt -eq 10) {
+                      throw "Visual Studio Build Tools install failed with exit code $($process.ExitCode)."
+                  }
+                  Write-Host "Another installation is in progress; retrying in 30 seconds (attempt $attempt/10)."
+                  Start-Sleep -Seconds 30
               }
           }
 

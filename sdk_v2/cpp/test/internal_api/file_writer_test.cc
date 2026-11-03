@@ -6,6 +6,8 @@
 // disjoint-range positional writes.
 
 #include "download/file_writer.h"
+#include "exception.h"
+#include "platform/file_io.h"
 #include "test_helpers.h"
 #include <gtest/gtest.h>
 
@@ -32,7 +34,7 @@ TEST(FileWriterTest, OpenCreatesFileAtRequestedSize) {
   auto p = TempPath::CreateTempFile();
   FileWriter w(fl::test::NullLog());
   w.Open(p.path(), 4096);
-  w.Close();
+  w.Finish();
   EXPECT_TRUE(fs::exists(p.path()));
   EXPECT_EQ(fs::file_size(p.path()), 4096u);
 }
@@ -45,6 +47,7 @@ TEST(FileWriterTest, OpenPreservesExistingFileAtSameSize) {
     f.seekp(1023);
     f.put('\0');
   }
+
   // Plant a known byte at offset 100.
   {
     std::fstream f(p.path(), std::ios::binary | std::ios::in | std::ios::out);
@@ -61,6 +64,34 @@ TEST(FileWriterTest, OpenPreservesExistingFileAtSameSize) {
   f.seekg(100);
   int byte = f.get();
   EXPECT_EQ(byte, 0xAB);
+}
+
+TEST(FileWriterTest, FinishReportsInvalidHandle) {
+  FileWriter writer(fl::test::NullLog());
+  EXPECT_THROW(writer.Finish(), fl::Exception);
+}
+
+TEST(FileWriterTest, FinishPropagatesCloseFailureWithoutClosingTwice) {
+  auto p = TempPath::CreateTempFile();
+  static int close_calls;
+  close_calls = 0;
+  {
+    FileWriter writer(fl::test::NullLog(), [](std::intptr_t handle, std::string& error) {
+      ++close_calls;
+      EXPECT_TRUE(platform::CloseFile(handle, error));
+      error = "injected close failure";
+      return false;
+    });
+    writer.Open(p.path(), 32);
+    try {
+      writer.Finish();
+      FAIL() << "Expected close failure";
+    } catch (const fl::Exception& e) {
+      EXPECT_NE(std::string(e.what()).find("injected close failure"), std::string::npos);
+    }
+  }
+
+  EXPECT_EQ(close_calls, 1);
 }
 
 TEST(FileWriterTest, OpenRecreatesFileWhenSizeDiffers) {

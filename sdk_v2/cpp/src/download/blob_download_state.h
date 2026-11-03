@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -20,11 +21,8 @@ class ILogger;
 ///
 /// The serialized form stores only the bitmap suffix starting at
 /// `bitmap_byte_aligned_start` to `highest_completed_chunk`.
-/// This keeps the on-disk state proportional to the *unfinished*
-/// range, not the total file size.
-///
 /// On-disk layout is a small fixed-width little-endian binary header followed
-/// by the truncated bitmap bytes.
+/// by the truncated bitmap, blob ETag, and per-chunk MD5 checksums.
 class BlobDownloadState {
  public:
   /// Identity of the blob (populated by caller; not serialized).
@@ -56,8 +54,15 @@ class BlobDownloadState {
   /// without resizing.
   std::vector<uint64_t> full_completion_bitmap;
 
+  /// Server identity and checksums of successfully transferred chunks. Checked against disk before resuming.
+  std::string etag;
+  std::vector<std::array<uint8_t, 16>> chunk_md5;
+
   /// Sidecar path for `local_file_path`.
   static std::filesystem::path GetStateFilePath(const std::filesystem::path& local_file_path);
+
+  /// Completed download receipt retained so interrupted model downloads can reuse verified files.
+  static std::filesystem::path GetVerifiedStateFilePath(const std::filesystem::path& local_file_path);
 
   /// Construct a fresh state for a new download. Bitmap sized for `total_chunks`.
   static std::unique_ptr<BlobDownloadState> CreateNew(std::string blob_name,
@@ -78,7 +83,8 @@ class BlobDownloadState {
                                                       int64_t expected_blob_size,
                                                       int32_t expected_chunk_size,
                                                       int32_t expected_total_chunks,
-                                                      ILogger& logger);
+                                                      ILogger& logger,
+                                                      bool verified = false);
 
   /// All chunks downloaded.
   bool IsComplete() const noexcept { return completed_count == total_chunks; }
@@ -93,6 +99,9 @@ class BlobDownloadState {
   /// Mark `chunk_idx` complete. Caller must hold the mutex when called from
   /// concurrent worker tasks (use `mutex()` for that). Idempotent.
   void MarkChunkComplete(int32_t chunk_idx);
+
+  /// Invalidate a completed chunk whose on-disk bytes no longer match its checksum.
+  void MarkChunkIncomplete(int32_t chunk_idx);
 
   /// Enumerate chunks in [0, total_chunks) that are not yet complete.
   std::vector<int32_t> GetPendingChunks() const;
