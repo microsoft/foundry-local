@@ -2281,6 +2281,8 @@ TEST_F(QwenNativeProductionIntegrationTest,
       {"ordinary answer", "ordinary answer", 0},
       {R"([{"name":"lookup","parameters":{"city":"Paris"}}])",
        R"([{"name":"lookup","parameters":{"city":"Paris"}}])", 0},
+      {"```json\n{\"foundry_tool_calls\":[{\"name\":\"lookup\",\"parameters\":{\"city\":\"Paris\"}}]}\n```",
+       "```json\n{\"foundry_tool_calls\":[{\"name\":\"lookup\",\"parameters\":{\"city\":\"Paris\"}}]}\n```", 0},
       {"MESS", "MESS", 0},
       {"MESSAGE", "MESSAGE", 0},
       {"MESSAGE\n", "", 0},
@@ -3020,7 +3022,7 @@ TEST_F(QwenNativeProductionIntegrationTest,
 }
 
 TEST_F(QwenNativeProductionIntegrationTest,
-       CanonicalToolOnlyTextNeverPublishesAndTruncationFailsClosedAcrossBackends) {
+       CanonicalToolOnlyTextFailsOnNaturalEndButLengthTerminationRemainsNormalAcrossBackends) {
   for (auto* native_model : {engine_model_, model_}) {
     SCOPED_TRACE(native_model == model_ ? "classic Generator" : "Engine");
     for (const auto termination : {BackendTerminationCause::kNaturalEnd,
@@ -3051,14 +3053,56 @@ TEST_F(QwenNativeProductionIntegrationTest,
         }
 
         Response response;
-        EXPECT_THROW(session.ProcessRequest(request, response), fl::Exception);
+        if (termination == BackendTerminationCause::kNaturalEnd) {
+          EXPECT_THROW(session.ProcessRequest(request, response), fl::Exception);
+        } else {
+          EXPECT_NO_THROW(session.ProcessRequest(request, response));
+        }
         EXPECT_EQ(streamed_items, 0u);
         EXPECT_TRUE(response.items.empty());
-        EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
-        EXPECT_EQ(session.TurnCount(), 0u);
-        EXPECT_TRUE(session.Transcript().Empty());
+        EXPECT_EQ(response.finish_reason,
+                  termination == BackendTerminationCause::kNaturalEnd
+                     ? FOUNDRY_LOCAL_FINISH_NONE
+                     : FOUNDRY_LOCAL_FINISH_LENGTH);
+        EXPECT_EQ(session.TurnCount(),
+                  termination == BackendTerminationCause::kNaturalEnd ? 0u : 1u);
+        EXPECT_EQ(session.Transcript().Empty(),
+                  termination == BackendTerminationCause::kNaturalEnd);
         EXPECT_EQ(counters->created,
                   termination == BackendTerminationCause::kNaturalEnd ? 2 : 1);
+      }
+    }
+  }
+}
+
+TEST_F(QwenNativeProductionIntegrationTest,
+       ChatCompletionsToolOnlyLengthTerminationReturnsLengthWithoutCalls) {
+  for (auto* native_model : {engine_model_, model_}) {
+    SCOPED_TRACE(native_model == model_ ? "classic Generator" : "Engine");
+    for (const bool streaming : {false, true}) {
+      SCOPED_TRACE(streaming);
+      auto catalog_model = MakeCatalogModel();
+      ChatSession session(
+          catalog_model, *native_model, *logger_, telemetry_, {},
+          OutputFactory("ordinary answer", {}, BackendTerminationCause::kOutputTokenLimit,
+                       /*chunk_size=*/1));
+      std::vector<nlohmann::json> chunks;
+      const auto completion =
+          RunChatCompletions(session, "required", streaming ? &chunks : nullptr);
+      const auto& choice = completion.at("choices").at(0);
+      EXPECT_EQ(choice.at("finish_reason"), "length");
+      EXPECT_TRUE(choice.at("message").value("tool_calls", nlohmann::json::array()).empty());
+      EXPECT_TRUE(choice.at("message").at("content").is_null() ||
+                  choice.at("message").at("content") == "");
+      if (streaming) {
+        ASSERT_FALSE(chunks.empty());
+        EXPECT_EQ(chunks.back().at("choices").at(0).at("finish_reason"), "length");
+        EXPECT_TRUE(std::ranges::none_of(chunks, [](const auto& chunk) {
+          const auto& delta = chunk.at("choices").at(0).at("delta");
+          return delta.contains("tool_calls") ||
+                 (delta.contains("content") && delta.at("content").is_string() &&
+                  !delta.at("content").template get<std::string>().empty());
+        }));
       }
     }
   }

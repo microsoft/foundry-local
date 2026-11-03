@@ -1222,7 +1222,8 @@ ToolCallContext BuildToolCallContextForRequest(const Request& request,
         tool_ctx.raw_envelope.reset();
       }
       tool_ctx.native_assistant_text_output = tool_ctx.text_output;
-      if (model.ModelId().starts_with("qwen2.5-coder-0.5b") && !tool_ctx.ActiveRawEnvelope() &&
+      if (!tool_ctx.text_output && model.ModelId().starts_with("qwen2.5-coder-0.5b") &&
+          !tool_ctx.ActiveRawEnvelope() &&
           !tool_ctx.HasAnyExplicitGuidance()) {
         tool_ctx.fenced_tool_call_output = true;
         tool_ctx.guidance_disabled = true;
@@ -1931,7 +1932,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   flush_accumulator(natural_tool_output_end);
   emit_visible_text(text_framer.Flush());
   stop_sequence_matched |= text_framer.Matched();
-  if (cached_tool_ctx_.tool_plan && !cached_tool_ctx_.text_output &&
+  if (natural_tool_output_end && cached_tool_ctx_.tool_plan && !cached_tool_ctx_.text_output &&
       !malformed_tool_output_seen && !HasGeneratedToolCalls(generated_events)) {
     malformed_tool_output_seen = true;
     malformed_tool_error = "The model did not emit the required tool call";
@@ -2333,7 +2334,7 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
       active_raw_detector, tool_accumulator, natural_tool_output_end));
   emit_visible_text(text_framer.Flush());
   stop_sequence_matched |= text_framer.Matched();
-  if (tool_ctx.tool_plan && !tool_ctx.text_output &&
+  if (natural_tool_output_end && tool_ctx.tool_plan && !tool_ctx.text_output &&
       !malformed_tool_output_seen && !HasGeneratedToolCalls(generated_events)) {
     malformed_tool_output_seen = true;
     malformed_tool_error = "The model did not emit the required tool call";

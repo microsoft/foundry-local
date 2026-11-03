@@ -147,11 +147,6 @@ inline ToolCallPayloadParser CreateJsonToolCallPayloadParser(std::shared_ptr<con
         result.calls.insert(result.calls.end(), std::make_move_iterator(calls.begin()),
                             std::make_move_iterator(calls.end()));
       } catch (const Exception& error) {
-        if (require_foundry_wrapper && reject_non_wrapper_as_text) {
-          result.disposition = ToolCallPayloadDisposition::kRejected;
-          result.consumed_size = body_end + end.size();
-          return result;
-        }
         return reject(error.what());
       }
 

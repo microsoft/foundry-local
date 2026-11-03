@@ -59,7 +59,7 @@ std::string Frame(const nlohmann::json& calls) {
   return "<tool_call>" + calls.dump() + "</tool_call>";
 }
 
-TEST(JsonToolCallPayloadParserTest, FoundryWrapperSeparatesAutomaticExamplesFromToolOnlyFailures) {
+TEST(JsonToolCallPayloadParserTest, SelectedFoundryWrapperFailsClosedAfterValidation) {
   const auto plan = ToolCallPlan::Create(kTools);
   const std::string invalid =
       "```json\n{\"foundry_tool_calls\":[{\"name\":\"edit\",\"parameters\":{\"input\":\"\"}}]}\n```";
@@ -69,16 +69,16 @@ TEST(JsonToolCallPayloadParserTest, FoundryWrapperSeparatesAutomaticExamplesFrom
   const auto automatic = CreateJsonToolCallPayloadParser(
       plan, "```json", "```", true, true, true);
   const auto rejected = automatic(invalid, true);
-  EXPECT_EQ(rejected.disposition, ToolCallPayloadDisposition::kRejected);
-  EXPECT_EQ(rejected.consumed_size, invalid.size());
+  EXPECT_EQ(rejected.disposition, ToolCallPayloadDisposition::kMalformed);
+  EXPECT_EQ(rejected.consumed_size, 0u);
   const auto parsed = automatic(valid, true);
   EXPECT_EQ(parsed.disposition, ToolCallPayloadDisposition::kParsed);
   ASSERT_EQ(parsed.calls.size(), 1u);
 
-  const auto tool_only = CreateJsonToolCallPayloadParser(
-      plan, "```json", "```", true, true, false);
-  EXPECT_EQ(tool_only(invalid, true).disposition,
-            ToolCallPayloadDisposition::kMalformed);
+  const std::string non_wrapper = "```json\n{\"example\":\"text\"}\n```";
+  const auto ordinary = automatic(non_wrapper, true);
+  EXPECT_EQ(ordinary.disposition, ToolCallPayloadDisposition::kRejected);
+  EXPECT_EQ(ordinary.consumed_size, non_wrapper.size());
 }
 
 TEST(JsonToolCallPayloadParserTest, FoundryCompatibilityRequiresOneCompleteResponseOnlyEnvelope) {
