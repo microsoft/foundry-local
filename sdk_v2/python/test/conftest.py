@@ -22,6 +22,7 @@ process by the session-scoped ``manager`` fixture.
 from __future__ import annotations
 
 import os
+import threading
 
 import pytest
 
@@ -40,6 +41,57 @@ IS_CI: bool = is_running_in_ci()
 
 # Required model cache path for sdk_v2 Python tests.
 FOUNDRY_TEST_DATA_DIR: str | None = os.environ.get("FOUNDRY_TEST_DATA_DIR") or None
+
+
+@pytest.fixture
+def cancel_on_native_processing(monkeypatch):
+    """Cancel a synchronous request while a native callback holds it in flight."""
+    from foundry_local_sdk._native import ffi
+    from foundry_local_sdk._native.api import api
+    from foundry_local_sdk.request import Request
+    from foundry_local_sdk.session import Session
+
+    event = threading.Event()
+    cancel_attempted = threading.Event()
+    callback_timed_out = threading.Event()
+    original_cancel = Request.cancel
+    original_process = Session.process_request
+
+    def cancel(request):
+        original_cancel(request)
+        cancel_attempted.set()
+
+    @ffi.callback("flStreamingCallback")
+    def on_native_processing(data, _user_data):
+        event.set()
+        if not cancel_attempted.wait(timeout=5):
+            callback_timed_out.set()
+        if data.item_queue != ffi.NULL:
+            item = ffi.new("flItem**")
+            while api.item.ItemQueue_TryPop(data.item_queue, item):
+                api.item.Item_Release(item[0])
+        return 0
+
+    def process(session, request, *, cancel_event=None):
+        if cancel_event is not event or event.is_set():
+            return original_process(session, request, cancel_event=cancel_event)
+
+        # Hold a native output callback until the dispatcher cancels the synchronous request.
+        assert not session._streaming_enabled
+        api.check_status(api.inference.Session_SetStreamingCallback(session._ptr, on_native_processing, ffi.NULL))
+        try:
+            return original_process(session, request, cancel_event=cancel_event)
+        finally:
+            api.check_status(
+                api.inference.Session_SetStreamingCallback(
+                    session._ptr, ffi.cast("flStreamingCallback", 0), ffi.NULL
+                )
+            )
+            assert not callback_timed_out.is_set(), "Cancellation did not reach the in-flight native request"
+
+    monkeypatch.setattr(Request, "cancel", cancel)
+    monkeypatch.setattr(Session, "process_request", process)
+    return event
 
 
 # ---------------------------------------------------------------------------

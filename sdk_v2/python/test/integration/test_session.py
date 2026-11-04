@@ -12,7 +12,6 @@ prove the typed entry points work too.
 from __future__ import annotations
 
 import pytest
-import threading
 
 from foundry_local_sdk import (
     ChatSession,
@@ -48,32 +47,22 @@ def _short_request() -> Request:
 
 class TestProcessRequest:
     @pytest.mark.parametrize("cancel_before_start", [False, True])
-    def test_cancellation_event_stops_inference_and_allows_request_reuse(self, chat_session, cancel_before_start):
+    def test_cancellation_event_stops_inference_and_allows_request_reuse(
+        self, chat_session, cancel_before_start, cancel_on_native_processing
+    ):
         from foundry_local_sdk.exception import FoundryLocalException
 
-        # Warm the generator so the active case exercises inference, not cold model initialization.
-        with _short_request() as warmup, chat_session.process_request(warmup):
-            pass
-
-        event = threading.Event()
-        timer = threading.Timer(0.1, event.set)
+        event = cancel_on_native_processing
         with Request() as request:
             request.add_item(MessageItem.user("Count from 1 to 10000, writing every integer on its own line."))
             request.set_options(RequestOptions(search=SearchOptions(max_output_tokens=256, temperature=0)))
             if cancel_before_start:
                 event.set()
-            else:
-                timer.start()
             turns_before = chat_session.turn_count
-            try:
-                with pytest.raises(FoundryLocalException) as error:
-                    chat_session.process_request(request, cancel_event=event)
-                assert error.value.error_code == 5
-                assert chat_session.turn_count == turns_before
-            finally:
-                timer.cancel()
-                if timer.ident is not None:
-                    timer.join()
+            with pytest.raises(FoundryLocalException) as error:
+                chat_session.process_request(request, cancel_event=event)
+            assert error.value.error_code == 5
+            assert chat_session.turn_count == turns_before
 
             request.set_options(RequestOptions(search=SearchOptions(max_output_tokens=8, temperature=0)))
             with chat_session.process_request(request) as response:
