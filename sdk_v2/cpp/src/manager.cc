@@ -240,6 +240,17 @@ void Manager::PrepareOrtEnvironment() {
 
 Manager::Manager(const Configuration& config) : config_(config) {
   config_.Validate();
+  const auto non_generative_memory_budget_bytes =
+      UnsignedAdditionalOption(
+          config_, "NonGenerativeMemoryBudgetBytes",
+          (std::numeric_limits<uint64_t>::max)());
+  const auto non_generative_readiness_concurrency =
+      UnsignedAdditionalOption(
+          config_, "NonGenerativeReadinessConcurrency", 1);
+  if (non_generative_readiness_concurrency >
+      (std::numeric_limits<size_t>::max)())
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "NonGenerativeReadinessConcurrency exceeds size_t");
   PrepareOrtEnvironment();
 
   const auto user_agent = config_.additional_options.find("UserAgent");
@@ -413,17 +424,6 @@ Manager::Manager(const Configuration& config) : config_(config) {
   download_manager_ =
       std::make_unique<DownloadManager>(*config_.model_cache_dir, config_.catalog_region.value_or("auto"),
                                         download_concurrency, *logger_, *telemetry_, disable_region_fallback);
-  const auto non_generative_memory_budget_bytes =
-      UnsignedAdditionalOption(
-          config_, "NonGenerativeMemoryBudgetBytes",
-          (std::numeric_limits<uint64_t>::max)());
-  const auto non_generative_readiness_concurrency =
-      UnsignedAdditionalOption(
-          config_, "NonGenerativeReadinessConcurrency", 1);
-  if (non_generative_readiness_concurrency >
-      (std::numeric_limits<size_t>::max)())
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             "NonGenerativeReadinessConcurrency exceeds size_t");
   model_load_manager_ = std::make_unique<ModelLoadManager>(
       *ep_detector_, *logger_, non_generative_memory_budget_bytes,
       static_cast<size_t>(non_generative_readiness_concurrency));

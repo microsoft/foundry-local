@@ -477,8 +477,6 @@ void WebService::Stop() {
     }
   }
 
-  ClearNonGenerativeRuntimes(*impl_->public_context);
-  ClearNonGenerativeRuntimes(*impl_->local_context);
   impl_->servers.clear();
   impl_->listener_threads.clear();
   impl_->providers.clear();

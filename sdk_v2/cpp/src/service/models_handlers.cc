@@ -239,14 +239,6 @@ class LoadModelHandler : public HttpRequestHandler {
     }
     tracker.SetModelId(model->Id());
 
-    if (model->Info().task == "text-ranking" ||
-        model->Info().task == "typed-decision") {
-      tracker.SetStatus(ActionStatus::kClientError);
-      return ErrorResponse(
-          Status::CODE_400, "Load not supported",
-          "Non-generative models load on the first ranking or decision request");
-    }
-
     const auto model_path = model->GetPath();
     if (auto error = ValidateExpectedModelPath(*request, model_path)) {
       tracker.SetStatus(ActionStatus::kClientError);
@@ -327,13 +319,6 @@ class UnloadModelHandler : public HttpRequestHandler {
     }
 
     try {
-      if (model->Info().task == "text-ranking" ||
-          model->Info().task == "typed-decision") {
-        const bool unloaded = UnloadNonGenerativeRuntime(ctx_, *model);
-        tracker.SetStatus(unloaded ? ActionStatus::kSuccess : ActionStatus::kSkipped);
-        return JsonResponse(Status::CODE_200,
-                            {{"status", unloaded ? "unloaded" : "not_loaded"}});
-      }
       model->Unload();
       tracker.SetStatus(ActionStatus::kSuccess);
 

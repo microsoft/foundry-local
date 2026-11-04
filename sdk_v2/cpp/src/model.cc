@@ -676,7 +676,9 @@ void Model::Load(ExecutionProvider ep, std::optional<std::string_view> expected_
     if (!package)
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
                "model is not a non-generative package");
+    ++external_session_count_;
     lifecycle_lock.unlock();
+    ScopeGuard lease([this]() noexcept { ReleaseExternalSession(); });
     model_load_manager_->AcquireNonGenerativeRuntime(
         *this, info.task, package->execution_provider,
         package->estimated_resident_bytes);

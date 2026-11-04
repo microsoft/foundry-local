@@ -92,6 +92,7 @@ uint64_t MeasureContainedPackage(const fs::path& canonical_root) {
       throw std::invalid_argument("package byte size overflows uint64");
     total += bytes;
   }
+  if (ec) throw std::invalid_argument("cannot enumerate package");
   return total;
 }
 

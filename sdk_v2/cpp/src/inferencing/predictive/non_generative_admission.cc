@@ -119,13 +119,14 @@ std::shared_ptr<void> NonGenerativeRuntimeState::Acquire(
 
   if (promise) {
     try {
-      auto reservation =
+      auto managed = std::make_shared<ManagedRuntime>();
+      managed->owner = owner;
+      managed->reservation =
           std::make_shared<NonGenerativeAdmissionReservation>(
               admission_, estimated_resident_bytes, model_id);
       NonGenerativeReadinessLease readiness(admission_, readiness_group);
-      auto runtime = factory();
-      promise->set_value(std::make_shared<ManagedRuntime>(
-          ManagedRuntime{std::move(reservation), std::move(runtime), owner}));
+      managed->runtime = factory();
+      promise->set_value(std::move(managed));
     } catch (...) {
       promise->set_exception(std::current_exception());
       std::lock_guard lock(mutex_);
@@ -139,23 +140,31 @@ std::shared_ptr<void> NonGenerativeRuntimeState::Acquire(
 }
 
 bool NonGenerativeRuntimeState::Remove(Model& model) {
-  std::lock_guard lock(mutex_);
+  std::vector<RuntimeEntry> removed;
   auto* leaf = model.SelectedLeaf();
-  bool removed{};
-  for (auto it = runtimes_.begin(); it != runtimes_.end();) {
-    if (it->second.owner == leaf) {
-      it = runtimes_.erase(it);
-      removed = true;
-    } else {
-      ++it;
+  {
+    std::lock_guard lock(mutex_);
+    for (auto it = runtimes_.begin(); it != runtimes_.end();) {
+      if (it->second.owner == leaf) {
+        removed.push_back(std::move(it->second));
+        it = runtimes_.erase(it);
+      } else {
+        ++it;
+      }
     }
   }
-  return removed;
+  const bool did_remove = !removed.empty();
+  removed.clear();
+  return did_remove;
 }
 
 void NonGenerativeRuntimeState::Clear() {
-  std::lock_guard lock(mutex_);
-  runtimes_.clear();
+  std::map<std::string, RuntimeEntry> removed;
+  {
+    std::lock_guard lock(mutex_);
+    removed.swap(runtimes_);
+  }
+  removed.clear();
 }
 
 void NonGenerativeRuntimeState::RejectNewAcquisitions() {

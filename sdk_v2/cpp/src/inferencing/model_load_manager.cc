@@ -153,7 +153,9 @@ std::shared_ptr<void> ModelLoadManager::AcquireNonGenerativeRuntime(
   const auto canonical =
       std::filesystem::weakly_canonical(model.GetPath()).string();
   const auto provider_name = std::string(provider);
-  const auto identity = model.Id() + "|" + canonical + "|" + provider_name;
+  const auto identity =
+      model.Id() + "|" + canonical + "|" + provider_name + "|" +
+      fmt::format("{}", static_cast<const void*>(model.SelectedLeaf()));
   return non_generative_runtimes_->Acquire(
       identity, model.Id(), &model, estimated_resident_bytes,
       provider.empty() ? "cpu" : provider_name,
@@ -340,6 +342,7 @@ void ModelLoadManager::RejectNewLoads() {
 }
 
 void ModelLoadManager::UnloadAll(std::chrono::milliseconds timeout) {
+  non_generative_runtimes_->Clear();
   // Snapshot ids+pointers under the lock; the GenAIModelInstance pointers stay valid
   // because (a) only this method or UnloadModel can erase entries, and (b) we serialize
   // the per-id erase below.

@@ -17,9 +17,11 @@
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <unordered_map>
 
 namespace fl {
 
@@ -38,6 +40,22 @@ class ModelNotFoundError : public std::runtime_error {
   using std::runtime_error::runtime_error;
 };
 
+NonGenerativePackageMetadata CachedPackageMetadata(
+    const std::string& path) {
+  static std::mutex mutex;
+  static std::unordered_map<std::string, NonGenerativePackageMetadata> cache;
+  const auto canonical =
+      std::filesystem::weakly_canonical(path).string();
+  std::lock_guard lock(mutex);
+  if (const auto found = cache.find(canonical); found != cache.end())
+    return found->second;
+  const auto package = ReadNonGenerativePackage(canonical);
+  if (!package)
+    throw std::invalid_argument(
+        "selected catalog model is not a multi-component package");
+  return cache.emplace(canonical, *package).first->second;
+}
+
 ResolvedPackage ResolvePackage(ServiceContext& ctx, const std::string& requested,
                                const char* expected_task) {
   Model* model = ctx.catalog.GetModelVariant(requested);
@@ -54,18 +72,14 @@ ResolvedPackage ResolvePackage(ServiceContext& ctx, const std::string& requested
   if (!model->IsCached()) {
     throw std::invalid_argument("selected model package is not available locally");
   }
-  const auto package = ReadNonGenerativePackage(model->GetPath());
-  if (!package) {
-    throw std::invalid_argument(
-        "selected catalog model is not a multi-component package");
-  }
-  auto provider = package->execution_provider;
+  const auto package = CachedPackageMetadata(model->GetPath());
+  auto provider = package.execution_provider;
   auto canonical =
       std::filesystem::weakly_canonical(model->GetPath()).string();
   return {ctx.catalog.GetName() + "|" + model->Id() + "|" + canonical + "|" +
               provider,
           model->Id(), std::move(canonical), std::move(provider),
-          package->estimated_resident_bytes, model};
+          package.estimated_resident_bytes, model};
 }
 
 class ModelSessionLease {

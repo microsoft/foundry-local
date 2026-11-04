@@ -277,6 +277,13 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
       genai_config = GenAIConfig::LoadFromFile(config_path.string());
     } else if (!DeclaresNonGenerativePackage(model_path) &&
                std::filesystem::is_regular_file(config_path, ec)) {
+      const auto* task =
+          metadata.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR);
+      if (task &&
+          (*task == "text-ranking" || *task == "typed-decision")) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                 "non-generative registration requires component_manifest.json");
+      }
       genai_config = GenAIConfig::LoadFromFile(config_path.string());
     } else {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,

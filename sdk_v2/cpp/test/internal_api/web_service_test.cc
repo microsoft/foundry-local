@@ -67,6 +67,22 @@ namespace {
 constexpr const char* kResponseStoreTestModelAlias = "response-store-test-model";
 constexpr const char* kCodingTestModelAlias = "coding-test-model";
 
+class CpuCudaEpDetector : public IEpDetector {
+ public:
+  std::map<std::string, std::vector<std::string>>
+  GetAvailableDevicesToEPs() const override {
+    return {{"CPU", {"CPUExecutionProvider"}},
+            {"GPU", {"CUDAExecutionProvider"}}};
+  }
+
+  bool PrepareForModelLoad(std::string_view ep_name) override {
+    prepared = std::string(ep_name);
+    return true;
+  }
+
+  std::string prepared;
+};
+
 TEST(HttpUserAgentTest, KeepsOnlyKnownProductAndNumericReleaseVersion) {
   EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/1.2.3"), "foundry-local-cpp/1.2.3");
   EXPECT_EQ(SafeHttpUserAgent("foundry-local-python/0.6"), "foundry-local-python/0.6");
@@ -302,7 +318,7 @@ class WebServiceTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
     logger_ = std::make_unique<StderrLogger>();
-    ep_detector_ = std::make_unique<test::CpuOnlyEpDetector>();
+    ep_detector_ = std::make_unique<CpuCudaEpDetector>();
     model_load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
     session_manager_ = std::make_unique<WebTestSessionManager>(*logger_);
     telemetry_ = std::make_unique<WebUsageTelemetry>();
@@ -405,7 +421,7 @@ class WebServiceTest : public ::testing::Test {
 
   static std::unique_ptr<test::MockCatalog> public_catalog_;
   static std::unique_ptr<test::MockCatalog> local_catalog_;
-  static std::unique_ptr<test::CpuOnlyEpDetector> ep_detector_;
+  static std::unique_ptr<CpuCudaEpDetector> ep_detector_;
   static std::unique_ptr<StderrLogger> logger_;
   static std::unique_ptr<ModelLoadManager> model_load_manager_;
   static std::unique_ptr<WebTestSessionManager> session_manager_;
@@ -418,7 +434,7 @@ class WebServiceTest : public ::testing::Test {
 // Static member definitions
 std::unique_ptr<test::MockCatalog> WebServiceTest::public_catalog_;
 std::unique_ptr<test::MockCatalog> WebServiceTest::local_catalog_;
-std::unique_ptr<test::CpuOnlyEpDetector> WebServiceTest::ep_detector_;
+std::unique_ptr<CpuCudaEpDetector> WebServiceTest::ep_detector_;
 std::unique_ptr<StderrLogger> WebServiceTest::logger_;
 std::unique_ptr<ModelLoadManager> WebServiceTest::model_load_manager_;
 std::unique_ptr<WebTestSessionManager> WebServiceTest::session_manager_;
@@ -1247,14 +1263,10 @@ TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCudaPackagesWhenConf
   const auto clm_metadata = AddLocalPackage(clm);
   const auto kev_metadata = AddLocalPackage(kev);
 
-  EXPECT_THROW(
-      TestHttpGet(base_url_ + "/catalogs/local/models/load/" +
-                  clm_metadata.model_id),
-      std::exception);
-  EXPECT_THROW(
-      TestHttpGet(base_url_ + "/catalogs/local/models/load/" +
-                  kev_metadata.model_id),
-      std::exception);
+  EXPECT_NO_THROW(TestHttpGet(
+      base_url_ + "/catalogs/local/models/load/" + clm_metadata.model_id));
+  EXPECT_NO_THROW(TestHttpGet(
+      base_url_ + "/catalogs/local/models/load/" + kev_metadata.model_id));
 
   auto ranking = json::parse(TestHttpPost(
       base_url_ + "/catalogs/local/v1/rank",
