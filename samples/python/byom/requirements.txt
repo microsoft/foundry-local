@@ -1,0 +1,1 @@
+foundry-local-sdk==2.2.1

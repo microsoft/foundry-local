@@ -25,16 +25,36 @@ export interface NativeManagerCtor {
 
 export interface NativeManager {
   getWebServiceEndpoints(): string[];
-  getCatalog(): NativeCatalog;
+  getCatalog(type?: 0 | 1): NativeCatalog;
   startWebService(): void;
   stopWebService(): void;
   discoverEps(): Array<{ name: string; isRegistered: boolean }>;
-  downloadAndRegisterEps(names?: string[], onProgress?: (epName: string, percent: number) => void): Promise<void>;
+  downloadAndRegisterEps(
+    names?: string[],
+    onProgress?: (epName: string, percent: number) => void,
+    /** @internal Emit acknowledged progress without requiring an installed EP. */
+    emitTestProgress?: boolean,
+  ): Promise<void>;
   isEpDownloadInProgress(): boolean;
   shutdown(): void;
   isShutdownRequested(): boolean;
   dispose(): void;
   isDisposed(): boolean;
+}
+
+export interface NativeMutableModelInfo {
+  setStringProperty(key: string, value: string): NativeMutableModelInfo;
+  setIntProperty(key: string, value: number): NativeMutableModelInfo;
+  dispose(): void;
+  isDisposed(): boolean;
+  /** @internal Test-only fault injection for the checked snapshot boundary. */
+  failNextSnapshotForTest(): void;
+  /** @internal Test-only path for native int64 values that JavaScript numbers cannot represent. */
+  setIntPropertyForTest(key: string, value: bigint): NativeMutableModelInfo;
+}
+
+export interface NativeMutableModelInfoCtor {
+  new (): NativeMutableModelInfo;
 }
 
 // Raw snapshot returned by the native side. All optional fields are omitted
@@ -72,7 +92,13 @@ export interface NativeModelInfo {
   modelProvider?: string;
   minFLVersion?: string;
   parentUri?: string;
+  toolCallStart?: string;
+  toolCallEnd?: string;
+  reasoningStart?: string;
+  reasoningEnd?: string;
   supportsToolCalling?: boolean;
+  supportsReasoning?: boolean;
+  supportsHybridReasoning?: boolean;
   fileSizeMb?: number;
   maxOutputTokens?: number;
   createdAtUnix: number;
@@ -85,14 +111,16 @@ export interface NativeModelInfo {
 
 export interface NativeModel {
   getInfo(): NativeModelInfo;
+  getStringProperty(key: string): string | undefined;
+  getIntProperty(key: string, defaultValue?: number): number;
   isCached(): boolean;
   isLoaded(): boolean;
   getPath(): string;
   getVariants(): NativeModel[];
   selectVariant(variant: NativeModel): void;
   load(): Promise<void>;
-  unload(): Promise<void>;
-  download(progress?: (percent: number) => void): Promise<void>;
+  unload(onWorkerStarted?: () => void): Promise<void>;
+  download(progress?: (percent: number) => void, signal?: AbortSignal): Promise<void>;
   removeFromCache(): void;
 }
 
@@ -105,6 +133,15 @@ export interface NativeCatalog {
   getModelVariant(modelId: string): NativeModel | undefined;
   getLatestVersion(model: NativeModel): NativeModel | undefined;
   getModelVersions(modelAlias: string, modelName: string | null, maxVersions: number): Promise<NativeModel[]>;
+  registerModel(
+    modelPath: string,
+    modelId: string,
+    metadata: NativeMutableModelInfo,
+    onWorkerStarted?: () => void,
+  ): Promise<NativeModel>;
+  registerModelSync(modelPath: string, modelId: string, metadata: NativeMutableModelInfo): NativeModel;
+  unregisterModel(aliasOrModelId: string, onWorkerStarted?: () => void): Promise<void>;
+  unregisterModelSync(aliasOrModelId: string): void;
 }
 
 // ── Inference surface ───────────────────────────────────────────────────────
@@ -118,6 +155,15 @@ export interface NativeResponse {
   output: ReadonlyArray<unknown>; // `Item[]` once narrowed via the public surface
   finishReason: "none" | "stop" | "length" | "toolCalls" | "error";
   usage: { promptTokens: number; completionTokens: number; totalTokens: number };
+}
+
+export interface NativeRequestPreflightResult {
+  promptTokens: number;
+  outputReserveTokens: number;
+  requiredTokens: number;
+  contextLimitTokens: number;
+  fits: boolean;
+  deficitTokens: number;
 }
 
 export interface NativeRequestCtor {
@@ -167,15 +213,33 @@ export interface NativeItemQueue {
 }
 
 export interface NativeSession {
-  processRequest(request: NativeRequest): Promise<NativeResponse>;
-  processStreamingRequest(request: NativeRequest, onItem: (item: unknown) => void): Promise<NativeResponse>;
+  processRequest(request: NativeRequest, workerStartedForTest?: (release: () => void) => void): Promise<NativeResponse>;
+  processStreamingRequest(
+    request: NativeRequest,
+    onItem: (item: unknown) => void,
+  ): Promise<NativeResponse> & { cancelQueued(): boolean };
   setOptions(options: NativeRequestOptions): void;
   dispose(): void;
   isDisposed(): boolean;
 }
 
 export interface NativeChatSession extends NativeSession {
-  addToolDefinition(definition: { name: string; description: string; jsonSchema: string }): void;
+  preflightRequest(request: NativeRequest): Promise<NativeRequestPreflightResult>;
+  addToolDefinition(
+    definition:
+      | {
+          name: string;
+          description: string;
+          jsonSchema: string;
+          kind?: "function";
+        }
+      | {
+          name: string;
+          description: string;
+          kind: "custom";
+          jsonSchema?: never;
+        },
+  ): void;
   removeToolDefinition(name: string): boolean;
   turnCount(): number;
   undoTurns(count: number): void;
@@ -202,6 +266,7 @@ export interface NativeAddon {
     ...args: unknown[]
   ) => unknown;
   Model: new (...args: unknown[]) => unknown;
+  ModelInfo: NativeMutableModelInfoCtor;
   // `Request` IS directly constructible from JS — it's a stateful builder.
   Request: NativeRequestCtor;
   // `ItemQueue` is directly constructible — the public TS `ItemQueue` class

@@ -119,7 +119,7 @@ std::shared_ptr<OnnxChatEngine::Conversation> OnnxChatEngine::CreateConversation
   Enqueue(
       [this, conversation, completion]() {
         auto request_options = OgaRequestOptions::Create();
-        request_options->SetMaxSessionTokens(static_cast<uint64_t>(GetModelMaxContextLength(model_.GetGenAIConfig())));
+        request_options->SetMaxSessionTokens(max_request_length_);
 
         auto request = engine_->CreateRequest(request_options.get());
         conversations_.emplace(conversation.get(),
@@ -161,29 +161,35 @@ uint64_t OnnxChatEngine::BeginTurn(const std::shared_ptr<Conversation>& conversa
           existing_tokens = conversation->resident_tokens.size();
           resident_tokens = conversation->resident_tokens;
           resident_tokens.insert(resident_tokens.end(), tokens.begin(), tokens.end());
-          conversation->tokens.clear();
-          conversation->error = nullptr;
-          conversation->result = {};
-          conversation->turn_finished = false;
-          conversation->turn_has_progress = false;
         }
 
         auto plan = BuildEngineTurnOptionsPlan(options, tool_ctx, model_.GetGenAIConfig().GetChatBackendKind(),
                                                prompt_opens_reasoning);
+        const auto& region_grammar = tool_ctx.tool_body_grammar;
+        if (!plan.guidance && region_grammar && !tool_ctx.HasAnyExplicitGuidance()) {
+          try {
+            turn_options->SetDelimitedGuidance(*tool_ctx.tool_call_start_token_id,
+                                               *tool_ctx.tool_call_end_token_id,
+                                               region_grammar->c_str());
+            model_.GetLogger().Log(LogLevel::Debug, "Delimited tool-call guidance installed for Engine turn");
+          } catch (const std::runtime_error& e) {
+            FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+                     "failed to apply tool-call region guidance: " + std::string(e.what()));
+          }
+        }
         if (plan.max_generated_tokens.has_value()) {
           // Validate only the limit the caller requested. When it is absent, leave the turn uncapped and let OGA
-          // enforce the Request's model-context session limit.
+          // enforce the Request's Engine-capability session limit.
           const uint64_t total_required =
               static_cast<uint64_t>(existing_tokens) + static_cast<uint64_t>(tokens.size()) +
               static_cast<uint64_t>(*plan.max_generated_tokens);
-          const uint64_t model_max_tokens = static_cast<uint64_t>(GetModelMaxContextLength(model_.GetGenAIConfig()));
-          if (total_required > model_max_tokens) {
+          if (total_required > max_request_length_) {
             FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
                      "request requires " + std::to_string(total_required) + " total tokens (" +
                          std::to_string(existing_tokens) + " existing + " + std::to_string(tokens.size()) +
                          " input + " + std::to_string(*plan.max_generated_tokens) +
-                         " output), which exceeds the model's maximum context length of " +
-                         std::to_string(model_max_tokens) + " tokens");
+                         " output), which exceeds the Engine's maximum request length of " +
+                         std::to_string(max_request_length_) + " tokens");
           }
         }
 
@@ -192,6 +198,11 @@ uint64_t OnnxChatEngine::BeginTurn(const std::shared_ptr<Conversation>& conversa
         const uint64_t turn_id = native.request->BeginTurn(tokens.data(), tokens.size(), turn_options.get());
         {
           std::lock_guard<std::mutex> lock(conversation->mutex);
+          conversation->tokens.clear();
+          conversation->error = nullptr;
+          conversation->result = {};
+          conversation->turn_finished = false;
+          conversation->turn_has_progress = false;
           conversation->turn_id = turn_id;
           conversation->resident_tokens = std::move(resident_tokens);
           conversation->turn_started_at = std::chrono::steady_clock::now();
@@ -326,6 +337,12 @@ void OnnxChatEngine::Enqueue(std::function<void()> command,
 void OnnxChatEngine::WorkerLoop(std::promise<void> initialized) {
   try {
     engine_ = OgaEngine::Create(model_.GetOgaModel());
+    auto capabilities = engine_->GetCapabilities();
+    max_request_length_ = capabilities->MaxRequestLength();
+    if (max_request_length_ == 0) {
+      throw std::runtime_error("Dynamic Engine did not report max_request_length.");
+    }
+
     // Drain an ordinary full decode batch in one call. OGA retains speculative or fatal overflow for later runs.
     event_buffer_ = engine_->CreateEventBuffer(model_.GetGenAIConfig().EngineMaxBatchSize().value_or(1));
     initialized.set_value();
@@ -384,6 +401,8 @@ void OnnxChatEngine::WorkerLoop(std::promise<void> initialized) {
 
 void OnnxChatEngine::RouteEvents() {
   engine_->Run(*event_buffer_);
+  bool capacity_blocked = false;
+  bool retryable_event = false;
   for (size_t i = 0; i < event_buffer_->Count(); ++i) {
     const auto* event = event_buffer_->Get(i);
     const auto flags = event->Flags();
@@ -393,17 +412,9 @@ void OnnxChatEngine::RouteEvents() {
         throw std::runtime_error("ORT GenAI Engine failed with error code " +
                                  std::to_string(event->ErrorCode()));
       }
-      if ((flags & OgaEngineEventFlag_CapacityBlocked) != 0 && EvictDormantConversation()) {
-        continue;
-      }
       if ((flags & (OgaEngineEventFlag_CapacityBlocked | OgaEngineEventFlag_Retryable)) != 0) {
-        if ((flags & OgaEngineEventFlag_CapacityBlocked) != 0 && ExpireCapacityBlockedConversation()) {
-          continue;
-        }
-
-        // Capacity pressure is transient while resident requests are active. Leave the request queued in OGA and
-        // return to the dispatcher so cancellation and close commands can still make progress.
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        capacity_blocked |= (flags & OgaEngineEventFlag_CapacityBlocked) != 0;
+        retryable_event = true;
         continue;
       }
       throw std::runtime_error("ORT GenAI Engine returned an invalid request-less event");
@@ -420,6 +431,10 @@ void OnnxChatEngine::RouteEvents() {
       std::lock_guard<std::mutex> lock(conversation->mutex);
       conversation->turn_has_progress = true;
       conversation->last_activity = std::chrono::steady_clock::now();
+      if ((flags & (OgaEngineEventFlag_Token | OgaEngineEventFlag_TurnFinished | OgaEngineEventFlag_Failed)) != 0) {
+        last_progress_at_ = conversation->last_activity;
+      }
+
       if ((flags & OgaEngineEventFlag_Token) != 0) {
         it->second->admitted = true;
         const auto token = event->Token();
@@ -462,10 +477,16 @@ void OnnxChatEngine::RouteEvents() {
     }
   }
 
-  if (has_waiting_admission && resident_count >= model_.GetGenAIConfig().EngineMaxBatchSize().value_or(1)) {
+  const bool resident_batch_full =
+      has_waiting_admission && resident_count >= model_.GetGenAIConfig().EngineMaxBatchSize().value_or(1);
+  if (capacity_blocked || resident_batch_full) {
     if (!EvictDormantConversation()) {
-      ExpireCapacityBlockedConversation(/*new_admissions_only=*/true);
+      ExpireCapacityBlockedConversation(/*new_admissions_only=*/!capacity_blocked);
     }
+  }
+
+  if (retryable_event) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 }
 
@@ -510,7 +531,7 @@ bool OnnxChatEngine::ExpireCapacityBlockedConversation(bool new_admissions_only)
     const auto& conversation = it->second->state;
     std::lock_guard<std::mutex> lock(conversation->mutex);
     if (!conversation->turn_finished && !conversation->turn_has_progress &&
-        now - conversation->turn_started_at >= capacity_wait_timeout_ &&
+        now - std::max(conversation->turn_started_at, last_progress_at_) >= capacity_wait_timeout_ &&
         conversation->admission_sequence > newest_admission) {
       candidate = it;
       newest_admission = conversation->admission_sequence;
@@ -535,7 +556,7 @@ bool OnnxChatEngine::ExpireCapacityBlockedConversation(bool new_admissions_only)
   {
     std::lock_guard<std::mutex> lock(conversation->mutex);
     conversation->error = std::make_exception_ptr(std::runtime_error(
-        "ORT GenAI Engine capacity remained unavailable for " +
+        "ORT GenAI Engine capacity made no progress for " +
         std::to_string(capacity_wait_timeout_.count()) + " ms"));
     conversation->turn_finished = true;
     conversation->closed = true;

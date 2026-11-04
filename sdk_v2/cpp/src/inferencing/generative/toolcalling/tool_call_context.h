@@ -2,16 +2,26 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "inferencing/session/types.h"
+
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
 
 namespace fl {
+
+class ToolCallPlan;
 
 /// Request-scoped context for tool calling behavior.
 /// Built from catalog metadata + request fields (tool_choice, response_format).
 /// Flows through ChatSession → OnnxChatGenerator to control guidance and detection.
 struct ToolCallContext {
+  static constexpr std::string_view kAssistantTextPrefix = "MESSAGE\n";
+
   /// Whether the model supports tool calling (controlled by catalog metadata and/or request option)
   bool supports_tool_calling = false;
 
@@ -28,8 +38,10 @@ struct ToolCallContext {
   /// Whether the model may produce tool call output (controlled by tool_choice + tools presence).
   bool tool_output = false;
 
+  bool parallel_tool_calls = true;
+
   /// Whether the model supports chain-of-thought reasoning (e.g., DeepSeek R1 Distilled).
-  /// When true, grammar guidance is applied for text-only output to produce correct <think> tags.
+  /// Structured tool guidance preserves the model's published reasoning boundaries.
   bool supports_reasoning = false;
 
   /// The special token that marks the start of reasoning/thinking output.
@@ -48,9 +60,65 @@ struct ToolCallContext {
   /// llguidance renders these as numeric `<[ID]>` terminals. Unresolved or multi-token markers remain literals.
   std::optional<int32_t> reasoning_start_token_id;
   std::optional<int32_t> reasoning_end_token_id;
+  std::vector<int32_t> eos_token_ids;
 
   /// The raw tools JSON string for the chat template (passed to ApplyChatTemplate).
   std::string tools_json;
+
+  /// Additional typed context values for the model's chat template, serialized as a JSON object.
+  std::string template_kwargs_json;
+
+  /// Whether the loaded template has proven that it consumes assistant reasoning_content and honors
+  /// preserve_thinking. Qualified templates receive typed historical reasoning during projection.
+  bool supports_reasoning_history = false;
+
+  /// Kind of each named tool, snapshotted from the session's registry at the same moment
+  /// `tools_json` was built. Generation resolves a produced call's name through this copy rather
+  /// than through the session's registry, which another thread may change mid-turn.
+  std::unordered_map<std::string, ToolKind> tool_kinds;
+  std::unordered_map<std::string, std::string> custom_lark_grammars;
+  std::optional<ForcedToolChoice> forced_tool;
+  std::optional<RawEnvelopeDescriptor> raw_envelope;
+  bool guidance_disabled = false;
+  std::shared_ptr<const ToolCallPlan> tool_plan;
+  std::optional<std::string> tool_body_grammar;
+
+  void ConfigureForGuidedToolRetry() {
+    text_output = false;
+    tool_output = true;
+    tool_body_grammar.reset();
+  }
+
+  const RawEnvelopeDescriptor* ActiveRawEnvelope() const {
+    if (!tool_output || !raw_envelope.has_value() || !IsCustomTool(raw_envelope->tool_name)) {
+      return nullptr;
+    }
+
+    if (!forced_tool.has_value()) {
+      return text_output ? &*raw_envelope : nullptr;
+    }
+
+    if (forced_tool->kind != ToolKind::kCustom || forced_tool->name != raw_envelope->tool_name) {
+      return nullptr;
+    }
+
+    return &*raw_envelope;
+  }
+
+  /// Whether this turn explicitly forces the custom tool whose raw envelope is active.
+  bool HasForcedRawEnvelope() const {
+    return forced_tool.has_value() && ActiveRawEnvelope() != nullptr;
+  }
+
+  /// The kind registered for `name` when this context was built. Names the context does not know
+  /// resolve to kFunction, which leaves their arguments untouched.
+  ToolKind KindOf(const std::string& name) const {
+    auto it = tool_kinds.find(name);
+    return it == tool_kinds.end() ? ToolKind::kFunction : it->second;
+  }
+
+  /// Whether the named tool takes a raw text payload rather than JSON arguments.
+  bool IsCustomTool(const std::string& name) const { return KindOf(name) == ToolKind::kCustom; }
 
   /// User-specified guidance type from response_format (e.g., "lark_grammar", "json_schema").
   /// Empty means no explicit guidance — the generator may still apply auto-generated tool guidance.
@@ -59,11 +127,36 @@ struct ToolCallContext {
   /// User-specified guidance data (the LARK grammar string, JSON schema, etc.).
   std::string guidance_data;
 
+  bool HasExplicitGuidance() const {
+    return !guidance_type.empty() && !guidance_data.empty();
+  }
+
+  bool HasPartialExplicitGuidance() const {
+    return guidance_type.empty() != guidance_data.empty();
+  }
+
+  bool HasAnyExplicitGuidance() const {
+    return !guidance_type.empty() || !guidance_data.empty();
+  }
+
+  bool UsesAssistantTextFraming() const {
+    return tool_plan && text_output && tool_output && !HasAnyExplicitGuidance() && !ActiveRawEnvelope();
+  }
+
   /// Whether any tools were provided in the request.
   bool HasTools() const { return !tools_json.empty(); }
 
   /// Whether two turns expose the same definitions to the model.
-  bool HasSameTools(const ToolCallContext& other) const { return tools_json == other.tools_json; }
+  ///
+  /// Kinds are compared as well as the rendered JSON: a custom tool is normalized into a function-shaped schema
+  /// before it reaches `tools_json`, so two tool sets can render byte-identical JSON and still differ in how the
+  /// calls they produce must be read back.
+  bool HasSameTools(const ToolCallContext& other) const {
+    return tools_json == other.tools_json && tool_kinds == other.tool_kinds &&
+           custom_lark_grammars == other.custom_lark_grammars && raw_envelope == other.raw_envelope &&
+           guidance_disabled == other.guidance_disabled &&
+           tool_body_grammar == other.tool_body_grammar;
+  }
 
   /// Whether the model has known tool call marker tokens.
   bool HasToolCallTokens() const {

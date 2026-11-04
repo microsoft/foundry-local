@@ -109,6 +109,7 @@ class KeyValuePairs {
 
   /// Read-only access to the underlying map.
   const std::map<std::string, std::string>& Entries() const { return entries_; }
+  bool operator==(const KeyValuePairs& other) const { return entries_ == other.entries_; }
 
   bool empty() const { return entries_.empty(); }
   size_t size() const { return entries_.size(); }
@@ -151,5 +152,19 @@ class KeyValuePairs {
   mutable std::vector<const char*> values_;
   mutable bool dirty_ = false;
 };
+
+/// Return base options with request options overlaid; request values win on collision.
+inline KeyValuePairs MergeKeyValuePairs(const KeyValuePairs& base, const KeyValuePairs& request) {
+  if (request.empty()) {
+    return base;
+  }
+
+  auto merged = base;
+  for (const auto& [key, value] : request) {
+    merged.Add(key, value);
+  }
+
+  return merged;
+}
 
 }  // namespace fl

@@ -7,35 +7,20 @@
 //
 // The prepack hook separately stages sdk_v2/deps_versions.json next to
 // package.json so the tarball carries the native dependency versions.
-import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { cppBuildConfig, resolveCppRuntimeBinDir } from "./native-build-layout.mjs";
+
 const here = fileURLToPath(new URL(".", import.meta.url));
 const pkgRoot = resolve(here, "..");
-const repoRoot = resolve(pkgRoot, "..", "..");
-
-const config = process.env.FOUNDRY_LOCAL_CPP_CONFIG ?? "RelWithDebInfo";
-
-const platformSegment = (() => {
-  switch (process.platform) {
-    case "win32":
-      return "Windows";
-    case "linux":
-      return "Linux";
-    case "darwin":
-      return "macOS";
-    default:
-      throw new Error(`Unsupported platform: ${process.platform}`);
-  }
-})();
-
-const sourceDir = resolve(repoRoot, "sdk_v2", "cpp", "build", platformSegment, config, "bin", config);
+const sourceDir = resolveCppRuntimeBinDir();
 
 if (!existsSync(sourceDir)) {
   console.error(`[pack-prebuilds] source directory not found: ${sourceDir}`);
   console.error("[pack-prebuilds] Build the C++ SDK first:");
-  console.error(`[pack-prebuilds]   python sdk_v2/cpp/build.py --configure --build --config ${config}`);
+  console.error(`[pack-prebuilds]   python sdk_v2/cpp/build.py --configure --build --config ${cppBuildConfig}`);
   process.exit(1);
 }
 
@@ -54,6 +39,8 @@ const wanted = (() => {
 // not. The reg-free WinML 2.x runtime ships next to foundry_local.dll on Windows
 // so WinML hardware EPs work out of the box without an install-time download.
 const optional = process.platform === "win32" ? ["Microsoft.Windows.AI.MachineLearning.dll"] : [];
+const host = process.platform === "win32" ? "foundry-local-host.exe" : "foundry-local-host";
+wanted.push(host, "foundry-local-runtime.json");
 
 let copied = 0;
 const available = new Set(readdirSync(sourceDir));
@@ -65,6 +52,7 @@ for (const file of wanted) {
   const src = resolve(sourceDir, file);
   const dst = resolve(destDir, file);
   copyFileSync(src, dst);
+  if (file === "foundry-local-host") chmodSync(dst, 0o755);
   const size = statSync(dst).size;
   console.log(`[pack-prebuilds] ${file} (${size} bytes)`);
   copied += 1;

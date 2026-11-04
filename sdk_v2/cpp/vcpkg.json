@@ -2,32 +2,34 @@
   "name": "foundry-local",
   "version-semver": "0.1.0",
   "description": "Foundry Local C++ SDK",
-  "builtin-baseline": "256acc64012b23a13041d8705805e1f23b43a024",
+  "builtin-baseline": "67e816ef4b11c01fa923a18d16ecf863216fda55",
   "dependencies": [
+    {
+      "name": "azure-core-cpp",
+      "default-features": false,
+      "features": [
+        "curl"
+      ],
+      "platform": "!windows | uwp"
+    },
+    {
+      "name": "azure-core-cpp",
+      "default-features": false,
+      "features": [
+        "winhttp"
+      ],
+      "platform": "windows & !uwp"
+    },
     "azure-storage-blobs-cpp",
     {
       "name": "libarchive",
       "default-features": false
     },
-    {
-      "name": "azure-core-cpp",
-      "default-features": false,
-      "features": ["winhttp"],
-      "platform": "windows & !uwp"
-    },
-    {
-      "name": "azure-core-cpp",
-      "default-features": false,
-      "features": ["curl"],
-      "platform": "!windows | uwp"
-    },
-    "zlib",
     "nlohmann-json",
-    "spdlog"
-  ],
-  "overrides": [
-    { "name": "nlohmann-json", "version": "3.11.3" },
-    { "name": "oatpp", "version": "1.3.0" }
+    "jsoncons",
+    "spdlog",
+    "z4kn4fein-semver",
+    "zlib"
   ],
   "features": {
     "service": {
@@ -42,7 +44,11 @@
         {
           "name": "cpp-client-telemetry",
           "default-features": false,
-          "features": ["minimal-sqlite", "curl-openssl"],
+          "features": [
+            "curl-openssl",
+            "minimal-sqlite",
+            "no-logging"
+          ],
           "platform": "!uwp"
         }
       ]
@@ -50,12 +56,28 @@
     "tests": {
       "description": "Build unit tests",
       "dependencies": [
-        "gtest",
         {
           "name": "cpp-httplib",
-          "features": ["openssl"]
-        }
+          "features": [
+            "openssl"
+          ]
+        },
+        "gtest"
       ]
     }
-  }
+  },
+  "overrides": [
+    {
+      "name": "cpp-client-telemetry",
+      "version": "3.10.281.1"
+    },
+    {
+      "name": "nlohmann-json",
+      "version": "3.11.3"
+    },
+    {
+      "name": "oatpp",
+      "version": "1.3.0"
+    }
+  ]
 }

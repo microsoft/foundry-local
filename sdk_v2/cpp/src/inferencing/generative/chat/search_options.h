@@ -91,6 +91,15 @@ struct SearchOptions {
   bool HasSameRetainedGenerationSettings(const SearchOptions& other, ChatBackendKind backend_kind) const;
 };
 
+struct RequestBudget {
+  int64_t prompt_tokens = 0;
+  int64_t output_reserve_tokens = 0;
+  int64_t required_tokens = 0;
+  int64_t context_limit_tokens = 0;
+  bool fits = false;
+  int64_t deficit_tokens = 0;
+};
+
 inline constexpr int kDefaultChatTextMaxOutputTokens = 2048;
 inline constexpr int kDefaultChatMediaMaxOutputTokens = 3072;
 
@@ -103,8 +112,23 @@ constexpr int GetDefaultMaxOutputTokens(bool has_media) noexcept {
 int ResolveMaxOutputTokens(const SearchOptions& options,
                            int default_max_output_tokens = kDefaultChatTextMaxOutputTokens);
 
-/// Return the model's total context window from genai_config.json.
+/// Return the model's total context window, falling back to legacy search.max_length.
 int GetModelMaxContextLength(const GenAIConfig& config);
+
+/// Compute the checked prompt plus output token budget.
+RequestBudget ComputeRequestBudget(int64_t prompt_tokens,
+                                   int64_t output_reserve_tokens,
+                                   int64_t context_limit_tokens);
+
+/// Validate a classic Generator's prompt and output limit before creating or appending its token sequence.
+int ValidateGeneratorRequestBudget(int64_t prompt_tokens, int max_output_tokens, int context_limit_tokens);
+
+/// Resolve the output reserve using the same explicit limits and backend defaults as generation.
+int64_t ResolveOutputReserve(const SearchOptions& options,
+                             ChatBackendKind backend_kind,
+                             bool has_media,
+                             int64_t prompt_tokens,
+                             int64_t context_limit_tokens);
 
 /// Resolve the guidance configuration that should apply to a single tool-only turn.
 std::optional<TurnGuidanceOptions> ResolveTurnGuidanceOptions(const ToolCallContext& tool_ctx,
@@ -134,7 +158,7 @@ EngineTurnOptionsPlan BuildEngineTurnOptionsPlan(const SearchOptions& options,
 ///
 /// @param options            Search options extracted from the request
 /// @param input_token_count  Number of tokens in the encoded prompt
-/// @param config             Model's GenAI config (for search.max_length)
+/// @param config             Model's GenAI config (for model.context_length or legacy search.max_length)
 /// @param gen_params         ORT GenAI generator params to configure
 /// @param ep                 Resolved execution provider. Used to enable chunked prefill by default
 ///                           on providers that benefit from it (CUDA, NvTensorRtRtx, WebGPU, CPU).

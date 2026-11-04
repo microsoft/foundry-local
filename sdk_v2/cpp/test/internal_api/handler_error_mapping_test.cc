@@ -6,7 +6,9 @@
 
 #include "service/handler_utils.h"
 
+#include "contracts/chat_completions_converter.h"
 #include "exception.h"
+#include "inferencing/generative/chat/search_options.h"
 
 #include <gtest/gtest.h>
 
@@ -55,6 +57,41 @@ TEST(HandlerErrorMappingTest, InternalFailuresRemainServerErrors) {
 
   EXPECT_EQ(status.code, Status::CODE_500.code);
   EXPECT_STREQ(ErrorTypeForStatus(status), "server_error");
+}
+
+TEST(HandlerErrorMappingTest, InvalidCatalogDefaultMapsToServerError) {
+  ChatCompletionRequest req;
+  KeyValuePairs settings;
+  settings.Add("top_p", "-0.1");
+
+  try {
+    chat_completions::ApplyCatalogDefaults(req, settings);
+    FAIL() << "Expected an invalid catalog default to fail";
+  } catch (const fl::Exception& ex) {
+    const auto status = StatusForException(ex);
+    EXPECT_EQ(status.code, Status::CODE_500.code);
+    EXPECT_STREQ(ErrorTypeForStatus(status), "server_error");
+  }
+}
+
+TEST(HandlerErrorMappingTest, InvalidClientSettingStillMapsToClientError) {
+  ChatCompletionRequest req;
+  req.top_p = -0.1f;
+  KeyValuePairs settings;
+  settings.Add("top_p", "0.9");
+
+  chat_completions::ApplyCatalogDefaults(req, settings);
+  Request session_request;
+  chat_completions::MapRequestParameters(req, session_request);
+
+  try {
+    ResolveSamplingPlan(SearchOptions::FromParameters(session_request.options));
+    FAIL() << "Expected the client setting to fail";
+  } catch (const fl::Exception& ex) {
+    const auto status = StatusForException(ex);
+    EXPECT_EQ(status.code, Status::CODE_400.code);
+    EXPECT_STREQ(ErrorTypeForStatus(status), "invalid_request_error");
+  }
 }
 
 TEST(HandlerErrorMappingTest, OtherErrorCodesRemainServerErrors) {

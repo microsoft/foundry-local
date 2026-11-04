@@ -116,7 +116,7 @@
          Option 1 (NuGet): set FoundryLocalRuntimeVersion to use the Runtime NuGet package, e.g.:
            dotnet build /p:FoundryLocalRuntimeVersion=0.1.0-dev
          Option 2 (local build): set FoundryLocalNativeBinDir to point at a C++ build output, e.g.:
-           dotnet build /p:FoundryLocalNativeBinDir=..\..\cpp\build\Windows\RelWithDebInfo\bin\RelWithDebInfo
+           dotnet build /p:FoundryLocalNativeBinDir=..\..\cpp\build\Windows\RelWithDebInfo\bin
          Option 3 (default): auto-detect the C++ build output from the repo-relative location. -->
     <ItemGroup Condition="'$(FoundryLocalRuntimeVersion)' != '' AND '$(FoundryLocalNativeBinDir)' == ''">
       <PackageReference Include="Microsoft.AI.Foundry.Local.Runtime" Version="$(FoundryLocalRuntimeVersion)" />
@@ -127,6 +127,7 @@
     <PropertyGroup Condition="'$(FoundryLocalNativeBinDir)' == '' AND '$(FoundryLocalRuntimeVersion)' == ''">
       <_CppBuildBase>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\cpp\build'))</_CppBuildBase>
       <FoundryLocalNativeBinDir Condition="$([MSBuild]::IsOSPlatform('Windows')) AND Exists('$(_CppBuildBase)\Windows\RelWithDebInfo\bin\RelWithDebInfo\foundry_local.dll')">$(_CppBuildBase)\Windows\RelWithDebInfo\bin\RelWithDebInfo</FoundryLocalNativeBinDir>
+      <FoundryLocalNativeBinDir Condition="$([MSBuild]::IsOSPlatform('Windows')) AND '$(FoundryLocalNativeBinDir)' == '' AND Exists('$(_CppBuildBase)\Windows\RelWithDebInfo\bin\foundry_local.dll')">$(_CppBuildBase)\Windows\RelWithDebInfo\bin</FoundryLocalNativeBinDir>
       <FoundryLocalNativeBinDir Condition="$([MSBuild]::IsOSPlatform('Linux')) AND Exists('$(_CppBuildBase)/Linux/RelWithDebInfo/bin/libfoundry_local.so')">$(_CppBuildBase)/Linux/RelWithDebInfo/bin</FoundryLocalNativeBinDir>
       <FoundryLocalNativeBinDir Condition="$([MSBuild]::IsOSPlatform('OSX')) AND Exists('$(_CppBuildBase)/macOS/RelWithDebInfo/bin/libfoundry_local.dylib')">$(_CppBuildBase)/macOS/RelWithDebInfo/bin</FoundryLocalNativeBinDir>
     </PropertyGroup>

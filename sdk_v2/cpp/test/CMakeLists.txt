@@ -1,5 +1,76 @@
 # Copyright (c) Microsoft. All rights reserved.
 
+include("${CMAKE_CURRENT_SOURCE_DIR}/telemetry-shutdown-tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/nanoarrow-consumer-tests.cmake")
+
+if(NOT CMAKE_CROSSCOMPILING AND NOT ANDROID AND NOT IOS)
+    add_executable(sdk-dependency-probe ../tools/sdk-dependency-probe.cc)
+    target_include_directories(sdk-dependency-probe PRIVATE ../include)
+    target_compile_options(sdk-dependency-probe PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+    target_link_libraries(sdk-dependency-probe PRIVATE ${CMAKE_DL_LIBS})
+
+    add_executable(cpp-api-v2-compatibility cpp-api-v2-compatibility.cc)
+    target_include_directories(cpp-api-v2-compatibility PRIVATE ../include)
+    target_compile_definitions(cpp-api-v2-compatibility PRIVATE FL_STATIC_LIBRARY)
+    target_compile_options(cpp-api-v2-compatibility PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+    set_target_properties(cpp-api-v2-compatibility PROPERTIES CXX_STANDARD 17)
+    add_test(NAME cpp-api-v2-compatibility COMMAND cpp-api-v2-compatibility)
+endif()
+
+if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux" OR
+   (NOT CMAKE_CROSSCOMPILING AND NOT ANDROID AND NOT IOS))
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+endif()
+
+if(NOT CMAKE_CROSSCOMPILING AND NOT ANDROID AND NOT IOS)
+    add_test(NAME TelemetryPortPolicy
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../tools/test_telemetry_port.py)
+endif()
+
+if(APPLE)
+    add_test(NAME native-exports
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/native-library-test.py
+            exports $<TARGET_FILE:foundry_local> ${CMAKE_NM} apple)
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_package(CURL REQUIRED)
+    find_package(Threads REQUIRED)
+    add_executable(elf-loader-probe elf-loader-probe.cc)
+    target_include_directories(elf-loader-probe PRIVATE ../include ${CURL_INCLUDE_DIRS})
+    target_compile_options(elf-loader-probe PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+    # Do not link Foundry or curl: each test must control the first/last dlopen handle.
+    target_link_libraries(elf-loader-probe PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
+    add_dependencies(elf-loader-probe foundry_local)
+
+    add_test(NAME elf-artifact-contract
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/native-library-test.py
+            artifact $<TARGET_FILE:foundry_local> ${CMAKE_NM} ${CMAKE_READELF})
+    add_test(NAME elf-tls-probe-contract
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/native-library-test.py probe)
+    foreach(order IN ITEMS curl-first foundry-first)
+        add_test(NAME elf-loader-${order}
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/native-library-test.py
+                runtime $<TARGET_FILE:foundry_local> $<TARGET_FILE:elf-loader-probe>
+                ${CMAKE_CURRENT_BINARY_DIR}/elf-loader-${order} ${order})
+        set_tests_properties(elf-loader-${order} PROPERTIES TIMEOUT 120)
+    endforeach()
+
+    add_library(export-isolation-dependency STATIC export-isolation/dependency.cc)
+    set_target_properties(export-isolation-dependency PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    add_library(export-isolation-fixture SHARED export-isolation/fixture.cc)
+    target_include_directories(export-isolation-fixture PRIVATE ../include)
+    target_link_libraries(export-isolation-fixture PRIVATE export-isolation-dependency)
+    foundry_local_configure_shared_library_exports(export-isolation-fixture)
+    add_test(NAME elf-archive-exports
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/native-library-test.py
+            exports $<TARGET_FILE:export-isolation-fixture> ${CMAKE_NM})
+    add_executable(export-isolation-runtime export-isolation/runtime.cc)
+    target_include_directories(export-isolation-runtime PRIVATE ../include)
+    target_link_libraries(export-isolation-runtime PRIVATE export-isolation-fixture)
+    add_test(NAME elf-archive-runtime COMMAND export-isolation-runtime)
+endif()
+
 find_package(httplib CONFIG REQUIRED)
 
 # cpp-httplib's non-blocking resolver uses getaddrinfo_a, which lives in libanl on glibc < 2.34.
@@ -15,6 +86,8 @@ endif()
 # ==========================================================================
 add_executable(foundry_local_tests
     test_main.cc
+    internal_api/api_backend_test.cc
+    internal_api/request_admission_test.cc
     internal_api/audio/audio_session_test.cc
     internal_api/audio/audio_transcription_contract_test.cc
     internal_api/audio/pcm_utils_test.cc
@@ -45,11 +118,16 @@ add_executable(foundry_local_tests
     internal_api/file_uri_test.cc
     internal_api/file_writer_test.cc
     internal_api/genai_config_test.cc
+    internal_api/genai_model_instance_test.cc
     internal_api/handler_error_mapping_test.cc
     internal_api/http_ca_bundle_test.cc
     internal_api/http_download_test.cc
     internal_api/http_retry_test.cc
+    internal_api/host_lifetime_test.cc
+    internal_api/host_profile_test.cc
     internal_api/item_test.cc
+    internal_api/item_codec_test.cc
+    internal_api/sdk_values_test.cc
     internal_api/local_model_catalog_test.cc
     internal_api/local_model_scanner_test.cc
     internal_api/model_info_test.cc
@@ -76,13 +154,27 @@ add_executable(foundry_local_tests
     internal_api/time_utils_test.cc
     internal_api/chat/search_options_test.cc
     internal_api/toolcalling/tool_call_stream_accumulator_test.cc
+    internal_api/toolcalling/raw_envelope_detector_test.cc
     internal_api/toolcalling/tool_call_utils_test.cc
+    internal_api/toolcalling/tool_call_plan_test.cc
+    internal_api/toolcalling/json_tool_call_payload_parser_test.cc
+    internal_api/toolcalling/tool_call_recovery_checkpoint_test.cc
+    internal_api/toolcalling/custom_tools_chat_test.cc
+    internal_api/toolcalling/custom_tools_responses_test.cc
+    internal_api/toolcalling/tool_definition_abi_test.cc
+    internal_api/toolcalling/tool_definitions_test.cc
+    internal_api/toolcalling/tool_registry_test.cc
     internal_api/toolcalling/grammar_test.cc
     internal_api/utils_test.cc
     internal_api/web_service_test.cc
     internal_api/winml_provider_allowlist_test.cc
     internal_api/zip_extract_test.cc
 )
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    target_sources(foundry_local_tests PRIVATE internal_api/telemetry_test.rc)
+    target_compile_definitions(foundry_local_tests PRIVATE FOUNDRY_LOCAL_TEST_HOST_VERSION_RESOURCE=1)
+endif()
 
 if(FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS)
     target_sources(foundry_local_tests PRIVATE
@@ -93,17 +185,42 @@ if(FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS)
     )
 endif()
 
-if(FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE)
+if(FOUNDRY_LOCAL_HAS_SHARED_HOST)
     target_sources(foundry_local_tests PRIVATE
-        internal_api/chat/dynamic_engine_chat_test.cc
+        internal_api/host_server_test.cc
+        internal_api/host_state_test.cc
+        internal_api/child_host_role_test.cc
+        internal_api/bootstrap_descriptor_test.cc
+        internal_api/ipc_channel_test.cc
+        internal_api/process_watch_test.cc
+        internal_api/sdk_connection_test.cc
+        internal_api/sdk_session_test.cc
     )
+    add_executable(hosting_process_fixture
+        hosting_process_fixture.cc
+        "${PROJECT_SOURCE_DIR}/${FOUNDRY_LOCAL_PROCESS_WATCH_SOURCE}"
+    )
+    target_include_directories(hosting_process_fixture PRIVATE ../src)
+    target_compile_options(hosting_process_fixture PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+    target_compile_definitions(foundry_local_tests PRIVATE
+        FOUNDRY_PROCESS_FIXTURE_PATH="$<TARGET_FILE:hosting_process_fixture>"
+    )
+    set_source_files_properties(internal_api/bootstrap_descriptor_test.cc PROPERTIES COMPILE_DEFINITIONS
+        "FOUNDRY_HOST_EXECUTABLE=\"$<TARGET_FILE:foundry-local-host>\";FOUNDRY_NATIVE_RUNTIME_DIR=\"$<TARGET_FILE_DIR:foundry_local>\"")
+    add_dependencies(foundry_local_tests hosting_process_fixture foundry-local-runtime-manifest)
 endif()
 
-target_compile_options(foundry_local_tests PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
-target_compile_definitions(
-    foundry_local_tests
-    PRIVATE FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE=$<BOOL:${FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE}>
+target_sources(foundry_local_tests PRIVATE
+    internal_api/chat/dynamic_engine_chat_test.cc
 )
+
+target_compile_options(foundry_local_tests PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+target_compile_definitions(foundry_local_tests PRIVATE
+    FOUNDRY_LOCAL_TEST_SCRATCH_DIR="${PROJECT_SOURCE_DIR}/build/TestResults"
+)
+if(MSVC)
+    target_compile_options(foundry_local_tests PRIVATE /bigobj)
+endif()
 
 target_link_libraries(foundry_local_tests
     PRIVATE
@@ -117,7 +234,13 @@ target_link_libraries(foundry_local_tests
 # RUNPATH by default, which doesn't propagate to transitive dlopen calls.
 # --disable-new-dtags forces the older RPATH tag, which does propagate.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    target_link_options(foundry_local_tests PRIVATE -Wl,--disable-new-dtags)
+    # Archive-owned weak telemetry thread vtables must not interpose with GenAI's private curl implementation.
+    target_link_options(foundry_local_tests PRIVATE
+        "LINKER:--disable-new-dtags"
+        "LINKER:--exclude-libs,ALL")
+    add_test(NAME elf-test-private-transports
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/native-library-test.py
+            private-transports $<TARGET_FILE:foundry_local_tests> ${CMAKE_NM})
 endif()
 
 # Ensure ORT/GenAI DLLs are copied to the bin directory before test discovery.
@@ -130,6 +253,14 @@ target_include_directories(foundry_local_tests
         ${CMAKE_CURRENT_SOURCE_DIR}/../src
         ${CMAKE_CURRENT_SOURCE_DIR}
 )
+
+if(NOT CMAKE_CROSSCOMPILING)
+    add_executable(benchmark-download ../tools/benchmark-download.cc)
+    target_include_directories(benchmark-download PRIVATE ../src)
+    target_compile_options(benchmark-download PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+    target_link_libraries(benchmark-download PRIVATE foundry_local_static)
+    add_dependencies(benchmark-download foundry_local)
+endif()
 
 add_custom_command(TARGET foundry_local_tests POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -152,6 +283,31 @@ else()
 endif()
 
 include(GoogleTest)
+if(WIN32)
+    # Real DLL imports exercise Windows' dependency search and handle lifetime without CUDA or a GPU.
+    add_library(loader-test-dependency SHARED windows_loader/dependency.cc)
+    set_target_properties(loader-test-dependency PROPERTIES
+        OUTPUT_NAME foundry_loader_test_dependency
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/loader-fixtures/dependency")
+    add_library(loader-test-library SHARED windows_loader/library.cc)
+    target_link_libraries(loader-test-library PRIVATE loader-test-dependency)
+    set_target_properties(loader-test-library PROPERTIES
+        OUTPUT_NAME foundry_loader_test_library
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/loader-fixtures/library")
+
+    add_executable(windows-dynlib-loader-tests
+        internal_api/windows_dynlib_loader_test.cc
+        ../src/platform/windows/dynlib_loader.cc)
+    target_include_directories(windows-dynlib-loader-tests PRIVATE ../src .)
+    target_compile_options(windows-dynlib-loader-tests PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+    target_link_libraries(windows-dynlib-loader-tests PRIVATE GTest::gtest_main fmt::fmt)
+    target_compile_definitions(windows-dynlib-loader-tests PRIVATE
+        FOUNDRY_TEST_LOADER_LIBRARY="$<TARGET_FILE:loader-test-library>"
+        FOUNDRY_TEST_LOADER_DEPENDENCY="$<TARGET_FILE:loader-test-dependency>")
+    add_dependencies(windows-dynlib-loader-tests loader-test-library)
+    gtest_discover_tests(windows-dynlib-loader-tests DISCOVERY_MODE PRE_TEST)
+endif()
+
 # DISCOVERY_TIMEOUT defaults to 5s, which is not enough for the Windows build:
 # foundry_local.dll links against Microsoft.Windows.AI.MachineLearning.dll
 # (delay-loaded) plus standalone ORT, and process startup + gtest enumeration
@@ -160,6 +316,23 @@ gtest_discover_tests(foundry_local_tests
     WORKING_DIRECTORY $<TARGET_FILE_DIR:foundry_local_tests>
     DISCOVERY_MODE PRE_TEST
     DISCOVERY_TIMEOUT 60
+)
+
+add_test(
+    NAME FoundryLocalVersionConfigureTwice
+    COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/cmake/version_configure_twice
+        -DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/version_configure_twice
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/version_configure_twice.cmake
+)
+
+add_test(
+    NAME NativeBuildIdentityIncremental
+    COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/cmake/native_build_identity
+        -DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/native_build_identity
+        "-DGENERATOR=${CMAKE_GENERATOR}"
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/native_build_identity.cmake
 )
 
 # ==========================================================================

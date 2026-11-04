@@ -13,15 +13,63 @@
 #include "model.h"
 #include "telemetry/telemetry.h"
 #include "telemetry/telemetry_action_tracker.h"
+#include "util/scope_guard.h"
 #include "utils.h"
 
 #include <fmt/format.h>
-#include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <chrono>
+#include <limits>
 #include <memory>
 
 namespace fl {
+
+namespace {
+
+void LogUsageTelemetryFailure(ILogger& logger) noexcept {
+  try {
+    logger.Log(LogLevel::Warning, "Unable to record inference usage telemetry");
+  } catch (...) {
+    // Even a caller-provided diagnostic logger must not change a completed inference result.
+  }
+}
+
+uint64_t CountTypedRequestMessages(const Request& request) {
+  uint64_t count = 0;
+  for (const auto* item : request.items) {
+    if (!item) {
+      continue;
+    }
+
+    if (item->type == FOUNDRY_LOCAL_ITEM_MESSAGE || item->type == FOUNDRY_LOCAL_ITEM_TOOL_RESULT) {
+      ++count;
+    }
+  }
+
+  return count;
+}
+
+[[noreturn]] void ThrowCancellation(const Request& request) {
+  switch (request.GetCancellationReason()) {
+    case Request::CancellationReason::StreamingCallback:
+      FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "request cancelled by streaming callback");
+    case Request::CancellationReason::StreamingCallbackException: {
+      const auto detail = request.CancellationDetail();
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+               detail.empty() ? "streaming callback threw an exception"
+                              : fmt::format("streaming callback threw an exception: {}", detail));
+    }
+    case Request::CancellationReason::SessionShutdown:
+      FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "request cancelled because the session is shutting down");
+    case Request::CancellationReason::None:
+    case Request::CancellationReason::Caller:
+    default:
+      FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "request cancelled by caller");
+  }
+}
+
+}  // namespace
 
 Session::Session(const fl::Model& catalog_model, ILogger& logger, ITelemetry& telemetry,
                  bool allow_concurrent_requests)
@@ -50,15 +98,15 @@ std::unique_ptr<Session> Session::Create(const fl::Model& model) {
       FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model must be loaded before creating a session");
     }
 
-    auto* loaded = mgr.GetModelLoadManager().GetLoadedModel(model.Id(), model.GetPath());
+    auto loaded = mgr.GetModelLoadManager().AcquireSessionModel(model.Id(), model.GetPath());
     if (!loaded) {
-      FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL, "loaded model not found in load manager");
+      FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model must be loaded before creating a session");
     }
 
     tracker.SetModelId(model.Id());
 
     const auto& info = model.Info();
-    if (info.task == "chat-completion" || info.task == "vision-language-chat") {
+    if (info.task == "chat-completion" || info.task == "coding" || info.task == "vision-language-chat") {
       auto session = std::make_unique<ChatSession>(model, *loaded, logger, telemetry);
       tracker.SetStatus(ActionStatus::kSuccess);
       return session;
@@ -83,24 +131,50 @@ std::unique_ptr<Session> Session::Create(const fl::Model& model) {
   }
 }
 
-void Session::UndoTurns(size_t /*count*/) {
+size_t Session::UndoTurns(size_t /*count*/) {
   FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "UndoTurns is not supported for this session type");
 }
 
-void Session::AddToolDefinition(ToolDefinition tool_def) {
-  if (!nlohmann::json::accept(tool_def.json_schema)) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             "ToolDefinition.json_schema is not valid JSON for tool: " + tool_def.name);
+std::unique_lock<std::mutex> Session::TryLockRequestMutex() const {
+  {
+    std::lock_guard<std::mutex> active_lock(*active_requests_mutex_);
+    if (processing_thread_ == std::this_thread::get_id()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "session state is unavailable while session work is active");
+    }
   }
 
-  tool_definitions_.push_back(std::move(tool_def));
+  std::unique_lock<std::mutex> lock(*request_mutex_, std::try_to_lock);
+  if (!lock.owns_lock()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "session state is unavailable while session work is active");
+  }
+
+  return lock;
+}
+
+std::unique_ptr<Session::RequestPreflightOperation> Session::CreateRequestPreflight(const Request& request) const {
+  if (Type() != SessionType::kChat) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "request preflight is only supported for chat sessions");
+  }
+
+  auto lock = TryLockRequestMutex();
+  auto snapshot = request.CaptureChatSnapshot();
+  ValidateRequestItems(snapshot);
+  return CreateRequestPreflightImpl(std::move(snapshot));
+}
+
+std::unique_ptr<Session::RequestPreflightOperation> Session::CreateRequestPreflightImpl(Request) const {
+  FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "request preflight is only supported for chat sessions");
+}
+
+void Session::AddToolDefinition(ToolDefinition tool_def) {
+  tool_registry_.Add(std::move(tool_def));
 }
 
 void Session::ValidateRequestItems(const Request& request) const {
   // Only chat tasks are validated: other tasks either have no IO descriptor (embeddings) or accept
   // transport items that the descriptor does not advertise (the ASR streaming QUEUE item).
   const auto& task = catalog_model_.Info().task;
-  if (task != "chat-completion" && task != "vision-language-chat") {
+  if (task != "chat-completion" && task != "coding" && task != "vision-language-chat") {
     return;
   }
 
@@ -144,57 +218,180 @@ void Session::ValidateRequestItems(const Request& request) const {
   }
 }
 
-void Session::ProcessRequest(const Request& request, Response& response) {
+size_t Session::ProcessRequest(const Request& request, Response& response,
+                               std::optional<StreamingCallback> callback) {
   // Serialize requests unless the derived class opted into concurrency.
   std::unique_lock<std::mutex> lock(*request_mutex_, std::defer_lock);
   if (!allow_concurrent_requests_) {
     lock.lock();
+    std::lock_guard<std::mutex> active_lock(*active_requests_mutex_);
+    processing_thread_ = std::this_thread::get_id();
   }
+  ScopeGuard processing_guard([&]() noexcept {
+    if (lock.owns_lock()) {
+      std::lock_guard<std::mutex> active_lock(*active_requests_mutex_);
+      processing_thread_ = {};
+    }
+  });
+
+  bool admitted = false;
+  bool registered = false;
+  auto finish_lifecycle = [&]() noexcept {
+    if (!admitted) {
+      return;
+    }
+
+    if (registered) {
+      std::lock_guard<std::mutex> active_lock(*active_requests_mutex_);
+      active_requests_.erase(&request);
+      registered = false;
+    }
+
+    request.PublishCompletion();
+    admitted = false;
+  };
+  ScopeGuard lifecycle_guard([&]() noexcept { finish_lifecycle(); });
 
   {
     std::lock_guard<std::mutex> active_lock(*active_requests_mutex_);
-    active_requests_.insert(&request);
+    if (!request.TryBegin()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "request is already being processed");
+    }
+    admitted = true;
 
-    // If Cancel() already ran (shutdown began before this request was admitted), stamp it now so the
-    // generation loop exits at its first poll instead of running an uncanceled turn.
+    // A late shutdown admission must first claim the request, then be canceled under the same lock that protects
+    // active registration. This keeps TryBegin as the sole admission gate while preventing backend entry.
     if (session_canceled_) {
-      request.canceled.store(true, std::memory_order_relaxed);
+      request.Cancel(Request::CancellationReason::SessionShutdown);
+    }
+
+    if (!callback) {
+      callback = StreamingCallback{callback_fn_, callback_user_data_};
+    }
+
+    active_requests_.emplace(&request, *callback);
+    registered = true;
+  }
+
+  ActionTracker tracker(Action::kSessionProcessRequest, telemetry_, TakeInvocationContext());
+  tracker.SetModelId(CatalogModel().Id());
+
+  const auto start = std::chrono::steady_clock::now();
+  Response staged_response;
+  try {
+    if (request.IsCancellationRequested()) {
+      ThrowCancellation(request);
+    }
+
+    ValidateRequestItems(request);
+
+    ProcessRequestImpl(request, staged_response);
+
+    if (!request.TryComplete()) {
+      ThrowCancellation(request);
+    }
+
+    response = std::move(staged_response);
+    finish_lifecycle();
+    lifecycle_guard.Dismiss();
+    tracker.SetStatus(ActionStatus::kSuccess);
+  } catch (const std::exception& ex) {
+    if (request.TryComplete()) {
+      finish_lifecycle();
+      lifecycle_guard.Dismiss();
+      tracker.RecordException(ex);
+      throw;
+    }
+
+    try {
+      ThrowCancellation(request);
+    } catch (const std::exception& cancellation) {
+      finish_lifecycle();
+      lifecycle_guard.Dismiss();
+      tracker.RecordException(cancellation);
+      throw;
+    }
+  } catch (...) {
+    if (request.TryComplete()) {
+      finish_lifecycle();
+      lifecycle_guard.Dismiss();
+      throw;
+    }
+
+    try {
+      ThrowCancellation(request);
+    } catch (const std::exception& cancellation) {
+      finish_lifecycle();
+      lifecycle_guard.Dismiss();
+      tracker.RecordException(cancellation);
+      throw;
     }
   }
 
-  // RAII: deregister the request even if ProcessRequestImpl throws, so Cancel() never
-  // dereferences a dangling Request after this call unwinds.
-  struct ActiveRequestGuard {
-    Session& session;
-    const Request& request;
-    ~ActiveRequestGuard() {
-      std::lock_guard<std::mutex> active_lock(*session.active_requests_mutex_);
-      session.active_requests_.erase(&request);
-    }
-  } active_guard{*this, request};
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  RecordUsage(request, response, tracker.Context(),
+              std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
+              static_cast<bool>(callback->function));
+  return TurnCount();
+}
 
-  ActionTracker tracker(Action::kSessionProcessRequest, telemetry_);
-  tracker.SetModelId(CatalogModel().Id());
+InvocationContext Session::TakeInvocationContext() {
+  std::lock_guard<std::mutex> lock(*invocation_context_mutex_);
+  auto context = invocation_context_ ? std::move(*invocation_context_) : InvocationContext::Direct();
+  invocation_context_.reset();
+  return context;
+}
 
+int32_t Session::TelemetryTokenCount(int64_t count) {
+  return static_cast<int32_t>(std::clamp<int64_t>(count, 0, std::numeric_limits<int32_t>::max()));
+}
+
+void Session::RecordUsage(const Request& request, const Response& response,
+                          const InvocationContext& context, int64_t total_time_ms, bool streaming) {
+  // This boundary covers metric preparation as well as emission; neither may change inference results.
   try {
-    ValidateRequestItems(request);
+    if (!response.openai_json_message_count.has_value()) {
+      LogUsageTelemetryFailure(logger_);
+      return;
+    }
 
-    ProcessRequestImpl(request, response);
+    ModelUsageInfo usage;
+    usage.model_id = TelemetryInternal::SanitizeTelemetryIdentifier(CatalogModel().Id());
+    usage.execution_provider = TelemetryInternal::SanitizeTelemetryIdentifier(ExecutionProvider());
+    if (usage.execution_provider.empty()) {
+      usage.execution_provider =
+          TelemetryInternal::SanitizeTelemetryIdentifier(CatalogModel().Info().execution_provider);
+    }
 
-    tracker.SetStatus(ActionStatus::kSuccess);
-  } catch (const std::exception& ex) {
-    tracker.RecordException(ex);
-    throw;
+    usage.user_agent = TelemetryInternal::SanitizeTelemetryValue(context.user_agent);
+    usage.correlation_id = TelemetryInternal::SanitizeTelemetryIdentifier(context.correlation_id);
+    usage.indirect = context.indirect;
+    usage.stream = streaming;
+    usage.num_messages = CountTypedRequestMessages(request) + *response.openai_json_message_count;
+    usage.total_time_ms = total_time_ms;
+    usage.total_tokens = TelemetryTokenCount(response.usage.total_tokens);
+    usage.input_token_count = TelemetryTokenCount(response.usage.prompt_tokens);
+    // TTFT and memory remain unknown; token counts come from the current backend's per-turn accounting.
+    try {
+      telemetry_.RecordModelUsage(usage);
+    } catch (...) {
+      // Keep the modality-specific event independent of failure in the generic telemetry sink.
+      LogUsageTelemetryFailure(logger_);
+    }
+
+    RecordAdditionalModelUsage(response, usage);
+  } catch (...) {
+    LogUsageTelemetryFailure(logger_);
   }
 }
 
 void Session::Cancel() {
-  // Only flip cancel flags — never block or join — so this is safe to call while the
+  // Only update request lifecycle state — never block or join — so this is safe to call while the
   // SessionManager holds its own lock during shutdown. Generation loops poll the flag.
   std::lock_guard<std::mutex> lock(*active_requests_mutex_);
   session_canceled_ = true;
-  for (const Request* r : active_requests_) {
-    r->canceled.store(true, std::memory_order_relaxed);
+  for (const auto& [r, callback] : active_requests_) {
+    r->Cancel(Request::CancellationReason::SessionShutdown);
   }
 }
 

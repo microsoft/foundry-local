@@ -4,11 +4,64 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace fl {
+
+/// Whether `text` is well-formed UTF-8. Embedded NUL is valid UTF-8 and must be
+/// rejected separately by contracts that use NUL-terminated ABI strings.
+inline bool IsValidUtf8(std::string_view text) {
+  size_t i = 0;
+  while (i < text.size()) {
+    const auto lead = static_cast<unsigned char>(text[i]);
+    if (lead <= 0x7F) {
+      ++i;
+      continue;
+    }
+
+    size_t width = 0;
+    uint32_t code_point = 0;
+    if ((lead & 0xE0) == 0xC0) {
+      width = 2;
+      code_point = lead & 0x1F;
+    } else if ((lead & 0xF0) == 0xE0) {
+      width = 3;
+      code_point = lead & 0x0F;
+    } else if ((lead & 0xF8) == 0xF0) {
+      width = 4;
+      code_point = lead & 0x07;
+    } else {
+      return false;
+    }
+
+    if (i + width > text.size()) {
+      return false;
+    }
+
+    for (size_t j = 1; j < width; ++j) {
+      const auto continuation = static_cast<unsigned char>(text[i + j]);
+      if ((continuation & 0xC0) != 0x80) {
+        return false;
+      }
+
+      code_point = (code_point << 6) | (continuation & 0x3F);
+    }
+
+    if ((width == 2 && code_point < 0x80) || (width == 3 && code_point < 0x800) ||
+        (width == 4 && code_point < 0x10000) || code_point > 0x10FFFF ||
+        (code_point >= 0xD800 && code_point <= 0xDFFF)) {
+      return false;
+    }
+
+    i += width;
+  }
+
+  return true;
+}
 
 template <typename... Args>
 std::string MakeString(Args&&... args) {

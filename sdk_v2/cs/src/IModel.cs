@@ -18,6 +18,9 @@ public interface IModel
 
     ModelInfo Info { get; }
 
+    string? GetStringProperty(string key);
+    long GetIntProperty(string key, long defaultValue = 0);
+
     Task<bool> IsCachedAsync(CancellationToken? ct = null);
     Task<bool> IsLoadedAsync(CancellationToken? ct = null);
 

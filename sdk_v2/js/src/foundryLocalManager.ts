@@ -3,15 +3,25 @@
 // `FoundryLocalError` from the native addon. `create()` and `createAsync()` are factory wrappers around the
 // constructor — the native layer is the source of truth for instance identity.
 
+import { readFileSync } from "node:fs";
+
 import { type Catalog, wrapNativeCatalog } from "./catalog.js";
 import { FOUNDRY_LOCAL_CONFIG_KEYS, type FoundryLocalConfig } from "./configuration.js";
-import {
-  type NativeManager,
-  configureNativeLoader,
-  getAddon,
-  getPreloadedLibraryPath,
-} from "./detail/native.js";
-import type { EpDownloadResult, EpInfo } from "./types.js";
+import { type NativeManager, configureNativeLoader, getAddon, getPreloadedLibraryPath } from "./detail/native.js";
+
+import { CatalogType, type EpDownloadResult, type EpInfo } from "./types.js";
+
+function readSdkVersion(): string {
+  const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+    version?: unknown;
+  };
+  if (typeof packageJson.version !== "string" || packageJson.version.length === 0) {
+    throw new Error("package.json version is missing.");
+  }
+  return packageJson.version;
+}
+
+const SDK_VERSION = readSdkVersion();
 
 // A native Manager holds process-global native resources. Dispose the live
 // Manager on process exit so native teardown happens at a deterministic point
@@ -49,8 +59,7 @@ function installExitHandlersOnce(): void {
 
 export class FoundryLocalManager {
   readonly #native: NativeManager;
-  #catalog: Catalog | undefined;
-  #urls: string[] = [];
+  readonly #catalogs = new Map<CatalogType, Catalog>();
 
   constructor(config: FoundryLocalConfig) {
     if (config === null || config === undefined) {
@@ -91,7 +100,20 @@ export class FoundryLocalManager {
         }
       }
     }
-    this.#native = new (getAddon().Manager)(config);
+    const rawAdditionalSettings: unknown = config.additionalSettings;
+    if (
+      rawAdditionalSettings !== undefined &&
+      (typeof rawAdditionalSettings !== "object" ||
+        rawAdditionalSettings === null ||
+        Array.isArray(rawAdditionalSettings))
+    ) {
+      throw new TypeError("additionalSettings must be an object");
+    }
+    const additionalSettings = {
+      UserAgent: `foundry-local-js/${SDK_VERSION}`,
+      ...config.additionalSettings,
+    };
+    this.#native = new (getAddon().Manager)({ ...config, additionalSettings });
     liveManager = this;
     installExitHandlersOnce();
   }
@@ -114,35 +136,43 @@ export class FoundryLocalManager {
 
   /** The model catalog. Lazily wraps the native handle and is cached. */
   get catalog(): Catalog {
-    if (this.#catalog === undefined) {
-      this.#catalog = wrapNativeCatalog(this.#native.getCatalog());
+    return this.getCatalog();
+  }
+
+  /** Return the selected manager-owned catalog. Omitting `type` preserves the public-catalog default. */
+  getCatalog(type: CatalogType = CatalogType.Public): Catalog {
+    if (type !== CatalogType.Public && type !== CatalogType.Local) {
+      throw new TypeError("Catalog type must be CatalogType.Public or CatalogType.Local.");
     }
-    return this.#catalog;
+    let catalog = this.#catalogs.get(type);
+    if (catalog === undefined) {
+      catalog = wrapNativeCatalog(this.#native.getCatalog(type));
+      this.#catalogs.set(type, catalog);
+    }
+    return catalog;
   }
 
-  /** URLs the embedded web service is bound to. Empty when not running. */
+  /** Observe native listening URLs without starting the service or acquiring shared-host ownership. */
   get urls(): string[] {
-    return this.#urls;
+    return this.disposed ? [] : this.#native.getWebServiceEndpoints();
   }
 
-  /** True when the embedded web service is currently running. */
+  /** True when the native web service is currently running. */
   get isWebServiceRunning(): boolean {
-    return this.#urls.length > 0;
+    return this.urls.length > 0;
   }
 
   /** Start the embedded web service. Updates `urls`. */
   startWebService(): void {
     this.#native.startWebService();
-    this.#urls = this.#native.getWebServiceEndpoints();
   }
 
   /** Stop the embedded web service. Clears `urls`. */
   stopWebService(): void {
-    if (this.#urls.length === 0) {
+    if (this.urls.length === 0) {
       return;
     }
     this.#native.stopWebService();
-    this.#urls = [];
   }
 
   /** Discover available execution providers and their registration status. */
@@ -219,8 +249,7 @@ export class FoundryLocalManager {
       liveManager = undefined;
     }
     this.#native.dispose();
-    this.#catalog = undefined;
-    this.#urls = [];
+    this.#catalogs.clear();
   }
 
   [Symbol.dispose](): void {

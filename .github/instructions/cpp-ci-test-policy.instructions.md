@@ -34,11 +34,9 @@ unload, not CUDA kernel correctness or trained-model quality.
 
 The packaging pipeline includes the unconditional `cpp_test_engine` stage from
 `.pipelines/v2/templates/stages-test-engine.yml`. It runs on the existing `onnxruntime-Ubuntu2404-AMD-CPU` pool image
-without a custom container and uses standard CPU NuGet packages with a test-only Engine-capable GenAI pin.
-`FOUNDRY_LOCAL_REQUIRE_DYNAMIC_ENGINE_TESTS=ON` rejects packages that cannot compile the suite. The XML gate rejects
+without a custom container and uses the same stable ORT and GenAI packages as the SDK build. The XML gate rejects
 missing lifecycle cases, skipped/disabled/unexecuted tests, and failures. Do not bypass failures with skips or
-`continueOnError`. Its binaries are not published as SDK artifacts, and shipping/release dependency pins are unchanged.
-Generator-only builds can still exclude the suite; the unconditional Engine lane supplies the required coverage.
+`continueOnError`. Its binaries are not published as SDK artifacts.
 
 ## Debugging skips in CI
 

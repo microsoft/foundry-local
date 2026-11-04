@@ -30,6 +30,7 @@ internal static class Api
     internal static FlItemApi Item;
     internal static FlInferenceApi Inference;
     internal static FlConfigurationApi Config;
+    internal static FlConfig_SetUseSharedHostDelegate? SetUseSharedHost;
     internal static FlCatalogApi Catalog;
     internal static FlModelApi Model;
     private static volatile bool _initialized;
@@ -49,11 +50,18 @@ internal static class Api
                 return;
             }
 
-            var apiPtr = NativeMethods.FoundryLocalGetApi(NativeMethods.ApiVersion);
+            var version = NativeMethods.LatestApiVersion;
+            var apiPtr = NativeMethods.FoundryLocalGetApi(version);
             if (apiPtr == IntPtr.Zero)
             {
-                throw new InvalidOperationException(
-                    $"FoundryLocalGetApi returned null for version {NativeMethods.ApiVersion}.");
+                version = NativeMethods.ApiVersion;
+                apiPtr = NativeMethods.FoundryLocalGetApi(version);
+            }
+
+            if (apiPtr == IntPtr.Zero)
+            {
+                var loadedRuntimeVersion = FoundryLocal.GetVersionString();
+                throw new InvalidOperationException(CreateIncompatibleRuntimeMessage(loadedRuntimeVersion));
             }
 
             Root = Marshal.PtrToStructure<FlApi>(apiPtr);
@@ -74,6 +82,7 @@ internal static class Api
             if (p != IntPtr.Zero)
             {
                 Config = Marshal.PtrToStructure<FlConfigurationApi>(p);
+                SetUseSharedHost = ReadSharedHostSetting(p, version);
             }
 
             p = Root.GetCatalogApi();
@@ -90,6 +99,30 @@ internal static class Api
 
             _initialized = true;
         }
+    }
+
+    internal static FlConfig_SetUseSharedHostDelegate? ReadSharedHostSetting(IntPtr configApi, uint version)
+    {
+        if (version < 3)
+        {
+            return null;
+        }
+
+        var setter = Marshal.ReadIntPtr(configApi, Marshal.SizeOf<FlConfigurationApi>());
+        if (setter == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("The native runtime returned an incomplete v3 configuration API.");
+        }
+
+        return Marshal.GetDelegateForFunctionPointer<FlConfig_SetUseSharedHostDelegate>(setter);
+    }
+
+    internal static string CreateIncompatibleRuntimeMessage(string loadedRuntimeVersion)
+    {
+        return $"FoundryLocalGetApi({NativeMethods.ApiVersion}) returned null. The loaded native Foundry Local runtime "
+            + $"reports product version '{loadedRuntimeVersion}', but this SDK requires C API table version "
+            + $"{NativeMethods.ApiVersion}. Update the native runtime ({NativeMethods.LibraryName} and the libraries "
+            + "shipped with it).";
     }
 
     internal static void CheckStatus(IntPtr status)
@@ -209,6 +242,24 @@ public sealed class Configuration : IDisposable
         return this;
     }
 
+    public Configuration SetUseSharedHost(bool enabled)
+    {
+        var setter = Api.SetUseSharedHost;
+        if (setter == null)
+        {
+            if (enabled)
+            {
+                throw new FoundryLocalException("Shared hosting requires an API v3 Foundry Local runtime.",
+                                                FoundryLocalErrorCode.NotImplemented);
+            }
+
+            return this;
+        }
+
+        Api.CheckStatus(setter(Ptr, enabled));
+        return this;
+    }
+
     public Configuration SetCatalogRegion(string region)
     {
         Api.CheckStatus(Api.Config.SetCatalogRegion(Ptr, region));
@@ -253,9 +304,9 @@ public sealed class Manager : IDisposable
         Ptr = ptr;
     }
 
-    public Catalog GetCatalog()
+    public Catalog GetCatalog(FlCatalogType catalogType = FlCatalogType.Public)
     {
-        var status = Api.Root.ManagerGetCatalog(Ptr, out var catalogPtr);
+        var status = Api.Root.ManagerGetCatalogByType(Ptr, catalogType, out var catalogPtr);
         Api.CheckStatus(status);
         return new Catalog(catalogPtr);
     }
@@ -496,6 +547,24 @@ public sealed class Catalog
             }
         }
     }
+
+    public Model RegisterModel(string modelPath, string modelId, MutableModelInfo metadata)
+    {
+        var status = Api.Catalog.RegisterModel(Ptr, modelPath, modelId, metadata.Ptr, out var ptr);
+        Api.CheckStatus(status);
+
+        if (ptr == IntPtr.Zero)
+        {
+            throw new FoundryLocalException("RegisterModel returned no model.");
+        }
+
+        return new Model(ptr);
+    }
+
+    public void UnregisterModel(string aliasOrModelId)
+    {
+        Api.CheckStatus(Api.Catalog.UnregisterModel(Ptr, aliasOrModelId));
+    }
 }
 
 // ===================================================================
@@ -580,6 +649,57 @@ public sealed class ModelInfo
         }
 
         return result;
+    }
+}
+
+// ===================================================================
+// MutableModelInfo — owns caller-created flModelInfo*
+// ===================================================================
+
+public sealed class MutableModelInfo : IDisposable
+{
+    private bool _disposed;
+
+    internal IntPtr Ptr { get; private set; }
+
+    public MutableModelInfo()
+    {
+        Api.EnsureInitialized();
+        var status = Api.Model.CreateModelInfo(out var ptr);
+        Api.CheckStatus(status);
+        Ptr = ptr;
+    }
+
+    public void SetStringProperty(string key, string value)
+    {
+        Detail.Throw.IfDisposed(_disposed, this);
+        Api.CheckStatus(Api.Model.InfoSetStringProperty(Ptr, key, value));
+    }
+
+    public void SetIntProperty(string key, long value)
+    {
+        Detail.Throw.IfDisposed(_disposed, this);
+        Api.CheckStatus(Api.Model.InfoSetIntProperty(Ptr, key, value));
+    }
+
+    public void Dispose()
+    {
+        if (!_disposed && Ptr != IntPtr.Zero)
+        {
+            Api.Model.ReleaseModelInfo(Ptr);
+            Ptr = IntPtr.Zero;
+            _disposed = true;
+        }
+
+        GC.SuppressFinalize(this);
+    }
+
+    ~MutableModelInfo()
+    {
+        if (!_disposed)
+        {
+            Api.FinalizeRelease(Ptr, Api.Model.ReleaseModelInfo.Invoke);
+        }
     }
 }
 
@@ -737,8 +857,16 @@ public sealed class Session : IDisposable
         Ptr = ptr;
     }
 
-    /// <summary>Add a tool definition to the session. The session copies the data.</summary>
+    /// <summary>
+    /// Add a tool definition to the session. The session copies the data, so the marshalled buffers
+    /// are freed as soon as the call returns.
+    /// </summary>
     public Session AddToolDefinition(string name, string description, string jsonSchema)
+    {
+        return AddToolDefinition(name, description, jsonSchema, FlToolKind.Function);
+    }
+
+    public Session AddToolDefinition(string name, string description, string jsonSchema, FlToolKind kind)
     {
         var nameNative = Utf8.StringToCoTaskMem(name);
         var descNative = Utf8.StringToCoTaskMem(description);
@@ -751,6 +879,7 @@ public sealed class Session : IDisposable
                 Name = nameNative,
                 Description = descNative,
                 JsonSchema = schemaNative,
+                Kind = kind,
             };
             Api.CheckStatus(Api.Inference.SessionAddToolDefinition(Ptr, ref toolDef));
         }

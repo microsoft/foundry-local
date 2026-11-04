@@ -96,6 +96,52 @@ describe.skipIf(!haveTestModelCache)("ChatSession (real model, non-streaming)", 
   );
 
   it(
+    "preflightRequest returns an exact budget matching inference without changing history",
+    async () => {
+      if (session === undefined) throw new Error("fixture missing");
+      const request = new Request()
+        .addItem(Item.systemMessage("You are concise."))
+        .addItem(Item.userMessage("Explain why the sky is blue."))
+        .setOptions({ search: { maxOutputTokens: 64, temperature: 0 } });
+      const before = session.turnCount;
+
+      const result = await session.preflightRequest(request);
+
+      expect(result.promptTokens).toBeGreaterThan(0);
+      expect(result.outputReserveTokens).toBe(64);
+      expect(result.requiredTokens).toBe(result.promptTokens + result.outputReserveTokens);
+      expect(result.contextLimitTokens).toBeGreaterThan(0);
+      expect(result.fits).toBe(result.requiredTokens <= result.contextLimitTokens);
+      expect(result.deficitTokens).toBe(Math.max(0, result.requiredTokens - result.contextLimitTokens));
+      expect(session.turnCount).toBe(before);
+
+      const response = await session.processRequest(request);
+      expect(result.promptTokens).toBe(response.usage.promptTokens);
+    },
+    2 * 60_000,
+  );
+
+  it(
+    "preflightRequest owns captured state after source session disposal",
+    async () => {
+      if (fixture === undefined) throw new Error("fixture missing");
+      const source = new ChatSession(fixture.model);
+      const request = new Request()
+        .addItem(Item.userMessage("Count the prompt tokens."))
+        .setOptions({ search: { maxOutputTokens: 32 } });
+
+      const pending = source.preflightRequest(request);
+      request.setOptions({ search: { maxOutputTokens: 96 } });
+      source.dispose();
+
+      await expect(pending).resolves.toMatchObject({
+        outputReserveTokens: 32,
+      });
+    },
+    2 * 60_000,
+  );
+
+  it(
     "undoTurns rewinds the conversation",
     async () => {
       if (session === undefined) throw new Error("fixture missing");
@@ -117,6 +163,77 @@ describe.skipIf(!haveTestModelCache)("ChatSession (real model, non-streaming)", 
     oneShot.dispose();
     expect(oneShot.disposed).toBe(true);
     expect(() => oneShot.dispose()).not.toThrow();
+  });
+});
+
+describe.skipIf(!haveTestModelCache)("ChatSession tool registration", () => {
+  let fixture: RealModelManagerFixture | undefined;
+  let session: ChatSession | undefined;
+
+  beforeAll(async () => {
+    fixture = await setupRealModelManager();
+  }, 5 * 60_000);
+
+  afterAll(() => {
+    teardownRealModelManager(fixture);
+  });
+
+  beforeEach(() => {
+    if (fixture === undefined) throw new Error("fixture missing");
+    session = new ChatSession(fixture.model);
+  });
+
+  afterEach(() => {
+    session?.dispose();
+    session = undefined;
+  });
+
+  it("registers a function tool and a custom tool", () => {
+    if (session === undefined) throw new Error("fixture missing");
+    session.addToolDefinition({
+      name: "multiply_numbers",
+      description: "Multiplies two numbers.",
+      jsonSchema: JSON.stringify({ type: "object", properties: { first: { type: "integer" } } }),
+    });
+    // A custom tool carries no schema — the one the model sees is synthesized natively.
+    expect(session.addCustomToolDefinition({ name: "apply_patch", description: "Applies a patch." })).toBe(session);
+    session.addToolDefinition({ name: "run_shell", description: "Runs a command.", kind: "custom" });
+  });
+
+  it("rejects a duplicate name across kinds and allows re-adding after removal", () => {
+    if (session === undefined) throw new Error("fixture missing");
+    session.addCustomToolDefinition({ name: "apply_patch", description: "Applies a patch." });
+
+    expect(() => session?.addCustomToolDefinition({ name: "apply_patch", description: "again" })).toThrow();
+    expect(() => session?.addToolDefinition({ name: "apply_patch", description: "d", jsonSchema: "{}" })).toThrow();
+
+    // Names are case-sensitive, so a differently-cased name is a different tool.
+    session.addCustomToolDefinition({ name: "Apply_Patch", description: "Different tool." });
+
+    expect(session.removeToolDefinition("apply_patch")).toBe(true);
+    expect(session.removeToolDefinition("apply_patch")).toBe(false);
+    session.addToolDefinition({ name: "apply_patch", description: "Now a function.", jsonSchema: "{}" });
+  });
+
+  it("rejects a custom tool that supplies a schema and a function tool with an invalid schema", () => {
+    if (session === undefined) throw new Error("fixture missing");
+    expect(() =>
+      // @ts-expect-error — exercising the native guard against a schema on a custom tool
+      session?.addToolDefinition({ name: "custom", description: "d", jsonSchema: "{}", kind: "custom" }),
+    ).toThrow();
+    expect(() => session?.addToolDefinition({ name: "broken", description: "d", jsonSchema: "{not json" })).toThrow();
+  });
+
+  it("rejects an unknown tool kind", () => {
+    if (session === undefined) throw new Error("fixture missing");
+    expect(() =>
+      session?.addToolDefinition({
+        name: "weird",
+        description: "d",
+        // @ts-expect-error — exercising the native guard against unknown tool kinds
+        kind: "grammar",
+      }),
+    ).toThrow(TypeError);
   });
 });
 

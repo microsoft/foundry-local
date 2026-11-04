@@ -2,16 +2,20 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "inferencing/generative/chat/chat_template.h"
 #include "inferencing/generative/chat/chat_transcript.h"
 #include "inferencing/generative/chat/reasoning_stream_splitter.h"
 #include "inferencing/generative/chat/search_options.h"
 #include "inferencing/generative/chat/stop_strings.h"
+#include "inferencing/generative/toolcalling/raw_envelope_detector.h"
 #include "inferencing/generative/toolcalling/tool_call_context.h"
+#include "inferencing/generative/toolcalling/tool_call_stream_accumulator.h"
 #include "inferencing/generative/toolcalling/tool_call_utils.h"
 #include "inferencing/session/session.h"
 #include "items/message_item.h"
 #include "logger.h"
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -23,21 +27,45 @@ namespace fl {
 
 class GenAIModelInstance;
 class ChatGenerator;
+struct PreparedChatRequest;
+enum class BackendTerminationCause;
+
+using TextChatGeneratorFactory =
+    std::function<std::unique_ptr<ChatGenerator>(
+        const chat_internal::PreparedChatMessages&,
+        const SearchOptions&,
+        GenAIModelInstance&,
+        const ToolCallContext&,
+        bool)>;
+using ChatMessagePreparer = std::function<chat_internal::PreparedChatMessages(
+    std::vector<TranscriptMessage>, bool)>;
 
 namespace chat_session_internal {
+
+template <typename SegmentProcessor>
+void DeliverDecodedFragment(std::string text, std::optional<int32_t> token_id, ReasoningStreamSplitter& splitter,
+                            SegmentProcessor&& process_segments, bool inside_tool_payload) {
+  if (inside_tool_payload) {
+    if (!text.empty()) {
+      process_segments(std::vector<ReasoningStreamSplitter::Segment>{{std::move(text),
+                                                                      FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT, token_id}});
+    }
+  } else if (token_id.has_value()) {
+    process_segments(splitter.Push(*token_id, std::move(text)));
+  } else if (!text.empty()) {
+    process_segments(splitter.Push(text));
+  }
+}
 
 template <typename SegmentProcessor>
 bool PushDecodedFragment(const std::string& fragment,
                          std::optional<int32_t> token_id,
                          StopStringFilter* stop_filter,
                          ReasoningStreamSplitter& splitter,
-                         SegmentProcessor&& process_segments) {
+                         SegmentProcessor&& process_segments,
+                         bool inside_tool_payload = false) {
   if (stop_filter == nullptr) {
-    if (token_id.has_value()) {
-      process_segments(splitter.Push(*token_id, fragment));
-    } else if (!fragment.empty()) {
-      process_segments(splitter.Push(fragment));
-    }
+    DeliverDecodedFragment(fragment, token_id, splitter, process_segments, inside_tool_payload);
 
     return false;
   }
@@ -47,20 +75,15 @@ bool PushDecodedFragment(const std::string& fragment,
   }
 
   if (fragment.empty()) {
-    if (token_id.has_value()) {
-      process_segments(splitter.Push(*token_id, fragment));
-    }
+    DeliverDecodedFragment(fragment, token_id, splitter, process_segments, inside_tool_payload);
 
     return false;
   }
 
   auto filtered = stop_filter->PushWithTokenAlignment(fragment, token_id);
   for (auto& safe_fragment : filtered.fragments) {
-    if (safe_fragment.token_id.has_value()) {
-      process_segments(splitter.Push(*safe_fragment.token_id, std::move(safe_fragment.text)));
-    } else {
-      process_segments(splitter.Push(safe_fragment.text));
-    }
+    DeliverDecodedFragment(std::move(safe_fragment.text), safe_fragment.token_id, splitter, process_segments,
+                           inside_tool_payload);
   }
 
   return stop_filter->matched();
@@ -69,23 +92,20 @@ bool PushDecodedFragment(const std::string& fragment,
 template <typename SegmentProcessor>
 void FlushDecodedStream(StopStringFilter* stop_filter,
                         ReasoningStreamSplitter& splitter,
-                        SegmentProcessor&& process_segments) {
+                        SegmentProcessor&& process_segments,
+                        bool inside_tool_payload = false) {
   if (stop_filter != nullptr && !stop_filter->matched()) {
     auto tail = stop_filter->FlushWithTokenAlignment();
     for (auto& safe_fragment : tail.fragments) {
-      if (safe_fragment.token_id.has_value()) {
-        process_segments(splitter.Push(*safe_fragment.token_id, std::move(safe_fragment.text)));
-      } else {
-        process_segments(splitter.Push(safe_fragment.text));
-      }
+      DeliverDecodedFragment(std::move(safe_fragment.text), safe_fragment.token_id, splitter, process_segments,
+                             inside_tool_payload);
     }
   }
 
   process_segments(splitter.Flush());
 }
 
-flFinishReason ResolveGeneratedFinishReason(bool canceled,
-                                            bool has_tool_calls,
+flFinishReason ResolveGeneratedFinishReason(bool has_tool_calls,
                                             bool stop_sequence_matched,
                                             bool host_output_limit_reached,
                                             std::optional<flFinishReason> backend_finish_reason,
@@ -93,16 +113,40 @@ flFinishReason ResolveGeneratedFinishReason(bool canceled,
                                             std::optional<int> max_output_tokens);
 bool DidHostOutputLimitTruncate(int output_tokens, int max_output_tokens, bool backend_finished);
 bool ShouldEnforceHostOutputLimit(ChatBackendKind backend_kind, bool media_turn);
-bool ShouldRebuildRetainedGeneratorBeforeAppend(ChatBackendKind backend_kind,
-                                                bool guidance_requirement_changed,
-                                                bool guidance_payload_changed,
+bool ShouldRebuildRetainedGeneratorBeforeAppend(bool guidance_requirement_changed, bool guidance_payload_changed,
                                                 bool retained_generation_settings_changed);
-bool ShouldInvalidateRetainedGenerationStateAfterSuccessfulTurn(ChatBackendKind backend_kind,
-                                                                bool grammar_was_active,
-                                                                bool reasoning_was_active,
-                                                                bool stop_sequence_matched,
+bool ShouldInvalidateRetainedGenerationStateAfterSuccessfulTurn(const ToolCallContext& tool_ctx,
+                                                                bool prompt_opens_reasoning, bool recovered_tool_output,
+                                                                bool reasoning_was_active, bool stop_sequence_matched,
                                                                 bool host_output_limit_reached);
 bool ShouldInvalidateRetainedGeneratorForUndo(bool undo_all, bool has_pre_turn_boundary, bool can_rewind);
+std::vector<ToolDefinition> BuildJsonRequestToolDefinitions(
+    std::vector<ToolDefinition> definitions, const std::vector<ToolDefinition>& session_snapshot);
+void PopulateToolDefinitions(const std::vector<ToolDefinition>& definitions, ToolCallContext& context);
+void ResolveBuiltInRawEnvelope(ToolCallContext& context);
+void ApplyRawEnvelopeGuidance(ToolCallContext& context, ILogger& logger);
+bool ShouldStartInsideReasoning(const ToolCallContext& context, bool prompt_opens_reasoning);
+ToolCallPayloadParser CreateToolCallPayloadParser(const ToolCallContext& context);
+void NormalizeToolOutputBatch(ToolCallStreamAccumulator::Output& output,
+                              const ToolCallContext& tool_ctx);
+ToolCallStreamAccumulator::Output PushToolOutput(
+    const std::string& text, RawEnvelopeDetector* raw_detector,
+    ToolCallStreamAccumulator& structured_accumulator);
+ToolCallStreamAccumulator::Output PushToolOutputSegment(
+    const ReasoningStreamSplitter::Segment& segment, const ToolCallContext& context,
+    RawEnvelopeDetector* raw_detector, ToolCallStreamAccumulator& structured_accumulator);
+ToolCallStreamAccumulator::Output FlushToolOutput(
+    RawEnvelopeDetector* raw_detector,
+    ToolCallStreamAccumulator& structured_accumulator,
+    bool natural_end = true);
+ToolCallStreamAccumulator::Output AbortRawToolOutput(
+    RawEnvelopeDetector* raw_detector);
+bool InsideToolOutput(const RawEnvelopeDetector* raw_detector,
+                      const ToolCallStreamAccumulator& structured_accumulator);
+bool IsNaturalToolOutputEnd(bool canceled,
+                            bool stop_sequence_matched,
+                            bool host_output_limit_reached,
+                            std::optional<BackendTerminationCause> backend_termination);
 
 }  // namespace chat_session_internal
 
@@ -120,7 +164,9 @@ using GeneratedOutputEvent = std::variant<ReasoningStreamSplitter::Segment, Pars
 class ChatSession : public Session {
  public:
   ChatSession(const fl::Model& catalog_model, GenAIModelInstance& model, ILogger& logger, ITelemetry& telemetry,
-              ChatTranscript::CommitFaultInjector transcript_fault_injector = {});
+              ChatTranscript::CommitFaultInjector transcript_fault_injector = {},
+              TextChatGeneratorFactory text_generator_factory = {},
+              ChatMessagePreparer message_preparer = {});
   ~ChatSession();
 
   // Movable: transfers session refcount ownership to the moved-to instance.
@@ -150,7 +196,8 @@ class ChatSession : public Session {
   /// Blocks until any in-flight request on this session completes.
   ///
   /// @param count  Number of turns to undo. Must be <= TurnCount().
-  void UndoTurns(size_t count) override;
+  /// @return Number of completed turns remaining.
+  size_t UndoTurns(size_t count) override;
 
  private:
   // populate session_options_
@@ -159,28 +206,29 @@ class ChatSession : public Session {
   /// Process a request: extracts items and parameters from the generic request, generates a response, and on
   /// success commits the turn to the transcript.
   void ProcessRequestImpl(const Request& request, Response& response) override;
-
-  /// Build tool calling context from request parameters and session tool definitions.
-  ToolCallContext BuildToolCallContext(const Request& request) const;
+  std::unique_ptr<RequestPreflightOperation> CreateRequestPreflightImpl(Request request) const override;
 
   /// Build final response items from the typed segments and tool calls produced during generation.
   void ProcessGeneratedOutput(std::vector<GeneratedOutputEvent> events,
+                              const ToolCallContext& tool_ctx,
                               const SearchOptions& effective_options,
-                              bool canceled,
                               bool stop_sequence_matched,
                               bool host_output_limit_reached,
                               Response& response,
                               int prompt_tokens,
                               int total_tokens,
                               int reasoning_tokens,
-                              std::optional<flFinishReason> backend_finish_reason);
+                              int cached_prompt_tokens,
+                              std::optional<flFinishReason> backend_finish_reason,
+                              std::optional<BackendTerminationCause> backend_termination);
 
   /// Process a request whose first item is a TextItem tagged OPENAI_JSON containing an OpenAI chat completions
   /// request. Parses the JSON, converts to internal items, runs generation, and produces an OPENAI_JSON-tagged
   /// TextItem response with the OpenAI ChatCompletionResponse.
   /// Does not use or update the transcript or the cached generator.
-  void ProcessChatCompletionsJson(const std::string& request_json, const Request& original_request,
-                                  Response& response);
+  void ProcessChatCompletionsJson(PreparedChatRequest& prepared, const Request& original_request, Response& response);
+
+  std::string ExecutionProvider() const override;
 
   /// Drop the cached generator and its tool context. Called whenever the generator's KV cache can no longer be
   /// trusted to match the committed transcript — the next turn then rebuilds from full committed history.
@@ -214,6 +262,8 @@ class ChatSession : public Session {
   // and is never replayed from a stored conversation. A turn that asks for a different prefix rebuilds; a turn that
   // asks for the same one keeps the KV cache.
   std::string system_prompt_;
+  TextChatGeneratorFactory text_generator_factory_;
+  ChatMessagePreparer message_preparer_;
 };
 
 }  // namespace fl

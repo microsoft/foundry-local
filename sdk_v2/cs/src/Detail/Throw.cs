@@ -39,4 +39,13 @@ internal static class Throw
         }
 #endif
     }
+
+    public static void IfContainsEmbeddedNul(string value,
+        [CallerArgumentExpression(nameof(value))] string? paramName = null)
+    {
+        if (value.Contains('\0'))
+        {
+            throw new ArgumentException("Value must not contain an embedded NUL character.", paramName);
+        }
+    }
 }

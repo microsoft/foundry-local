@@ -22,6 +22,13 @@ export interface FoundryLocalConfig {
   /** External service URL (when the web service runs in a separate process). */
   serviceEndpoint?: string;
 
+  /**
+   * Route execution through the packaged native shared host. Defaults to false.
+   * Discovery does not start it; execution starts or joins a compatible host. Disposal releases only this client.
+   * Cannot be combined with serviceEndpoint.
+   */
+  useSharedHost?: boolean;
+
   /** Disable non-essential telemetry. Foundry Local may still send a minimal ProcessInfo event. Defaults to false. */
   disableNonessentialTelemetry?: boolean;
 
@@ -51,6 +58,7 @@ export const FOUNDRY_LOCAL_CONFIG_KEYS: ReadonlySet<keyof FoundryLocalConfig> = 
   "logLevel",
   "webServiceUrls",
   "serviceEndpoint",
+  "useSharedHost",
   "disableNonessentialTelemetry",
   "libraryPath",
   "additionalSettings",

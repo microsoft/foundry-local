@@ -6,6 +6,18 @@
 
 namespace Microsoft.AI.Foundry.Local;
 
+/// <summary>
+/// Identifies which model catalog to retrieve from <see cref="FoundryLocalManager"/>.
+/// </summary>
+public enum CatalogType
+{
+    /// <summary>The public Foundry Local model catalog.</summary>
+    Public = 0,
+
+    /// <summary>The local catalog for caller-owned model registrations.</summary>
+    Local = 1,
+}
+
 public enum ItemType
 {
     Unknown = 0,

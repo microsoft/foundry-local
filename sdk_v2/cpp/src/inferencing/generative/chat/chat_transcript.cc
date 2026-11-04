@@ -3,6 +3,7 @@
 #include "inferencing/generative/chat/chat_transcript.h"
 
 #include "exception.h"
+#include "inferencing/session/tool_registry.h"
 #include "items/message_item.h"
 #include "items/text_item.h"
 #include "items/tool_call_item.h"
@@ -53,23 +54,39 @@ std::optional<nlohmann::ordered_json> ParseToolCallArguments(const std::string& 
   return parsed;
 }
 
-TranscriptToolCall MakeSuppliedToolCall(std::string call_id, std::string name, std::string arguments) {
-  auto normalized = ParseToolCallArguments(arguments);
+/// Project raw argument bytes into the object form the chat template renders, according to the tool's kind.
+///
+/// kFunction defers to ParseToolCallArguments and can fail. kCustom never fails: the payload is free-form text by
+/// definition, so it is wrapped as `{"input": <arguments>}` — the exact shape the synthesized custom-tool schema
+/// asks the model for, and therefore the shape a replayed call must render back to. Wrapping unconditionally keeps
+/// the rule unambiguous: a payload that happens to look like `{"input": "..."}` is still just text.
+static std::optional<nlohmann::ordered_json> NormalizeToolCallArguments(ToolKind kind,
+                                                                        const std::string& arguments) {
+  if (kind == ToolKind::kCustom) {
+    ValidateToolCallText(arguments, "custom tool payload");
+    return nlohmann::ordered_json{{kCustomToolInputParameter, arguments}};
+  }
+
+  return ParseToolCallArguments(arguments);
+}
+
+TranscriptToolCall MakeSuppliedToolCall(std::string call_id, std::string name, std::string arguments, ToolKind kind) {
+  auto normalized = NormalizeToolCallArguments(kind, arguments);
   if (!normalized.has_value()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
              "tool call '" + name + "' has arguments that are not a JSON object: " + arguments);
   }
 
-  return {std::move(call_id), std::move(name), std::move(arguments), std::move(*normalized),
-          ToolCallKind::kFunction};
+  return {std::move(call_id), std::move(name), std::move(arguments), std::move(*normalized), kind};
 }
 
-GeneratedToolCall MakeGeneratedToolCall(std::string call_id, std::string name, std::string arguments) {
-  auto normalized = ParseToolCallArguments(arguments);
+GeneratedToolCall MakeGeneratedToolCall(std::string call_id, std::string name, std::string arguments, ToolKind kind,
+                                        GeneratedCallEncoding encoding) {
+  auto normalized = NormalizeToolCallArguments(kind, arguments);
   const bool usable = normalized.has_value();
 
   return {{std::move(call_id), std::move(name), std::move(arguments),
-           usable ? std::move(*normalized) : nlohmann::ordered_json::object(), ToolCallKind::kFunction},
+           usable ? std::move(*normalized) : nlohmann::ordered_json::object(), kind, encoding},
           usable};
 }
 
@@ -228,7 +245,15 @@ void AppendWithinSegment(std::vector<TranscriptMessage>& messages, TranscriptMes
 
 }  // namespace
 
-TranscriptIngest IngestRequestItems(const std::vector<Item*>& items, const std::vector<size_t>& segment_starts) {
+TranscriptIngest IngestRequestItems(const std::vector<Item*>& items, const std::vector<size_t>& segment_starts,
+                                    const std::unordered_map<std::string, ToolKind>& tool_kinds) {
+  // A replayed call is normalized the way the generated one was: a custom tool's payload is text, so resolving its
+  // kind here is what keeps it from being rejected as malformed JSON on the way back in.
+  const auto kind_of = [&tool_kinds](const std::string& name) {
+    auto it = tool_kinds.find(name);
+    return it == tool_kinds.end() ? ToolKind::kFunction : it->second;
+  };
+
   TranscriptIngest ingest;
   auto& messages = ingest.messages;
 
@@ -282,7 +307,17 @@ TranscriptIngest IngestRequestItems(const std::vector<Item*>& items, const std::
 
       TranscriptMessage message;
       message.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
-      message.AppendToolCall(MakeSuppliedToolCall(call_item.call_id, call_item.name, call_item.arguments));
+      if (call_item.replayed_from_store) {
+        const auto kind = call_item.replayed_kind.value_or(kind_of(call_item.name));
+        message.AppendToolCall(MakeGeneratedToolCall(call_item.call_id, call_item.name,
+                                                     call_item.replayed_arguments, kind,
+                                                     call_item.generated_encoding)
+                                   .call);
+      } else {
+        const auto kind = call_item.declared_kind.value_or(kind_of(call_item.name));
+        message.AppendToolCall(
+            MakeSuppliedToolCall(call_item.call_id, call_item.name, call_item.arguments, kind));
+      }
 
       // The same rule folds the call into the open assistant turn, so replayed content and its calls stay in one
       // message — and a call that opens a segment starts its own.
@@ -320,8 +355,9 @@ TranscriptIngest IngestRequestItems(const std::vector<Item*>& items, const std::
   return ingest;
 }
 
-std::vector<TranscriptMessage> BuildTranscriptMessages(const std::vector<Item*>& items) {
-  return IngestRequestItems(items, {}).messages;
+std::vector<TranscriptMessage> BuildTranscriptMessages(
+    const std::vector<Item*>& items, const std::unordered_map<std::string, ToolKind>& tool_kinds) {
+  return IngestRequestItems(items, {}, tool_kinds).messages;
 }
 
 bool CarriesToolActivity(const std::vector<TranscriptMessage>& messages) {
@@ -345,20 +381,6 @@ bool CarriesRespondableContent(const std::vector<TranscriptMessage>& messages) {
 bool TurnCanGenerate(const std::vector<TranscriptMessage>& inputs, const TurnContent& context) {
   return context.media || context.history || context.system_prefix || CarriesPriorTurnHistory(inputs) ||
          CarriesRespondableContent(inputs);
-}
-
-const TranscriptMessage* AssistantPrefillForReply(const std::vector<TranscriptMessage>& inputs, size_t merge_floor) {
-  if (inputs.size() <= merge_floor || inputs.back().role != FOUNDRY_LOCAL_ROLE_ASSISTANT) {
-    return nullptr;
-  }
-
-  // A generated reply has no participant name, so it continues whatever name the prefill carries.
-  return &inputs.back();
-}
-
-AssistantTurnGuard AssistantTurnGuard::ForReplyTo(const std::vector<TranscriptMessage>& inputs, size_t merge_floor) {
-  const auto* prefill = AssistantPrefillForReply(inputs, merge_floor);
-  return AssistantTurnGuard(prefill != nullptr && prefill->HasToolCalls());
 }
 
 void ValidateRenderableTurn(const TranscriptMessage& message) {
@@ -471,41 +493,25 @@ void ChatTranscript::ValidateGeneratedOutput(const TranscriptMessage& output) co
   StageTurn({}, &output, issued, outstanding);
 }
 
-void ChatTranscript::CommitTurn(std::vector<TranscriptMessage> inputs, TranscriptMessage output, TurnTokens tokens,
-                                size_t reply_merge_floor) {
-  // Build every part of the post-commit state separately. Validation, copying, vector growth, assistant merging, and
-  // call-state updates may all throw; none of them may partially publish a turn.
+void ChatTranscript::CommitTurn(std::vector<TranscriptMessage> inputs, TranscriptMessage output, TurnTokens tokens) {
+  // Build every part of the post-commit state separately. Validation, copying, vector growth, and call-state updates
+  // may all throw; none of them may partially publish a turn.
   auto messages = messages_;
   auto turns = turns_;
   auto issued = issued_;
   auto outstanding = outstanding_;
   StageTurn(inputs, &output, issued, outstanding);
 
-  // A reply that merges into a trailing assistant prefill becomes one message with it, so the ordering invariant
-  // applies to the merged result rather than to the two halves. Checked before anything is appended, so a rejected
-  // turn still leaves the transcript untouched.
-  if (const auto* prefill = AssistantPrefillForReply(inputs, reply_merge_floor);
-      prefill != nullptr && ContinuesAssistantTurn(*prefill, output)) {
-    TranscriptMessage merged = *prefill;
-    auto reply = output;
-    MergeAssistantTurn(merged, std::move(reply));
-    ValidateRenderableTurn(merged);
-  }
-
   Turn turn;
   turn.message_start = messages.size();
   turn.tokens = tokens;
-
-  // The floor is expressed against `inputs`; translate it to an index in the committed list. Inputs are appended
-  // as ingestion produced them — it already applied the merge rule within each segment it knew about.
-  const size_t floor = turn.message_start + std::min(reply_merge_floor, inputs.size());
 
   messages.reserve(messages.size() + inputs.size() + 1);
   for (auto& message : inputs) {
     messages.push_back(std::move(message));
   }
 
-  AppendWithinSegment(messages, std::move(output), floor);
+  messages.push_back(std::move(output));
   turns.push_back(turn);
 
   if (fault_injector_) {

@@ -16,6 +16,7 @@ struct ChatCompletionRequest;
 class ChatSession;
 class Model;
 class GenAIModelInstance;
+class ActionTracker;
 struct Request;
 
 // ========================================================================
@@ -32,7 +33,8 @@ class ChatCompletionsHandler : public HttpRequestHandler {
   /// Parse JSON body and deserialize into ChatCompletionRequest. Validates required fields.
   /// Returns an error response on failure, nullptr on success.
   std::shared_ptr<OutgoingResponse> ParseAndValidateRequest(const std::string& body,
-                                                            ChatCompletionRequest& req);
+                                                            ChatCompletionRequest& req,
+                                                            Request& prepared_request);
 
   /// Look up model in catalog and verify it's loaded. Sets output pointers.
   /// Returns an error response on failure, nullptr on success.
@@ -45,11 +47,17 @@ class ChatCompletionsHandler : public HttpRequestHandler {
                               const Model& model, Request& session_request);
 
   /// Non-streaming inference — processes request, extracts the OPENAI_JSON-tagged TEXT response.
-  std::shared_ptr<OutgoingResponse> HandleNonStreaming(ChatSession& session, Request& session_request);
+  std::shared_ptr<OutgoingResponse> HandleNonStreaming(ChatSession& session, Request& session_request,
+                                                       const std::shared_ptr<IncomingRequest>& request,
+                                                       bool& disconnected);
 
-  /// Streaming inference — runs inference in background thread with SSE output.
+  /// Streaming inference — runs inference in a background thread with SSE output.
+  /// Takes ownership of the route ActionTracker so the route action is recorded
+  /// when the stream actually finishes (real duration + terminal status),
+  /// instead of when this handler returns.
   std::shared_ptr<OutgoingResponse> HandleStreaming(ChatSession&& session, Request session_request,
-                                                    bool include_usage);
+                                                    bool include_usage,
+                                                    std::unique_ptr<ActionTracker> route_tracker);
 
   ServiceContext& ctx_;
 };

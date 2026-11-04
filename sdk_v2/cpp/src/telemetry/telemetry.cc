@@ -83,6 +83,10 @@ std::string_view ActionStatusToString(ActionStatus status) {
 }
 
 ActionStatus ActionStatusFromException(const std::exception& exception) {
+  if (dynamic_cast<const TimeoutException*>(&exception) != nullptr) {
+    return ActionStatus::kTimeout;
+  }
+
   const auto* foundry_exception = dynamic_cast<const Exception*>(&exception);
   if (foundry_exception == nullptr) {
     return ActionStatus::kFailure;

@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use foundry_local_sdk::{
-    ChatSession, EmbeddingsSession, FinishReason, FoundryLocalError, Item, MessageRole, Model,
-    NativeErrorCode, Request, RequestOptions, SearchOptions,
+    ChatSession, CustomToolDefinition, EmbeddingsSession, FinishReason, FoundryLocalError, Item,
+    MessageRole, Model, NativeErrorCode, Request, RequestOptions, SearchOptions, ToolDefinition,
 };
 use tokio_stream::StreamExt;
 
@@ -109,6 +109,59 @@ async fn should_process_request_and_return_response() {
 }
 
 #[tokio::test]
+async fn preflight_survives_source_session_and_maps_budget_results() {
+    let (session, model) = setup_chat_session().await;
+    let request = Request::from_items(vec![Item::user_message(vec![Item::text("Say hello.")])])
+        .with_options(RequestOptions {
+            search: SearchOptions {
+                max_output_tokens: Some(17),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+    let fitting_preflight = session.preflight_request(request);
+
+    let oversized_request = Request::from_items(vec![Item::user_message(vec![Item::text(
+        "Say hello.",
+    )])])
+    .with_options(RequestOptions {
+        search: SearchOptions {
+            max_output_tokens: Some(1_000_000),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let oversized_preflight = session.preflight_request(oversized_request);
+    drop(session);
+
+    let fitting = fitting_preflight.await.expect("captured preflight failed");
+    assert!(fitting.prompt_tokens > 0);
+    assert_eq!(fitting.output_reserve_tokens, 17);
+    assert_eq!(fitting.required_tokens, fitting.prompt_tokens + 17);
+    assert!(fitting.context_limit_tokens >= fitting.required_tokens);
+    assert!(fitting.fits);
+    assert_eq!(fitting.deficit_tokens, 0);
+
+    let oversized = oversized_preflight
+        .await
+        .expect("oversized preflight failed");
+    assert_eq!(oversized.prompt_tokens, fitting.prompt_tokens);
+    assert_eq!(oversized.output_reserve_tokens, 1_000_000);
+    assert_eq!(
+        oversized.required_tokens,
+        oversized.prompt_tokens + oversized.output_reserve_tokens
+    );
+    assert_eq!(oversized.context_limit_tokens, fitting.context_limit_tokens);
+    assert!(!oversized.fits);
+    assert_eq!(
+        oversized.deficit_tokens,
+        oversized.required_tokens - oversized.context_limit_tokens
+    );
+
+    model.unload().await.expect("unload should succeed");
+}
+
+#[tokio::test]
 async fn should_stream_items() {
     let (session, model) = setup_chat_session().await;
 
@@ -199,6 +252,50 @@ async fn should_track_turn_count() {
         "turn count should advance after a processed request, got {}",
         session.turn_count()
     );
+
+    drop(session); // release the session so the model can unload
+    model.unload().await.expect("unload should succeed");
+}
+
+#[tokio::test]
+async fn should_register_function_and_custom_tool_definitions() {
+    let (session, model) = setup_chat_session().await;
+
+    session
+        .add_tool_definition(
+            ToolDefinition::new("multiply", r#"{"type":"object"}"#)
+                .with_description("Multiplies two numbers."),
+        )
+        .await
+        .expect("registering a function tool should succeed");
+
+    // A custom tool carries no schema — the native side synthesizes the one the model is prompted
+    // with. This is the path that requires an API version 2 runtime.
+    session
+        .add_custom_tool_definition(
+            CustomToolDefinition::new("apply_patch").with_description("Applies a patch."),
+        )
+        .await
+        .expect("registering a custom tool should succeed");
+
+    // Names are unique across kinds until the existing definition is removed.
+    let duplicate = session
+        .add_custom_tool_definition(CustomToolDefinition::new("multiply"))
+        .await
+        .expect_err("a duplicate name must be rejected");
+    assert_eq!(
+        duplicate.native_code(),
+        Some(NativeErrorCode::InvalidArgument)
+    );
+
+    assert!(session
+        .remove_tool_definition("multiply")
+        .await
+        .expect("remove should succeed"));
+    session
+        .add_custom_tool_definition(CustomToolDefinition::new("multiply"))
+        .await
+        .expect("re-registering a removed name should succeed");
 
     drop(session); // release the session so the model can unload
     model.unload().await.expect("unload should succeed");

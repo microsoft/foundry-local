@@ -73,12 +73,13 @@ internal static class Program
                 "What is the capital of France? Answer with only the city name."));
 
             using var response = await session.ProcessRequestAsync(request).ConfigureAwait(false);
-            var responseText = string.Join(
-                Environment.NewLine,
+            var responseText = string.Concat(
                 response
                     .OfType<MessageItem>()
-                    .Where(message => message.IsSimpleText())
-                    .Select(message => message.GetSimpleText()));
+                    .SelectMany(message => message.Parts)
+                    .OfType<TextItem>()
+                    .Where(text => text.Type == TextItemType.Default)
+                    .Select(text => text.Text));
 
             Console.WriteLine($"Assistant: {responseText}");
 
@@ -103,6 +104,7 @@ internal static class Program
     {
         var info = model.Info;
         var isChat = string.Equals(info.Task, "chat-completion", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(info.Task, "coding", StringComparison.OrdinalIgnoreCase)
             || string.Equals(info.Task, "vision-language-chat", StringComparison.OrdinalIgnoreCase);
         var isCpu = info.Runtime?.DeviceType == DeviceType.CPU
             || string.Equals(

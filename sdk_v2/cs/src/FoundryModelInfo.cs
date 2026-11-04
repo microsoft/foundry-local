@@ -196,7 +196,7 @@ public record ModelInfo
                 DeviceType = deviceType,
                 ExecutionProvider = info.ExecutionProvider ?? string.Empty,
             },
-            FileSizeMb = filesizeMb >= 0 ? (int)filesizeMb : null,
+            FileSizeMb = ToNullableFileSizeMb(filesizeMb),
             SupportsToolCalling = supportsToolCalling,
             MaxOutputTokens = maxOutputTokens >= 0 ? maxOutputTokens : null,
             MinFLVersion = info.MinFlVersion,
@@ -207,4 +207,79 @@ public record ModelInfo
             Capabilities = info.GetStringProperty("capabilities"),
         };
     }
+
+    internal static int? ToNullableFileSizeMb(long value) =>
+        value is >= 0 and <= int.MaxValue ? (int)value : null;
+}
+
+/// <summary>
+/// Mutable, caller-owned metadata used to register a local model.
+/// </summary>
+public sealed class ModelInfoBuilder
+{
+    internal Dictionary<string, string> StringProperties { get; } = new(StringComparer.Ordinal);
+    internal Dictionary<string, long> IntProperties { get; } = new(StringComparer.Ordinal);
+
+    public ModelInfoBuilder SetStringProperty(string key, string value)
+    {
+        ValidateKey(key);
+        Detail.Throw.IfNull(value);
+        Detail.Throw.IfContainsEmbeddedNul(value);
+        StringProperties[key] = value;
+        return this;
+    }
+
+    public ModelInfoBuilder SetIntProperty(string key, long value)
+    {
+        ValidateKey(key);
+        IntProperties[key] = value;
+        return this;
+    }
+
+    private static void ValidateKey(string key)
+    {
+        if (string.IsNullOrEmpty(key))
+        {
+            throw new ArgumentException("Property key cannot be null or empty.", nameof(key));
+        }
+        Detail.Throw.IfContainsEmbeddedNul(key);
+    }
+}
+
+/// <summary>
+/// Well-known property keys accepted by <see cref="ModelInfoBuilder.SetStringProperty"/> and
+/// <see cref="ModelInfoBuilder.SetIntProperty"/> when constructing metadata for local model registration.
+/// </summary>
+public static class ModelInfoPropertyKeys
+{
+    public const string DisplayName = "display_name";
+    public const string ModelType = "type";
+    public const string Publisher = "publisher";
+    public const string License = "license";
+    public const string LicenseDescription = "license_description";
+    public const string Task = "task";
+    public const string ModelProvider = "model_provider";
+    public const string MinimumFoundryLocalVersion = "min_fl_version";
+    public const string ParentUri = "parent_uri";
+    public const string ToolCallStart = "tool_call_start";
+    public const string ToolCallEnd = "tool_call_end";
+    public const string ReasoningStart = "reasoning_start";
+    public const string ReasoningEnd = "reasoning_end";
+    public const string DeviceType = "device_type";
+    public const string ExecutionProvider = "execution_provider";
+    public const string EntityType = "entity_type";
+    public const string Author = "author";
+    public const string Quantization = "quantization";
+    public const string CreationTime = "creation_time";
+    public const string InputModalities = "input_modalities";
+    public const string OutputModalities = "output_modalities";
+    public const string Capabilities = "capabilities";
+    public const string SupportsToolCalling = "supports_tool_calling";
+    public const string SupportsReasoning = "supports_reasoning";
+    public const string FileSizeMb = "filesize_mb";
+    public const string MaxOutputTokens = "max_output_tokens";
+    public const string CreatedAtUnix = "created_at_unix";
+    public const string IsTestModel = "is_test_model";
+    public const string ContextLength = "context_length";
+    public const string SupportsHybridReasoning = "supports_hybrid_reasoning";
 }

@@ -7,6 +7,7 @@
 #include <ort_genai_c.h>
 
 #include <atomic>
+#include <DebugEvents.hpp>
 #include <string_view>
 
 #include "catalog.h"
@@ -30,6 +31,7 @@
 #include "telemetry/one_ds_telemetry.h"
 #include "telemetry/telemetry_environment.h"
 #include "telemetry/telemetry_metadata.h"
+#include "util/process_shutdown.h"
 #include "util/string_utils.h"
 #include "utils.h"
 
@@ -180,10 +182,52 @@ void SetOgaLogCallback(ILogger* logger) {
 }  // namespace
 
 std::mutex Manager::s_mutex_;
-std::unique_ptr<Manager> Manager::s_instance_;
+Manager::InstanceOwner* Manager::s_owner_ = nullptr;
+bool Manager::s_destroyed_ = false;
+
+struct Manager::InstanceOwner {
+  explicit InstanceOwner(std::unique_ptr<Manager> initial_instance) : instance(std::move(initial_instance)) {
+    // Prime the mutex even when the first Manager suppresses telemetry and a later Create enables it.
+    // An empty diagnostic source starts no uploader and emits no collector event.
+    ::Microsoft::Applications::Events::DebugEventSource source;
+    source.DispatchEvent({});
+  }
+
+  ~InstanceOwner() {
+    // DLL process detach runs after Windows terminates other threads, which may still own our locks.
+    // Leave the Manager and its workers to process reclamation; ordinary Destroy/FreeLibrary still clean up.
+    if (IsDllShutdownInProgress()) {
+      (void)instance.release();
+      return;
+    }
+
+    std::lock_guard<std::mutex> lock(s_mutex_);
+    s_destroyed_ = true;
+    instance.reset();
+    s_owner_ = nullptr;
+  }
+
+  std::unique_ptr<Manager> instance;
+};
+
+void Manager::PrepareOrtEnvironment() {
+#ifdef _WIN32
+  // Temporary workaround until our ORT core and EP bundles include microsoft/onnxruntime#33291.
+  // Suppress uploader initialization before any ORT/GenAI calls, including in subsequently loaded EP libraries.
+  if (!::SetEnvironmentVariableW(L"ORT_DISABLE_TELEMETRY", L"1")) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+             fmt::format("Failed to disable ORT telemetry (Windows error {}).", ::GetLastError()));
+  }
+#endif
+}
 
 Manager::Manager(const Configuration& config) : config_(config) {
   config_.Validate();
+  PrepareOrtEnvironment();
+
+  const auto user_agent = config_.additional_options.find("UserAgent");
+  SetDefaultUserAgent(user_agent == config_.additional_options.end() ? std::string_view{}
+                                                                     : std::string_view(user_agent->second));
 
   const bool genai_verbose_logging = IsGenAIVerboseLoggingEnabled();
   const auto logger_level = genai_verbose_logging ? LogLevel::Verbose : config_.log_level;
@@ -281,7 +325,35 @@ Manager::Manager(const Configuration& config) : config_(config) {
   }
 #endif
 
-  ep_detector_ = std::make_unique<EpDetector>(*ort_api_, *ort_env_, std::move(bootstrappers), *logger_);
+  const bool disable_nonessential_telemetry =
+      config_.disable_nonessential_telemetry || IsAdditionalOptionEnabled(config_, "DisableNonessentialTelemetry") ||
+      TelemetryEnvironment::IsTelemetryDisabledByEnvVar();
+  const bool telemetry_hard_disabled = TelemetryEnvironment::IsCiEnvironment();
+  auto telemetry = std::make_unique<OneDsTelemetry>(config_.app_name, *logger_, disable_nonessential_telemetry);
+  try {
+    telemetry->RecordProcessInfo(config_);
+  } catch (const std::exception& ex) {
+    logger_->Log(LogLevel::Warning,
+                 fmt::format("telemetry ProcessInfo failed during Manager initialization: {}",
+                             TelemetryInternal::SanitizeTelemetryValue(BoundedTelemetryCString(ex.what()))));
+  } catch (...) {
+    logger_->Log(LogLevel::Warning, "telemetry ProcessInfo failed during Manager initialization.");
+  }
+
+  telemetry_ = std::move(telemetry);
+  ep_detector_ =
+      std::make_unique<EpDetector>(*ort_api_, *ort_env_, std::move(bootstrappers), *logger_, *telemetry_);
+  if (!disable_nonessential_telemetry && !telemetry_hard_disabled) {
+    try {
+      telemetry_->RecordHardwareInfo(BuildHardwareInfo(ep_detector_->GetAvailableDevicesToEPs()));
+    } catch (const std::exception& ex) {
+      logger_->Log(LogLevel::Warning,
+                   fmt::format("telemetry HardwareInfo failed during initialization: {}",
+                               TelemetryInternal::SanitizeTelemetryValue(BoundedTelemetryCString(ex.what()))));
+    } catch (...) {
+      logger_->Log(LogLevel::Warning, "telemetry HardwareInfo failed during initialization.");
+    }
+  }
 
   // Read configurable download concurrency (default 64)
   int download_concurrency = 64;
@@ -303,29 +375,14 @@ Manager::Manager(const Configuration& config) : config_(config) {
 
   download_manager_ =
       std::make_unique<DownloadManager>(*config_.model_cache_dir, config_.catalog_region.value_or("auto"),
-                                        download_concurrency, *logger_, disable_region_fallback);
+                                        download_concurrency, *logger_, *telemetry_, disable_region_fallback);
   model_load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
   session_manager_ = std::make_unique<SessionManager>(*logger_);
-  const bool disable_nonessential_telemetry =
-      config_.disable_nonessential_telemetry || IsAdditionalOptionEnabled(config_, "DisableNonessentialTelemetry");
-  const bool telemetry_hard_disabled =
-      TelemetryEnvironment::IsCiEnvironment() || TelemetryEnvironment::IsTelemetryDisabledByEnvVar();
-  telemetry_ = std::make_unique<OneDsTelemetry>(config_.app_name, *logger_, disable_nonessential_telemetry);
-  try {
-    telemetry_->RecordProcessInfo(BuildProcessInfo(BuildTelemetryMetadata(config_.app_name),
-                                                   !disable_nonessential_telemetry && !telemetry_hard_disabled));
-  } catch (const std::exception& ex) {
-    logger_->Log(LogLevel::Warning,
-                 fmt::format("telemetry ProcessInfo failed during Manager initialization: {}", ex.what()));
-  } catch (...) {
-    logger_->Log(LogLevel::Warning, "telemetry ProcessInfo failed during Manager initialization.");
-  }
 
   public_catalog_ = std::make_unique<AzureModelCatalog>(
       config_.catalog_urls, download_manager_->GetCacheDirectory(),
       [this](ModelInfo info, std::string local_path) { return CreateModel(std::move(info), std::move(local_path)); },
-      *ep_detector_, *logger_, config_.external_service_url.has_value(), config_.catalog_region.value_or("auto"),
-      disable_region_fallback);
+      *ep_detector_, *logger_, config_.external_service_url.has_value(), *telemetry_);
   local_catalog_ = std::make_unique<LocalModelCatalog>(
       download_manager_->GetCacheDirectory(),
       [this](ModelInfo info, std::string local_path) {
@@ -399,8 +456,12 @@ Manager::~Manager() {
 Manager& Manager::Create(const Configuration& config) {
   std::lock_guard<std::mutex> lock(s_mutex_);
 
-  if (s_instance_ != nullptr) {
-    FL_LOG_AND_THROW(s_instance_->GetLogger(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+  if (s_destroyed_) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Manager cannot be created during process shutdown.");
+  }
+
+  if (s_owner_ != nullptr && s_owner_->instance != nullptr) {
+    FL_LOG_AND_THROW(s_owner_->instance->GetLogger(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
                      "Manager already created. Call Destroy() first.");
   }
 
@@ -416,29 +477,39 @@ Manager& Manager::Create(const Configuration& config) {
     created->telemetry_->RecordAction(Action::kCoreInitialize, ActionStatus::kSuccess, "", false, 0);
   } catch (const std::exception& ex) {
     created->GetLogger().Log(LogLevel::Error,
-                             fmt::format("telemetry RecordAction failed during Create: {}", ex.what()));
+                             fmt::format("telemetry RecordAction failed during Create: {}",
+                                         TelemetryInternal::SanitizeTelemetryValue(
+                                             BoundedTelemetryCString(ex.what()))));
   }
 
   created->GetLogger().Log(LogLevel::Information, "Manager initialized successfully.");
 
-  s_instance_ = std::move(created);
-  return *s_instance_;
+  if (s_owner_ == nullptr) {
+    // Register the actual owner after Manager's construction has initialized its static dependencies.
+    static InstanceOwner owner(std::move(created));
+    s_owner_ = &owner;
+  } else {
+    s_owner_->instance = std::move(created);
+  }
+  return *s_owner_->instance;
 }
 
 Manager& Manager::Instance() {
   std::lock_guard<std::mutex> lock(s_mutex_);
-  if (s_instance_ == nullptr) {
+  if (s_owner_ == nullptr || s_owner_->instance == nullptr) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
              "Manager not created. Call Create() first. "
              "Manager must remain valid until all Model and Session instances are destroyed.");
   }
 
-  return *s_instance_;
+  return *s_owner_->instance;
 }
 
 void Manager::Destroy() {
   std::lock_guard<std::mutex> lock(s_mutex_);
-  s_instance_.reset();
+  if (s_owner_ != nullptr) {
+    s_owner_->instance.reset();
+  }
 }
 
 ICatalog& Manager::GetCatalog() {
@@ -469,22 +540,28 @@ void Manager::StartWebService() {
   ActionTracker tracker(Action::kCoreServiceStart, *telemetry_);
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
-  web_service_ = std::make_unique<WebService>(*public_catalog_, *logger_, *config_.model_cache_dir,
+  web_service_ = std::make_unique<WebService>(*public_catalog_, *local_catalog_, *logger_, *config_.model_cache_dir,
                                               *model_load_manager_,
                                               *session_manager_, *telemetry_,
-                                              [this]() { Shutdown(); });
+                                              [this]() { RequestShutdown(); }, shared_host_lifetime_);
 
   auto endpoints = config_.web_service_endpoints;
   if (endpoints.empty()) {
     endpoints.push_back("http://127.0.0.1:0");
   }
 
-  bound_urls_ = web_service_->Start(endpoints);
+  auto urls = web_service_->Start(endpoints);
+  {
+    std::lock_guard lock(urls_mutex_);
+    bound_urls_ = std::move(urls);
+  }
+
   web_service_running_ = true;
   try {
     telemetry_->StartSession();
   } catch (const std::exception& ex) {
-    logger_->Log(LogLevel::Warning, std::string("telemetry StartSession failed: ") + ex.what());
+    logger_->Log(LogLevel::Warning, "telemetry StartSession failed: " +
+                                        TelemetryInternal::SanitizeTelemetryValue(BoundedTelemetryCString(ex.what())));
   } catch (...) {
     logger_->Log(LogLevel::Warning, "telemetry StartSession failed with unknown error");
   }
@@ -495,11 +572,19 @@ void Manager::StartWebService() {
 #endif
 }
 
+void Manager::SetSharedHostLifetime(std::shared_ptr<hosting::HostLifetime> lifetime) {
+  if (!lifetime || web_service_running_ ||
+      (shared_host_lifetime_ && shared_host_lifetime_ != lifetime)) {
+    FL_LOG_AND_THROW(*logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                    "shared-host HTTP admission must be configured once before starting the web service");
+  }
+
+  shared_host_lifetime_ = std::move(lifetime);
+}
+
 const std::vector<std::string>& Manager::GetWebServiceUrls() const {
-  // No "not running" check: bound_urls_ is cleared in StopWebService() and is empty before
-  // StartWebService(), so the empty vector is the documented "service is not running" signal
-  // (see GetWebServiceEndpoints() docstring in foundry_local_cpp.h).
-  return bound_urls_;
+  std::lock_guard lock(urls_mutex_);
+  return *url_snapshots_.insert(bound_urls_).first;
 }
 
 void Manager::StopWebService() {
@@ -517,13 +602,17 @@ void Manager::StopWebService() {
   try {
     telemetry_->EndSession();
   } catch (const std::exception& ex) {
-    logger_->Log(LogLevel::Warning, std::string("telemetry EndSession failed: ") + ex.what());
+    logger_->Log(LogLevel::Warning, "telemetry EndSession failed: " +
+                                        TelemetryInternal::SanitizeTelemetryValue(BoundedTelemetryCString(ex.what())));
   } catch (...) {
     logger_->Log(LogLevel::Warning, "telemetry EndSession failed with unknown error");
   }
   web_service_.reset();
   web_service_running_ = false;
-  bound_urls_.clear();
+  {
+    std::lock_guard lock(urls_mutex_);
+    bound_urls_.clear();
+  }
   tracker.SetStatus(ActionStatus::kSuccess);
 #else
   FL_LOG_AND_THROW(*logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
@@ -531,7 +620,7 @@ void Manager::StopWebService() {
 #endif
 }
 
-void Manager::Shutdown() {
+void Manager::RequestShutdown() {
   bool expected = false;
   if (!shutdown_requested_.compare_exchange_strong(expected, true)) {
     return;  // already shutting down
@@ -539,18 +628,27 @@ void Manager::Shutdown() {
 
   logger_->Log(LogLevel::Information, "Shutdown requested");
 
+  model_load_manager_->RejectNewLoads();
+  session_manager_->CancelAll();
+}
+
+void Manager::Shutdown() {
+  RequestShutdown();
+
+  bool expected = false;
+  if (!shutdown_started_.compare_exchange_strong(expected, true)) {
+    return;
+  }
+
   // Order matters:
   //   1. Reject new loads so callers gated on IsShutdownRequested can stop early.
   //   2. Cancel in-flight generations BEFORE stopping the web service. StopWebService() hard-joins
-  //      streaming threads; a generation grinding in ORT GenAI only stops when request.canceled is
+  //      streaming threads; a generation grinding in ORT GenAI only stops when request cancellation is
   //      set, so cancelling first is what lets JoinAll() return promptly instead of deadlocking
   //      process shutdown.
   //   3. Stop the web service (JoinAll now unblocks), then drain HTTP-tracked sessions.
   //   4. Unload all models, polling per-model session refcount for direct-API users who haven't
   //      dropped their flSession* yet. Bounded by timeout so a stuck caller can't block shutdown.
-  model_load_manager_->RejectNewLoads();
-  session_manager_->CancelAll();
-
   if (web_service_running_) {
     StopWebService();
   }

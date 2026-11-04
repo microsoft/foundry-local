@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 from foundry_local_sdk.exception import FoundryLocalException
 from foundry_local_sdk.logging_helper import LogLevel
+from foundry_local_sdk.version import __version__
 
 # Maps Python LogLevel → native flLogLevel integer values (from foundry_local_c.h)
 _LOG_LEVEL_MAP: dict[LogLevel, int] = {
@@ -45,10 +46,18 @@ class Configuration:
         additional_settings: Additional settings that Foundry Local Core can consume.
         catalog_urls: Catalog URLs with optional per-catalog filter overrides.
             Each entry is a ``(url, filter)`` tuple where filter may be ``None``.
+            Prefix catalog-v2 deployment-option values with
+            ``deploymentOptions=``. Unqualified values retain the legacy
+            ``foundryLocal`` tag semantics.
+            URL paths must end in ``/asset-gallery/v1.0/models``; legacy
+            ``/ux/v1.0`` endpoints are unsupported.
             Defaults to the Azure Foundry Local Catalog when empty or ``None``.
         catalog_region: Region hint forwarded to the catalog service
         disable_nonessential_telemetry: When True, disable non-essential telemetry. Foundry
             Local may still send a minimal ProcessInfo event. Defaults to False.
+        use_shared_host: Route execution through the packaged native shared host. Defaults to False.
+            Discovery does not start it; execution starts or joins a compatible host. Closing this
+            manager releases only this client. Cannot be combined with ``web.external_url``.
         external_service_url: URL of an external Foundry Local service. When
             set, the catalog operates in cache-only mode — it reads only the
             local disk cache populated by that external service and skips
@@ -89,6 +98,7 @@ class Configuration:
         catalog_urls: list[tuple[str, str | None]] | None = None,
         catalog_region: str | None = None,
         disable_nonessential_telemetry: bool = False,
+        use_shared_host: bool = False,
     ) -> None:
         self.app_name = app_name
         # v1-compat no-op: native loading happens at import time in
@@ -103,6 +113,7 @@ class Configuration:
         self.catalog_urls = catalog_urls
         self.catalog_region = catalog_region
         self.disable_nonessential_telemetry = disable_nonessential_telemetry
+        self.use_shared_host = use_shared_host
 
     def validate(self) -> None:
         """Validate the configuration.
@@ -121,6 +132,9 @@ class Configuration:
             )
 
         if self.web is not None and self.web.external_url is not None:
+            if self.use_shared_host:
+                raise FoundryLocalException("Shared hosting cannot use an external service.")
+
             parsed = urlparse(self.web.external_url)
             if not parsed.port or parsed.port == 0:
                 raise FoundryLocalException(
@@ -144,6 +158,7 @@ class Configuration:
         config_values: dict[str, str] = {
             "AppName": self.app_name,
             "LogLevel": str(self.log_level),
+            "UserAgent": f"foundry-local-python/{__version__}",
         }
 
         if self.app_data_dir:
@@ -154,6 +169,9 @@ class Configuration:
 
         if self.logs_dir:
             config_values["LogsDir"] = self.logs_dir
+
+        if self.use_shared_host:
+            config_values["UseSharedHost"] = "true"
 
         if self.web is not None:
             if self.web.urls is not None:
@@ -189,6 +207,13 @@ class Configuration:
             raise
 
     def _apply_settings(self, native_config, api, ffi) -> object:
+        if self.use_shared_host:
+            if api.api_version < 3:
+                raise FoundryLocalException(
+                    "Shared hosting requires an API v3 Foundry Local runtime.", error_code=1
+                )
+            api.check_status(api.config.SetUseSharedHost(native_config, True))
+
         # Log level
         if self.log_level is not None:
             level_int = _LOG_LEVEL_MAP.get(self.log_level, 3)  # default WARNING
@@ -242,7 +267,7 @@ class Configuration:
                 )
 
         # Additional key/value settings
-        additional_settings: dict[str, str] = {}
+        additional_settings: dict[str, str] = {"UserAgent": f"foundry-local-python/{__version__}"}
         if self.additional_settings:
             additional_settings.update(self.additional_settings)
         if self.disable_nonessential_telemetry:

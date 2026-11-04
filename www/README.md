@@ -53,6 +53,8 @@ npm run dev        # Using npm
 | `bun run preview` / `npm run preview` | Preview production build locally |
 | `bun run check` / `npm run check` | Run Svelte type checking |
 | `bun run check:watch` / `npm run check:watch` | Run type checking in watch mode |
+| `bun run test:cli` / `npm run test:cli` | Verify latest CLI release selection and platform download links |
+| `bun run test:privacy` / `npm run test:privacy` | Verify cookie consent and analytics gating |
 | `bun run format` / `npm run format` | Format code with Prettier |
 | `bun run lint` / `npm run lint` | Check code formatting |
 
@@ -166,11 +168,67 @@ This project requires contributors to sign a Contributor License Agreement (CLA)
 
 ## Deployment
 
-This site is configured to deploy automatically to Vercel using `@sveltejs/adapter-auto`. Push to the main branch to trigger a deployment.
+This site is configured to deploy automatically to Vercel using `@sveltejs/adapter-vercel`. Push to the main branch to trigger a deployment.
 
 ### Environment Variables
 
-No environment variables are required for basic functionality. The site fetches model data from a public Azure Function endpoint.
+No environment variables are required for basic functionality. The Models page sends requests to
+the same-origin SvelteKit `/api/models` route, which forwards them to Catalog v2 at
+`https://api.catalog.azureml.ms/asset-gallery/v1.0/models` with the required
+`User-Agent: AzureAiStudio` and `x-ms-use-full-service-contracts: true` headers.
+The site requires a server runtime; a static-only deployment cannot serve this route.
+
+### Testing the Model Catalog Locally
+
+Use Node.js 22 and run the following from `www/` (install dependencies first if needed):
+
+```powershell
+npm run dev -- --host localhost
+```
+
+Open `http://localhost:5173/models`. No local Foundry service, Azure credentials, or
+separate Azure Function is needed; the development server needs internet access to Catalog v2.
+
+- In browser developer tools, check that model requests are `POST /api/models` on localhost,
+  not requests to the old Azure Function. Responses should contain a top-level `value` array.
+- Inspect a request: it should contain top-level `filters` and `pageSize`, the
+  `Foundry Local on Devices` deployment option, and the non-archived filter.
+  When a response has a continuation token, the next request for that device/provider
+  should include it. Multiple device/provider requests are expected.
+- Confirm cards populate, search and device/acceleration/task/capability filters work,
+  and opening a card shows its variants and metadata.
+- Copy a model share link and open it in a fresh tab to check that the details reopen.
+- Block `/api/models` in developer tools and reload: the page should show its fetch error,
+  rather than silently displaying a partial catalog. Unblock and reload to recover.
+
+For type checking and production validation:
+
+```powershell
+npm run check
+npm run build
+npm run preview -- --host localhost
+```
+
+Use the preview URL printed by Vite and repeat the catalog checks. An HTTP error from
+`/api/models` indicates an upstream catalog or server-route failure; inspect the response
+and terminal output for details.
+
+### Cookie Consent
+
+The root layout loads Microsoft's [WCP consent library](https://wcpstatic.microsoft.com/mscc/lib/v2/wcp-consent.js)
+on every page. It displays the Microsoft consent banner for visitors without a saved choice and
+persists preferences in the library-managed `MSCC` cookie. The **Manage Cookies** footer button on
+the homepage, model catalog, and error pages reopens the preferences dialog.
+
+Vercel Analytics is not injected until the library reports Analytics consent. Its `beforeSend`
+callback checks current consent for each event, so rejecting Analytics later stops further events
+without requiring a page reload. If the consent script fails to load or initialize, optional
+analytics stay disabled and an accessible error message offers a retry.
+
+After deployment, verify the banner in a fresh browser session, test Accept and Reject, and use
+**Manage Cookies** to change a saved choice. Check that no Vercel Analytics script or events load
+before consent or after rejection (an already-loaded script remains after withdrawal, but events
+are blocked). Repeat on `/models` and request a new ComplianceWeb scan of the deployed site.
 
 ## About Foundry Local
 

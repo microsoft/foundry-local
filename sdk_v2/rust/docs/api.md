@@ -13,6 +13,7 @@
 - [Model Catalog](#model-catalog)
   - [Catalog](#catalog)
   - [Model](#model)
+- [Shared Serving](#shared-serving)
 - [OpenAI Clients](#openai-clients)
   - [ChatClient](#chatclient)
   - [ChatCompletionStream](#chatcompletionstream)
@@ -27,6 +28,7 @@
 - [Inference API](#inference-api)
   - [Session](#session)
   - [ChatSession](#chatsession)
+  - [RequestPreflightResult](#requestpreflightresult)
   - [EmbeddingsSession](#embeddingssession)
   - [AudioSession](#audiosession)
   - [ItemQueue](#itemqueue)
@@ -39,6 +41,7 @@
   - [Response](#response)
   - [FinishReason](#finishreason)
   - [ToolDefinition](#tooldefinition)
+  - [CustomToolDefinition](#customtooldefinition)
 - [Types](#types)
   - [ModelInfo](#modelinfo)
   - [ChatResponseFormat](#chatresponseformat)
@@ -67,11 +70,31 @@ pub struct FoundryLocalManager { /* private fields */ }
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `create` | `fn create(config: FoundryLocalConfig) -> Result<Arc<Self>, FoundryLocalError>` | Initialise the SDK. Returns a shared handle: while any handle is alive, all calls return the same instance (config ignored after the first). Once the last handle is dropped the native manager is torn down via `Drop`, and a later call builds a fresh instance. |
+| `create` | `fn create(config: FoundryLocalConfig) -> Result<Arc<Self>, FoundryLocalError>` | Initialise the SDK. Live handles reuse the same instance; conflicting hosted/in-process modes are rejected, including when derived handles retain it. Other settings remain those of the first configuration. Once the final native handle is dropped, a later call builds a fresh instance. |
 | `catalog` | `fn catalog(&self) -> &Catalog` | Access the model catalog. |
-| `urls` | `fn urls(&self) -> Result<Vec<String>, FoundryLocalError>` | URLs the local web service is listening on. Empty until `start_web_service` is called. |
+| `urls` | `fn urls(&self) -> Result<Vec<String>, FoundryLocalError>` | Observe current listening URLs without starting the service or acquiring shared-host ownership. Empty when no listener is running. |
 | `start_web_service` | `async fn start_web_service(&self) -> Result<(), FoundryLocalError>` | Start the local web service. Retrieve listening URLs via `urls()`. |
 | `stop_web_service` | `async fn stop_web_service(&self) -> Result<(), FoundryLocalError>` | Stop the local web service. |
+| `is_shutdown_requested` | `fn is_shutdown_requested(&self) -> bool` | Observe shutdown requested by native code or a web-service handler. |
+
+---
+
+## Shared Serving
+
+Use `FoundryLocalConfig::new("my-app").use_shared_host(true)` to route the normal manager, model and session APIs
+through the native host shipped with the runtime. In-process remains the default. Metadata, discovery and model
+downloads do not start the host; execution, cache removal, EP download/registration or `start_web_service()` starts or
+joins it. Clients must match the Foundry native build, IPC protocol, platform and effective catalog, data/cache,
+provider, web, logs directory/level, telemetry and additional settings other than `UserAgent`. Dependency hashes and
+packaging paths do not split hosts; the first starter's verified runtime serves all clients. Hosted mode cannot be
+combined with `service_endpoint` and never falls back to in-process execution.
+
+Manager shutdown/drop releases only this client's ownership. After the final owner, the host drains admitted work,
+allows a five-second reconnect grace and exits normally. Keep the manager alive while using its HTTP endpoint:
+HTTP connections are not owners. Explicit model unload stays shared and rejects in-use models. Web-service Stop
+rejects other owners or active HTTP work.
+
+See the [shared-host requirements](../../cpp/README.md#quick-start) for inherited environment/cwd and Linux prerequisites.
 
 ---
 
@@ -93,6 +116,7 @@ pub struct FoundryLocalConfig { /* private fields */ }
 | `log_level` | `fn log_level(self, level: LogLevel) -> Self` | Set the log level. |
 | `web_service_urls` | `fn web_service_urls(self, urls: impl Into<String>) -> Self` | Set the web-service listen URLs. |
 | `service_endpoint` | `fn service_endpoint(self, endpoint: impl Into<String>) -> Self` | Set an external service endpoint URL. |
+| `use_shared_host` | `fn use_shared_host(self, enabled: bool) -> Self` | Route existing APIs through the packaged native host; defaults to `false`. |
 | `catalog_url` | `fn catalog_url(self, url: impl Into<String>) -> Self` | Add a catalog source URL (no filter override). May be called multiple times. |
 | `catalog_url_with_filter` | `fn catalog_url_with_filter(self, url: impl Into<String>, filter_override: impl Into<String>) -> Self` | Add a catalog source URL with a filter override. |
 | `catalog_region` | `fn catalog_region(self, region: impl Into<String>) -> Self` | Set the Azure region used by the catalog service. |
@@ -428,12 +452,27 @@ impl Deref for ChatSession { type Target = Session; }
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `new` | `async fn new(model: &Model) -> Result<ChatSession, FoundryLocalError>` | Open a chat session on a loaded model. Returns `Validation` if the model's task is not `chat-completion` or `vision-language-chat`. |
+| `new` | `async fn new(model: &Model) -> Result<ChatSession, FoundryLocalError>` | Open a chat session on a loaded model. Returns `Validation` if the model's task is not `chat-completion`, `coding`, or `vision-language-chat`. |
 | `add_tool_definition` | `async fn add_tool_definition(&self, definition: ToolDefinition) -> Result<(), FoundryLocalError>` | Register a tool for the lifetime of the session. |
+| `add_custom_tool_definition` | `async fn add_custom_tool_definition(&self, definition: CustomToolDefinition) -> Result<(), FoundryLocalError>` | Register a custom text tool for the lifetime of the session. |
 | `remove_tool_definition` | `async fn remove_tool_definition(&self, name: impl Into<String>) -> Result<bool, FoundryLocalError>` | Remove a tool by name; returns whether one was removed. |
 | `turn_count` | `fn turn_count(&self) -> usize` | The number of completed conversation turns. |
 | `undo_turns` | `async fn undo_turns(&self, count: usize) -> Result<(), FoundryLocalError>` | Rewind the last `count` turns. |
+| `preflight_request` | `fn preflight_request(&self, request: Request) -> impl Future<Output = Result<RequestPreflightResult, FoundryLocalError>> + Send + 'static` | Synchronously capture the request and current conversation state before returning an awaitable future; only exact native token-budget execution is deferred to a blocking worker. |
 | `into_session` | `fn into_session(self) -> Session` | Consume this handle, yielding the base session. |
+
+### RequestPreflightResult
+
+Exact native token-budget result returned by
+[`ChatSession::preflight_request`](#chatsession). Its public value fields are
+`prompt_tokens`, `output_reserve_tokens`, `required_tokens`,
+`context_limit_tokens`, `fits`, and `deficit_tokens`.
+The limit is the Engine's structural request capacity or the Generator's model context.
+`fits` does not reserve cache or guarantee immediate admission while other requests are active.
+
+Request and session state is captured synchronously before the future is returned.
+URI-backed media is resolved during execution. The captured operation executes
+once on the SDK's blocking worker.
 
 ### EmbeddingsSession
 
@@ -542,7 +581,7 @@ pub enum Item {
 | `float_tensor` | `fn float_tensor(shape: impl Into<Vec<i64>>, data: &[f32]) -> Item` | A `Float`-typed tensor from `f32` values. |
 | `image_data` / `image_uri` | `fn(…, format: Option<impl Into<String>>) -> Item` | An inline or URI-referenced image. |
 | `audio_data` / `audio_uri` | `fn(…) -> Item` | An inline or URI-referenced audio clip. |
-| `tool_call` | `fn tool_call(call_id: impl Into<String>, name: impl Into<String>, arguments: impl Into<String>) -> Item` | A model-issued tool call. |
+| `tool_call` | `fn tool_call(call_id: impl Into<String>, name: impl Into<String>, arguments: impl Into<String>) -> Item` | A model-issued tool call whose arguments are JSON object text for a function tool or raw NUL-free UTF-8 text for a custom tool. |
 | `tool_result` | `fn tool_result(call_id: impl Into<String>, result: impl Into<String>) -> Item` | The result of executing a tool call. |
 
 **Accessors:**
@@ -693,6 +732,20 @@ pub struct ToolDefinition {
 |--------|-----------|-------------|
 | `new` | `fn new(name: impl Into<String>, json_schema: impl Into<String>) -> ToolDefinition` | A tool with a name and JSON-schema parameters. |
 | `with_description` | `fn with_description(mut self, description: impl Into<String>) -> ToolDefinition` | Attach a description (builder-style). |
+
+### CustomToolDefinition
+
+A custom text tool registered on a [`ChatSession`](#chatsession). Its fields are private so future
+additive metadata does not break downstream construction.
+
+```rust
+pub struct CustomToolDefinition { /* private fields */ }
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `new` | `fn new(name: impl Into<String>) -> CustomToolDefinition` | Create a custom text tool with no caller-supplied schema. |
+| `with_description` | `fn with_description(mut self, description: impl Into<String>) -> CustomToolDefinition` | Attach a description (builder-style). |
 
 ---
 

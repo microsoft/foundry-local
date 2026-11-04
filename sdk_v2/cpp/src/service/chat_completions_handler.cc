@@ -7,15 +7,20 @@
 #include "c_api_types.h"
 #include "catalog.h"
 #include "contracts/chat_completions.h"
+#include "contracts/chat_completions_converter.h"
+#include "contracts/tool_definitions.h"
 #include "inferencing/generative/chat/chat_session.h"
 #include "inferencing/model_load_manager.h"
 #include "inferencing/session/session.h"
 #include "inferencing/session/session_manager.h"
 #include "inferencing/session/session_registration.h"
+#include "inferencing/session/tool_registry.h"
 #include "items/text_item.h"
 #include "model_info.h"
+#include "service/non_streaming_disconnect_monitor.h"
 #include "service/web_service.h"
 #include "telemetry/telemetry_action_tracker.h"
+#include "util/json_helpers.h"
 
 #include <foundry_local/foundry_local_c.h>
 
@@ -33,17 +38,34 @@ ChatCompletionsHandler::ChatCompletionsHandler(ServiceContext& ctx) : ctx_(ctx) 
 // --- Validation & model resolution ---
 
 std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::ParseAndValidateRequest(
-    const std::string& body, ChatCompletionRequest& req) {
-  nlohmann::json req_json;
+    const std::string& body, ChatCompletionRequest& req, Request& prepared_request) {
+  nlohmann::ordered_json req_json;
 
   try {
-    req_json = nlohmann::json::parse(body);
+    req_json = ParseJsonStrict(body);
   } catch (const nlohmann::json::parse_error& ex) {
     return ErrorResponse(Status::CODE_400, "Invalid JSON", ex.what());
   }
 
   try {
     req = req_json.get<ChatCompletionRequest>();
+
+    auto definitions = chat_completions::ExtractToolDefinitions(req, prepared_request);
+    if (req.metadata.has_value()) {
+      const auto descriptor = req.metadata->find(tools::kRawEnvelopeMetadataKey);
+      if (descriptor != req.metadata->end()) {
+        prepared_request.raw_envelope_descriptor =
+            tools::ParseRawEnvelopeDescriptor(descriptor->second);
+        tools::ValidateRawEnvelopeTool(*prepared_request.raw_envelope_descriptor, definitions);
+      }
+    }
+
+    ToolRegistry registry;
+    for (auto& definition : definitions) {
+      registry.Add(std::move(definition));
+    }
+
+    prepared_request.prepared_tool_definitions = registry.Definitions();
   } catch (const fl::Exception& ex) {
     // Contract validation (tool call shape, unsupported tool kinds) rejects malformed client payloads.
     return ErrorResponse(StatusForException(ex), "Invalid request", ex.what());
@@ -69,7 +91,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Pa
 }
 
 std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::ResolveModel(
-  const std::string& model_name, Model*& model, GenAIModelInstance*& loaded) {
+    const std::string& model_name, Model*& model, GenAIModelInstance*& loaded) {
   model = ctx_.catalog.GetModelVariant(model_name);
   if (!model) {
     return ErrorResponse(Status::CODE_404, "Model not found", "No model matching '" + model_name + "'");
@@ -113,11 +135,12 @@ void ChatCompletionsHandler::BuildOpenAIJsonRequest(const std::string& body, con
 
 std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::handle(
     const std::shared_ptr<IncomingRequest>& request) {
-  ActionTracker tracker(Action::kOpenAIChatCompletions, ctx_.telemetry);
+  auto route_ctx = InvocationContext::Direct(GetUserAgent(request));
+  auto tracker = std::make_unique<ActionTracker>(Action::kOpenAIChatCompletions, ctx_.telemetry, route_ctx);
 
   auto body_str = request->readBodyToString();
   if (!body_str || body_str->empty()) {
-    tracker.SetStatus(ActionStatus::kClientError);
+    tracker->SetStatus(ActionStatus::kClientError);
     return ErrorResponse(Status::CODE_400, "Empty request body");
   }
 
@@ -126,8 +149,9 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::ha
   // We could push the validation down so the only meaningful thing this is doing is adding the model name to the
   // telemetry. How much do we care about that? Is it worth the double parsing?
   ChatCompletionRequest req;
-  if (auto err = ParseAndValidateRequest(body_str->c_str(), req)) {
-    tracker.SetStatus(ActionStatus::kClientError);
+  Request session_request;
+  if (auto err = ParseAndValidateRequest(body_str->c_str(), req, session_request)) {
+    tracker->SetStatus(ActionStatus::kClientError);
     return err;
   }
 
@@ -141,13 +165,13 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::ha
   Model* model = nullptr;
   GenAIModelInstance* loaded = nullptr;
   if (auto err = ResolveModel(model_name, model, loaded)) {
+    tracker->SetStatus(ActionStatus::kClientError);
     return err;
   }
 
-  tracker.SetModelId(model_name);
+  tracker->SetModelId(model_name);
 
   // 3. Build an OPENAI_JSON-tagged TEXT request item.
-  Request session_request;
   BuildOpenAIJsonRequest(body_str->c_str(), req, *model, session_request);
 
   // 5. Check stream_options for include_usage
@@ -156,27 +180,40 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::ha
     include_usage_in_stream = req.stream_options->include_usage;
   }
 
+  // The session and the inference it drives happen as a consequence of this
+  // route, so they are indirect and reuse the route's correlation id.
+  auto session_ctx = route_ctx.AsIndirect();
+
   // 6. Run inference via ChatSession
   try {
-    ChatSession session(*model, *loaded, ctx_.logger, ctx_.telemetry);
+    auto session = CreateSessionWithTelemetry<ChatSession>(*model, *loaded, ctx_, session_ctx);
 
     if (stream) {
-      tracker.SetStatus(ActionStatus::kSuccess);
-      return HandleStreaming(std::move(session), std::move(session_request), include_usage_in_stream);
+      // The route action is recorded by the streaming thread when the stream
+      // finishes, so don't set its status here — move the tracker into the thread.
+      return HandleStreaming(std::move(*session), std::move(session_request), include_usage_in_stream,
+                             std::move(tracker));
     } else {
-      SessionRegistration reg(ctx_.session_manager, session);
-      auto response = HandleNonStreaming(session, session_request);
-      tracker.SetStatus(ActionStatus::kSuccess);
+      SessionRegistration reg(ctx_.session_manager, *session);
+      bool disconnected = false;
+      auto response = HandleNonStreaming(*session, session_request, request, disconnected);
+      tracker->SetStatus(disconnected ? ActionStatus::kCanceled : ResponseToActionStatus(response));
       return response;
     }
   } catch (const fl::Exception& ex) {
-    tracker.RecordException(ex);
+    if (tracker) {
+      tracker->RecordException(ex);
+    }
+
     const auto status = StatusForException(ex);
 
     if (status.code == Status::CODE_400.code) {
       // An incoherent conversation — an unknown or duplicate tool call ID, or tool arguments that are not a JSON
       // object — is the caller's mistake, not a service failure.
-      tracker.SetStatus(ActionStatus::kClientError);
+      if (tracker) {
+        tracker->SetStatus(ActionStatus::kClientError);
+      }
+
       ctx_.logger.Log(LogLevel::Warning, fmt::format("Chat completion request rejected: {}", ex.what()));
       return ErrorResponse(status, "Invalid request", ex.what());
     }
@@ -184,8 +221,14 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::ha
     ctx_.logger.Log(LogLevel::Error, fmt::format("Chat completion inference failed: {}", ex.what()));
     return ErrorResponse(status, "Inference failed", ex.what());
   } catch (const std::exception& ex) {
-    tracker.RecordException(ex);
+    // Not an fl::Exception, so it carries no error code to classify: nothing below reports a client mistake this
+    // way, which makes it a service failure by construction.
+    if (tracker) {
+      tracker->RecordException(ex);
+    }
+
     ctx_.logger.Log(LogLevel::Error, fmt::format("Chat completion inference failed: {}", ex.what()));
+
     return ErrorResponse(Status::CODE_500, "Inference failed", ex.what());
   }
 }
@@ -193,9 +236,23 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::ha
 // --- Inference dispatch ---
 
 std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::HandleNonStreaming(
-    ChatSession& session, Request& session_request) {
+    ChatSession& session, Request& session_request, const std::shared_ptr<IncomingRequest>& request,
+    bool& disconnected) {
   fl::Response session_response;
-  session.ProcessRequest(session_request, session_response);
+  NonStreamingDisconnectMonitor monitor(request->getConnection(), session_request);
+  try {
+    session.ProcessRequest(session_request, session_response);
+  } catch (const fl::Exception& ex) {
+    disconnected = monitor.Stop();
+    if (disconnected && ex.code() == FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED) {
+      return ErrorResponse(Status(499, "Client Closed Request"), "Client disconnected");
+    }
+    throw;
+  }
+  disconnected = monitor.Stop();
+  if (disconnected) {
+    return ErrorResponse(Status(499, "Client Closed Request"), "Client disconnected");
+  }
 
   // ChatSession produces a single OPENAI_JSON-tagged TextItem with the ChatCompletionResponse.
   if (session_response.items.empty() || session_response.items[0]->type != FOUNDRY_LOCAL_ITEM_TEXT) {
@@ -214,16 +271,18 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
 }
 
 std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::HandleStreaming(
-    ChatSession&& session, Request session_request, bool include_usage) {
+    ChatSession&& session, Request session_request, bool include_usage,
+    std::unique_ptr<ActionTracker> route_tracker) {
   auto body = std::make_shared<SseStreamBody>();
-  auto body_ptr = body;
+  auto stream = body->Stream();
+  auto req = std::make_shared<Request>(std::move(session_request));
+  stream->BindRequest(req);
   auto& logger = ctx_.logger;
   auto& tracker = ctx_.thread_tracker;
 
-  std::thread streaming_thread([bg_session = std::move(session), body_ptr, &logger,
-                                req = std::move(session_request),
-                                include_usage, &tracker,
-                                &session_manager = ctx_.session_manager]() mutable {
+  tracker.Start([bg_session = std::move(session), stream, &logger, req, include_usage,
+                 route_tracker = std::move(route_tracker),
+                 &session_manager = ctx_.session_manager]() mutable {
     try {
       // Register inside the try so a shutdown rejection (Register throws) is reported as a stream error
       // instead of escaping this raw std::thread and calling std::terminate.
@@ -241,7 +300,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
 
         if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
           auto& text_item = static_cast<fl::TextItem&>(*item);
-          body_ptr->Push("data: " + text_item.text + "\n\n");
+          stream->Push("data: " + text_item.text + "\n\n");
         } else {
           logger.Log(LogLevel::Error,
                      fmt::format("Unexpected item type {} in chat streaming callback", static_cast<int>(item->type)));
@@ -251,7 +310,14 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
       };
 
       bg_session.SetStreamingCallback(callback_fn);
-      bg_session.ProcessRequest(req, bg_response);
+      if (stream->IsDisconnected()) {
+        route_tracker->SetStatus(ActionStatus::kCanceled);
+        stream->Finish();
+        reg.Release();
+        return;
+      }
+
+      bg_session.ProcessRequest(*req, bg_response);
 
       // Usage chunk — only if stream_options.include_usage was true
       if (include_usage) {
@@ -269,14 +335,21 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
         usage.prompt_tokens = static_cast<int>(bg_response.usage.prompt_tokens);
         usage.completion_tokens = static_cast<int>(bg_response.usage.completion_tokens);
         usage.total_tokens = static_cast<int>(bg_response.usage.total_tokens);
+        usage.prompt_tokens_details.cached_tokens =
+            static_cast<int>(bg_response.usage.cached_prompt_tokens);
         usage.completion_tokens_details.reasoning_tokens =
             static_cast<int>(bg_response.usage.reasoning_tokens);
         usage_chunk.usage = std::move(usage);
 
-        body_ptr->Push("data: " + nlohmann::json(usage_chunk).dump() + "\n\n");
+        stream->Push("data: " + nlohmann::json(usage_chunk).dump() + "\n\n");
       }
 
-      body_ptr->Push("data: [DONE]\n\n");
+      stream->Push("data: [DONE]\n\n");
+
+      // Record final route status after streaming completes.
+      if (route_tracker) {
+        route_tracker->SetStatus(ActionStatus::kSuccess);
+      }
     } catch (const std::exception& ex) {
       // The status line is already sent, so a rejected request can only be reported in the event payload. Keep the
       // error type honest so the caller can tell a client mistake from a service failure.
@@ -286,14 +359,16 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
       nlohmann::json err = {
           {"error", {{"message", ex.what()}, {"type", error_type}, {"param", nullptr}, {"code", nullptr}}},
       };
-      body_ptr->Push("data: " + err.dump() + "\n\n");
+      stream->Push("data: " + err.dump() + "\n\n");
+
+      // Preserve exception-based classification for cancellation, client errors and dependency failures.
+      if (route_tracker) {
+        route_tracker->RecordException(ex);
+      }
     }
 
-    body_ptr->Finish();
-    tracker.Remove(std::this_thread::get_id());
+    stream->Finish();
   });
-
-  tracker.Track(std::move(streaming_thread));
 
   auto response = oatpp::web::protocol::http::outgoing::Response::createShared(
       Status::CODE_200, body);

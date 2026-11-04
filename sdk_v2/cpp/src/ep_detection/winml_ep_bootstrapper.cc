@@ -140,7 +140,12 @@ bool WinMLEpBootstrapper::IsRegistered() const {
 
 bool WinMLEpBootstrapper::DownloadAndRegister(bool force,
                                               const ProgressCallback& progress_cb,
-                                              ILogger& logger) {
+                                              ILogger& logger,
+                                              bool* downloaded) {
+  if (downloaded) {
+    *downloaded = false;  // WinML EnsureReady does not report whether it fetched package bytes.
+  }
+
   if (registered_ && !force) {
     if (progress_cb) {
       progress_cb(name_, 100.0f);

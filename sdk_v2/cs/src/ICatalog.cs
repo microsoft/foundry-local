@@ -71,4 +71,28 @@ public interface ICatalog
     /// <param name="ct">Optional CancellationToken.</param>
     /// <returns>The latest version of the model. Will match the input if it is the latest version.</returns>
     Task<IModel> GetLatestVersionAsync(IModel model, CancellationToken? ct = null);
+
+    /// <summary>
+    /// Register existing model assets without taking ownership of the directory. Task is required. The SDK synchronously
+    /// copies the <paramref name="metadata"/> snapshot. Missing display name and modalities receive defaults, while
+    /// context length comes from model.context_length, then search.max_length, when positive. A caller-supplied provider
+    /// remains the default load override; when omitted, runtime metadata stays unset and genai_config.json selects it.
+    /// </summary>
+    /// <param name="modelPath">Model directory containing a valid genai_config.json file.</param>
+    /// <param name="modelId">Canonical model identifier in &lt;name&gt;:&lt;version&gt; format.</param>
+    /// <param name="metadata">Model metadata. At minimum, set a supported task such as chat-completion.</param>
+    /// <param name="ct">Optional cancellation token.</param>
+    /// <returns>A manager-owned model handle that remains valid for the manager's lifetime, including after unregister.</returns>
+    /// <exception cref="FoundryLocalException">The catalog is not local or registration validation fails.</exception>
+    Task<IModel> RegisterModelAsync(string modelPath, string modelId, ModelInfoBuilder metadata,
+                                    CancellationToken? ct = null);
+
+    /// <summary>
+    /// Unregister a local model without deleting its assets. A model ID removes one variant; an alias removes every
+    /// registered version and variant in that alias group.
+    /// </summary>
+    /// <param name="aliasOrModelId">A registered model alias or canonical model ID.</param>
+    /// <param name="ct">Optional cancellation token.</param>
+    /// <exception cref="FoundryLocalException">The catalog is not local or the registration cannot be removed.</exception>
+    Task UnregisterModelAsync(string aliasOrModelId, CancellationToken? ct = null);
 }

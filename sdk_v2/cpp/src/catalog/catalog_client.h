@@ -12,6 +12,9 @@
 
 namespace fl {
 
+class ITelemetry;
+struct CatalogFetchInfo;
+
 /// Abstract catalog client. Implemented by the live Azure catalog client,
 /// which queries the Azure Foundry catalog REST API.
 class ICatalogClient {
@@ -54,21 +57,19 @@ class ICatalogClient {
 std::vector<ModelInfo> FetchAllModelInfosWithCachedModels(
     ICatalogClient& client,
     const std::vector<std::string>& cached_model_ids,
-    ILogger& logger);
+    ILogger& logger,
+    ITelemetry& telemetry,
+    const CatalogFetchInfo& base_info);
 
-/// Construct a client for the live Azure Foundry catalog.
+/// Construct a client for the live Azure Foundry catalog (Asset Gallery API).
 /// - `ep_detector` limits results to models supported by this machine.
-/// - `filter_override` sets the foundryLocal tag filter.
-/// - `catalog_region` controls regional routing: empty/"auto" means detect it,
-///   any other value is an explicit region.
-/// - `disable_region_fallback` disables cross-region retries.
+/// - `filter_override` accepts explicit `deploymentOptions=` values. Unqualified
+///   values retain the legacy foundryLocal-tag semantics.
 std::unique_ptr<ICatalogClient> MakeCatalogClient(
     const std::string& base_url,
     const std::string& filter_override,
     const IEpDetector& ep_detector,
     ILogger& logger,
-    const std::string& cache_directory,
-    const std::string& catalog_region = "",
-    bool disable_region_fallback = false);
+    const std::string& cache_directory);
 
 }  // namespace fl

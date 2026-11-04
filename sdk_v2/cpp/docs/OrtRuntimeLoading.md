@@ -52,6 +52,73 @@ first. Steps 2–3 are best-effort: if the files aren't present (e.g., a strippe
 deployment that ships ORT via a separate package), the binding logs and
 continues; step 4 will then surface a clearer load error.
 
+### Native Symbol Isolation
+
+The shared library exports only `FoundryLocalGetApi` and `FoundryLocalGetVersionString`.
+Linux/Android use an ELF version script and `--exclude-libs,ALL`; the latter also
+localizes compiler compatibility archives such as manylinux's
+`libstdc++_nonshared.a`. Public definitions come from OBJECT sources, so archive
+localization does not remove the API. macOS/iOS use a Mach-O exported-symbols
+allowlist, and Windows uses its explicit `.def` exports. This policy does not
+hide exports in separately shipped shared dependencies.
+
+Linux and macOS builds check the exact defined export set. Linux also exercises
+strong/weak archive isolation and calls through a public fixture API. White-box
+tests link the static/OBJECT implementation instead of requiring private shared
+library exports.
+
+### Linux and Android Library Lifetime
+
+`libfoundry_local.so` exports only the two public entry points through an ELF
+version script and archive localization, keeping bundled static dependencies private. It is also linked
+with `-z nodelete` so `dlclose` cannot unmap it before process exit. Bundled
+OpenSSL registers pthread-local cleanup callbacks on caller-owned threads
+(including Rust's Tokio blocking workers); those callbacks can run after the
+last SDK handle is released.
+
+This retains the library mapping and its static state, not the manager:
+`Manager_Shutdown` and `Manager_Release` still run normally, and a new manager
+can be created after all previous handles are released. Bindings must release
+managers and derived handles normally rather than relying on library unloading
+for cleanup.
+
+The trade-off is intentional: Foundry's code and static state, and dependencies
+retained by the loader, may remain resident until process exit. Replacing the
+library file on disk does not upgrade the copy already mapped in a running
+process, even after all SDK handles have been released. SDK users should restart
+the application to pick up native-library upgrades; unloading/reloading the SDK
+is not a supported hot-upgrade mechanism. Normal package updates followed by an
+application restart are unaffected. Do not overwrite a mapped library in place;
+deploy an update separately and restart.
+
+## Windows CUDA Provider Dependencies
+
+CUDA provider DLLs are loaded later, during execution-provider registration.
+This is separate from the binding-owned ORT/GenAI core preload described above.
+The Windows CUDA bootstrapper preloads `onnxruntime-genai-cuda.dll` and
+`onnxruntime_providers_cuda.dll` by absolute path. For each library it first uses
+`LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR`, allowing
+provider-local dependencies and application-configured `AddDllDirectory` entries.
+Only a missing-module error (126) triggers a second attempt using
+`LOAD_WITH_ALTERED_SEARCH_PATH`, enabling ordinary Windows dependency search,
+including `PATH`. Other load errors are reported without retrying.
+
+The provider is preloaded before ORT registration, using the same absolute path
+passed to ORT so its registration load reuses the resident module. Both handles
+remain owned by the bootstrapper until teardown, after ORT unregistration.
+Failed attempts release provisional handles without dropping committed ones.
+The OS resolves CUDA/cuDNN imports; there is no maintained dependency-name list.
+Dependencies may be provider-local, application-added, or on `PATH`; applications
+do not need to configure both `PATH` and `AddDllDirectory` for these preloads.
+
+This preload does not modify `PATH`, register DLL directories, or change the
+process-wide default DLL search flags. Core ORT/GenAI loading and existing
+model-load setup are unchanged. Applications own compatible installations and
+trusted search configuration, including `PATH` and the current directory used
+by ordinary Windows search. This is not a sandbox or isolated DLL namespace.
+Libraries loaded later still follow their component's own loading policy;
+successful registration alone does not qualify every delayed/cuDNN workload.
+
 ## Why Not a Native-Side Loader?
 
 Earlier iterations tried two native-side designs:

@@ -3,6 +3,7 @@
 #include "download/blob_download_state.h"
 #include "logger.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <fstream>
@@ -21,7 +22,7 @@ constexpr const char* kStateFileExtension = ".dlstate";
 //   bytes  | field
 //   -------|--------------------------------------------------------
 //   0..3   | magic "FLDS"
-//   4      | version (currently 1)
+//   4      | version (currently 2)
 //   5..12  | blob_size                   (int64)
 //   13..16 | chunk_size                  (int32)
 //   17..20 | total_chunks                (int32)
@@ -33,8 +34,9 @@ constexpr const char* kStateFileExtension = ".dlstate";
 //   45..   | trunc_bitmap_byte_len bytes of bitmap data, copied directly out of
 //           full_completion_bitmap starting at the byte offset implied by
 //           bitmap_byte_aligned_start.
+// Followed by a uint32 ETag byte length, ETag bytes, and 16 MD5 bytes per chunk.
 constexpr char kMagic[4] = {'F', 'L', 'D', 'S'};
-constexpr uint8_t kVersion = 1;
+constexpr uint8_t kVersion = 2;
 
 constexpr int32_t kBitsPerWord = 64;
 
@@ -68,6 +70,12 @@ std::filesystem::path BlobDownloadState::GetStateFilePath(const std::filesystem:
   return p;
 }
 
+std::filesystem::path BlobDownloadState::GetVerifiedStateFilePath(const std::filesystem::path& local_file_path) {
+  auto path = local_file_path;
+  path += ".dlverified";
+  return path;
+}
+
 std::unique_ptr<BlobDownloadState> BlobDownloadState::CreateNew(std::string blob_name,
                                                                 const std::filesystem::path& local_file_path,
                                                                 int64_t blob_size,
@@ -85,6 +93,7 @@ std::unique_ptr<BlobDownloadState> BlobDownloadState::CreateNew(std::string blob
   state->last_modified_unix_ms = NowUnixMs();
   auto words = static_cast<size_t>((total_chunks + kBitsPerWord - 1) / kBitsPerWord);
   state->full_completion_bitmap.assign(words, 0);
+  state->chunk_md5.resize(static_cast<size_t>(total_chunks));
   return state;
 }
 
@@ -93,8 +102,9 @@ std::unique_ptr<BlobDownloadState> BlobDownloadState::LoadState(std::string blob
                                                                 int64_t expected_blob_size,
                                                                 int32_t expected_chunk_size,
                                                                 int32_t expected_total_chunks,
-                                                                ILogger& logger) {
-  auto state_path = GetStateFilePath(local_file_path);
+                                                                ILogger& logger,
+                                                                bool verified) {
+  auto state_path = verified ? GetVerifiedStateFilePath(local_file_path) : GetStateFilePath(local_file_path);
   std::error_code ec;
   if (!std::filesystem::exists(state_path, ec)) {
     return nullptr;
@@ -173,12 +183,31 @@ std::unique_ptr<BlobDownloadState> BlobDownloadState::LoadState(std::string blob
                  "Download state bitmap length exceeds expected capacity: " + state_path.string());
       return nullptr;
     }
+
     in.read(reinterpret_cast<char*>(dest), trunc_len);
     if (!in) {
       logger.Log(LogLevel::Warning,
                  "Download state bitmap payload truncated: " + state_path.string());
       return nullptr;
     }
+  }
+
+  uint32_t etag_length = 0;
+  if (!ReadNative(in, etag_length) || etag_length > 1024) {
+    logger.Log(LogLevel::Warning, "Invalid download state ETag: " + state_path.string());
+    return nullptr;
+  }
+
+  std::string etag(etag_length, '\0');
+  in.read(etag.data(), etag_length);
+  std::vector<std::array<uint8_t, 16>> chunk_md5(static_cast<size_t>(total_chunks));
+  for (auto& digest : chunk_md5) {
+    in.read(reinterpret_cast<char*>(digest.data()), digest.size());
+  }
+
+  if (!in) {
+    logger.Log(LogLevel::Warning, "Download state checksums truncated: " + state_path.string());
+    return nullptr;
   }
 
   auto state = std::make_unique<BlobDownloadState>();
@@ -192,6 +221,22 @@ std::unique_ptr<BlobDownloadState> BlobDownloadState::LoadState(std::string blob
   state->completed_count = completed_count;
   state->last_modified_unix_ms = last_modified_unix_ms;
   state->full_completion_bitmap = std::move(bitmap);
+  state->etag = std::move(etag);
+  state->chunk_md5 = std::move(chunk_md5);
+
+  int32_t actual_count = 0;
+  int32_t actual_highest = -1;
+  for (int32_t i = 0; i < total_chunks; ++i) {
+    if (state->IsChunkComplete(i)) {
+      ++actual_count;
+      actual_highest = i;
+    }
+  }
+
+  if (actual_count != completed_count || actual_highest != highest_completed_chunk) {
+    logger.Log(LogLevel::Warning, "Inconsistent download state bitmap: " + state_path.string());
+    return nullptr;
+  }
 
   logger.Log(LogLevel::Information,
              "Loaded download state " + state_path.string() + ": " +
@@ -232,6 +277,7 @@ void BlobDownloadState::MarkChunkComplete(int32_t chunk_idx) {
   if (chunk_idx < 0 || chunk_idx >= total_chunks) {
     return;
   }
+
   if (IsChunkComplete(chunk_idx)) {
     return;
   }
@@ -242,6 +288,21 @@ void BlobDownloadState::MarkChunkComplete(int32_t chunk_idx) {
   auto bit_idx = static_cast<size_t>(chunk_idx) % kBitsPerWord;
   full_completion_bitmap[word_idx] |= (uint64_t{1} << bit_idx);
   ++completed_count;
+}
+
+void BlobDownloadState::MarkChunkIncomplete(int32_t chunk_idx) {
+  if (!IsChunkComplete(chunk_idx)) {
+    return;
+  }
+
+  const auto word_idx = static_cast<size_t>(chunk_idx) / kBitsPerWord;
+  const auto bit_idx = static_cast<size_t>(chunk_idx) % kBitsPerWord;
+  full_completion_bitmap[word_idx] &= ~(uint64_t{1} << bit_idx);
+  bitmap_byte_aligned_start = std::min(bitmap_byte_aligned_start, (chunk_idx / 8) * 8);
+  --completed_count;
+  while (highest_completed_chunk >= 0 && !IsChunkComplete(highest_completed_chunk)) {
+    --highest_completed_chunk;
+  }
 }
 
 std::vector<int32_t> BlobDownloadState::GetPendingChunks() const {
@@ -326,6 +387,12 @@ bool BlobDownloadState::SaveState(ILogger& logger) {
       auto* src = reinterpret_cast<const unsigned char*>(full_completion_bitmap.data()) + byte_offset;
       out.write(reinterpret_cast<const char*>(src), trunc_len);
     }
+    WriteNative(out, static_cast<uint32_t>(etag.size()));
+    out.write(etag.data(), static_cast<std::streamsize>(etag.size()));
+    for (const auto& digest : chunk_md5) {
+      out.write(reinterpret_cast<const char*>(digest.data()), digest.size());
+    }
+    out.close();
     if (!out) {
       logger.Log(LogLevel::Error, "Failed to write download state tmp file: " + tmp_path.string());
       return false;

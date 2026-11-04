@@ -15,6 +15,7 @@ void from_json(const nlohmann::json& j, PromptTokensDetails& d);
 void from_json(const nlohmann::json& j, CompletionTokensDetails& d);
 void from_json(const nlohmann::json& j, ChatCompletionUsage& u);
 void from_json(const nlohmann::json& j, ChatCompletionFunctionCall& f);
+void from_json(const nlohmann::json& j, ChatCompletionCustomCall& c);
 void from_json(const nlohmann::json& j, ChatCompletionToolCall& tc);
 void from_json(const nlohmann::json& j, ChatCompletionResponseMessage& m);
 void from_json(const nlohmann::json& j, ChatCompletionChoice& c);

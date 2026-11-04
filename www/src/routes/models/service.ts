@@ -1,21 +1,18 @@
 // API service for Azure AI Foundry models
-// Uses Azure Function as CORS proxy for static deployment
+// Uses a same-origin SvelteKit route for Catalog v2's required server-side headers.
 //
 // This service implements the Azure Foundry Model Catalog API specification:
-// - Fetches models from ai.azure.com API endpoint (via proxy)
-// - Supports pagination with skip and continuationToken
+// - Fetches models from the Asset Gallery API (via /api/models)
+// - Supports pagination with continuationToken
 // - Filters by device (CPU/GPU/NPU) and execution provider (CPUExecutionProvider, CUDAExecutionProvider, etc.)
-// - Includes required filters: type, kind, labels (latest), foundryLocal tag
-// - Validates prompt templates (required except for gpt-oss-* models)
+// - Includes required filters: type, kind, latest, deploymentOptions, and non-archived
 // - Handles parent-variant relationships for model organization
 // - Sorts variants by priority (NPU > vendor GPU > generic GPU > vendor CPU > generic CPU)
 // - Applies platform-specific filtering (ARM64 incompatibilities)
 // - Caches results to minimize API calls
 import type { FoundryModel, GroupedFoundryModel } from './types';
 
-// Azure Function endpoint for CORS proxy
-const FOUNDRY_API_ENDPOINT =
-	'https://foundry-local-cors-proxy.azurewebsites.net/api/foundryproxy';
+const FOUNDRY_API_ENDPOINT = '/api/models';
 
 export interface ApiFilters {
 	device?: string;
@@ -100,6 +97,14 @@ export class FoundryModelService {
 	// Get acceleration display name
 	getAccelerationDisplayName(acceleration: string): string {
 		return FoundryModelService.ACCELERATION_DISPLAY_NAMES[acceleration] || acceleration;
+	}
+
+	getMetadataDisplayName(value: string): string {
+		return value
+			.split(/[-_\s]+/)
+			.filter(Boolean)
+			.map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+			.join(' ');
 	}
 
 	// License URL mapping patterns
@@ -267,61 +272,36 @@ export class FoundryModelService {
 		executionProvider: string
 	): Promise<FoundryModel[]> {
 		const allModels: FoundryModel[] = [];
-		let skip: number | null = null;
 		let continuationToken: string | null = null;
-		let hasMore = true;
+		const seenTokens = new Set<string>();
 
 		// Paginate through all results
-		while (hasMore) {
-			const requestBody = this.buildRequestBody(device, executionProvider, skip, continuationToken);
+		while (true) {
+			const requestBody = this.buildRequestBody(device, executionProvider, continuationToken);
+			const response = await fetch(FOUNDRY_API_ENDPOINT, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					Accept: 'application/json'
+				},
+				body: JSON.stringify(requestBody)
+			});
 
-			try {
-				// NOTE: Content-Type is intentionally "text/plain" (not "application/json").
-				// This keeps the request a CORS "simple request" so the browser does NOT
-				// send a preflight OPTIONS. The Azure Functions host intercepts preflight
-				// OPTIONS before our proxy code runs and returns 204 with no
-				// Access-Control-Allow-Origin header, which fails CORS. The proxy parses the
-				// body as JSON regardless of Content-Type, so sending text/plain is safe and
-				// avoids the preflight entirely. Do not change this back to application/json
-				// unless platform-level CORS is configured on the Function App.
-				const response = await fetch(FOUNDRY_API_ENDPOINT, {
-					method: 'POST',
-					headers: {
-						'Content-Type': 'text/plain',
-						Accept: 'application/json'
-					},
-					body: JSON.stringify(requestBody)
-				});
+			if (!response.ok) {
+				throw new Error(`Catalog request failed: ${response.status} ${response.statusText}`);
+			}
 
-				if (!response.ok) {
-					console.error(`API request failed with status: ${response.status} ${response.statusText}`);
-					break;
-				}
+			const apiData = await response.json();
+			allModels.push(...this.transformApiResponse(apiData));
 
-				const responseBody = await response.text();
-				if (!responseBody) {
-					console.error('Empty response body from API');
-					break;
-				}
-
-				const apiData = JSON.parse(responseBody);
-
-				if (!apiData.indexEntitiesResponse?.value) {
-					console.error('Invalid response structure');
-					break;
-				}
-
-				const pageModels = this.transformApiResponse(apiData);
-				allModels.push(...pageModels);
-
-				// Update pagination parameters
-				skip = apiData.indexEntitiesResponse?.nextSkip || null;
-				continuationToken = apiData.indexEntitiesResponse?.continuationToken || null;
-				hasMore = skip !== null || continuationToken !== null;
-			} catch (error) {
-				console.error('Failed to fetch foundry models:', error);
+			continuationToken = apiData.continuationToken;
+			if (!continuationToken) {
 				break;
 			}
+			if (typeof continuationToken !== 'string' || seenTokens.has(continuationToken)) {
+				throw new Error('Catalog returned an invalid or repeated continuation token');
+			}
+			seenTokens.add(continuationToken);
 		}
 
 		return allModels;
@@ -330,7 +310,6 @@ export class FoundryModelService {
 	private buildRequestBody(
 		device: string,
 		executionProvider: string,
-		skip: number | null = null,
 		continuationToken: string | null = null
 	) {
 		const filters = [
@@ -350,14 +329,19 @@ export class FoundryModelService {
 				values: ['latest']
 			},
 			{
-				field: 'annotations/tags/foundryLocal',
+				field: 'annotations/systemCatalogData/deploymentOptions',
 				operator: 'eq',
-				values: ['', 'test']
+				values: ['Foundry Local on Devices']
+			},
+			{
+				field: 'annotations/archived',
+				operator: 'NotEquals',
+				values: ['true']
 			},
 			{
 				field: 'properties/variantInfo/variantMetadata/device',
 				operator: 'eq',
-				values: [device]
+				values: [device.toLowerCase()]
 			},
 			{
 				field: 'properties/variantInfo/variantMetadata/executionProvider',
@@ -367,18 +351,9 @@ export class FoundryModelService {
 		];
 
 		const requestBody = {
-			resourceIds: [
-				{
-					resourceId: 'azureml',
-					entityContainerType: 'Registry'
-				}
-			],
-			indexEntitiesRequest: {
-				filters: filters,
-				pageSize: 50,
-				skip: skip,
-				continuationToken: continuationToken
-			}
+			filters,
+			pageSize: 50,
+			...(continuationToken ? { continuationToken } : {})
 		};
 
 		return requestBody;
@@ -386,27 +361,15 @@ export class FoundryModelService {
 
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	private transformApiResponse(apiData: any): FoundryModel[] {
-		// Handle the Azure AI Foundry API response structure
-		let entities = [];
-
-		// Check for entities in the response structure
-		if (
-			apiData?.indexEntitiesResponse?.value &&
-			Array.isArray(apiData.indexEntitiesResponse.value)
-		) {
-			entities = apiData.indexEntitiesResponse.value;
+		// The proxy requests full service contracts, which return nested records in `value`.
+		if (!Array.isArray(apiData?.value)) {
+			throw new Error('Catalog response must contain a value array');
 		}
-		// Fallback: check if entities are directly in the response
-		else if (apiData?.entities && Array.isArray(apiData.entities)) {
-			entities = apiData.entities;
-		}
-
-		if (entities.length === 0) {
-			return [];
-		}
+		const entities = apiData.value;
 
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		return entities
+			.filter((entity: any) => entity.properties?.variantInfo?.variantMetadata)
 			.map((entity: any) => this.transformSingleModel(entity))
 			.filter((model: FoundryModel) => {
 				// Filter out blocked models
@@ -424,12 +387,7 @@ export class FoundryModelService {
 					return false;
 				}
 
-				// Prompt template validation: filter out models without prompt templates
-				// UNLESS they start with "gpt-oss-" OR have a task type of chat-completion
-				// Some models may not have promptTemplate but are still valid chat models
-				if (!this.isValidChatModel(model)) {
-					return false;
-				}				// Platform-specific filtering: ARM64 with INT8 quantization
+				// Platform-specific filtering: ARM64 with INT8 quantization
 				if (this.isArm64Platform()) {
 					// Extract model name without version
 					const baseName = model.name.split(':')[0];
@@ -442,41 +400,9 @@ export class FoundryModelService {
 			});
 	}
 
-	// Helper to validate if a model is a valid chat model for prompt template filtering
-	private isValidChatModel(model: FoundryModel): boolean {
-		const normalizedTaskType =
-			typeof model.taskType === 'string' ? model.taskType.toLowerCase() : '';
-		const normalizedName = model.name.toLowerCase();
-		
-		// Allow speech-to-text / whisper models (they don't have prompt templates but are valid)
-		if (normalizedTaskType.includes('automatic-speech-recognition') || 
-			normalizedTaskType.includes('speech-to-text') ||
-			normalizedName.includes('whisper')) {
-			return true;
-		}
-		
-		const validTaskTypeKeywords = [
-			'chat',
-			'completion',
-			'text-generation',
-			'text generation',
-			'instruct',
-			'instruction',
-			'reasoning'
-		];
-		const hasValidTaskType =
-			normalizedTaskType.length > 0 &&
-			validTaskTypeKeywords.some((keyword) => normalizedTaskType.includes(keyword));
-
-		return (
-			model.name.startsWith('gpt-oss-') ||
-			!!model.promptTemplate ||
-			hasValidTaskType
-		);
-	}
-
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	private transformSingleModel(entity: any): FoundryModel {
+		const systemData = entity.annotations?.systemCatalogData;
 		// Extract assetId (URI) - this is the unique identifier
 		const uri = entity.assetId || entity.entityId || '';
 
@@ -535,14 +461,13 @@ export class FoundryModelService {
 			tags.push(...entity.annotations.labels.map((l: string) => `label:${l}`));
 		}
 
-		// Extract prompt template
-		const promptTemplate = entity.annotations?.tags?.promptTemplate || null;
-
 		// Extract tool calling support
-		const supportsToolCalling = entity.annotations?.tags?.supportsToolCalling === 'true';
+		const supportsToolCalling =
+			systemData?.supportsToolCalling ??
+			(entity.annotations?.tags?.supportsToolCalling === 'true');
 
 		// Extract alias
-		const alias = entity.annotations?.tags?.alias || this.extractAlias(modelName);
+		const alias = systemData?.alias || entity.annotations?.tags?.alias || this.extractAlias(modelName);
 
 		// Check if this is a test model
 		const isTestModel = entity.annotations?.tags?.foundryLocal === 'test';
@@ -561,19 +486,37 @@ export class FoundryModelService {
 		const acceleration = this.detectAcceleration(modelName);
 
 		// Extract max output tokens
-		const maxOutputTokens = entity.annotations?.systemCatalogData?.maxOutputTokens ||
+		const maxOutputTokens = systemData?.modelLimits?.textLimits?.maxOutputTokens ||
+			systemData?.maxOutputTokens ||
 			parseInt(entity.annotations?.tags?.maxOutputTokens || '0', 10) ||
 			undefined;
 
 		// Extract min FL version
-		const minFLVersion = entity.properties?.minFLVersion || undefined;
+		const minFLVersion = systemData?.minFLVersion || entity.properties?.minFLVersion || undefined;
 
-		// Extract task type
-		const taskType = entity.annotations?.tags?.task || 'chat-completion';
+		// Extract task type and capabilities
+		const rawTaskType = systemData?.inferenceTasks?.[0] || entity.annotations?.tags?.task;
+		const taskType =
+			typeof rawTaskType === 'string' && rawTaskType.trim() ? rawTaskType.trim() : undefined;
+		const rawCapabilities: unknown =
+			systemData?.modelCapabilities ?? entity.annotations?.tags?.capabilities;
+		const capabilities =
+			Array.isArray(rawCapabilities)
+				? rawCapabilities.filter((value: unknown): value is string => typeof value === 'string')
+				: typeof rawCapabilities === 'string'
+					? [
+							...new Set(
+								rawCapabilities
+									.split(',')
+									.map((value) => value.trim())
+									.filter(Boolean)
+							)
+						]
+					: [];
 
 		// Extract license
-		const license = entity.annotations?.tags?.license || entity.properties?.license || undefined;
-		const licenseDescription = entity.annotations?.tags?.licenseDescription || undefined;
+		const license = systemData?.license || entity.annotations?.tags?.license || entity.properties?.license || undefined;
+		const licenseDescription = systemData?.licenseDescription || entity.annotations?.tags?.licenseDescription || undefined;
 
 		// Extract model type
 		const modelType = entity.properties?.variantInfo?.variantMetadata?.modelType || 'ONNX';
@@ -588,12 +531,13 @@ export class FoundryModelService {
 			tags: tags,
 			publisher: publisher,
 			acceleration: acceleration,
-			lastModified: entity.lastModifiedDateTime || entity.properties?.lastModified || new Date().toISOString(),
-			createdDate: entity.createdDateTime || entity.properties?.created || new Date().toISOString(),
+			lastModified: entity.lastModifiedDateTime || entity.properties?.lastModified || entity.properties?.creationContext?.lastModifiedTime || entity.properties?.creationContext?.createdTime || new Date().toISOString(),
+			createdDate: entity.createdDateTime || entity.properties?.created || entity.properties?.creationContext?.createdTime || new Date().toISOString(),
 			downloadCount: entity.properties?.downloadCount || 0,
 			framework: modelType,
 			license: license || licenseDescription,
 			taskType: taskType,
+			capabilities,
 			modelSize: this.formatModelSize(fileSizeBytes),
 			inputFormat: entity.properties?.inputFormat,
 			outputFormat: entity.properties?.outputFormat,
@@ -612,7 +556,6 @@ export class FoundryModelService {
 			device: device,
 			fileSizeBytes: fileSizeBytes,
 			vRamFootprintBytes: vRamFootprintBytes,
-			promptTemplate: promptTemplate,
 			supportsToolCalling: supportsToolCalling,
 			alias: alias,
 			isTestModel: isTestModel,
@@ -832,15 +775,12 @@ export class FoundryModelService {
 		// First get all individual models
 		const allModels = await this.fetchModels(filters, sortOptions);
 
-		// Group models by extracted alias to ensure all variants (CPU, CUDA, etc.) are combined
+		// Prefer the catalog alias so grouping does not depend on variant naming conventions.
 		// This ensures models like gpt-oss-20b with different device variants show as one card
 		const modelGroups = new Map<string, FoundryModel[]>();
 
 		for (const model of allModels) {
-			// Always use extracted alias as the group key
-			// This ensures qwen2.5-coder-0.5b and qwen2.5-coder-1.5b are NOT grouped together
-			// but gpt-oss-20b-cuda-gpu and gpt-oss-20b-generic-cpu ARE grouped together
-			const extractedAlias = this.extractAlias(model.name);
+			const extractedAlias = model.alias || this.extractAlias(model.name);
 			const groupKey = `alias:${extractedAlias}`;
 
 			if (!modelGroups.has(groupKey)) {
@@ -868,7 +808,7 @@ export class FoundryModelService {
 				const dedupeKey = `${device}-${acceleration}-${execProvider}`;
 
 				const existing = variantMap.get(dedupeKey);
-				if (!existing || variant.version > existing.version) {
+				if (!existing || variant.version.localeCompare(existing.version, undefined, { numeric: true }) > 0) {
 					variantMap.set(dedupeKey, variant);
 				}
 			}
@@ -885,6 +825,11 @@ export class FoundryModelService {
 
 			// Combine tags from all variants
 			const tags = [...new Set(uniqueVariants.flatMap((v) => v.tags))].sort();
+
+			// Combine capabilities from all variants
+			const capabilities = [
+				...new Set(uniqueVariants.flatMap((variant) => variant.capabilities))
+			].sort();
 
 			// Sum download counts
 			const totalDownloads = uniqueVariants.reduce((sum, v) => sum + (v.downloadCount || 0), 0);
@@ -905,8 +850,7 @@ export class FoundryModelService {
 
 			// Get latest version
 			const latestVersion = uniqueVariants.reduce((latest, v) => {
-				// Simple version comparison - you might want to improve this
-				return v.version > latest ? v.version : latest;
+				return v.version.localeCompare(latest, undefined, { numeric: true }) > 0 ? v.version : latest;
 			}, uniqueVariants[0].version);
 
 			// Get all accelerations from variants (prefer the first one found for the group)
@@ -939,6 +883,7 @@ export class FoundryModelService {
 				framework: primaryModel.framework,
 				license: primaryModel.license,
 				taskType: primaryModel.taskType,
+				capabilities,
 				modelSize: primaryModel.modelSize,
 				fileSizeBytes: maxFileSizeBytes,
 				variants: uniqueVariants,
@@ -1017,22 +962,8 @@ export class FoundryModelService {
 	}
 
 	async fetchModelById(modelId: string): Promise<FoundryModel | null> {
-		try {
-			const response = await fetch(`${FOUNDRY_API_ENDPOINT}?id=${encodeURIComponent(modelId)}`);
-
-			if (!response.ok) {
-				console.error(`Failed to fetch model ${modelId}: ${response.status}`);
-				return null;
-			}
-
-			const apiData = await response.json();
-			const models = this.transformApiResponse(apiData);
-
-			return models.length > 0 ? models[0] : null;
-		} catch (error) {
-			console.error(`Error fetching model ${modelId}:`, error);
-			return null;
-		}
+		const models = await this.fetchAllModels();
+		return models.find((model) => model.id === modelId || model.name === modelId) ?? null;
 	}
 }
 

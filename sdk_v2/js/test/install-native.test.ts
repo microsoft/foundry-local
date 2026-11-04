@@ -1,16 +1,19 @@
 // Pure installer tests: no network calls or dotnet invocation.
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import type { ClientRequest, IncomingMessage } from "node:http";
+import https from "node:https";
 import { createRequire } from "node:module";
 import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const require = createRequire(import.meta.url);
+const AdmZip = require("adm-zip");
 
 // biome-ignore lint/suspicious/noExplicitAny: .cjs module has no type declarations (see test/preload-addon.test.ts).
 const installNative = require(join(here, "..", "script", "install-native.cjs")) as any;
@@ -21,6 +24,7 @@ const {
   redactUrl,
   redactUrlsInText,
   downloadWithRetryAndRedirects,
+  runHttpMode,
   generateRestoreProjectXml,
   buildDotnetRestoreArgs,
   findRestoredPackageDir,
@@ -44,6 +48,7 @@ beforeEach(() => {
 
 afterEach(() => {
   process.env = { ...ORIGINAL_ENV };
+  vi.restoreAllMocks();
 });
 
 describe("readConfig", () => {
@@ -168,6 +173,69 @@ describe("readConfig", () => {
   });
 });
 
+describe("HTTP feed fallback", () => {
+  it.each([false, true])("falls back after NuGet.org TLS failure (proxy unavailable: %s)", async (proxyFails) => {
+    const buildDir = join(here, "..", "build");
+    mkdirSync(buildDir, { recursive: true });
+    const binDir = mkdtempSync(join(buildDir, "feed-fallback-"));
+    const requests: string[] = [];
+    const zip = new AdmZip();
+    zip.addFile("runtimes/win-x64/native/onnxruntime.dll", Buffer.from("runtime"));
+    const packageBody: Buffer = zip.toBuffer();
+    const feeds = [
+      "https://api.nuget.org/v3/index.json",
+      "https://packagefeedproxy.microsoft.io/nuget/v3/index.json",
+      "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json",
+    ];
+    const successfulFeed = proxyFails ? feeds[2] : feeds[1];
+    const baseAddress = "https://packages.example/flat2/";
+    const packageUrl = `${baseAddress}microsoft.ml.onnxruntime/1.30.0/microsoft.ml.onnxruntime.1.30.0.nupkg`;
+
+    vi.spyOn(https, "get").mockImplementation((url, _options, callback) => {
+      const address = String(url);
+      requests.push(address);
+      const request = new EventEmitter();
+      queueMicrotask(() => {
+        if (address === feeds[0] || (proxyFails && address === feeds[1])) {
+          request.emit("error", new Error("EPROTO: TLS handshake failure"));
+          return;
+        }
+        const body =
+          address === successfulFeed
+            ? JSON.stringify({ resources: [{ "@type": "PackageBaseAddress/3.0.0", "@id": baseAddress }] })
+            : address === packageUrl
+              ? packageBody
+              : undefined;
+        if (body === undefined) {
+          request.emit("error", new Error(`Unexpected request: ${address}`));
+          return;
+        }
+        const response = Readable.from([body]) as IncomingMessage;
+        response.statusCode = 200;
+        response.headers = {};
+        callback?.(response);
+      });
+      return request as ClientRequest;
+    });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      await runHttpMode(
+        readConfig(process.env),
+        [{ name: "Microsoft.ML.OnnxRuntime", version: "1.30.0", expected: "onnxruntime.dll" }],
+        binDir,
+        { rid: "win-x64", ext: ".dll" },
+      );
+      expect(requests).toEqual([...feeds.slice(0, proxyFails ? 3 : 2), packageUrl]);
+      expect(readFileSync(join(binDir, "onnxruntime.dll"), "utf8")).toBe("runtime");
+      expect(warn).toHaveBeenCalledTimes(proxyFails ? 2 : 1);
+    } finally {
+      rmSync(binDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("redactUrl", () => {
   it("strips the query string", () => {
     expect(redactUrl("https://example.com/pkg.nupkg?sv=2021&sig=SECRET")).toBe("https://example.com/pkg.nupkg");
@@ -243,11 +311,11 @@ describe("downloadWithRetryAndRedirects", () => {
 describe("generateRestoreProjectXml", () => {
   it("includes bracketed exact versions for every artifact", () => {
     const xml = generateRestoreProjectXml([
-      { name: "Microsoft.ML.OnnxRuntime", version: "1.28.0", expected: "onnxruntime.dll" },
-      { name: "Microsoft.ML.OnnxRuntimeGenAI.Foundry", version: "0.15.2", expected: "onnxruntime-genai.dll" },
+      { name: "Microsoft.ML.OnnxRuntime", version: "1.30.0", expected: "onnxruntime.dll" },
+      { name: "Microsoft.ML.OnnxRuntimeGenAI.Foundry", version: "0.17.1", expected: "onnxruntime-genai.dll" },
     ]);
-    expect(xml).toContain('<PackageReference Include="Microsoft.ML.OnnxRuntime" Version="[1.28.0]" />');
-    expect(xml).toContain('<PackageReference Include="Microsoft.ML.OnnxRuntimeGenAI.Foundry" Version="[0.15.2]" />');
+    expect(xml).toContain('<PackageReference Include="Microsoft.ML.OnnxRuntime" Version="[1.30.0]" />');
+    expect(xml).toContain('<PackageReference Include="Microsoft.ML.OnnxRuntimeGenAI.Foundry" Version="[0.17.1]" />');
   });
 
   it("targets net8.0", () => {
@@ -323,9 +391,9 @@ describe("findRestoredPackageDir", () => {
   });
 
   it("finds the lowercased id/version directory", () => {
-    const dir = join(packagesDir, "microsoft.ml.onnxruntime", "1.28.0");
+    const dir = join(packagesDir, "microsoft.ml.onnxruntime", "1.30.0");
     mkdirSync(dir, { recursive: true });
-    expect(findRestoredPackageDir(packagesDir, "Microsoft.ML.OnnxRuntime", "1.28.0")).toBe(dir);
+    expect(findRestoredPackageDir(packagesDir, "Microsoft.ML.OnnxRuntime", "1.30.0")).toBe(dir);
   });
 
   it("throws when the expected package directory is missing", () => {
@@ -341,13 +409,13 @@ describe("buildNugetInstallArgs", () => {
   it("passes exact package-only install flags and each configured source", () => {
     const args = buildNugetInstallArgs(
       { ...config, configFile: undefined },
-      { id: "Microsoft.ML.OnnxRuntime", version: "1.28.0", outputDir: "pkgs" },
+      { id: "Microsoft.ML.OnnxRuntime", version: "1.30.0", outputDir: "pkgs" },
     );
     expect(args).toEqual([
       "install",
       "Microsoft.ML.OnnxRuntime",
       "-Version",
-      "1.28.0",
+      "1.30.0",
       "-OutputDirectory",
       "pkgs",
       "-NonInteractive",
@@ -364,13 +432,13 @@ describe("buildNugetInstallArgs", () => {
   it("passes -ConfigFile and no -Source args when a config file is set", () => {
     const args = buildNugetInstallArgs(
       { ...config, configFile: "NuGet.config" },
-      { id: "Microsoft.ML.OnnxRuntimeGenAI.Foundry", version: "0.15.2", outputDir: "pkgs" },
+      { id: "Microsoft.ML.OnnxRuntimeGenAI.Foundry", version: "0.17.1", outputDir: "pkgs" },
     );
     expect(args).toEqual([
       "install",
       "Microsoft.ML.OnnxRuntimeGenAI.Foundry",
       "-Version",
-      "0.15.2",
+      "0.17.1",
       "-OutputDirectory",
       "pkgs",
       "-NonInteractive",
@@ -419,24 +487,24 @@ describe("findNugetPackageDir", () => {
   });
 
   it("finds the id.version directory using nuget's original casing", () => {
-    const dir = join(outputDir, "Microsoft.ML.OnnxRuntime.1.28.0");
+    const dir = join(outputDir, "Microsoft.ML.OnnxRuntime.1.30.0");
     mkdirSync(dir, { recursive: true });
-    expect(findNugetPackageDir(outputDir, "Microsoft.ML.OnnxRuntime", "1.28.0")).toBe(dir);
+    expect(findNugetPackageDir(outputDir, "Microsoft.ML.OnnxRuntime", "1.30.0")).toBe(dir);
   });
 
   it("matches case-insensitively regardless of the casing nuget.exe produced", () => {
-    const dir = join(outputDir, "microsoft.ml.onnxruntimegenai.foundry.0.15.2");
+    const dir = join(outputDir, "microsoft.ml.onnxruntimegenai.foundry.0.17.1");
     mkdirSync(dir, { recursive: true });
-    expect(findNugetPackageDir(outputDir, "Microsoft.ML.OnnxRuntimeGenAI.Foundry", "0.15.2")).toBe(dir);
+    expect(findNugetPackageDir(outputDir, "Microsoft.ML.OnnxRuntimeGenAI.Foundry", "0.17.1")).toBe(dir);
   });
 
   it("only looks at immediate children of outputDir, not nested dependency package folders", () => {
     // Simulates nuget.exe restoring a transitive dependency alongside the requested package —
     // only the exact id.version match at the root should be returned.
     mkdirSync(join(outputDir, "Some.Other.Dependency.2.0.0"), { recursive: true });
-    const dir = join(outputDir, "Microsoft.ML.OnnxRuntime.1.28.0");
+    const dir = join(outputDir, "Microsoft.ML.OnnxRuntime.1.30.0");
     mkdirSync(join(dir, "runtimes", "win-x64", "native"), { recursive: true });
-    expect(findNugetPackageDir(outputDir, "Microsoft.ML.OnnxRuntime", "1.28.0")).toBe(dir);
+    expect(findNugetPackageDir(outputDir, "Microsoft.ML.OnnxRuntime", "1.30.0")).toBe(dir);
   });
 
   it("throws when the expected package directory is missing", () => {

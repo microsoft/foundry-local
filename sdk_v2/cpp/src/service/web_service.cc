@@ -24,8 +24,11 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <stdexcept>
+#include <string>
 #include <thread>
+#include <vector>
 
 #ifdef _WIN32
 // winsock2.h must come before windows.h to avoid pulling in winsock.h (1.x).
@@ -125,6 +128,20 @@ class ForceCloseConnectionProvider : public oatpp::network::ServerConnectionProv
   std::shared_ptr<ForceCloseInvalidator> invalidator_;
 };
 
+struct ServiceStatusResponse {
+  std::string model_cache_path;
+  std::vector<std::string> endpoints;
+  int64_t pid;
+  bool artifact_qualified_model_management = true;
+};
+
+void to_json(nlohmann::json& json, const ServiceStatusResponse& response) {
+  json = {{"modelCachePath", response.model_cache_path},
+          {"endpoints", response.endpoints},
+          {"pid", response.pid},
+          {"artifact_qualified_model_management", response.artifact_qualified_model_management}};
+}
+
 }  // namespace
 
 // ========================================================================
@@ -136,13 +153,13 @@ class StatusHandler : public HttpRequestHandler {
   explicit StatusHandler(ServiceContext& ctx) : ctx_(ctx) {}
 
   std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest>&) override {
-    nlohmann::json body = {
-        {"modelCachePath", ctx_.model_cache_dir},
-        {"endpoints", ctx_.bound_urls},
+    const ServiceStatusResponse body{
+        .model_cache_path = ctx_.model_cache_dir,
+        .endpoints = ctx_.bound_urls,
 #ifdef _WIN32
-        {"pid", static_cast<int64_t>(GetCurrentProcessId())},
+        .pid = static_cast<int64_t>(GetCurrentProcessId()),
 #else
-        {"pid", static_cast<int64_t>(getpid())},
+        .pid = static_cast<int64_t>(getpid()),
 #endif
     };
 
@@ -159,10 +176,14 @@ class StatusHandler : public HttpRequestHandler {
 
 class ShutdownHandler : public HttpRequestHandler {
  public:
-  explicit ShutdownHandler(std::function<void()> shutdown_fn)
-      : shutdown_fn_(std::move(shutdown_fn)) {}
+  ShutdownHandler(std::function<void()> shutdown_fn, bool shared_host)
+      : shutdown_fn_(std::move(shutdown_fn)), shared_host_(shared_host) {}
 
   std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest>&) override {
+    if (shared_host_) {
+      return ErrorResponse(Status::CODE_403, "Shared host shutdown is managed by SDK client ownership");
+    }
+
     shutdown_fn_();
 
     nlohmann::json body = {{"status", "shutting_down"}};
@@ -171,7 +192,40 @@ class ShutdownHandler : public HttpRequestHandler {
 
  private:
   std::function<void()> shutdown_fn_;
+  const bool shared_host_;
 };
+
+namespace {
+
+void Route(const std::shared_ptr<oatpp::web::server::HttpRouter>& router, const char* method, const std::string& path,
+           std::shared_ptr<HttpRequestHandler> handler, const std::shared_ptr<hosting::HostLifetime>& lifetime) {
+  router->route(method, path, WithSharedHostAdmission(std::move(handler), lifetime));
+}
+
+void RegisterModelManagementRoutes(const std::shared_ptr<oatpp::web::server::HttpRouter>& router,
+                                   const std::string& prefix, ServiceContext& ctx,
+                                   const std::shared_ptr<hosting::HostLifetime>& lifetime) {
+  Route(router, "GET", prefix + "/models/loaded", CreateListLoadedModelsHandler(ctx), lifetime);
+  Route(router, "GET", prefix + "/models/load/{name}", CreateLoadModelHandler(ctx), lifetime);
+  Route(router, "GET", prefix + "/models/unload/{name}", CreateUnloadModelHandler(ctx), lifetime);
+}
+
+void RegisterOpenAIRoutes(const std::shared_ptr<oatpp::web::server::HttpRouter>& router,
+                          const std::string& prefix, ServiceContext& ctx,
+                          const std::shared_ptr<hosting::HostLifetime>& lifetime) {
+  Route(router, "GET", prefix + "/v1/models", CreateOpenAIListModelsHandler(ctx), lifetime);
+  Route(router, "GET", prefix + "/v1/models/{name}", CreateOpenAIRetrieveModelHandler(ctx), lifetime);
+  Route(router, "POST", prefix + "/v1/chat/completions", CreateChatCompletionsHandler(ctx), lifetime);
+  Route(router, "POST", prefix + "/v1/audio/transcriptions", CreateAudioTranscriptionsHandler(ctx), lifetime);
+  Route(router, "POST", prefix + "/v1/embeddings", CreateEmbeddingsHandler(ctx), lifetime);
+  Route(router, "POST", prefix + "/v1/responses", CreateResponsesHandler(ctx), lifetime);
+  Route(router, "GET", prefix + "/v1/responses", CreateListResponsesHandler(ctx), lifetime);
+  Route(router, "GET", prefix + "/v1/responses/{id}", CreateGetResponseHandler(ctx), lifetime);
+  Route(router, "DELETE", prefix + "/v1/responses/{id}", CreateDeleteResponseHandler(ctx), lifetime);
+  Route(router, "GET", prefix + "/v1/responses/{id}/input_items", CreateGetInputItemsHandler(ctx), lifetime);
+}
+
+}  // namespace
 
 // ========================================================================
 // WebService implementation
@@ -181,7 +235,7 @@ struct WebService::Impl {
   /// Keeps the session cache in step with response deletion. ResponseStore calls Drop() while holding its own lock,
   /// so this must never call back into the store; SessionManager does not.
   ///
-  /// Declared before `response_store` so it outlives it — the store may use it until it is destroyed.
+  /// Declared before the response stores so it outlives them — the stores may use it until they are destroyed.
   class SessionCacheCoordinator final : public IResponseCacheCoordinator {
    public:
     explicit SessionCacheCoordinator(SessionManager& manager) : manager_(manager) {}
@@ -198,10 +252,13 @@ struct WebService::Impl {
   std::shared_ptr<oatpp::web::server::HttpConnectionHandler> connection_handler;
   std::shared_ptr<oatpp::web::server::HttpRouter> router;
   SessionCacheCoordinator session_cache;
-  ResponseStore response_store;
+  ResponseStore public_response_store;
+  ResponseStore local_response_store;
   StreamingThreadTracker thread_tracker;
   std::function<void()> shutdown_callback;
-  std::unique_ptr<ServiceContext> context;
+  std::shared_ptr<hosting::HostLifetime> shared_host_lifetime;
+  std::unique_ptr<ServiceContext> public_context;
+  std::unique_ptr<ServiceContext> local_context;
   std::atomic<bool> running{false};
 
 #ifdef FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT
@@ -221,30 +278,44 @@ struct WebService::Impl {
   } wsa_guard_;
 #endif
 
-  Impl(ICatalog& catalog, ILogger& logger, std::string model_cache_dir,
+  Impl(ICatalog& public_catalog, ICatalog& local_catalog, ILogger& logger, std::string model_cache_dir,
        ModelLoadManager& model_load_manager, SessionManager& session_manager,
-       ITelemetry& telemetry, std::function<void()> shutdown_callback)
+       ITelemetry& telemetry, std::function<void()> shutdown_callback,
+       std::shared_ptr<hosting::HostLifetime> shared_lifetime)
       : session_cache(session_manager),
-        response_store(ResponseStore::kDefaultCapacity, &session_cache),
+        public_response_store(ResponseStore::kDefaultCapacity, &session_cache),
+        local_response_store(ResponseStore::kDefaultCapacity, &session_cache),
         shutdown_callback(std::move(shutdown_callback)),
-        context(std::make_unique<ServiceContext>(
-            ServiceContext{catalog,
+        shared_host_lifetime(std::move(shared_lifetime)),
+        public_context(std::make_unique<ServiceContext>(
+            ServiceContext{public_catalog,
+                           logger,
+                           model_cache_dir,
+                           {},
+                           model_load_manager,
+                           session_manager,
+                           public_response_store,
+                           telemetry,
+                           thread_tracker})),
+        local_context(std::make_unique<ServiceContext>(
+            ServiceContext{local_catalog,
                            logger,
                            std::move(model_cache_dir),
                            {},
                            model_load_manager,
                            session_manager,
-                           response_store,
+                           local_response_store,
                            telemetry,
                            thread_tracker})) {}
 };
 
-WebService::WebService(ICatalog& catalog, ILogger& logger, std::string model_cache_dir,
+WebService::WebService(ICatalog& public_catalog, ICatalog& local_catalog, ILogger& logger, std::string model_cache_dir,
                        ModelLoadManager& model_load_manager, SessionManager& session_manager,
-                       ITelemetry& telemetry, std::function<void()> shutdown_callback)
-    : impl_(std::make_unique<Impl>(catalog, logger, std::move(model_cache_dir),
+                       ITelemetry& telemetry, std::function<void()> shutdown_callback,
+                       std::shared_ptr<hosting::HostLifetime> shared_host_lifetime)
+    : impl_(std::make_unique<Impl>(public_catalog, local_catalog, logger, std::move(model_cache_dir),
                                    model_load_manager, session_manager, telemetry,
-                                   std::move(shutdown_callback))) {}
+                                   std::move(shutdown_callback), std::move(shared_host_lifetime))) {}
 
 WebService::~WebService() {
   if (impl_->running.load()) {
@@ -253,10 +324,11 @@ WebService::~WebService() {
 }
 
 std::vector<std::string> WebService::Start(const std::vector<std::string>& endpoints) {
-  auto& ctx = *impl_->context;
+  auto& public_ctx = *impl_->public_context;
+  auto& local_ctx = *impl_->local_context;
 
   if (impl_->running.load()) {
-    ctx.logger.Log(LogLevel::Information, "Web service is already running.");
+    public_ctx.logger.Log(LogLevel::Information, "Web service is already running.");
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Web service is already running");
   }
 
@@ -264,29 +336,16 @@ std::vector<std::string> WebService::Start(const std::vector<std::string>& endpo
   impl_->router = oatpp::web::server::HttpRouter::createShared();
 
   // Status
-  impl_->router->route("GET", "/status",
-                       std::make_shared<StatusHandler>(ctx));
+  Route(impl_->router, "GET", "/status", std::make_shared<StatusHandler>(public_ctx), impl_->shared_host_lifetime);
 
   // Shutdown
   impl_->router->route("POST", "/shutdown",
-                       std::make_shared<ShutdownHandler>(impl_->shutdown_callback));
+                       std::make_shared<ShutdownHandler>(impl_->shutdown_callback, bool(impl_->shared_host_lifetime)));
 
-  // Model management
-  impl_->router->route("GET", "/models/loaded", CreateListLoadedModelsHandler(ctx));
-  impl_->router->route("GET", "/models/load/{name}", CreateLoadModelHandler(ctx));
-  impl_->router->route("GET", "/models/unload/{name}", CreateUnloadModelHandler(ctx));
-
-  // OpenAI-compatible endpoints
-  impl_->router->route("GET", "/v1/models", CreateOpenAIListModelsHandler(ctx));
-  impl_->router->route("GET", "/v1/models/{name}", CreateOpenAIRetrieveModelHandler(ctx));
-  impl_->router->route("POST", "/v1/chat/completions", CreateChatCompletionsHandler(ctx));
-  impl_->router->route("POST", "/v1/audio/transcriptions", CreateAudioTranscriptionsHandler(ctx));
-  impl_->router->route("POST", "/v1/embeddings", CreateEmbeddingsHandler(ctx));
-  impl_->router->route("POST", "/v1/responses", CreateResponsesHandler(ctx));
-  impl_->router->route("GET", "/v1/responses", CreateListResponsesHandler(ctx));
-  impl_->router->route("GET", "/v1/responses/{id}", CreateGetResponseHandler(ctx));
-  impl_->router->route("DELETE", "/v1/responses/{id}", CreateDeleteResponseHandler(ctx));
-  impl_->router->route("GET", "/v1/responses/{id}/input_items", CreateGetInputItemsHandler(ctx));
+  RegisterModelManagementRoutes(impl_->router, "", public_ctx, impl_->shared_host_lifetime);
+  RegisterOpenAIRoutes(impl_->router, "", public_ctx, impl_->shared_host_lifetime);
+  RegisterModelManagementRoutes(impl_->router, "/catalogs/local", local_ctx, impl_->shared_host_lifetime);
+  RegisterOpenAIRoutes(impl_->router, "/catalogs/local", local_ctx, impl_->shared_host_lifetime);
 
   impl_->connection_handler = oatpp::web::server::HttpConnectionHandler::createShared(impl_->router);
 
@@ -361,10 +420,11 @@ std::vector<std::string> WebService::Start(const std::vector<std::string>& endpo
     std::string bound_url = "http://" + host + ":" + std::to_string(port);
     bound_urls.push_back(bound_url);
 
-    ctx.logger.Log(LogLevel::Information, fmt::format("Web service listening on {}", bound_url));
+    public_ctx.logger.Log(LogLevel::Information, fmt::format("Web service listening on {}", bound_url));
   }
 
-  ctx.bound_urls = bound_urls;
+  public_ctx.bound_urls = bound_urls;
+  local_ctx.bound_urls = bound_urls;
   impl_->running.store(true);
 
   return bound_urls;
@@ -395,12 +455,11 @@ void WebService::Stop() {
     impl_->connection_handler->stop();
   }
 
-  // Join streaming worker threads only after the acceptor and handler workers are fully stopped. A streaming
-  // handler spawns a std::thread and then calls tracker.Track() synchronously before returning its Response. If we
-  // joined while handlers were still live, a handler could reach Track() after JoinAll() took its snapshot, leaving
-  // a joinable thread in the tracker that nothing joins — its destruction would call std::terminate. Quiescing the
-  // handlers first makes the tracker contents final before we drain them. This can't deadlock: SseStreamBody::Push
-  // is non-blocking, and CancelAll() (run before Stop) unwinds in-flight generation so the workers finish promptly.
+  // Join streaming worker threads only after the acceptor and handler workers are fully stopped. Streaming
+  // handlers register workers before returning their Responses. If we joined while handlers were still live, a
+  // handler could start a worker after JoinAll() took its snapshot, leaving a joinable thread in the tracker whose
+  // destruction would call std::terminate. Quiescing handlers first makes the tracker contents final. This can't
+  // deadlock: SseStreamBody::Push is non-blocking, and CancelAll() (run before Stop) unwinds in-flight generation.
   impl_->thread_tracker.JoinAll();
 
   for (auto& thread : impl_->listener_threads) {
@@ -416,8 +475,9 @@ void WebService::Stop() {
   impl_->router.reset();
   impl_->running.store(false);
 
-  impl_->context->bound_urls.clear();
-  impl_->context->logger.Log(LogLevel::Information, "Web service stopped");
+  impl_->public_context->bound_urls.clear();
+  impl_->local_context->bound_urls.clear();
+  impl_->public_context->logger.Log(LogLevel::Information, "Web service stopped");
 }
 
 }  // namespace fl

@@ -1,61 +1,95 @@
-# <complete_code>
-# <imports>
-from foundry_local_sdk import Configuration, FoundryLocalManager
-# </imports>
+#!/usr/bin/env python3
+"""Generate embeddings through the native in-process API."""
+
+from __future__ import annotations
+
+from array import array
+from collections.abc import Sequence
+
+from foundry_local_sdk import (
+    Configuration,
+    EmbeddingsSession,
+    FoundryLocalManager,
+    Request,
+    TensorDataType,
+    TensorItem,
+    TextItem,
+)
+
+APP_NAME = "foundry_local_samples"
+MODEL_ALIAS = "qwen3-embedding-0.6b"
+INPUTS = (
+    "A kitten is sleeping on a rug.",
+    "A cat rests on a mat.",
+    "Saturn has a prominent ring system.",
+)
 
 
-def main():
-    # <init>
-    # Initialize the Foundry Local SDK
-    config = Configuration(app_name="foundry_local_samples")
-    FoundryLocalManager.initialize(config)
-    manager = FoundryLocalManager.instance
+def cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
+    # EmbeddingsSession returns L2-normalized vectors, so their dot product is cosine similarity.
+    return sum(a * b for a, b in zip(left, right, strict=True))
 
-    # Select and load an embedding model from the catalog
-    model = manager.catalog.get_model("qwen3-embedding-0.6b")
-    model.download(
-        lambda progress: print(
-            f"\rDownloading model: {progress:.2f}%",
-            end="",
-            flush=True,
+
+def main() -> None:
+    manager = FoundryLocalManager(Configuration(app_name=APP_NAME))
+    ep_result = manager.download_and_register_eps()
+    if not ep_result.success:
+        manager.close()
+        raise RuntimeError(
+            f"Execution provider registration failed: {ep_result.failed_eps}"
         )
-    )
-    print()
-    model.load()
-    print("Model loaded and ready.")
 
-    # Get an embedding client
-    client = model.get_embedding_client()
-    # </init>
+    model = manager.catalog.get_model(MODEL_ALIAS)
+    if model is None:
+        manager.close()
+        raise RuntimeError(f"Model {MODEL_ALIAS!r} was not found in the catalog.")
 
-    # <single_embedding>
-    # Generate a single embedding
-    print("\n--- Single Embedding ---")
-    response = client.generate_embedding("The quick brown fox jumps over the lazy dog")
-    embedding = response.data[0].embedding
-    print(f"Dimensions: {len(embedding)}")
-    print(f"First 5 values: {embedding[:5]}")
-    # </single_embedding>
+    try:
+        if not model.is_cached:
+            model.download(
+                progress_callback=lambda percent: print(
+                    f"\rDownloading model: {percent:5.1f}%",
+                    end="",
+                    flush=True,
+                )
+            )
+            print()
 
-    # <batch_embedding>
-    # Generate embeddings for multiple inputs
-    print("\n--- Batch Embeddings ---")
-    batch_response = client.generate_embeddings([
-        "Machine learning is a subset of artificial intelligence",
-        "The capital of France is Paris",
-        "Rust is a systems programming language",
-    ])
+        model.load()
+        with EmbeddingsSession(model) as session, Request() as request:
+            for text in INPUTS:
+                request.add_item(TextItem(text))
 
-    print(f"Number of embeddings: {len(batch_response.data)}")
-    for i, data in enumerate(batch_response.data):
-        print(f"  [{i}] Dimensions: {len(data.embedding)}")
-    # </batch_embedding>
+            with session.process_request(request) as response:
+                tensors = [item for item in response if isinstance(item, TensorItem)]
+                if len(tensors) != len(INPUTS):
+                    raise RuntimeError(
+                        f"Expected {len(INPUTS)} tensors, received {len(tensors)}."
+                    )
 
-    # Clean up
-    model.unload()
-    print("\nModel unloaded.")
+                embeddings = []
+                for tensor in tensors:
+                    if tensor.data_type is not TensorDataType.FLOAT:
+                        raise RuntimeError(
+                            f"Expected FLOAT tensor, received {tensor.data_type.name}."
+                        )
+                    values = array("f")
+                    values.frombytes(tensor.data)
+                    embeddings.append(values)
+
+                print(f"Model: {model.id}")
+                print(f"Dimensions: {len(embeddings[0])}")
+                print(
+                    f"Similarity (cat, cat): {cosine_similarity(embeddings[0], embeddings[1])}"
+                )
+                print(
+                    f"Similarity (cat, Saturn): {cosine_similarity(embeddings[0], embeddings[2])}"
+                )
+    finally:
+        if model.is_loaded:
+            model.unload()
+        manager.close()
 
 
 if __name__ == "__main__":
     main()
-# </complete_code>

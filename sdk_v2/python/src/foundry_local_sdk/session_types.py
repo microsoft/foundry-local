@@ -23,6 +23,21 @@ class TokenUsage:
     total_tokens: int
 
 
+@dataclass(frozen=True)
+class RequestPreflightResult:
+    """Exact structural token budget. ``fits`` does not reserve cache or guarantee live Engine admission.
+
+    ``context_limit_tokens`` is the Engine request capacity or Generator model context.
+    """
+
+    prompt_tokens: int
+    output_reserve_tokens: int
+    required_tokens: int
+    context_limit_tokens: int
+    fits: bool
+    deficit_tokens: int
+
+
 class _SessionParam:
     """Internal — well-known parameter key strings for the native KVP wire format. These mirror the
     ``FOUNDRY_LOCAL_PARAM_*`` macros in ``foundry_local_c.h``. Use the typed ``RequestOptions`` / ``SearchOptions`` API

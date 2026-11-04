@@ -23,24 +23,49 @@ std::optional<flFinishReason> MapFinishReason(OgaFinishReason reason) {
     case OgaFinishReason_MaxGeneratedTokens:
     case OgaFinishReason_MaxSessionTokens:
       return FOUNDRY_LOCAL_FINISH_LENGTH;
-    case OgaFinishReason_Cancelled:
-      return FOUNDRY_LOCAL_FINISH_NONE;
     case OgaFinishReason_Failed:
       return FOUNDRY_LOCAL_FINISH_ERROR;
+    case OgaFinishReason_Cancelled:
+      return std::nullopt;
     default:
       return std::nullopt;
   }
 }
 
-bool DetectPromptOpensReasoning(const std::string& prompt,
-                                const OgaSequences& sequences,
-                                const ToolCallContext& tool_ctx,
-                                GenAIModelInstance& model) {
-  const std::span<const int32_t> token_ids(sequences.SequenceData(0), sequences.SequenceCount(0));
-  return PromptOpensReasoning(token_ids, ResolveReasoningMarkers(tool_ctx, model), prompt);
+}  // namespace
+
+namespace onnx_engine_chat_stream_internal {
+
+std::optional<BackendTerminationCause> MapTerminationCause(uint32_t reason) {
+  switch (static_cast<OgaFinishReason>(reason)) {
+    case OgaFinishReason_Eos:
+      return BackendTerminationCause::kNaturalEnd;
+    case OgaFinishReason_StopString:
+      return BackendTerminationCause::kStopSequence;
+    case OgaFinishReason_MaxGeneratedTokens:
+      return BackendTerminationCause::kOutputTokenLimit;
+    case OgaFinishReason_MaxSessionTokens:
+      return BackendTerminationCause::kSessionTokenLimit;
+    case OgaFinishReason_Cancelled:
+      return BackendTerminationCause::kCancellation;
+    case OgaFinishReason_Failed:
+      return BackendTerminationCause::kFailure;
+    default:
+      return std::nullopt;
+  }
 }
 
-}  // namespace
+ChatTurnUsage BuildTurnUsage(int prompt_tokens, const OnnxChatEngine::TurnResult& result) {
+  return ChatTurnUsage{
+      prompt_tokens,
+      static_cast<int>(result.generated_tokens),
+      MapFinishReason(static_cast<OgaFinishReason>(result.finish_reason)),
+      MapTerminationCause(result.finish_reason),
+      static_cast<int>(result.cached_prompt_tokens),
+  };
+}
+
+}  // namespace onnx_engine_chat_stream_internal
 
 OnnxEngineChatStream::OnnxEngineChatStream(
     OnnxChatEngine& engine,
@@ -56,7 +81,7 @@ OnnxEngineChatStream::OnnxEngineChatStream(
 
 OnnxEngineChatStream::~OnnxEngineChatStream() {
   try {
-    engine_.Close(conversation_);
+    Close();
   } catch (...) {
   }
 }
@@ -128,23 +153,49 @@ void OnnxEngineChatStream::Cancel() {
   engine_.Cancel(conversation_);
 }
 
+void OnnxEngineChatStream::Close() {
+  if (closed_) {
+    return;
+  }
+
+  engine_.Close(conversation_);
+  closed_ = true;
+}
+
 int OnnxEngineChatStream::AppendMessages(const std::vector<TranscriptMessage>& new_messages,
                                          const std::vector<TranscriptMessage>& full_messages,
                                          GenAIModelInstance& model,
                                          const ToolCallContext& tool_ctx,
                                          const SearchOptions& options) {
-  if (new_messages.empty() || full_messages.empty()) {
+  return AppendMessages(new_messages,
+                        chat_internal::PrepareChatMessages(full_messages, model.HasPositionalToolResults()),
+                        model, tool_ctx, options);
+}
+
+int OnnxEngineChatStream::AppendMessages(const std::vector<TranscriptMessage>& new_messages,
+                                         const chat_internal::PreparedChatMessages& full_messages,
+                                         GenAIModelInstance& model,
+                                         const ToolCallContext& tool_ctx,
+                                         const SearchOptions& options) {
+  const auto prepared = PrepareTextChatPrompt(full_messages, model, tool_ctx);
+  return AppendPreparedPrompt(new_messages, prepared, model, tool_ctx, options);
+}
+
+int OnnxEngineChatStream::AppendPreparedPrompt(const std::vector<TranscriptMessage>& new_messages,
+                                               const PreparedChatPrompt& prepared,
+                                               GenAIModelInstance&,
+                                               const ToolCallContext& tool_ctx,
+                                               const SearchOptions& options) {
+  if (new_messages.empty() || prepared.token_ids.empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "new_messages and full_messages must not be empty");
   }
 
-  auto prompt = BuildChatPrompt(full_messages, model, tool_ctx.tools_json);
-  auto sequences = EncodePrompt(prompt, model);
-  const int count = static_cast<int>(sequences->SequenceCount(0));
-  const auto* data = sequences->SequenceData(0);
-  const std::span<const int32_t> full_prompt(data, static_cast<size_t>(count));
+  const int count = static_cast<int>(prepared.prompt_token_count);
+  const std::span<const int32_t> full_prompt(prepared.token_ids);
   const auto resident_tokens = engine_.ResidentTokens(conversation_);
   const auto suffix_start = chat_internal::FindUnmatchedPromptSuffix(resident_tokens, full_prompt);
-  const bool prompt_opens_reasoning = DetectPromptOpensReasoning(prompt, *sequences, tool_ctx, model);
+  const bool prompt_opens_reasoning =
+      fl::PromptOpensReasoning(full_prompt, ResolveReasoningMarkers(tool_ctx, model_), prepared.prompt);
 
   // Keep the previous decoder intact if admission fails. Once admitted, start a fresh stream so partial UTF-8/BPE
   // state from the prior turn cannot affect generated tokens; prompt tokens are never decoded.
@@ -189,12 +240,8 @@ void OnnxEngineChatStream::ResetTurnDecoder() {
 }
 
 std::optional<ChatTurnUsage> OnnxEngineChatStream::GetTurnUsage() const {
-  const auto result = engine_.GetTurnResult(conversation_);
-  return ChatTurnUsage{
-      prompt_token_count_,
-      static_cast<int>(result.generated_tokens),
-      MapFinishReason(result.finish_reason),
-  };
+  return onnx_engine_chat_stream_internal::BuildTurnUsage(
+      prompt_token_count_, engine_.GetTurnResult(conversation_));
 }
 
 std::unique_ptr<OnnxEngineChatStream> OnnxEngineChatStream::Create(
@@ -202,8 +249,25 @@ std::unique_ptr<OnnxEngineChatStream> OnnxEngineChatStream::Create(
     const SearchOptions& options,
     GenAIModelInstance& model,
     const ToolCallContext& tool_ctx) {
-  if (messages.empty()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "messages must not be empty");
+  return Create(chat_internal::PrepareChatMessages(messages, model.HasPositionalToolResults()),
+                options, model, tool_ctx);
+}
+
+std::unique_ptr<OnnxEngineChatStream> OnnxEngineChatStream::Create(
+    const chat_internal::PreparedChatMessages& messages,
+    const SearchOptions& options,
+    GenAIModelInstance& model,
+    const ToolCallContext& tool_ctx) {
+  return CreatePrepared(PrepareTextChatPrompt(messages, model, tool_ctx), options, model, tool_ctx);
+}
+
+std::unique_ptr<OnnxEngineChatStream> OnnxEngineChatStream::CreatePrepared(
+    PreparedChatPrompt prepared,
+    const SearchOptions& options,
+    GenAIModelInstance& model,
+    const ToolCallContext& tool_ctx) {
+  if (prepared.token_ids.empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "prepared text prompt must not be empty");
   }
 
   auto* engine = model.GetChatEngine();
@@ -211,20 +275,16 @@ std::unique_ptr<OnnxEngineChatStream> OnnxEngineChatStream::Create(
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model does not own a chat Engine");
   }
 
-  auto prompt = BuildChatPrompt(messages, model, tool_ctx.tools_json);
-  auto sequences = EncodePrompt(prompt, model);
-  const int prompt_token_count = static_cast<int>(sequences->SequenceCount(0));
-  const bool prompt_opens_reasoning = DetectPromptOpensReasoning(prompt, *sequences, tool_ctx, model);
+  const int prompt_token_count = static_cast<int>(prepared.prompt_token_count);
+  const bool prompt_opens_reasoning =
+      fl::PromptOpensReasoning(prepared.token_ids, ResolveReasoningMarkers(tool_ctx, model), prepared.prompt);
   auto stream = model.GetPreprocessor().CreateTokenizerStream();
   auto conversation = engine->CreateConversation(options, tool_ctx, prompt_token_count);
   try {
-    const auto* data = sequences->SequenceData(0);
-    engine->BeginTurn(conversation, std::span<const int32_t>(data, static_cast<size_t>(prompt_token_count)), options,
-                      tool_ctx, prompt_opens_reasoning);
+    engine->BeginTurn(conversation, prepared.token_ids, options, tool_ctx, prompt_opens_reasoning);
 
     auto result = std::unique_ptr<OnnxEngineChatStream>(
-        new OnnxEngineChatStream(*engine, std::move(conversation), std::move(stream), model,
-                                 prompt_token_count));
+        new OnnxEngineChatStream(*engine, std::move(conversation), std::move(stream), model, prompt_token_count));
     result->prompt_opens_reasoning_ = prompt_opens_reasoning;
     return result;
   } catch (...) {

@@ -166,6 +166,7 @@ class LiveAudioTranscriptionSession:
         from foundry_local_sdk.items import AudioItem
         from foundry_local_sdk.request import Request
         from foundry_local_sdk.session import AudioSession
+        from foundry_local_sdk.session_types import RequestOptions
 
         # Snapshot settings — mutation after start() has no effect.
         active = self.settings.snapshot()
@@ -188,6 +189,10 @@ class LiveAudioTranscriptionSession:
             audio_session.set_streaming(True)
 
             request = Request()
+            if active.language is not None:
+                request.set_options(
+                    RequestOptions(additional_options={"language": active.language})
+                )
             # format_descriptor: ownership transfers to the request.
             request.add_item(format_descriptor)
             # item_queue: keep ownership — append() pushes into it.

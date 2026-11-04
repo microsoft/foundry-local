@@ -3,12 +3,17 @@
 #pragma once
 
 #include "logger.h"
+#include "service/request_lifetime.h"
 
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace fl {
@@ -20,27 +25,27 @@ class SessionManager;
 class ResponseStore;
 
 /// Tracks streaming threads so they can be joined on shutdown.
-/// Handlers call Track() instead of std::thread::detach().
-/// Threads call Remove() when done to clean up immediately.
 class StreamingThreadTracker {
  public:
-  /// Take ownership of a streaming thread.
-  void Track(std::thread t) {
+  /// Register before the worker can untrack itself; release its captures before declaring it finished.
+  template <typename Work>
+  void Start(Work&& work) {
     std::lock_guard<std::mutex> lock(mutex_);
-    threads_.push_back(std::move(t));
+    threads_.emplace_back([this, admission = HttpRequestLifetime::CurrentWork(),
+                           task = std::optional<std::decay_t<Work>>(std::forward<Work>(work))]() mutable {
+      {
+        HttpRequestLifetime scope(std::move(admission));
+        (*task)();
+        task.reset();
+      }
+
+      Remove(std::this_thread::get_id());
+    });
   }
 
-  /// Called from within a thread to untrack itself after work is done.
-  /// Detaches the thread (can't join itself) and removes the entry.
-  void Remove(std::thread::id id) {
+  std::size_t TrackedCount() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    for (auto it = threads_.begin(); it != threads_.end(); ++it) {
-      if (it->get_id() == id) {
-        it->detach();
-        threads_.erase(it);
-        return;
-      }
-    }
+    return threads_.size();
   }
 
   /// Join all remaining threads. Called by WebService::Stop().
@@ -60,7 +65,18 @@ class StreamingThreadTracker {
   }
 
  private:
-  std::mutex mutex_;
+  void Remove(std::thread::id id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto it = threads_.begin(); it != threads_.end(); ++it) {
+      if (it->get_id() == id) {
+        it->detach();
+        threads_.erase(it);
+        return;
+      }
+    }
+  }
+
+  mutable std::mutex mutex_;
   std::vector<std::thread> threads_;
 };
 
@@ -84,12 +100,13 @@ struct ServiceContext {
 ///   2. Start(endpoints) — binds to addresses, launches listener threads
 ///   3. Stop() — graceful shutdown
 ///
-/// Creates and owns ResponseStore, StreamingThreadTracker, and ServiceContext internally.
+/// Creates and owns the response stores, StreamingThreadTracker, and catalog-bound ServiceContexts internally.
 class WebService {
  public:
-  WebService(ICatalog& catalog, ILogger& logger, std::string model_cache_dir,
+  WebService(ICatalog& public_catalog, ICatalog& local_catalog, ILogger& logger, std::string model_cache_dir,
              ModelLoadManager& model_load_manager, SessionManager& session_manager,
-             ITelemetry& telemetry, std::function<void()> shutdown_callback);
+             ITelemetry& telemetry, std::function<void()> shutdown_callback,
+             std::shared_ptr<hosting::HostLifetime> shared_host_lifetime = {});
   ~WebService();
 
   WebService(const WebService&) = delete;

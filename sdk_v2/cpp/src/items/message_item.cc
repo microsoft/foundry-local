@@ -90,7 +90,7 @@ void MessageItem::SetMessageData(const flMessageData& new_data) {
 }
 
 void MessageItem::GetApiData(flMessageData& out) const {
-  out.version = FOUNDRY_LOCAL_API_VERSION;
+  out.version = FOUNDRY_LOCAL_DATA_VERSION;
   out.role = role;
   out.name = name.empty() ? nullptr : name.c_str();
 

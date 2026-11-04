@@ -12,7 +12,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use super::api::{cstr_to_string, Api};
+use super::api::{cstr_to_string, to_cstring, Api};
 use super::ffi::*;
 use super::manager::NativeManager;
 use crate::error::{FoundryLocalError, Result};
@@ -50,6 +50,23 @@ impl NativeModel {
         let status = unsafe { (self.api.model_api().GetInfo)(self.ptr, &mut info) };
         self.api.check(status)?;
         Ok(info)
+    }
+
+    pub(crate) fn get_string_property(&self, key: &str) -> Result<Option<String>> {
+        let key = to_cstring(key)?;
+        let info = self.info_ptr()?;
+        let value = unsafe { (self.api.model_api().Info_GetStringProperty)(info, key.as_ptr()) };
+        Ok(unsafe { cstr_to_string(value) })
+    }
+
+    pub(crate) fn get_int_property(&self, key: &str, default_value: i64) -> Result<i64> {
+        let key = to_cstring(key)?;
+        let info = self.info_ptr()?;
+        Ok(
+            unsafe {
+                (self.api.model_api().Info_GetIntProperty)(info, key.as_ptr(), default_value)
+            },
+        )
     }
 
     pub(crate) fn is_cached(&self) -> Result<bool> {
@@ -303,5 +320,44 @@ impl NativeCatalog {
             latest,
             Arc::clone(&self.manager),
         ))
+    }
+
+    pub(crate) fn register_model(
+        &self,
+        model_path: &str,
+        model_id: &str,
+        metadata: *const flModelInfo,
+    ) -> Result<NativeModel> {
+        let model_path = to_cstring(model_path)?;
+        let model_id = to_cstring(model_id)?;
+        let mut model = std::ptr::null_mut();
+        let status = unsafe {
+            (self.api.catalog_api().RegisterModel)(
+                self.ptr,
+                model_path.as_ptr(),
+                model_id.as_ptr(),
+                metadata,
+                &mut model,
+            )
+        };
+        self.api.check(status)?;
+        if model.is_null() {
+            return Err(FoundryLocalError::Internal {
+                reason: "RegisterModel returned a null model".into(),
+            });
+        }
+        Ok(NativeModel::new(
+            Arc::clone(&self.api),
+            model,
+            Arc::clone(&self.manager),
+        ))
+    }
+
+    pub(crate) fn unregister_model(&self, alias_or_model_id: &str) -> Result<()> {
+        let alias_or_model_id = to_cstring(alias_or_model_id)?;
+        let status = unsafe {
+            (self.api.catalog_api().UnregisterModel)(self.ptr, alias_or_model_id.as_ptr())
+        };
+        self.api.check(status)
     }
 }

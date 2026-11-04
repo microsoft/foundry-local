@@ -20,7 +20,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "WindowsStore" OR VCPKG_TARGET_TRIPLET MATCHES "uw
 endif()
 list(APPEND VCPKG_MANIFEST_FEATURES "telemetry")
 
-project(foundry_local VERSION 0.1.0 LANGUAGES CXX C)
+project(foundry_local VERSION 2.0.1 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -50,12 +50,6 @@ option(FOUNDRY_LOCAL_BUILD_TESTS "Build unit tests" ON)
 option(FOUNDRY_LOCAL_BUILD_EXAMPLES "Build example programs" ON)
 option(FOUNDRY_LOCAL_BUILD_SERVICE "Build web service support (requires oat++)" ON)
 option(FOUNDRY_LOCAL_ENABLE_ASAN "Enable AddressSanitizer + UndefinedBehaviorSanitizer (Linux only)" OFF)
-option(FOUNDRY_LOCAL_REQUIRE_DYNAMIC_ENGINE_TESTS
-       "Fail configuration unless the ORT GenAI dynamic Engine tests can be built"
-       OFF)
-if(FOUNDRY_LOCAL_REQUIRE_DYNAMIC_ENGINE_TESTS AND NOT FOUNDRY_LOCAL_BUILD_TESTS)
-    message(FATAL_ERROR "FOUNDRY_LOCAL_REQUIRE_DYNAMIC_ENGINE_TESTS requires FOUNDRY_LOCAL_BUILD_TESTS=ON")
-endif()
 
 # Optional 1DS ingestion token override. Override only via environment so it does
 # not appear in CMake cache files.
@@ -98,7 +92,9 @@ include(cmake/Sanitizers.cmake)
 # Dependencies via vcpkg (manifest mode)
 # --------------------------------------------------------------------------
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(jsoncons CONFIG REQUIRED)
 find_package(azure-storage-blobs-cpp CONFIG REQUIRED)
+find_package(semver CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 find_package(LibArchive REQUIRED)
 
@@ -116,49 +112,6 @@ endif()
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 find_package(OnnxRuntimeGenAI REQUIRED)
 
-include(CheckCXXSourceCompiles)
-
-set(CMAKE_REQUIRED_LIBRARIES OnnxRuntimeGenAI::OnnxRuntimeGenAI)
-unset(FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE CACHE)
-check_cxx_source_compiles("
-#include <cstddef>
-#include <cstdint>
-#include <memory>
-
-#include <ort_genai.h>
-
-int main() {
-    auto* model = reinterpret_cast<OgaModel*>(1);
-    auto engine = OgaEngine::Create(*model);
-    auto events = engine->CreateEventBuffer(1);
-    auto request_options = OgaRequestOptions::Create();
-    auto request = engine->CreateRequest(request_options.get());
-    auto turn_options = request->CreateTurnOptions();
-    turn_options->SetMaxGeneratedTokens(static_cast<uint64_t>(1));
-    turn_options->SetDoSample(true);
-    turn_options->SetTemperature(1.0f);
-    turn_options->SetTopP(1.0f);
-    turn_options->SetTopK(1);
-    turn_options->SetSeed(static_cast<uint64_t>(1));
-    const char* values[] = {\"stop\"};
-    auto stop_strings = OgaStringArray::Create(values, 1);
-    turn_options->SetStopStrings(*stop_strings);
-    turn_options->SetGuidance(\"\", \"\");
-    const auto finish_reason = OgaFinishReason_StopString;
-    return events && request && turn_options && finish_reason == OgaFinishReason_Eos ? 0 : 1;
-}
-" FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE)
-unset(CMAKE_REQUIRED_LIBRARIES)
-
-if(FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE)
-    message(STATUS "ORT GenAI dynamic Engine API: enabled")
-else()
-    if(FOUNDRY_LOCAL_REQUIRE_DYNAMIC_ENGINE_TESTS)
-        message(FATAL_ERROR
-            "FOUNDRY_LOCAL_REQUIRE_DYNAMIC_ENGINE_TESTS requires an ORT GenAI package with the dynamic Engine API")
-    endif()
-    message(STATUS "ORT GenAI dynamic Engine API: unavailable; using Generator backend")
-endif()
 find_package(OnnxRuntime REQUIRED)
 
 # WinML EP Catalog — Windows-only, for hardware EP discovery and download. The
@@ -194,12 +147,22 @@ if(WIN32)
         src/platform/windows/cross_process_file_lock.cc
         src/platform/windows/dynlib_loader.cc
     )
+    if(CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
+        list(APPEND FOUNDRY_LOCAL_PLATFORM_SOURCES
+            src/platform/windows_store/telemetry_device_id.cc
+        )
+    else()
+        list(APPEND FOUNDRY_LOCAL_PLATFORM_SOURCES
+            src/platform/windows/telemetry_device_id.cc
+        )
+    endif()
 else()
     list(APPEND FOUNDRY_LOCAL_PLATFORM_SOURCES
         src/util/stacktrace_posix.cc
         src/platform/posix/path.cc
         src/platform/posix/file_io.cc
         src/platform/posix/cross_process_file_lock.cc
+        src/platform/posix/telemetry_device_id.cc
     )
     # Android does not support the dlopen-based loader; dynlib_loader.cc is
     # only compiled for Linux and macOS.
@@ -221,11 +184,12 @@ if(WinMLEpCatalog_FOUND)
     )
 endif()
 
-string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" FOUNDRY_LOCAL_SYSTEM_PROCESSOR)
+# CUDA/WebGPU EP bootstrappers are compiled on every non-Android platform.
+# Per-platform IsSupportedPlatform() gates runtime instantiation, so on
+# platforms without a published bundle (e.g. exotic Linux archs) the code is
+# present but inert.
 set(FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS ON)
-if(ANDROID OR
-   (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
-    NOT FOUNDRY_LOCAL_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$"))
+if(ANDROID)
     set(FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS OFF)
 endif()
 
@@ -245,6 +209,16 @@ endif()
 
 set(FOUNDRY_LOCAL_SOURCES
     src/c_api.cc
+    src/api/embedded_backend.cc
+    src/api/manager_root.cc
+    src/api/request_admission.cc
+    src/hosting/host_lifetime.cc
+    src/hosting/host_objects.cc
+    src/hosting/host_profile.cc
+    src/hosting/child_host_role.cc
+    src/hosting/bootstrap_descriptor.cc
+    src/hosting/item_codec.cc
+    src/hosting/sdk_values.cc
     src/items/item.cc
     src/items/image_item.cc
     src/items/message_item.cc
@@ -264,11 +238,14 @@ set(FOUNDRY_LOCAL_SOURCES
     src/inferencing/generative/embeddings/embeddings_session.cc
     src/inferencing/generative/chat/chat_generator.cc
     src/inferencing/session/session.cc
+    src/inferencing/session/request.cc
     src/inferencing/session/session_manager.cc
+    src/inferencing/session/tool_registry.cc
     src/inferencing/generative/chat/chat_session.cc
     src/inferencing/generative/chat/chat_template.cc
     src/inferencing/generative/chat/chat_transcript.cc
     src/inferencing/generative/chat/media_input.cc
+    src/inferencing/generative/chat/prepared_chat_prompt.cc
     src/configuration.cc
     src/download/blob_download_state.cc
     src/download/blob_downloader.cc
@@ -294,7 +271,10 @@ set(FOUNDRY_LOCAL_SOURCES
     src/inferencing/generative/openresponses/response_converter.cc
     src/inferencing/generative/openresponses/response_store.cc
     src/contracts/responses_json.cc
+    src/contracts/reasoning_options.cc
+    src/inferencing/generative/toolcalling/qwen_xml_tool_call_decoder.cc
     src/inferencing/generative/toolcalling/tool_call_utils.cc
+    src/inferencing/generative/toolcalling/tool_call_plan.cc
     src/inferencing/generative/toolcalling/grammar.cc
     src/inferencing/generative/chat/search_options.cc
     src/inferencing/generative/chat/stop_strings.cc
@@ -303,17 +283,21 @@ set(FOUNDRY_LOCAL_SOURCES
     src/manager.cc
     src/contracts/chat_completions.cc
     src/contracts/chat_completions_converter.cc
+    src/contracts/tool_definitions.cc
     src/contracts/audio_transcriptions.cc
     src/contracts/embeddings.cc
     src/service/audio_transcriptions_handler.cc
     src/service/embeddings_handler.cc
     src/service/chat_completions_handler.cc
     src/service/models_handlers.cc
+    src/service/request_lifetime.cc
     src/service/responses_handler.cc
     src/service/web_service.cc
     src/telemetry/telemetry.cc
     src/telemetry/telemetry_action_tracker.cc
     src/telemetry/device_id.cc
+    src/telemetry/download_tracker.cc
+    src/telemetry/ep_download_tracker.cc
     src/telemetry/invocation_context.cc
     src/telemetry/telemetry_environment.cc
     src/telemetry/telemetry_logger.cc
@@ -330,11 +314,38 @@ set(FOUNDRY_LOCAL_SOURCES
     ${FOUNDRY_LOCAL_INTERNAL_HEADERS}
 )
 
-if(FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE)
+list(APPEND FOUNDRY_LOCAL_SOURCES
+    src/inferencing/generative/chat/onnx_chat_engine.cc
+    src/inferencing/generative/chat/onnx_engine_chat_stream.cc
+)
+
+set(FOUNDRY_LOCAL_HAS_SHARED_HOST OFF)
+set(FOUNDRY_LOCAL_HOST_RIDS win-x64 win-arm64 linux-x64 linux-arm64 osx-arm64)
+if(NOT ANDROID AND NOT IOS AND _ORT_PLATFORM IN_LIST FOUNDRY_LOCAL_HOST_RIDS)
+    set(FOUNDRY_LOCAL_HAS_SHARED_HOST ON)
     list(APPEND FOUNDRY_LOCAL_SOURCES
-        src/inferencing/generative/chat/onnx_chat_engine.cc
-        src/inferencing/generative/chat/onnx_engine_chat_stream.cc
+        src/api/hosted_backend.cc
+        src/api/hosted_manager.cc
+        src/hosting/ipc_channel.cc
+        src/hosting/sdk_connection.cc
+        src/hosting/host_server.cc
+        src/hosting/resident_module.cc
+        src/hosting/runtime_assets.cc
+        src/hosting/host_state.cc
+        src/hosting/host_process.cc
+        src/hosting/host_coordinator.cc
+        src/hosting/manager_dispatcher.cc
+        src/hosting/model_dispatcher.cc
+        src/hosting/session_dispatcher.cc
     )
+    if(WIN32)
+        set(FOUNDRY_LOCAL_PROCESS_WATCH_SOURCE src/hosting/process_watch_windows.cc)
+        list(APPEND FOUNDRY_LOCAL_SOURCES src/hosting/ipc_channel_windows.cc)
+    else()
+        set(FOUNDRY_LOCAL_PROCESS_WATCH_SOURCE src/hosting/process_watch_posix.cc)
+        list(APPEND FOUNDRY_LOCAL_SOURCES src/hosting/ipc_channel_posix.cc)
+    endif()
+    list(APPEND FOUNDRY_LOCAL_SOURCES ${FOUNDRY_LOCAL_PROCESS_WATCH_SOURCE})
 endif()
 
 # 1DS bridge — always compiled for Foundry Local Core.
@@ -354,6 +365,8 @@ list(APPEND FOUNDRY_LOCAL_SOURCES ${FOUNDRY_LOCAL_PUBLIC_HEADERS})
 # --------------------------------------------------------------------------
 function(foundry_local_configure_target TARGET LINK_SCOPE)
     target_compile_options(${TARGET} PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+    target_compile_definitions(${TARGET} ${LINK_SCOPE}
+        FOUNDRY_LOCAL_HAS_SHARED_HOST=$<BOOL:${FOUNDRY_LOCAL_HAS_SHARED_HOST}>)
 
     target_include_directories(${TARGET}
         PUBLIC
@@ -367,8 +380,10 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
     target_link_libraries(${TARGET}
         ${LINK_SCOPE}
             nlohmann_json::nlohmann_json
+            jsoncons::jsoncons
             Azure::azure-core
             Azure::azure-storage-blobs
+            semver::semver
             spdlog::spdlog
             LibArchive::LibArchive
             ${CMAKE_DL_LIBS}
@@ -388,9 +403,10 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
     endif()
 
     if(WIN32)
-        target_link_libraries(${TARGET} ${LINK_SCOPE} dbghelp bcrypt version)
+        target_link_libraries(${TARGET} ${LINK_SCOPE} dbghelp bcrypt)
         # UWP builds have CMAKE_SYSTEM_NAME = "WindowsStore"; desktop = "Windows".
         if(NOT CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
+            target_link_libraries(${TARGET} ${LINK_SCOPE} version advapi32)
             target_compile_definitions(${TARGET} PRIVATE
                 FOUNDRY_LOCAL_DESKTOP_WINDOWS=1
                 FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT=1
@@ -411,7 +427,6 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
         ${TARGET}
         PRIVATE
             FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS=$<BOOL:${FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS}>
-            FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE=$<BOOL:${FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE}>
     )
 
     if(FOUNDRY_LOCAL_BUILD_SERVICE)
@@ -433,12 +448,10 @@ endfunction()
 # --------------------------------------------------------------------------
 # Generate version header from CMake project version (single source of truth)
 # --------------------------------------------------------------------------
-# CI overrides via -DFOUNDRY_LOCAL_VERSION_STRING=<full-version-string> so the
-# binary's FoundryLocalGetVersionString() matches the .nupkg version (which
-# typically includes a dev/timestamp suffix). Defaults to PROJECT_VERSION for
-# local developer builds.
-set(FOUNDRY_LOCAL_VERSION_STRING "${PROJECT_VERSION}"
-    CACHE STRING "Version string returned by FoundryLocalGetVersionString()")
+include(cmake/FoundryLocalVersion.cmake)
+
+include(cmake/NativeBuildIdentity.cmake)
+foundry_local_refresh_native_build_id("${CMAKE_CURRENT_SOURCE_DIR}")
 
 set(FOUNDRY_LOCAL_ORT_GENAI_VERSION "${ORT_GENAI_VERSION}")
 if(NOT FOUNDRY_LOCAL_ORT_GENAI_VERSION)
@@ -478,6 +491,17 @@ target_compile_definitions(foundry_local_objects PRIVATE FL_STATIC_LIBRARY=1)
 add_library(foundry_local SHARED)
 target_link_libraries(foundry_local PRIVATE foundry_local_objects)
 
+# Keep bundled libcurl (used by 1DS and Azure) and other static dependencies out of
+# the process-wide symbol namespace. Otherwise a host's libcurl can interpose
+# our curl_easy_init/curl_easy_perform calls with an incompatible CURL handle layout.
+include(cmake/shared-library-exports.cmake)
+foundry_local_configure_shared_library_exports(foundry_local)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
+    # Bundled OpenSSL registers pthread-local destructors on caller-owned threads.
+    # Keep their code mapped after dlclose until those threads have exited.
+    target_link_options(foundry_local PRIVATE "LINKER:-z,nodelete")
+endif()
+
 # --------------------------------------------------------------------------
 # RPATH — bake "look beside me" into the shared library so it works in every
 # deployment shape without per-consumer patching.
@@ -514,10 +538,15 @@ endif()
 
 if(WIN32)
     target_sources(foundry_local PRIVATE src/exports.def)
+    if(MSVC)
+        target_link_options(foundry_local PRIVATE /guard:cf /DYNAMICBASE)
+    endif()
 
     # Delay-load the WinML EP Catalog DLL — it may not be present on older Windows.
     # The bootstrapper handles the delay-load failure gracefully at runtime.
     if(WinMLEpCatalog_FOUND)
+        # /DELAYLOAD emits calls to __delayLoadHelper2, which MSVC provides in delayimp.lib.
+        target_link_libraries(foundry_local PRIVATE delayimp)
         target_link_options(foundry_local PRIVATE
             /DELAYLOAD:Microsoft.Windows.AI.MachineLearning.dll
         )
@@ -530,6 +559,43 @@ endif()
 add_library(foundry_local_static STATIC)
 target_link_libraries(foundry_local_static PUBLIC foundry_local_objects)
 target_compile_definitions(foundry_local_static PUBLIC FL_STATIC_LIBRARY=1)
+
+if(FOUNDRY_LOCAL_HAS_SHARED_HOST)
+    find_package(Threads REQUIRED)
+    add_executable(foundry-local-host
+        tools/foundry-local-host.cc
+        src/hosting/bootstrap_descriptor.cc
+        src/hosting/child_host_role.cc
+        src/hosting/host_state.cc
+        ${FOUNDRY_LOCAL_PROCESS_WATCH_SOURCE}
+        src/util/sha256.cc
+        src/exception.cc
+    )
+    target_include_directories(foundry-local-host PRIVATE include src "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    target_compile_options(foundry-local-host PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+    target_link_libraries(foundry-local-host PRIVATE nlohmann_json::nlohmann_json Threads::Threads ${CMAKE_DL_LIBS})
+    if(WIN32)
+        target_sources(foundry-local-host PRIVATE src/util/stacktrace_windows.cc)
+        target_link_libraries(foundry-local-host PRIVATE bcrypt dbghelp advapi32 shell32 ole32)
+        if(MSVC)
+            target_link_options(foundry-local-host PRIVATE /guard:cf /DYNAMICBASE)
+        endif()
+    else()
+        target_sources(foundry-local-host PRIVATE src/util/stacktrace_posix.cc)
+        target_link_libraries(foundry-local-host PRIVATE OpenSSL::Crypto)
+    endif()
+    add_custom_target(foundry-local-runtime-manifest ALL
+        COMMAND ${CMAKE_COMMAND}
+            "-DNATIVE_FILE=$<TARGET_FILE:foundry_local>"
+            "-DHOST_FILE=$<TARGET_FILE:foundry-local-host>"
+            "-DNATIVE_BUILD=${FOUNDRY_LOCAL_NATIVE_BUILD_ID}"
+            "-DRID=${_ORT_PLATFORM}"
+            "-DOUTPUT_FILE=$<TARGET_FILE_DIR:foundry_local>/foundry-local-runtime.json"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/WriteHostManifest.cmake"
+        DEPENDS foundry_local foundry-local-host
+        VERBATIM
+    )
+endif()
 
 # --------------------------------------------------------------------------
 # Copy ORT and ORT GenAI runtime libraries to the output directory.

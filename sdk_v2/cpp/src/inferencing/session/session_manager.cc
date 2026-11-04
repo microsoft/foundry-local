@@ -68,7 +68,7 @@ void SessionManager::CancelAll() {
   logger_.Log(LogLevel::Information,
               fmt::format("SessionManager: cancelling all sessions ({} active)", sessions_.size()));
 
-  // Signal every in-flight request to stop. Cancel() only sets atomic flags — no joins, no
+  // Signal every in-flight request to stop. Cancel() only updates atomic lifecycle state — no joins, no
   // re-entrancy into SessionManager — so calling it while holding mutex_ cannot deadlock.
   for (Session* s : sessions_) {
     s->Cancel();

@@ -15,7 +15,7 @@ from tokenizers import Tokenizer, decoders, models, pre_tokenizers
 BLOCK_SIZE = 4
 NUM_BLOCKS = 512
 CONTEXT_LENGTH = 1024
-VOCAB_SIZE = 98
+VOCAB_SIZE = 99
 SPECIAL_TOKENS = ["\ue000", "\ue001", "\ue002"]
 ROOT = Path(__file__).resolve().parent
 
@@ -190,12 +190,13 @@ def check_poisoned_cache(model):
 
 def create_tokenizer():
     vocab = {token: index for index, token in enumerate(SPECIAL_TOKENS)}
-    vocab.update({chr(code): code - 32 + 3 for code in range(32, 127)})
+    vocab.update({"\u0120" if code == 32 else chr(code): code - 32 + 3 for code in range(32, 127)})
+    vocab["\u010a"] = VOCAB_SIZE - 1
     tokenizer = Tokenizer(models.BPE(vocab, merges=[], unk_token=SPECIAL_TOKENS[2]))
-    tokenizer.pre_tokenizer = pre_tokenizers.Split("", behavior="isolated")
-    tokenizer.decoder = decoders.Fuse()
+    tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=False)
+    tokenizer.decoder = decoders.ByteLevel()
     tokenizer.add_special_tokens(SPECIAL_TOKENS)
-    printable = "".join(chr(code) for code in range(32, 127))
+    printable = "\n" + "".join(chr(code) for code in range(32, 127))
     assert tokenizer.decode(tokenizer.encode(printable).ids) == printable
     write_json("tokenizer.json", json.loads(tokenizer.to_str()))
     write_json(
@@ -260,7 +261,7 @@ if __name__ == "__main__":
                     "state_groups": [{"kind": "paged_kv", "layer_ids": [0]}],
                 },
             },
-            "search": {"max_length": CONTEXT_LENGTH, "do_sample": False},
+            "search": {"max_length": 128, "do_sample": False},
             "engine": {
                 "dynamic_batching": {
                     "block_size": BLOCK_SIZE,

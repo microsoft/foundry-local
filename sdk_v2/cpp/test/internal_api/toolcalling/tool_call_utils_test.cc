@@ -4,6 +4,8 @@
 // Tests for tool call parsing utilities in toolcalling/tool_call_utils.h.
 //
 #include "inferencing/generative/toolcalling/tool_call_utils.h"
+#include "inferencing/generative/chat/chat_transcript.h"
+#include "inferencing/session/tool_registry.h"
 #include "items/tool_call_item.h"
 
 #include <gtest/gtest.h>
@@ -18,10 +20,11 @@ namespace {
 
 std::string AdvertisedTool(const std::string& name) {
   return nlohmann::json::array({{
-      {"type", "function"},
-      {"name", name},
-      {"parameters", {{"type", "object"}}},
-  }}).dump();
+                                   {"type", "function"},
+                                   {"name", name},
+                                   {"parameters", {{"type", "object"}}},
+                               }})
+      .dump();
 }
 
 }  // namespace
@@ -120,6 +123,13 @@ TEST(ParseToolCallsTest, ParametersKeyWorksAsAlternative) {
   EXPECT_NE(calls[0].arguments.find("b"), std::string::npos);
 }
 
+TEST(ParseToolCallsTest, ParametersKeyRequiresAdvertisedTool) {
+  const std::string text = R"(<tc>{"name":"unadvertised","parameters":{"a":"b"}}</tc>)";
+  auto calls = ParseToolCalls(text, "<tc>", "</tc>", AdvertisedTool("advertised"));
+
+  EXPECT_TRUE(calls.empty());
+}
+
 TEST(ParseToolCallsTest, SingleKeyToolCall) {
   std::string text =
       R"(<tc>{"exec_command":{"cmd":"grep -n test file.py"}}</tc>)";
@@ -205,32 +215,62 @@ TEST(ParseToolCallsTest, RecoversCommaAfterToolName) {
   EXPECT_EQ(calls[0].arguments, R"({"cmd":"ls /testbed","workdir":"/testbed"})");
 }
 
-TEST(ParseToolCallsTest, DoesNotAliasCanonicalExecCommandToShell) {
+TEST(ParseToolCallsTest, RejectsCanonicalUndeclaredTool) {
   std::string text =
       R"(<tool_call>{"name":"exec_command","arguments":{"cmd":"git diff"}}</tool_call>)";
   std::string tools =
-    R"([{"type":"function","name":"shell","parameters":{"type":"object"}}])";
+      R"([{"type":"function","name":"shell","parameters":{"type":"object"}}])";
   auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>", tools);
 
-  ASSERT_EQ(calls.size(), 1u);
-  EXPECT_EQ(calls[0].name, "exec_command");
-  EXPECT_EQ(calls[0].arguments, R"({"cmd":"git diff"})");
+  EXPECT_TRUE(calls.empty());
 }
 
 TEST(ParseToolCallsTest, RepairedNameMustMatchAdvertisedTool) {
   std::string text =
       R"(<tool_call><"exec_command","arguments":{"cmd":"git diff"}</tool_call>)";
   std::string tools =
-    R"([{"type":"function","name":"shell","parameters":{"type":"object"}}])";
+      R"([{"type":"function","name":"shell","parameters":{"type":"object"}}])";
   auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>", tools);
 
   EXPECT_TRUE(calls.empty());
+}
+
+TEST(ParseToolCallsTest, MalformedAdvertisedToolNamesRejectRepairWithoutThrowing) {
+  const std::string text =
+      R"(<tool_call>{"function":"advertised","arguments":{}}</tool_call>)";
+  const std::vector<std::string> malformed_tools = {
+      R"([{"name":1}])",
+      R"([{"function":{"name":1}}])",
+      R"([{"function":{"name":null}}])",
+      R"([{"function":1}])",
+      R"([{"type":"bogus","name":"advertised"}])",
+      R"([{"type":"bogus","function":{"name":"advertised"}}])",
+      R"([{"type":"function","name":"advertised","function":{"name":"inner"}}])",
+      R"([{"type":"function","name":"advertised","function":1}])",
+  };
+
+  for (const auto& tools : malformed_tools) {
+    SCOPED_TRACE(tools);
+    EXPECT_NO_THROW({
+      const auto calls =
+          ParseToolCalls(text, "<tool_call>", "</tool_call>", tools);
+      EXPECT_TRUE(calls.empty());
+    });
+  }
 }
 
 TEST(ParseToolCallsTest, RejectsRepairWhenToolMetadataIsEmpty) {
   std::string text =
       R"(<tool_call><"exec_command","arguments":{"cmd":"git diff"}</tool_call>)";
   auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>", "[]");
+
+  EXPECT_TRUE(calls.empty());
+}
+
+TEST(ParseToolCallsTest, RejectsRepairedCallWithoutToolMetadata) {
+  const std::string text =
+      R"(<tool_call>{"function":"missing","arguments":{}}</tool_call>)";
+  auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>");
 
   EXPECT_TRUE(calls.empty());
 }
@@ -270,16 +310,48 @@ TEST(ParseToolCallsTest, DoesNotAliasSingletonCmdToShell) {
   EXPECT_TRUE(calls.empty());
 }
 
-TEST(ParseToolCallsTest, DoesNotAliasCanonicalCommandArgumentOrToolName) {
+TEST(ParseToolCallsTest, RejectsCanonicalUndeclaredToolWithPlausibleArguments) {
   std::string text =
       R"(<tool_call>{"name":"exec_command","arguments":{"command":"pwd"}}</tool_call>)";
   std::string tools =
       R"([{"type":"function","name":"shell","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}])";
   auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>", tools);
 
+  EXPECT_TRUE(calls.empty());
+}
+
+TEST(ParseToolCallsTest, UndeclaredCanonicalSiblingRejectsEntireBatch) {
+  const std::string text =
+      R"(<tool_call>[{"name":"advertised","arguments":{}},{"name":"missing","arguments":{}}]</tool_call>)";
+  auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>", AdvertisedTool("advertised"));
+
+  EXPECT_TRUE(calls.empty());
+}
+
+TEST(ParseToolCallsTest, CanonicalParsingWithoutToolMetadataRemainsAvailable) {
+  const std::string text =
+      R"(<tool_call>{"name":"structural_parse","arguments":{"value":1}}</tool_call>)";
+  auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>");
+
   ASSERT_EQ(calls.size(), 1u);
-  EXPECT_EQ(calls[0].name, "exec_command");
-  EXPECT_EQ(calls[0].arguments, R"({"command":"pwd"})");
+  EXPECT_EQ(calls[0].name, "structural_parse");
+}
+
+TEST(ParseToolCallsTest, CanonicalAdmissionUsesSuppliedToolMetadata) {
+  const std::string text =
+      R"(<tool_call>{"name":"advertised","arguments":{"value":1}}</tool_call>)";
+  const std::vector<std::pair<std::string, bool>> cases = {
+      {"[]", false},
+      {"not json", false},
+      {R"([{"type":"function","name":"advertised","parameters":{"type":"object"}}])", true},
+      {R"([{"type":"function","function":{"name":"advertised","parameters":{"type":"object"}}}])", true},
+  };
+
+  for (const auto& [tools, accepted] : cases) {
+    SCOPED_TRACE(tools);
+    const auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>", tools);
+    EXPECT_EQ(!calls.empty(), accepted);
+  }
 }
 
 TEST(ParseToolCallsTest, RecoversFunctionKeyAndMissingOuterBrace) {
@@ -291,6 +363,16 @@ TEST(ParseToolCallsTest, RecoversFunctionKeyAndMissingOuterBrace) {
   ASSERT_EQ(calls.size(), 1u);
   EXPECT_EQ(calls[0].name, "exec_command");
   EXPECT_EQ(calls[0].arguments, R"({"cmd":"pwd"})");
+}
+
+TEST(ParseToolCallsTest, MissingOuterBracePreservesDuplicateCustomInputSource) {
+  const std::string arguments = R"({ "input":"first", "input":"second" })";
+  const std::string text = "<tc>{\"name\":\"run\",\"arguments\":" + arguments + "</tc>";
+  auto calls = ParseToolCalls(text, "<tc>", "</tc>", AdvertisedTool("run"));
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].argument_source, arguments);
+  EXPECT_EQ(ExtractCustomToolInput(calls[0].argument_source), arguments);
 }
 
 TEST(ParseToolCallsTest, InvalidJsonReturnsEmpty) {
@@ -316,6 +398,83 @@ TEST(ParseToolCallsTest, StringArguments) {
   EXPECT_EQ(calls[0].name, "fn");
   // String arguments are kept as-is
   EXPECT_NE(calls[0].arguments.find("key"), std::string::npos);
+  const std::string expected_source = R"("{\"key\": \"value\"}")";
+  EXPECT_EQ(calls[0].argument_source, expected_source);
+}
+
+TEST(ParseToolCallsTest, PreservesExactArgumentValueSourceBytes) {
+  const std::string arguments =
+      R"({ "z" : [1, {"escaped":"a\\\"b"}], "z":2, "input" : "\u0061" })";
+  const auto calls =
+      ParseToolCalls("<tc>{\"name\":\"fn\",\"arguments\":" + arguments + "}</tc>", "<tc>", "</tc>");
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].argument_source, arguments);
+  EXPECT_NE(calls[0].arguments, arguments);
+}
+
+TEST(ParseToolCallsTest, ParametersPreserveExactSourceBytes) {
+  const auto calls = ParseToolCalls(R"(<tc>{"name":"fn","parameters": { "b":2, "a":1 } }</tc>)",
+                                    "<tc>", "</tc>", AdvertisedTool("fn"));
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].argument_source, R"({ "b":2, "a":1 })");
+  EXPECT_EQ(calls[0].arguments, R"({"a":1,"b":2})");
+}
+
+TEST(ParseToolCallsTest, CustomLoneInputUnwrapsDecodedTextEndToEnd) {
+  const auto calls = ParseToolCalls(
+      R"(<tc>{"name":"run","arguments": { "input" : "line\u000a\u00e9" } }</tc>)", "<tc>", "</tc>");
+
+  ASSERT_EQ(calls.size(), 1u);
+  const auto payload = ExtractCustomToolInput(calls[0].argument_source);
+  auto generated = MakeGeneratedToolCall(calls[0].id, calls[0].name, payload, ToolKind::kCustom);
+  EXPECT_EQ(generated.call.arguments, "line\né");
+  EXPECT_EQ(generated.call.normalized_arguments,
+            nlohmann::ordered_json({{kCustomToolInputParameter, "line\né"}}));
+}
+
+TEST(ParseToolCallsTest, CustomNonWrapperKeepsExactSourceEndToEnd) {
+  const std::string arguments = R"({ "input":"first", "input":"second", "z" : 1 })";
+  const auto calls =
+      ParseToolCalls("<tc>{\"name\":\"run\",\"arguments\":" + arguments + "}</tc>", "<tc>", "</tc>");
+
+  ASSERT_EQ(calls.size(), 1u);
+  const auto payload = ExtractCustomToolInput(calls[0].argument_source);
+  auto generated = MakeGeneratedToolCall(calls[0].id, calls[0].name, payload, ToolKind::kCustom);
+  EXPECT_EQ(generated.call.arguments, arguments);
+  EXPECT_EQ(generated.call.normalized_arguments,
+            nlohmann::ordered_json({{kCustomToolInputParameter, arguments}}));
+}
+
+TEST(ParseToolCallsTest, RepairedArgsAliasPreservesDuplicateCustomInputSource) {
+  const std::string arguments = R"({ "input":"first", "input":"sec\u006fnd" })";
+  const auto calls = ParseToolCalls("<tc>{\"name\":\"run\",\"args\":" + arguments + "}</tc>",
+                                    "<tc>", "</tc>", AdvertisedTool("run"));
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].argument_source, arguments);
+  EXPECT_EQ(ExtractCustomToolInput(calls[0].argument_source), arguments);
+}
+
+TEST(ParseToolCallsTest, RepairedSingletonPreservesDuplicateCustomInputSource) {
+  const std::string arguments = R"({ "input":"first", "input":"sec\u006fnd" })";
+  const auto calls =
+      ParseToolCalls("<tc>{\"run\":" + arguments + "}</tc>", "<tc>", "</tc>", AdvertisedTool("run"));
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].argument_source, arguments);
+  EXPECT_EQ(ExtractCustomToolInput(calls[0].argument_source), arguments);
+}
+
+TEST(ParseToolCallsTest, RepairedMissingNameDirectMembersPreserveDuplicateCustomInputSource) {
+  const std::string arguments = R"({"input" : "first", "input":"sec\u006fnd" })";
+  const std::string text = R"(<tc><run","input" : "first", "input":"sec\u006fnd" }</tc>)";
+  const auto calls = ParseToolCalls(text, "<tc>", "</tc>", AdvertisedTool("run"));
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].argument_source, arguments);
+  EXPECT_EQ(ExtractCustomToolInput(calls[0].argument_source), arguments);
 }
 
 // ========================================================================

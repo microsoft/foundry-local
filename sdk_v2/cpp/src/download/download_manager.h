@@ -5,16 +5,21 @@
 #include "download/blob_downloader.h"
 #include "download/model_registry_client.h"
 #include "model_info.h"
+#include "util/region_fallback.h"
 
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace fl {
 
 class ILogger;
+class ITelemetry;
+class ModelLoadManager;
 
 /// Orchestrates the full model download flow:
 /// 1. Compute local cache path
@@ -32,30 +37,54 @@ class DownloadManager {
   /// @param logger Logger forwarded to the registry client for retry diagnostics.
   /// @param disable_region_fallback When true, the registry uses a single region attempt
   ///        with no cross-region fallback.
+  /// @param telemetry Telemetry sink. A Download event is emitted per DownloadModel call.
   DownloadManager(std::string cache_directory,
                   std::string_view catalog_region,
                   int max_concurrency,
                   ILogger& logger,
-                  bool disable_region_fallback = false);
+                  ITelemetry& telemetry,
+                  bool disable_region_fallback = false,
+                  std::unique_ptr<ModelRegistryClient> registry_client = nullptr,
+                  std::unique_ptr<IBlobDownloader> blob_downloader = nullptr);
   ~DownloadManager();
-
-  /// Override the model registry client (for testing).
-  void SetModelRegistryClient(std::unique_ptr<ModelRegistryClient> client);
-
-  /// Override the blob downloader (for testing).
-  void SetBlobDownloader(std::unique_ptr<IBlobDownloader> downloader);
 
   /// Download a model to the local cache.
   /// progress_cb reports 0.0 to 100.0 percentage.
+  /// user_agent identifies the calling API surface for telemetry attribution; pass an
+  /// empty string when called outside of an HTTP request context.
   /// Returns the local path where the model was downloaded.
   /// Throws fl::Exception on failure.
-  std::string DownloadModel(const ModelInfo& info, std::function<int(float)> progress_cb = nullptr);
+  std::string DownloadModel(const ModelInfo& info,
+                            std::function<int(float)> progress_cb = nullptr,
+                            const std::string& user_agent = "");
+
+  /// Download a model with telemetry attribution and an optional progress callback.
+  std::string DownloadModel(const ModelInfo& info,
+                            const std::string& user_agent,
+                            std::function<int(float)> progress_cb = nullptr) {
+    return DownloadModel(info, std::move(progress_cb), user_agent);
+  }
+
+  std::string DownloadModel(const ModelInfo& info,
+                            std::nullptr_t,
+                            const std::string& user_agent = "") {
+    return DownloadModel(info, std::function<int(float)>{}, user_agent);
+  }
 
   /// Check if a model is cached locally (directory exists and download is complete).
   bool IsModelCached(const ModelInfo& info) const;
 
   /// Get the local cache path for a model. Returns empty string if not determinable.
   std::string GetModelCachePath(const ModelInfo& info) const;
+
+  /// Resolve an already completed cache entry without downloading. Includes any inference revision subdirectory.
+  std::string GetCompletedModelCachePath(const ModelInfo& info) const;
+
+  /// Remove completed or incomplete model assets and download state.
+  /// local_path is the scanner-discovered inference directory, if available.
+  /// Rejects removal while a download owns the model's cross-process lock.
+  /// Checks loaded models against the resolved deletion subtree and excludes new loads during deletion.
+  void RemoveModelFromCache(const ModelInfo& info, const std::string& local_path, ModelLoadManager& model_load_manager);
 
   /// Get the cache directory.
   const std::string& GetCacheDirectory() const { return cache_directory_; }
@@ -77,6 +106,7 @@ class DownloadManager {
   ILogger& logger_;
   std::unique_ptr<ModelRegistryClient> registry_client_;
   std::unique_ptr<IBlobDownloader> blob_downloader_;
+  ITelemetry& telemetry_;
 
   /// Serializes all model downloads in this process: only one runs at a time, so
   /// each gets the full network/disk instead of competing with another download.

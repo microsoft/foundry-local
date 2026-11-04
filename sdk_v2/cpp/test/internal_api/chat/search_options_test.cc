@@ -7,6 +7,7 @@
 #include "inferencing/generative/chat/search_options.h"
 #include "inferencing/generative/chat/stop_strings.h"
 #include "inferencing/generative/toolcalling/tool_call_context.h"
+#include "inferencing/generative/toolcalling/tool_call_plan.h"
 #include "exception.h"
 #include "inferencing/generative/genai_config.h"
 #include "inferencing/model_load_manager.h"
@@ -26,12 +27,50 @@
 
 using namespace fl;
 
+TEST(SearchOptionsParsingTest, CanonicalReasoningToolsUseWholeTurnGuidanceRatherThanScratchpadRegionGuidance) {
+  ToolCallContext context;
+  context.tools_json = R"([{"type":"function","function":{"name":"read","parameters":{"type":"object"}}}])";
+  context.tool_plan = ToolCallPlan::Create(context.tools_json);
+  context.tool_output = true;
+  context.supports_reasoning = true;
+  context.reasoning_start = "<think>";
+  context.reasoning_end = "</think>";
+  context.tool_call_start = "<tool_call>";
+  context.tool_call_end = "</tool_call>";
+  context.tool_call_start_token_id = 101;
+  context.tool_call_end_token_id = 102;
+  context.reasoning_start_token_id = 103;
+  context.reasoning_end_token_id = 104;
+  const auto whole_turn = ResolveTurnGuidanceOptions(context, /*prompt_opens_reasoning=*/true);
+  ASSERT_TRUE(whole_turn.has_value());
+  EXPECT_EQ(whole_turn->type, "lark_grammar");
+  EXPECT_FALSE(whole_turn->user_specified);
+
+  context.supports_reasoning = false;
+  context.tool_body_grammar = context.tool_plan->Grammar();
+  EXPECT_FALSE(ResolveTurnGuidanceOptions(context, false).has_value());
+}
+
 TEST(SearchOptionsParsingTest, TemperatureOutsideSupportedRangeThrows) {
   for (const char* temperature : {"-1", "2.1", "nan"}) {
     KeyValuePairs params;
     params.Add(FOUNDRY_LOCAL_PARAM_TEMPERATURE, temperature);
 
     EXPECT_THROW(SearchOptions::FromParameters(params), fl::Exception);
+  }
+}
+
+TEST(SearchOptionsParsingTest, NumericParametersRejectTrailingCharacters) {
+  for (const auto& [key, value] : {std::pair{FOUNDRY_LOCAL_PARAM_TEMPERATURE, "0.9oops"},
+                                   std::pair{FOUNDRY_LOCAL_PARAM_TOP_P, "0.9oops"},
+                                   std::pair{FOUNDRY_LOCAL_PARAM_TOP_K, "40oops"},
+                                   std::pair{FOUNDRY_LOCAL_PARAM_MAX_OUTPUT_TOKENS, "1.5"},
+                                   std::pair{FOUNDRY_LOCAL_PARAM_FREQUENCY_PENALTY, "0.1oops"},
+                                   std::pair{FOUNDRY_LOCAL_PARAM_PRESENCE_PENALTY, "0.1oops"},
+                                   std::pair{FOUNDRY_LOCAL_PARAM_SEED, "42oops"}}) {
+    KeyValuePairs params;
+    params.Add(key, value);
+    EXPECT_THROW(SearchOptions::FromParameters(params), fl::Exception) << key;
   }
 }
 
@@ -48,6 +87,64 @@ TEST(SearchOptionsParsingTest, ExplicitOutputLimitOverridesTurnDefault) {
   explicit_limit.max_output_tokens = 64;
   EXPECT_EQ(ResolveMaxOutputTokens(explicit_limit, GetDefaultMaxOutputTokens(/*has_media=*/false)), 64);
   EXPECT_EQ(ResolveMaxOutputTokens(explicit_limit, GetDefaultMaxOutputTokens(/*has_media=*/true)), 64);
+}
+
+TEST(SearchOptionsParsingTest, ModelContextLengthIsAuthoritativeWithLegacyFallback) {
+  GenAIConfig config;
+  config.model.emplace().context_length = 8192;
+  config.search.emplace().max_length = 2048;
+  EXPECT_EQ(GetModelMaxContextLength(config), 8192);
+
+  config.model->context_length = 0;
+  EXPECT_EQ(GetModelMaxContextLength(config), 2048);
+
+  config.search->max_length = 0;
+  EXPECT_THROW(GetModelMaxContextLength(config), fl::Exception);
+}
+
+TEST(SearchOptionsParsingTest, RequestBudgetReportsExactFitAndDeficit) {
+  const auto exact = ComputeRequestBudget(90, 10, 100);
+  EXPECT_TRUE(exact.fits);
+  EXPECT_EQ(exact.required_tokens, 100);
+  EXPECT_EQ(exact.deficit_tokens, 0);
+
+  const auto over = ComputeRequestBudget(91, 10, 100);
+  EXPECT_FALSE(over.fits);
+  EXPECT_EQ(over.required_tokens, 101);
+  EXPECT_EQ(over.deficit_tokens, 1);
+}
+
+TEST(SearchOptionsParsingTest, GeneratorBudgetValidatorMatchesPreflightBoundaries) {
+  for (const int prompt_tokens : {90, 91}) {
+    const auto budget = ComputeRequestBudget(prompt_tokens, 10, 100);
+    EXPECT_EQ(budget.fits, prompt_tokens == 90);
+    if (budget.fits) {
+      EXPECT_EQ(ValidateGeneratorRequestBudget(prompt_tokens, 10, 100), 100);
+    } else {
+      EXPECT_THROW(ValidateGeneratorRequestBudget(prompt_tokens, 10, 100), fl::Exception);
+    }
+  }
+
+  const auto overflow = ComputeRequestBudget(10, (std::numeric_limits<int>::max)(), 100);
+  EXPECT_FALSE(overflow.fits);
+  EXPECT_THROW(ValidateGeneratorRequestBudget(10, (std::numeric_limits<int>::max)(), 100), fl::Exception);
+}
+
+TEST(SearchOptionsParsingTest, OutputReserveMatchesBackendGenerationPolicy) {
+  SearchOptions explicit_limit;
+  explicit_limit.max_output_tokens = 64;
+  EXPECT_EQ(ResolveOutputReserve(explicit_limit, ChatBackendKind::kEngine, false, 25, 100), 64);
+
+  const SearchOptions defaults;
+  EXPECT_EQ(ResolveOutputReserve(defaults, ChatBackendKind::kGenerator, false, 25, 100), 2048);
+  EXPECT_EQ(ResolveOutputReserve(defaults, ChatBackendKind::kGenerator, true, 25, 100), 3072);
+  EXPECT_EQ(ResolveOutputReserve(defaults, ChatBackendKind::kEngine, false, 25, 100), 75);
+  EXPECT_EQ(ResolveOutputReserve(defaults, ChatBackendKind::kEngine, false, 100, 100), 1);
+
+  const auto exhausted = ComputeRequestBudget(
+      100, ResolveOutputReserve(defaults, ChatBackendKind::kEngine, false, 100, 100), 100);
+  EXPECT_FALSE(exhausted.fits);
+  EXPECT_EQ(exhausted.deficit_tokens, 1);
 }
 
 TEST(SearchOptionsParsingTest, RetainedGenerationSettingsAreBackendAware) {
@@ -200,6 +297,28 @@ TEST(SamplingPlanTest, PositiveTemperatureEnablesSampling) {
   EXPECT_TRUE(*plan.do_sample);
 }
 
+TEST(SamplingPlanTest, NeutralTemperaturePreservesModelSamplingDefault) {
+  SearchOptions options;
+  options.temperature = 1.0f;
+
+  const auto plan = ResolveSamplingPlan(options);
+  EXPECT_FALSE(plan.greedy);
+  EXPECT_FALSE(plan.do_sample.has_value());
+  ASSERT_TRUE(plan.temperature.has_value());
+  EXPECT_FLOAT_EQ(*plan.temperature, 1.0f);
+}
+
+TEST(SamplingPlanTest, ExplicitSamplingWithNeutralTemperatureRemainsExplicit) {
+  SearchOptions options;
+  options.do_sample = true;
+  options.temperature = 1.0f;
+
+  const auto plan = ResolveSamplingPlan(options);
+  EXPECT_FALSE(plan.greedy);
+  ASSERT_TRUE(plan.do_sample.has_value());
+  EXPECT_TRUE(*plan.do_sample);
+}
+
 TEST(SamplingPlanTest, OutOfRangeScalarsAreRejected) {
   for (float top_p : {-0.1f, 1.1f, std::numeric_limits<float>::infinity()}) {
     SearchOptions options;
@@ -267,6 +386,55 @@ TEST(EngineTurnOptionsPlanTest, NegativeSeedIsOmitted) {
   }
 }
 
+TEST(EngineTurnOptionsPlanTest, SuppressesNativeStopsOnlyForAssistantTextFraming) {
+  SearchOptions options;
+  options.stop_sequences = {"SS", "STOP"};
+  ToolCallContext automatic;
+  automatic.tools_json =
+      R"([{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}])";
+  automatic.tool_plan = ToolCallPlan::Create(automatic.tools_json);
+  automatic.tool_call_start = "<tool_call>";
+  automatic.tool_call_end = "</tool_call>";
+  automatic.tool_call_start_token_id = 99;
+  automatic.tool_call_end_token_id = 100;
+  automatic.text_output = true;
+  automatic.tool_output = true;
+  ASSERT_TRUE(automatic.UsesAssistantTextFraming());
+
+  auto required = automatic;
+  required.text_output = false;
+  auto disabled_tools = automatic;
+  disabled_tools.tool_output = false;
+  auto explicit_guidance = automatic;
+  explicit_guidance.guidance_type = "json_schema";
+  explicit_guidance.guidance_data = R"({"type":"object"})";
+  auto raw = automatic;
+  raw.raw_envelope = RawEnvelopeDescriptor{"lookup", "BEGIN", "END"};
+  raw.tool_kinds.emplace("lookup", ToolKind::kCustom);
+  ASSERT_NE(raw.ActiveRawEnvelope(), nullptr);
+
+  const std::vector<std::pair<ToolCallContext, bool>> cases{
+      {ToolCallContext{}, false}, {automatic, true}, {required, false},
+      {disabled_tools, false}, {explicit_guidance, false}, {raw, false}};
+  for (const auto& [context, framed] : cases) {
+    for (const bool reasoning : {false, true}) {
+      auto turn_context = context;
+      turn_context.supports_reasoning = reasoning;
+      turn_context.reasoning_start = "<think>";
+      turn_context.reasoning_end = "</think>";
+      turn_context.reasoning_start_token_id = 101;
+      turn_context.reasoning_end_token_id = 102;
+      for (const bool prompt_opens_reasoning : {false, true}) {
+        const auto plan = BuildEngineTurnOptionsPlan(options, turn_context, ChatBackendKind::kEngine,
+                                                     prompt_opens_reasoning);
+        EXPECT_EQ(turn_context.UsesAssistantTextFraming(), framed);
+        EXPECT_EQ(plan.stop_sequences, framed ? std::vector<std::string>{} : options.stop_sequences);
+      }
+    }
+  }
+  EXPECT_EQ(options.stop_sequences, (std::vector<std::string>{"SS", "STOP"}));
+}
+
 TEST(EngineTurnOptionsPlanTest, ZeroSeedIsForwarded) {
   SearchOptions options;
   options.seed = 0;
@@ -291,6 +459,77 @@ TEST(EngineTurnOptionsPlanTest, UserGuidanceAppliesWithoutToolOnlyMode) {
   EXPECT_TRUE(plan.guidance->user_specified);
 }
 
+TEST(EngineTurnOptionsPlanTest, RegionGuidanceDoesNotBecomeWholeTurnGuidance) {
+  ToolCallContext tool_ctx;
+  tool_ctx.tool_output = true;
+  tool_ctx.tools_json = R"([{"type":"function","function":{"name":"grep",)"
+                        R"("parameters":{"type":"object","properties":{"paths":{"type":"string"}}}}}])";
+  tool_ctx.tool_body_grammar = "start: \"\\n<function=grep>\\n\"";
+
+  const auto plan = BuildEngineTurnOptionsPlan(SearchOptions{}, tool_ctx, ChatBackendKind::kEngine, false);
+  EXPECT_FALSE(plan.guidance.has_value());
+
+  tool_ctx.guidance_type = "json_schema";
+  tool_ctx.guidance_data = R"({"type":"object"})";
+  const auto explicit_plan = BuildEngineTurnOptionsPlan(SearchOptions{}, tool_ctx, ChatBackendKind::kEngine, false);
+  ASSERT_TRUE(explicit_plan.guidance.has_value());
+  EXPECT_TRUE(explicit_plan.guidance->user_specified);
+}
+
+TEST(EngineTurnOptionsPlanTest, GuidedRetryReplacesRegionGuidanceWithWholeTurnJsonGuidance) {
+  ToolCallContext tool_ctx;
+  tool_ctx.tool_output = true;
+  tool_ctx.tools_json = R"([{"type":"function","function":{"name":"grep",)"
+                        R"("parameters":{"type":"object","properties":{"paths":{"type":"string"}}}}}])";
+  tool_ctx.tool_call_start = "<tool_call>";
+  tool_ctx.tool_call_end = "</tool_call>";
+  tool_ctx.tool_plan = ToolCallPlan::Create(tool_ctx.tools_json);
+  tool_ctx.tool_body_grammar = "start: \"\\n<function=grep>\\n\"";
+  EXPECT_FALSE(BuildEngineTurnOptionsPlan(SearchOptions{}, tool_ctx, ChatBackendKind::kEngine, false).guidance);
+
+  tool_ctx.ConfigureForGuidedToolRetry();
+  EXPECT_FALSE(tool_ctx.text_output);
+  EXPECT_TRUE(tool_ctx.tool_output);
+  EXPECT_FALSE(tool_ctx.tool_body_grammar);
+
+  const auto retry = BuildEngineTurnOptionsPlan(SearchOptions{}, tool_ctx, ChatBackendKind::kEngine, false);
+  ASSERT_TRUE(retry.guidance);
+  EXPECT_EQ(retry.guidance->type, "lark_grammar");
+  EXPECT_NE(retry.guidance->data.find("functioncall"), std::string::npos);
+  EXPECT_FALSE(retry.guidance->user_specified);
+}
+
+TEST(EngineTurnOptionsPlanTest, ForcedRawToolWithoutCompatibleGrammarDisablesStructuredGuidance) {
+  ToolCallContext tool_ctx;
+  tool_ctx.text_output = false;
+  tool_ctx.tool_output = true;
+  tool_ctx.tools_json =
+      R"([{"type":"function","function":{"name":"edit","parameters":{"type":"object"}}}])";
+  tool_ctx.guidance_type = "json_schema";
+  tool_ctx.guidance_data = R"({"type":"object"})";
+  tool_ctx.guidance_disabled = true;
+
+  const auto plan =
+      BuildEngineTurnOptionsPlan(SearchOptions{}, tool_ctx, ChatBackendKind::kEngine, false);
+
+  EXPECT_FALSE(plan.guidance.has_value());
+}
+
+TEST(EngineTurnOptionsPlanTest, ForcedRawToolUsesItsCompatibleLarkGrammar) {
+  ToolCallContext tool_ctx;
+  tool_ctx.text_output = false;
+  tool_ctx.tool_output = true;
+  tool_ctx.guidance_type = "lark_grammar";
+  tool_ctx.guidance_data = "start: \"BEGIN\" /(.|\\n)+/ \"END\"";
+
+  const auto plan =
+      BuildEngineTurnOptionsPlan(SearchOptions{}, tool_ctx, ChatBackendKind::kEngine, false);
+
+  ASSERT_TRUE(plan.guidance.has_value());
+  EXPECT_EQ(plan.guidance->type, "lark_grammar");
+  EXPECT_EQ(plan.guidance->data, tool_ctx.guidance_data);
+}
+
 TEST(EngineTurnOptionsPlanTest, PromptOpenedReasoningOmitsTheGrammarOpener) {
   ToolCallContext tool_ctx;
   tool_ctx.text_output = false;
@@ -300,6 +539,10 @@ TEST(EngineTurnOptionsPlanTest, PromptOpenedReasoningOmitsTheGrammarOpener) {
   tool_ctx.reasoning_end = "</think>";
   tool_ctx.reasoning_start_token_id = 248058;
   tool_ctx.reasoning_end_token_id = 248059;
+  tool_ctx.tools_json = R"([{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}])";
+  tool_ctx.tool_plan = ToolCallPlan::Create(tool_ctx.tools_json);
+  tool_ctx.tool_call_start = "<tool_call>";
+  tool_ctx.tool_call_end = "</tool_call>";
 
   const auto closed_plan =
       BuildEngineTurnOptionsPlan(SearchOptions{}, tool_ctx, ChatBackendKind::kEngine, false);
@@ -310,8 +553,8 @@ TEST(EngineTurnOptionsPlanTest, PromptOpenedReasoningOmitsTheGrammarOpener) {
   ASSERT_TRUE(open_plan.guidance.has_value());
   EXPECT_FALSE(closed_plan.guidance->user_specified);
   EXPECT_FALSE(open_plan.guidance->user_specified);
-  EXPECT_NE(closed_plan.guidance->data.find("cot: <[248058]> THINK_TEXT"), std::string::npos);
-  EXPECT_NE(open_plan.guidance->data.find("cot: THINK_TEXT <[248059]>"), std::string::npos);
+  EXPECT_NE(closed_plan.guidance->data.find("cot: <[248058]> plain_token*"), std::string::npos);
+  EXPECT_NE(open_plan.guidance->data.find("cot: plain_token* <[248059]>"), std::string::npos);
   EXPECT_EQ(open_plan.guidance->data.find("cot: <[248058]>"), std::string::npos);
 }
 

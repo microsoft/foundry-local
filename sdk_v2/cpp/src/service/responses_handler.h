@@ -4,6 +4,7 @@
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
 
+#include "inferencing/generative/openresponses/response_converter.h"
 #include "service/handler_utils.h"
 
 #include "inferencing/generative/openresponses/response_chain.h"
@@ -12,6 +13,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 
 namespace fl {
 
@@ -20,6 +22,7 @@ struct Request;
 class ChatSession;
 class Model;
 class GenAIModelInstance;
+class ActionTracker;
 
 namespace responses {
 struct ResponseCreateParams;
@@ -53,7 +56,9 @@ class ResponsesHandler : public HttpRequestHandler {
   /// Returns an error response on failure, nullptr on success.
   std::shared_ptr<OutgoingResponse> ParseAndValidateRequest(const std::string& body,
                                                             nlohmann::json& req_json,
-                                                            responses::ResponseCreateParams& params);
+                                                            responses::ResponseCreateParams& params,
+                                                            Request& prepared_request,
+                                                            std::vector<fl::ToolDefinition>& tool_definitions);
 
   /// Look up model in catalog and verify it's loaded. Sets output pointers.
   /// Returns an error response on failure, nullptr on success.
@@ -85,7 +90,8 @@ class ResponsesHandler : public HttpRequestHandler {
   std::shared_ptr<OutgoingResponse> HandleStreaming(std::unique_ptr<ChatSession> session, Request session_request,
                                                     const ResponseTurn& turn, ResponseLease lease,
                                                     const responses::ResponseCreateParams& params,
-                                                    const nlohmann::json& req_json);
+                                                    const nlohmann::json& req_json,
+                                                    std::unique_ptr<ActionTracker> route_tracker);
 
   ServiceContext& ctx_;
 };

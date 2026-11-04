@@ -418,8 +418,14 @@ std::vector<Model*> BaseModelCatalog::GetLoadedModels() const {
   std::lock_guard<std::mutex> lock(mutex_);
   std::vector<Model*> result;
   for (auto& stored : models_) {
-    if (stored.active && stored.model->IsLoaded()) {
-      result.push_back(stored.model.get());
+    if (!stored.active) {
+      continue;
+    }
+
+    for (auto* variant : stored.model->Variants()) {
+      if (variant->IsLoaded()) {
+        result.push_back(variant);
+      }
     }
   }
 
@@ -495,7 +501,7 @@ std::vector<Model*> BaseModelCatalog::GetModelVersions(const std::string& model_
 
   std::vector<Model> fetched;
   try {
-    fetched = FetchModelVersions(model_alias, variant_name);  // variant_name is used as model_name filter
+    fetched = FetchModelVersions(model_alias, variant_name, max_versions);
   } catch (const std::exception& ex) {
     logger_.Log(LogLevel::Warning,
                 fmt::format("GetModelVersions: fetch for alias '{}' failed — {}",
@@ -547,26 +553,6 @@ std::vector<Model*> BaseModelCatalog::GetModelVersions(const std::string& model_
       logger_.Log(LogLevel::Information,
                   fmt::format("GetModelVersions: alias '{}' not found in catalog.", model_alias));
     }
-  }
-
-  if (max_versions > 0 && !result.empty()) {
-    // Enforce latest N per variant name from the best-first ordering.
-    std::unordered_map<std::string, int> selected_per_variant;
-    std::vector<Model*> limited;
-    limited.reserve(result.size());
-
-    for (Model* model : result) {
-      const std::string& variant = model->Info().name;
-      int& count = selected_per_variant[variant];
-      if (count >= max_versions) {
-        continue;
-      }
-
-      ++count;
-      limited.push_back(model);
-    }
-
-    result = std::move(limited);
   }
 
   return result;

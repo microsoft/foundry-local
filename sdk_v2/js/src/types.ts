@@ -7,6 +7,12 @@ export enum DeviceType {
   NPU = "NPU",
 }
 
+/** Selects the manager-owned model catalog. */
+export enum CatalogType {
+  Public = 0,
+  Local = 1,
+}
+
 /**
  * @deprecated PromptTemplate is an internal model implementation detail and will be removed in a future release.
  * Templates are applied automatically by ChatSession.
@@ -58,7 +64,13 @@ export interface ModelInfo {
   readonly modelProvider?: string;
   readonly minFLVersion?: string;
   readonly parentUri?: string;
+  readonly toolCallStart?: string;
+  readonly toolCallEnd?: string;
+  readonly reasoningStart?: string;
+  readonly reasoningEnd?: string;
   readonly supportsToolCalling?: boolean;
+  readonly supportsReasoning?: boolean;
+  readonly supportsHybridReasoning?: boolean;
   readonly fileSizeMb?: number;
   readonly maxOutputTokens?: number;
   readonly createdAtUnix: number;
@@ -67,6 +79,8 @@ export interface ModelInfo {
   readonly inputModalities?: string;
   readonly outputModalities?: string;
   readonly capabilities?: string;
+  getStringProperty(key: string): string | undefined;
+  getIntProperty(key: string, defaultValue?: number): number;
 }
 
 /** Information about a discoverable execution provider. */

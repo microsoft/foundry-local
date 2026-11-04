@@ -1,0 +1,19 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -227,7 +227,7 @@ if(TARGET SQLite::SQLite3 AND NOT TARGET SQLite3::SQLite3)
+   matsdk_add_interface_dependency(SQLite3::SQLite3 SQLite::SQLite3)
+ endif()
+ if(MATSDK_SQLITE_PROVIDER_RESOLVED STREQUAL "SYSTEM" AND NOT TARGET SQLite3::SQLite3)
+-  if(APPLE AND NOT MATSDK_USING_VCPKG)
++  if(APPLE)
+     matsdk_add_apple_system_library(SQLite3::SQLite3 sqlite3)
+     set(MATSDK_SQLITE_DEPENDENCY_KIND APPLE_SYSTEM)
+   else()
+@@ -256,5 +256,5 @@
+ if(MATSDK_ZLIB_PROVIDER_RESOLVED STREQUAL "SYSTEM" AND NOT TARGET ZLIB::ZLIB)
+-  if(APPLE AND NOT MATSDK_USING_VCPKG)
++  if(APPLE)
+     matsdk_add_apple_system_library(ZLIB::ZLIB z)
+     set(MATSDK_ZLIB_DEPENDENCY_KIND APPLE_SYSTEM)
+   else()

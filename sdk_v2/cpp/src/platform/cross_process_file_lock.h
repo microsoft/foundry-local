@@ -29,6 +29,12 @@ class CrossProcessFileLock {
   /// Returning true aborts WaitForDirectoryLock with FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED.
   using CancellationPredicate = std::function<bool()>;
 
+  enum class WaitExitReason {
+    kNone,
+    kCanceled,
+    kTimedOut,
+  };
+
   /// Non-blocking acquisition. Returns nullptr if another process currently
   /// holds the lock. Creates `directory` if missing. Throws fl::Exception on
   /// unexpected errors (permission denied, etc.). `logger` receives acquire/
@@ -46,7 +52,8 @@ class CrossProcessFileLock {
       const CancellationPredicate& is_cancelled,
       ILogger& logger,
       std::chrono::milliseconds poll_interval = std::chrono::milliseconds{1250},
-      std::chrono::milliseconds timeout = std::chrono::hours{3});
+      std::chrono::milliseconds timeout = std::chrono::hours{3},
+      WaitExitReason* exit_reason = nullptr);
 
   ~CrossProcessFileLock();
 

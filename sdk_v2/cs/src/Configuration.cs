@@ -64,8 +64,17 @@ public class Configuration
     public bool DisableNonessentialTelemetry { get; init; }
 
     /// <summary>
+    /// Route execution through the packaged native shared host instead of this process. Defaults to false.
+    /// The first execution starts or joins a compatible host; disposing this manager releases only this client.
+    /// Cannot be combined with <see cref="WebService.ExternalUrl"/>.
+    /// </summary>
+    public bool UseSharedHost { get; init; }
+
+    /// <summary>
     /// Catalog URLs with optional per-catalog filter overrides.
     /// Each entry is a (url, filter) pair where filter may be null to use the default.
+    /// Prefix catalog-v2 deployment-option values with <c>deploymentOptions=</c>.
+    /// Unqualified values retain the legacy <c>foundryLocal</c> tag semantics.
     /// Defaults to the Azure Foundry Local Catalog if empty.
     /// </summary>
     public IList<(string Url, string? Filter)>? CatalogUrls { get; init; }
@@ -109,6 +118,11 @@ public class Configuration
         if (AppName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
         {
             throw new ArgumentException("Configuration AppName value contains invalid characters.");
+        }
+
+        if (UseSharedHost && Web?.ExternalUrl != null)
+        {
+            throw new ArgumentException("Shared hosting cannot use an external service.");
         }
 
         if (Web?.ExternalUrl?.Port == 0)

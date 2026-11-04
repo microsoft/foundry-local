@@ -25,6 +25,9 @@ namespace fl {
 #define FL_THROW(code, ...) \
   throw ::fl::Exception(FL_WHERE_WITH_STACK, ::fl::MakeString(__VA_ARGS__), code)
 
+#define FL_THROW_TIMEOUT(code, ...) \
+  throw ::fl::TimeoutException(FL_WHERE_WITH_STACK, ::fl::MakeString(__VA_ARGS__), code)
+
 /// Exception type for all Foundry Local errors.
 class Exception : public std::runtime_error {
  public:
@@ -36,6 +39,12 @@ class Exception : public std::runtime_error {
 
  private:
   flErrorCode code_;
+};
+
+/// Internal timeout distinction that preserves the existing public error code.
+class TimeoutException : public Exception {
+ public:
+  using Exception::Exception;
 };
 
 }  // namespace fl

@@ -15,6 +15,20 @@
 
 using namespace foundry_local;
 
+static void PrintMessageText(const MessageContent& message) {
+  std::cout << "Assistant: ";
+  for (const Item& part : message.parts) {
+    if (part.GetType() == FOUNDRY_LOCAL_ITEM_TEXT) {
+      auto text = part.GetText();
+      if (text.type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT) {
+        std::cout << text.text;
+      }
+    }
+  }
+
+  std::cout << "\n";
+}
+
 /// Non-streaming chat example.
 /// Creates a session, sends a request, reads the full response, and does a follow-up turn.
 void BasicChat(IModel& model) {
@@ -39,7 +53,7 @@ void BasicChat(IModel& model) {
     switch (item.GetType()) {
       case FOUNDRY_LOCAL_ITEM_MESSAGE: {
         auto msg = item.GetMessage();
-        std::cout << "Assistant: " << msg.GetSimpleText() << "\n";
+        PrintMessageText(msg);
         break;
       }
       case FOUNDRY_LOCAL_ITEM_TOOL_CALL: {
@@ -55,7 +69,7 @@ void BasicChat(IModel& model) {
   // 5. Check finish reason and usage.
   if (response.GetFinishReason() == FOUNDRY_LOCAL_FINISH_STOP) {
     flUsage usage = response.GetUsage();
-    std::cout << "Tokens — prompt: " << usage.prompt_tokens
+    std::cout << "Tokens - prompt: " << usage.prompt_tokens
               << ", completion: " << usage.completion_tokens
               << ", total: " << usage.total_tokens << "\n";
   }
@@ -71,7 +85,7 @@ void BasicChat(IModel& model) {
     const auto& front = follow_up_response.GetItems().front();
     if (front.GetType() == FOUNDRY_LOCAL_ITEM_MESSAGE) {
       auto msg = front.GetMessage();
-      std::cout << "Assistant: " << msg.GetSimpleText() << "\n";
+      PrintMessageText(msg);
     } else {
       std::cerr << "Unexpected item type in follow-up response: "
                 << static_cast<int>(front.GetType()) << "\n";
@@ -85,28 +99,20 @@ void StreamingChat(IModel& model) {
   // 1. Create a session for multi-turn chat.
   ChatSession session(model);
 
-  // 2. Set a streaming callback. Each invocation receives one item in the queue.
-  //    We pop the item from the queue and print any message content incrementally.
+  // 2. Set a streaming callback. Each invocation receives one owning Item.
+  //    We print only DEFAULT text, skipping reasoning; the Item releases itself when the callback returns.
 
   // lambda can capture user data if needed (equivalent to the additional `void* user_data` parameter in the C API).
-  session.SetStreamingCallback([/*user_data*/](flStreamingCallbackData event) -> int {
-    const auto* item_api = detail::item_api();
-
-    flItem* raw_item = nullptr;
-    if (item_api->ItemQueue_TryPop(event.item_queue, &raw_item)) {
-      Item item(*raw_item);
-      // in this example we're streaming each token generated as simple text.
-      // what is streamed is flexible though given flItem is being used
-      if (item.GetType() == FOUNDRY_LOCAL_ITEM_TEXT) {
-        std::cout << item.GetText().text << std::flush;
-      } else {
-        std::cerr << "Unexpected item type" << std::endl;
+  session.SetStreamingCallback([/*user_data*/](Item item) -> int {
+    // in this example we're streaming each token generated as simple text.
+    // what is streamed is flexible though given Item is being used
+    if (item.GetType() == FOUNDRY_LOCAL_ITEM_TEXT) {
+      auto text = item.GetText();
+      if (text.type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT) {
+        std::cout << text.text << std::flush;
       }
-
-      // ~Item calls release.
     } else {
-      // should never happen. adding item to queue to callback should be 1:1.
-      std::cerr << "Callback invoked but no item in queue" << std::endl;
+      std::cerr << "Unexpected item type" << std::endl;
     }
 
     return 0;  // return non-zero to cancel
@@ -123,7 +129,7 @@ void StreamingChat(IModel& model) {
   // 4. The full response is still available after streaming completes.
   if (response.GetFinishReason() == FOUNDRY_LOCAL_FINISH_STOP) {
     flUsage usage = response.GetUsage();
-    std::cout << "Tokens — prompt: " << usage.prompt_tokens
+    std::cout << "Tokens - prompt: " << usage.prompt_tokens
               << ", completion: " << usage.completion_tokens
               << ", total: " << usage.total_tokens << "\n";
   }
@@ -166,7 +172,8 @@ int main() {
       for (const auto& variant : variants) {
         ModelInfo variant_info = variant->GetInfo();
         if (variant_info.DeviceType() == FOUNDRY_LOCAL_DEVICE_CPU &&
-            (variant_info.Task() == "chat-completion" || variant_info.Task() == "vision-language-chat")) {
+            (variant_info.Task() == "chat-completion" || variant_info.Task() == "coding" ||
+             variant_info.Task() == "vision-language-chat")) {
           candidate->SelectVariant(*variant);
           model = std::move(candidate);
           break;

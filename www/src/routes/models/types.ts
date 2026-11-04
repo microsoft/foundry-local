@@ -16,6 +16,7 @@ export interface FoundryModel {
 	framework?: string;
 	license?: string;
 	taskType?: string;
+	capabilities: string[];
 	modelSize?: string;
 	inputFormat?: string;
 	outputFormat?: string;
@@ -34,7 +35,6 @@ export interface FoundryModel {
 	device?: string; // Device type (CPU, GPU, NPU)
 	fileSizeBytes?: number; // File size in bytes
 	vRamFootprintBytes?: number; // VRAM footprint
-	promptTemplate?: string; // Prompt template JSON
 	supportsToolCalling?: boolean; // Tool calling support
 	alias?: string; // Short model alias
 	isTestModel?: boolean; // Whether this is a test model
@@ -60,6 +60,7 @@ export interface GroupedFoundryModel {
 	framework?: string; // Primary framework
 	license?: string;
 	taskType?: string;
+	capabilities: string[]; // Combined capabilities from all variants
 	modelSize?: string;
 	fileSizeBytes?: number; // File size in bytes for sorting/display
 	variants: FoundryModel[]; // All device variants

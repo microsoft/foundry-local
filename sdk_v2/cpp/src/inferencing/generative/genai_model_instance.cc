@@ -12,6 +12,143 @@
 #include <fmt/format.h>
 
 namespace fl {
+namespace {
+
+constexpr std::string_view kQwen35TextModelType = "qwen3_5_text";
+constexpr const char* kToolCallProbeMessages = R"([
+  {"role":"user","content":"capability-probe"},
+  {"role":"assistant","content":"","tool_calls":[
+    {"id":"probe-call","type":"function","function":{
+      "name":"probe_function","arguments":{"probe_parameter":"probe_value"}
+    }}
+  ]}
+])";
+constexpr const char* kToolResultProbeMessages = R"([
+  {"role":"user","content":"capability-probe"},
+  {"role":"assistant","content":"","tool_calls":[
+    {"id":"probe-call-a","type":"function","function":{"name":"probe_first","arguments":{}}},
+    {"id":"probe-call-b","type":"function","function":{"name":"probe_second","arguments":{}}}
+  ]},
+  {"role":"tool","tool_call_id":"probe-call-b","content":"probe-result-first"},
+  {"role":"tool","tool_call_id":"probe-call-a","content":"probe-result-second"}
+])";
+constexpr const char* kReasoningProbeMessages = R"([
+  {"role":"user","content":"reasoning-probe-user-a"},
+  {"role":"assistant","reasoning_content":"reasoning-probe-private-a","content":"reasoning-probe-visible-a"},
+  {"role":"user","content":"reasoning-probe-user-b"},
+  {"role":"assistant","reasoning_content":"reasoning-probe-private-b","content":"reasoning-probe-visible-b"},
+  {"role":"user","content":"reasoning-probe-user-c"}
+])";
+constexpr const char* kDisableReasoningPreservation = R"({"preserve_thinking":false})";
+
+constexpr std::string_view kExpectedToolCallBlock =
+    "<tool_call>\n"
+    "<function=probe_function>\n"
+    "<parameter=probe_parameter>\n"
+    "probe_value\n"
+    "</parameter>\n"
+    "</function>\n"
+    "</tool_call>";
+constexpr std::string_view kFirstToolCallBlock =
+    "<tool_call>\n<function=probe_first>\n</function>\n</tool_call>";
+constexpr std::string_view kSecondToolCallBlock =
+    "<tool_call>\n<function=probe_second>\n</function>\n</tool_call>";
+constexpr std::string_view kFirstToolResultBlock =
+    "<tool_response>\nprobe-result-first\n</tool_response>";
+constexpr std::string_view kSecondToolResultBlock =
+    "<tool_response>\nprobe-result-second\n</tool_response>";
+
+bool ContainsInOrder(std::string_view text, std::initializer_list<std::string_view> values) {
+  size_t offset = 0;
+  for (const auto value : values) {
+    const size_t found = text.find(value, offset);
+    if (found == std::string_view::npos) {
+      return false;
+    }
+    offset = found + value.size();
+  }
+  return true;
+}
+
+ModelCapabilities ResolveModelCapabilities(std::string_view model_type, Preprocessor& preprocessor,
+                                           std::string_view reasoning_start,
+                                           std::string_view reasoning_end) noexcept {
+#if !FOUNDRY_LOCAL_OGA_HAS_CHAT_TEMPLATE_KWARGS
+  (void)reasoning_start;
+  (void)reasoning_end;
+#endif
+
+  ModelCapabilities capabilities;
+  if (model_type == kQwen35TextModelType) {
+    try {
+      const auto tool_call_projection = preprocessor.ApplyChatTemplate(
+          kToolCallProbeMessages, /*tools_json=*/nullptr, /*add_generation_prompt=*/false);
+      const auto tool_result_projection = preprocessor.ApplyChatTemplate(
+          kToolResultProbeMessages, /*tools_json=*/nullptr, /*add_generation_prompt=*/false);
+      capabilities = model_capabilities_internal::ResolveRenderedProbes(
+          model_type, tool_call_projection, tool_result_projection);
+    } catch (...) {
+      // Qwen-specific tool projection failed closed without disabling independent reasoning probing.
+    }
+  }
+
+  try {
+    const auto reasoning_projection = preprocessor.ApplyChatTemplateWithOptions(
+      kReasoningProbeMessages, /*tools_json=*/nullptr, /*template_kwargs_json=*/nullptr,
+      /*add_generation_prompt=*/false);
+    const auto no_preserve_reasoning_projection = preprocessor.ApplyChatTemplateWithOptions(
+      kReasoningProbeMessages, /*tools_json=*/nullptr, kDisableReasoningPreservation,
+      /*add_generation_prompt=*/false);
+    const auto reasoning_capabilities = model_capabilities_internal::ResolveRenderedProbes(
+      model_type, {}, {}, reasoning_projection, no_preserve_reasoning_projection,
+      reasoning_start, reasoning_end);
+    capabilities.supports_reasoning_history = reasoning_capabilities.supports_reasoning_history;
+    capabilities.supports_preserve_thinking = reasoning_capabilities.supports_preserve_thinking;
+    capabilities.supports_reasoning_controls = true;
+  } catch (...) {
+    capabilities.supports_reasoning_history = false;
+    capabilities.supports_preserve_thinking = false;
+    capabilities.supports_reasoning_controls = false;
+  }
+
+  return capabilities;
+}
+
+}  // namespace
+
+ModelCapabilities model_capabilities_internal::ResolveRenderedProbes(
+    std::string_view model_type,
+    std::string_view tool_call_projection,
+    std::string_view tool_result_projection,
+    std::string_view reasoning_projection,
+    std::string_view no_preserve_reasoning_projection,
+    std::string_view reasoning_start,
+    std::string_view reasoning_end) noexcept {
+  const bool is_qwen35_text = model_type == kQwen35TextModelType;
+  const bool native_qwen_xml_tool_calls = is_qwen35_text &&
+      tool_call_projection.find(kExpectedToolCallBlock) != std::string_view::npos;
+  const bool positional_tool_results = is_qwen35_text &&
+      ContainsInOrder(tool_result_projection,
+                      {kFirstToolCallBlock, kSecondToolCallBlock, kFirstToolResultBlock,
+                       kSecondToolResultBlock}) &&
+      tool_result_projection.find("probe-call-a") == std::string_view::npos &&
+      tool_result_projection.find("probe-call-b") == std::string_view::npos;
+
+  const bool supports_reasoning_history = !reasoning_start.empty() && !reasoning_end.empty() &&
+      ContainsInOrder(reasoning_projection,
+                      {reasoning_start, "reasoning-probe-private-a", reasoning_end,
+                       "reasoning-probe-visible-a", reasoning_start, "reasoning-probe-private-b",
+                       reasoning_end, "reasoning-probe-visible-b"});
+  const bool supports_preserve_thinking = supports_reasoning_history &&
+      no_preserve_reasoning_projection.find("reasoning-probe-private-a") == std::string_view::npos &&
+      no_preserve_reasoning_projection.find("reasoning-probe-private-b") == std::string_view::npos &&
+      ContainsInOrder(no_preserve_reasoning_projection,
+                      {"reasoning-probe-visible-a", "reasoning-probe-visible-b"});
+
+  return {native_qwen_xml_tool_calls, positional_tool_results,
+          supports_reasoning_history, supports_preserve_thinking,
+          !reasoning_projection.empty() || !no_preserve_reasoning_projection.empty()};
+}
 
 // ---------------------------------------------------------------------------
 // Constructors / Destructors
@@ -26,6 +163,7 @@ GenAIModelInstance::GenAIModelInstance(std::string model_id,
       model_path_(std::move(effective_model_path)),
       genai_config_(std::move(genai_config)),
       ep_(resolved_ep),
+      logger_(logger),
       last_activity_(std::chrono::steady_clock::now()) {
   // Create OGA Config from the effective model directory
   std::unique_ptr<OgaConfig> oga_config;
@@ -36,30 +174,46 @@ GenAIModelInstance::GenAIModelInstance(std::string model_id,
                      "failed to create OGA config for model ", model_id_, ": ", e.what());
   }
 
-  // Every explicit EP overrides providers from genai_config.json. CPU is OGA's default when the provider list is
-  // empty, and EPtoGenAI intentionally has no CPU name, so CPU clears the list without appending a provider.
+  // Every explicit EP overrides the main decoder provider from genai_config.json. CPU is OGA's default when the
+  // provider list is empty, and EPtoGenAI intentionally has no CPU name, so CPU clears the list without appending a
+  // provider. DFlash has separate provider options and is not changed by these main decoder overrides.
   if (ep_ != ExecutionProvider::kDefault) {
     try {
+      logger_.Log(LogLevel::Information,
+                  fmt::format("model {} applying explicit main decoder EP override: {}", model_id_,
+                              EPUtils::EPtoRegistrationName(ep_)));
       oga_config->ClearProviders();
       if (ep_ != ExecutionProvider::kCPU) {
         std::string_view provider_str = EPUtils::EPtoGenAI(ep_);
         oga_config->AppendProvider(provider_str.data());
       }
 
-      // Disable CUDA graph for CUDA EP (matches C# behavior)
+      // Preserve existing behavior: an explicit CUDA override disables graph capture for the main decoder only.
       if (ep_ == ExecutionProvider::kCUDA) {
         oga_config->SetProviderOption("cuda", "enable_cuda_graph", "0");
+        logger_.Log(LogLevel::Information,
+                    fmt::format("model {} explicit CUDA override set main decoder enable_cuda_graph=0; "
+                                "DFlash provider options are unchanged",
+                                model_id_));
       }
     } catch (const std::runtime_error& e) {
       FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,
                        "failed to configure EP for model ", model_id_, ": ", e.what());
     }
+  } else {
+    const auto configured_provider = genai_config_.DefaultProvider();
+    logger_.Log(LogLevel::Information,
+                fmt::format("model {} using main decoder provider options from genai_config.json (provider={})",
+                            model_id_, configured_provider.empty() ? "implicit CPU" : configured_provider));
   }
 
   // Create OGA Model
   try {
     oga_model_ = OgaModel::Create(*oga_config);
     device_type_ = oga_model_->GetDeviceType().p_;
+    const OgaString model_type = oga_model_->GetType();
+    const auto* model_type_text = static_cast<const char*>(model_type);
+    model_type_ = model_type_text == nullptr ? std::string{} : std::string{model_type_text};
   } catch (const std::runtime_error& e) {
     FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,
                      "failed to load model ", model_id_, ": ", e.what());
@@ -72,6 +226,9 @@ GenAIModelInstance::GenAIModelInstance(std::string model_id,
                      "failed to create preprocessor for model ", model_id_, ": ", e.what());
   }
 
+  const auto& tag_info = GetTagInfo();
+  capabilities_ = ResolveModelCapabilities(model_type_, *preprocessor_, tag_info.bor_str, tag_info.eor_str);
+
   if (IsMultiModal() && genai_config_.GetChatBackendKind() == ChatBackendKind::kEngine) {
     FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,
                      "model ", model_id_,
@@ -79,18 +236,12 @@ GenAIModelInstance::GenAIModelInstance(std::string model_id,
   }
 
   if (genai_config_.GetChatBackendKind() == ChatBackendKind::kEngine) {
-#if FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE
     try {
       chat_engine_ = std::make_unique<OnnxChatEngine>(*this);
     } catch (const std::runtime_error& e) {
       FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,
                        "failed to create chat engine for model ", model_id_, ": ", e.what());
     }
-#else
-    FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,
-                     "model ", model_id_,
-                     " requires the ORT GenAI dynamic Engine API, but this build does not provide it");
-#endif
   }
 }
 

@@ -2,7 +2,9 @@
 // Licensed under the MIT License.
 #pragma once
 
-#include "inferencing/generative/toolcalling/tool_call_utils.h"
+#include "inferencing/generative/toolcalling/markdown_fence_tracker.h"
+#include "inferencing/generative/toolcalling/tool_call_payload_parser.h"
+#include "inferencing/generative/toolcalling/tool_call_plan.h"
 
 #include <algorithm>
 #include <string>
@@ -29,9 +31,7 @@ namespace fl {
 /// accumulator holds back the longest suffix of its scan buffer that could still extend into the marker rather than
 /// flushing it as visible text prematurely.
 ///
-/// `Flush()` drains end-of-stream. If a `<tool_call>` block was opened but never closed, the buffered bytes are
-/// returned as visible text — they turned out not to be a tool call, so the caller still sees what the model
-/// produced. Matches `ReasoningStreamSplitter::Flush()`.
+/// `Flush()` drains end-of-stream using the selected parser's normal finalization behavior.
 ///
 /// When either marker is empty, the accumulator degrades to a passthrough and returns its input as a text event.
 /// This keeps the call site uniform for non-tool-calling models.
@@ -45,15 +45,21 @@ class ToolCallStreamAccumulator {
 
   struct Output {
     std::vector<Event> events;
+    bool malformed = false;
+    std::string error;
   };
 
   ToolCallStreamAccumulator(std::string start_marker, std::string end_marker,
                             std::string tools_json = {},
-                            std::string reasoning_end_marker = {})
+                            std::string reasoning_end_marker = {},
+                            ToolCallPayloadParser payload_parser = {},
+                            bool canonical_json_payload = false)
       : start_marker_(std::move(start_marker)),
         end_marker_(std::move(end_marker)),
         tools_json_(std::move(tools_json)),
-        reasoning_end_marker_(std::move(reasoning_end_marker)) {}
+        reasoning_end_marker_(std::move(reasoning_end_marker)),
+        payload_parser_(std::move(payload_parser)),
+        canonical_json_payload_(canonical_json_payload) {}
 
   /// Feed a chunk into the accumulator. Returns ordered visible-text and completed-tool-call events.
   Output Push(const std::string& chunk) {
@@ -69,14 +75,30 @@ class ToolCallStreamAccumulator {
       return out;
     }
 
-    buffer_ += chunk;
-    Drain(out, /*flushing=*/false);
+    if (selected_payload_malformed_) {
+      return out;
+    }
+
+    if (payload_parser_) {
+      size_t offset = 0;
+      while (offset < chunk.size()) {
+        const auto count = std::min(SelectedPayloadBufferLimit(), chunk.size() - offset);
+        buffer_.append(chunk, offset, count);
+        offset += count;
+        DrainSelectedPayload(out, /*flushing=*/false);
+        if (selected_payload_malformed_) {
+          break;
+        }
+      }
+    } else {
+      buffer_ += chunk;
+      Drain(out, /*flushing=*/false);
+    }
 
     return out;
   }
 
-  /// Drain at end-of-stream. An unterminated tool-call block becomes visible text — it turned out not to be a real
-  /// tool call (no closing marker arrived), so the caller still sees what the model produced.
+  /// Drain at end-of-stream.
   Output Flush() {
     Output out;
 
@@ -84,26 +106,173 @@ class ToolCallStreamAccumulator {
       return out;
     }
 
-    Drain(out, /*flushing=*/true);
+    if (selected_payload_malformed_) {
+      return out;
+    }
+
+    if (payload_parser_) {
+      DrainSelectedPayload(out, /*flushing=*/true);
+    } else {
+      Drain(out, /*flushing=*/true);
+    }
 
     return out;
   }
 
+  /// Preserve ambiguous interrupted selected calls as text, but never expose a known schema-invalid call.
+  /// This is separate from `Flush()`: interrupted valid batches remain ambiguous and are not admitted as calls.
+  Output RejectPendingSelectedPayload() {
+    Output out;
+    if (!payload_parser_) {
+      return out;
+    }
+
+    if (selected_payload_malformed_) {
+      return out;
+    }
+
+    if (canonical_json_payload_ && inside_tool_call_) {
+      RejectMalformedSelectedPayload(out, "Tool-call output was interrupted before the batch could be committed");
+      return out;
+    }
+
+    if (inside_tool_call_ &&
+        payload_parser_(tool_call_buffer_, /*end_of_stream=*/false).disposition ==
+            ToolCallPayloadDisposition::kMalformed) {
+      RejectMalformedSelectedPayload(out);
+      return out;
+    }
+
+    if (inside_tool_call_ && tool_call_buffer_.find(end_marker_) != std::string::npos &&
+        payload_parser_(tool_call_buffer_, /*end_of_stream=*/true).disposition ==
+            ToolCallPayloadDisposition::kMalformed) {
+      RejectMalformedSelectedPayload(out);
+      return out;
+    }
+
+    EmitVisible(out, std::move(tool_call_buffer_));
+    EmitVisible(out, std::move(buffer_));
+    tool_call_buffer_.clear();
+    buffer_.clear();
+    inside_tool_call_ = false;
+    ResetPayloadScan();
+    ResetSelectedPayloadBoundaryScan();
+    return out;
+  }
+
+  bool HasPayloadParser() const noexcept { return static_cast<bool>(payload_parser_); }
+
   /// Whether the accumulator is currently inside a `<tool_call>...</tool_call>` block (between start and end markers).
   bool InsideToolCall() const noexcept { return inside_tool_call_; }
 
+  bool HasCompleteTokenOwnedEnvelope() const noexcept { return owned_after_payload_; }
+
+  /// Check published boundary identity before byte buffering can erase token provenance.
+  Output ObserveTokenBoundaries(std::string_view chunk, bool owns_start, bool owns_end) {
+    Output out;
+    if (selected_payload_malformed_) {
+      return out;
+    }
+
+    if (!owned_inside_payload_ && owns_start) {
+      owned_inside_payload_ = true;
+      owned_after_payload_ = false;
+      owned_boundary_prefix_.clear();
+      return out;
+    }
+
+    if (owned_inside_payload_ && !owned_inside_string_ && owns_end) {
+      owned_inside_payload_ = false;
+      owned_after_payload_ = true;
+      owned_boundary_prefix_.clear();
+      return out;
+    }
+
+    for (const auto byte : chunk) {
+      if (owned_inside_payload_) {
+        if (owned_inside_string_) {
+          if (owned_escaped_) {
+            owned_escaped_ = false;
+          } else if (byte == '\\') {
+            owned_escaped_ = true;
+          } else if (byte == '"') {
+            owned_inside_string_ = false;
+          }
+          continue;
+        }
+
+        if (byte == '"') {
+          owned_inside_string_ = true;
+          owned_boundary_prefix_.clear();
+          continue;
+        }
+      } else if (!owned_after_payload_) {
+        break;
+      } else if (owned_boundary_prefix_.empty() && std::string_view(" \t\r\n").find(byte) != std::string_view::npos) {
+        continue;
+      }
+
+      const auto& marker = owned_inside_payload_ ? end_marker_ : start_marker_;
+      owned_boundary_prefix_ += byte;
+      while (!marker.starts_with(owned_boundary_prefix_)) {
+        owned_boundary_prefix_.erase(0, 1);
+      }
+
+      if (owned_boundary_prefix_ == marker) {
+        RejectMalformedSelectedPayload(out, "Tool-call boundary was emitted as literal text, not its published token");
+        return out;
+      }
+
+      if (owned_after_payload_ && owned_boundary_prefix_.empty()) {
+        owned_after_payload_ = false;
+      }
+    }
+    return out;
+  }
+
  private:
-  enum class MarkerKind { kNone, kNestedStart, kEnd };
+  static constexpr size_t kSelectedPayloadBufferLimit = 64 * 1024;
+  bool owned_inside_payload_ = false;
+  bool owned_after_payload_ = false;
+  bool owned_inside_string_ = false;
+  bool owned_escaped_ = false;
+  std::string owned_boundary_prefix_;
+
+  size_t SelectedPayloadBufferLimit() const noexcept {
+    return canonical_json_payload_ ? ToolCallPlan::kMaxBatchBytes : kSelectedPayloadBufferLimit;
+  }
+
+  enum class MarkerKind { kNone,
+                          kNestedStart,
+                          kEnd };
+
+  enum class SelectedPayloadBoundaryState {
+    kSearchingForEnd,
+    kAfterEnd,
+    kMatchingAdjacentStart,
+    kResolved,
+  };
+
+  enum class ExactLimitLookahead {
+    kNeedMore,
+    kFinalize,
+    kOversized,
+  };
 
   struct MarkerMatch {
     MarkerKind kind = MarkerKind::kNone;
     size_t position = std::string::npos;
   };
 
-  static void EmitVisible(Output& out, std::string text) {
+  void EmitVisible(Output& out, std::string text) {
     if (text.empty()) {
       return;
     }
+
+    if (payload_parser_) {
+      markdown_fence_tracker_.Push(text);
+    }
+
     if (!out.events.empty()) {
       if (auto* previous = std::get_if<std::string>(&out.events.back())) {
         *previous += text;
@@ -111,6 +280,282 @@ class ToolCallStreamAccumulator {
       }
     }
     out.events.emplace_back(std::move(text));
+  }
+
+  void EmitParsedCalls(Output& out, std::vector<ParsedToolCall> calls) {
+    for (auto& call : calls) {
+      out.events.emplace_back(std::move(call));
+    }
+  }
+
+  void DrainSelectedPayload(Output& out, bool flushing) {
+    while (true) {
+      if (inside_tool_call_) {
+        const auto available = SelectedPayloadBufferLimit() - tool_call_buffer_.size();
+        const auto appended = std::min(available, buffer_.size());
+        tool_call_buffer_.append(buffer_, 0, appended);
+        buffer_.erase(0, appended);
+
+        bool has_decision_point = AdvanceSelectedPayloadBoundaryScan();
+        bool finalize_exact_limit = false;
+        if (!has_decision_point &&
+            tool_call_buffer_.size() == SelectedPayloadBufferLimit() &&
+            (selected_payload_boundary_state_ == SelectedPayloadBoundaryState::kAfterEnd ||
+             selected_payload_boundary_state_ == SelectedPayloadBoundaryState::kMatchingAdjacentStart)) {
+          switch (ResolveExactLimitLookahead(flushing)) {
+            case ExactLimitLookahead::kNeedMore:
+              return;
+            case ExactLimitLookahead::kFinalize:
+              has_decision_point = true;
+              finalize_exact_limit = true;
+              break;
+            case ExactLimitLookahead::kOversized:
+              RejectMalformedSelectedPayload(out);
+              return;
+          }
+        }
+
+        if (!flushing && !has_decision_point) {
+          if (tool_call_buffer_.size() < SelectedPayloadBufferLimit()) {
+            return;
+          }
+
+          RejectMalformedSelectedPayload(out);
+          return;
+        }
+
+        auto result = payload_parser_(tool_call_buffer_, flushing || finalize_exact_limit);
+        if (result.disposition == ToolCallPayloadDisposition::kNeedMore) {
+          if (flushing) {
+            if (canonical_json_payload_) {
+              RejectMalformedSelectedPayload(out, "Incomplete tool-call JSON at the end of generation");
+              return;
+            }
+
+            EmitVisible(out, std::move(tool_call_buffer_));
+            tool_call_buffer_.clear();
+            inside_tool_call_ = false;
+            ResetSelectedPayloadBoundaryScan();
+            return;
+          }
+
+          return;
+        }
+
+        if (result.consumed_size == 0 || result.consumed_size > tool_call_buffer_.size()) {
+          if (result.disposition == ToolCallPayloadDisposition::kMalformed || canonical_json_payload_) {
+            RejectMalformedSelectedPayload(out, std::move(result.error));
+            return;
+          }
+
+          EmitVisible(out, std::move(tool_call_buffer_));
+          tool_call_buffer_.clear();
+          inside_tool_call_ = false;
+          ResetSelectedPayloadBoundaryScan();
+          return;
+        }
+
+        if (result.disposition == ToolCallPayloadDisposition::kMalformed) {
+          RejectMalformedSelectedPayload(out, std::move(result.error));
+          return;
+        }
+
+        auto consumed = tool_call_buffer_.substr(0, result.consumed_size);
+        buffer_.insert(0, tool_call_buffer_.substr(result.consumed_size));
+        tool_call_buffer_.clear();
+        inside_tool_call_ = false;
+        ResetSelectedPayloadBoundaryScan();
+        if (result.disposition == ToolCallPayloadDisposition::kParsed) {
+          EmitParsedCalls(out, std::move(result.calls));
+        } else {
+          EmitVisible(out, std::move(consumed));
+        }
+
+        continue;
+      }
+
+      const auto found = buffer_.find(start_marker_);
+      if (found != std::string::npos) {
+        if (found > 0) {
+          EmitVisible(out, buffer_.substr(0, found));
+          buffer_.erase(0, found);
+        }
+
+        if (markdown_fence_tracker_.InsideFence()) {
+          EmitVisible(out, buffer_.substr(0, start_marker_.size()));
+          buffer_.erase(0, start_marker_.size());
+          continue;
+        }
+
+        tool_call_buffer_ = buffer_.substr(0, start_marker_.size());
+        buffer_.erase(0, start_marker_.size());
+        inside_tool_call_ = true;
+        ResetSelectedPayloadBoundaryScan();
+        continue;
+      }
+
+      if (flushing) {
+        EmitVisible(out, std::move(buffer_));
+        buffer_.clear();
+        return;
+      }
+
+      const auto hold = LongestSuffixThatIsPrefixOf(buffer_, start_marker_);
+      const auto safe = buffer_.size() - hold;
+      if (safe > 0) {
+        EmitVisible(out, buffer_.substr(0, safe));
+        buffer_.erase(0, safe);
+      }
+
+      return;
+    }
+  }
+
+  bool AdvanceSelectedPayloadBoundaryScan() {
+    if (selected_payload_boundary_state_ == SelectedPayloadBoundaryState::kResolved) {
+      return true;
+    }
+
+    while (selected_payload_scan_position_ < tool_call_buffer_.size()) {
+      if (selected_payload_boundary_state_ == SelectedPayloadBoundaryState::kSearchingForEnd) {
+        if (canonical_json_payload_) {
+          if (!AdvanceJsonPayloadBoundaryScan()) {
+            return false;
+          }
+
+          selected_payload_boundary_state_ = SelectedPayloadBoundaryState::kAfterEnd;
+          continue;
+        }
+
+        const auto found = tool_call_buffer_.find(end_marker_, selected_payload_scan_position_);
+        if (found == std::string::npos) {
+          selected_payload_scan_position_ =
+              tool_call_buffer_.size() >= end_marker_.size() - 1
+                  ? tool_call_buffer_.size() - (end_marker_.size() - 1)
+                  : 0;
+          return false;
+        }
+
+        selected_payload_scan_position_ = found + end_marker_.size();
+        selected_payload_boundary_state_ = SelectedPayloadBoundaryState::kAfterEnd;
+        continue;
+      }
+
+      const auto byte = tool_call_buffer_[selected_payload_scan_position_];
+      if (selected_payload_boundary_state_ == SelectedPayloadBoundaryState::kAfterEnd) {
+        if (std::string_view(" \t\r\n").find(byte) != std::string_view::npos) {
+          ++selected_payload_scan_position_;
+          continue;
+        }
+
+        selected_payload_boundary_state_ = SelectedPayloadBoundaryState::kMatchingAdjacentStart;
+        selected_payload_start_match_size_ = 0;
+      }
+
+      if (byte != start_marker_[selected_payload_start_match_size_]) {
+        selected_payload_boundary_state_ = SelectedPayloadBoundaryState::kResolved;
+        return true;
+      }
+
+      ++selected_payload_scan_position_;
+      ++selected_payload_start_match_size_;
+      if (selected_payload_start_match_size_ == start_marker_.size()) {
+        selected_payload_boundary_state_ = SelectedPayloadBoundaryState::kSearchingForEnd;
+        selected_payload_start_match_size_ = 0;
+      }
+    }
+
+    return selected_payload_boundary_state_ == SelectedPayloadBoundaryState::kResolved;
+  }
+
+  bool AdvanceJsonPayloadBoundaryScan() {
+    while (selected_payload_scan_position_ < tool_call_buffer_.size()) {
+      const auto byte = tool_call_buffer_[selected_payload_scan_position_];
+      if (selected_json_inside_string_) {
+        if (selected_json_escaped_) {
+          selected_json_escaped_ = false;
+        } else if (byte == '\\') {
+          selected_json_escaped_ = true;
+        } else if (byte == '"') {
+          selected_json_inside_string_ = false;
+        }
+      } else if (byte == '"') {
+        selected_json_inside_string_ = true;
+      } else if (byte == end_marker_.front()) {
+        const auto tail = std::string_view(tool_call_buffer_).substr(selected_payload_scan_position_);
+        if (tail.starts_with(end_marker_)) {
+          selected_payload_scan_position_ += end_marker_.size();
+          return true;
+        }
+        if (end_marker_.starts_with(tail)) {
+          return false;
+        }
+      }
+
+      ++selected_payload_scan_position_;
+    }
+
+    return false;
+  }
+
+  ExactLimitLookahead ResolveExactLimitLookahead(bool flushing) {
+    if (selected_payload_boundary_state_ == SelectedPayloadBoundaryState::kMatchingAdjacentStart) {
+      const auto remaining_marker = start_marker_.substr(selected_payload_start_match_size_);
+      const auto compared = std::min(buffer_.size(), remaining_marker.size());
+      if (std::string_view(buffer_).substr(0, compared) != remaining_marker.substr(0, compared)) {
+        return ExactLimitLookahead::kFinalize;
+      }
+      if (buffer_.size() >= remaining_marker.size()) {
+        return ExactLimitLookahead::kOversized;
+      }
+
+      return flushing ? ExactLimitLookahead::kFinalize : ExactLimitLookahead::kNeedMore;
+    }
+
+    while (selected_payload_lookahead_position_ < buffer_.size() &&
+           std::string_view(" \t\r\n").find(buffer_[selected_payload_lookahead_position_]) !=
+               std::string_view::npos) {
+      ++selected_payload_lookahead_position_;
+    }
+
+    if (selected_payload_lookahead_position_ == buffer_.size()) {
+      if (flushing) {
+        return ExactLimitLookahead::kFinalize;
+      }
+
+      return buffer_.size() <= SelectedPayloadBufferLimit()
+                 ? ExactLimitLookahead::kNeedMore
+                 : ExactLimitLookahead::kOversized;
+    }
+
+    const auto remaining = std::string_view(buffer_).substr(selected_payload_lookahead_position_);
+    if (remaining.starts_with(start_marker_)) {
+      return ExactLimitLookahead::kOversized;
+    }
+    if (!flushing && start_marker_.starts_with(remaining)) {
+      return ExactLimitLookahead::kNeedMore;
+    }
+
+    return ExactLimitLookahead::kFinalize;
+  }
+
+  void RejectMalformedSelectedPayload(Output& out, std::string error = {}) {
+    out.malformed = true;
+    out.error = error.empty() ? "Tool-call batch exceeds the payload limit or is malformed" : std::move(error);
+    selected_payload_malformed_ = true;
+    tool_call_buffer_.clear();
+    buffer_.clear();
+    inside_tool_call_ = false;
+    ResetSelectedPayloadBoundaryScan();
+  }
+
+  void ResetSelectedPayloadBoundaryScan() {
+    selected_payload_boundary_state_ = SelectedPayloadBoundaryState::kSearchingForEnd;
+    selected_payload_scan_position_ = start_marker_.size();
+    selected_payload_start_match_size_ = 0;
+    selected_payload_lookahead_position_ = 0;
+    selected_json_inside_string_ = false;
+    selected_json_escaped_ = false;
   }
 
   bool EmitParsedBlock(Output& out, const std::string& block) const {
@@ -187,10 +632,10 @@ class ToolCallStreamAccumulator {
 
     const size_t marker_width = std::max(start_marker_.size(), end_marker_.size());
     const size_t scan_end = flushing
-                  ? tool_call_buffer_.size()
-                  : (tool_call_buffer_.size() >= marker_width
-                       ? tool_call_buffer_.size() - marker_width + 1
-                       : 0);
+                                ? tool_call_buffer_.size()
+                                : (tool_call_buffer_.size() >= marker_width
+                                       ? tool_call_buffer_.size() - marker_width + 1
+                                       : 0);
 
     while (scan_position_ < scan_end) {
       if (!scan_inside_string_) {
@@ -354,9 +799,15 @@ class ToolCallStreamAccumulator {
   std::string end_marker_;
   std::string tools_json_;
   std::string reasoning_end_marker_;
+  ToolCallPayloadParser payload_parser_;
+  bool canonical_json_payload_ = false;
+  bool selected_json_inside_string_ = false;
+  bool selected_json_escaped_ = false;
   std::string buffer_;            // pending bytes from Push() that haven't yet been routed
   std::string tool_call_buffer_;  // accumulated bytes of the in-progress tool-call block (incl. start marker)
   bool inside_tool_call_ = false;
+  bool selected_payload_malformed_ = false;
+  MarkdownFenceTracker markdown_fence_tracker_;
   size_t scan_position_ = 0;
   size_t prefix_probe_position_ = 0;
   size_t prefix_quote_position_ = std::string::npos;
@@ -365,6 +816,11 @@ class ToolCallStreamAccumulator {
   bool prefix_classified_ = false;
   bool scan_inside_string_ = false;
   bool scan_escaped_ = false;
+  SelectedPayloadBoundaryState selected_payload_boundary_state_ =
+      SelectedPayloadBoundaryState::kSearchingForEnd;
+  size_t selected_payload_scan_position_ = 0;
+  size_t selected_payload_start_match_size_ = 0;
+  size_t selected_payload_lookahead_position_ = 0;
 };
 
 }  // namespace fl

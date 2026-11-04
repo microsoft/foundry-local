@@ -12,10 +12,10 @@ using System.Threading.Channels;
 using Betalgo.Ranul.OpenAI.ObjectModels.RealtimeModels;
 
 using Microsoft.AI.Foundry.Local;
+using Microsoft.AI.Foundry.Local.Detail;
 using Microsoft.AI.Foundry.Local.Detail.Interop;
 
 using Api = Microsoft.AI.Foundry.Local.Detail.Native.Api;
-using NativeModel = Microsoft.AI.Foundry.Local.Detail.Native.Model;
 using NativeSession = Microsoft.AI.Foundry.Local.Detail.Native.Session;
 
 #pragma warning disable IDISP001 // Dispose created — ownership transfers to Request/Queue
@@ -36,15 +36,22 @@ public sealed class LiveAudioTranscriptionSession : IAsyncDisposable
     private enum SessionState { Created, Started, Stopped, Disposed }
 
     private readonly string _modelId;
-    private readonly NativeModel _nativeModel;
+    private readonly Model _model;
+    private readonly object _stateSync = new();
+#pragma warning disable IDISP002, IDISP006 // Adapter is disposed through manager registration or Cleanup.
+    private readonly SessionRegistrationTarget _registrationTarget;
+#pragma warning restore IDISP002, IDISP006
 
     private SessionState _state = SessionState.Created;
     private ItemQueue? _queue;
     private NativeSession? _session;
+    private ManagerLifetime.Lease? _managerLease;
+    private ManagerLifetime.SessionRegistration? _managerRegistration;
     private Request? _request;
     private Channel<LiveAudioTranscriptionResponse>? _channel;
     private Task? _processingTask;
     private CancellationTokenSource? _stopCts;
+    private int _cleanupStarted;
 
     /// <summary>
     /// Audio format settings for the streaming session.
@@ -60,106 +67,122 @@ public sealed class LiveAudioTranscriptionSession : IAsyncDisposable
 
     public LiveAudioTranscriptionOptions Settings { get; } = new();
 
-    internal LiveAudioTranscriptionSession(string modelId, NativeModel nativeModel)
+    internal LiveAudioTranscriptionSession(string modelId, Model model)
     {
         _modelId = modelId;
-        _nativeModel = nativeModel;
+        _model = model;
+        _registrationTarget = new SessionRegistrationTarget(this);
     }
 
     public Task StartAsync(CancellationToken ct = default)
     {
-        Detail.Throw.IfDisposed(_state == SessionState.Disposed, this);
-
-        if (_state != SessionState.Created)
+        lock (_stateSync)
         {
-            throw new FoundryLocalException($"Session can only be started once (was {_state}).");
+            Detail.Throw.IfDisposed(_state == SessionState.Disposed, this);
+
+            if (_state != SessionState.Created)
+            {
+                throw new FoundryLocalException($"Session can only be started once (was {_state}).");
+            }
+
+            return StartCore(ct);
         }
+    }
 
+    private Task StartCore(CancellationToken ct)
+    {
         var formatDescriptor = AudioItem.CreateFormatDescriptor("pcm", Settings.SampleRate, Settings.Channels);
+        var language = Settings.Language;
 
-        _queue = new ItemQueue();
-
-        _channel = Channel.CreateUnbounded<LiveAudioTranscriptionResponse>(
-            new UnboundedChannelOptions
-            {
-                SingleWriter = true,
-                SingleReader = true,
-                AllowSynchronousContinuations = true
-            });
-
-        _session = new NativeSession(_nativeModel);
-
-        var channel = _channel;
-
-        _stopCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        var stopToken = _stopCts.Token;
-
-        FlStreamingCallback streamingCallback = (FlStreamingCallbackData data, IntPtr userData) =>
+        try
         {
-            bool errored = false;
-
-            try
-            {
-                if (data.ItemQueue != IntPtr.Zero)
+            _queue = new ItemQueue();
+            _channel = Channel.CreateUnbounded<LiveAudioTranscriptionResponse>(
+                new UnboundedChannelOptions
                 {
-                    while (Api.Item.QueueTryPop(data.ItemQueue, out var itemPtr))
+                    SingleWriter = true,
+                    SingleReader = true,
+                    AllowSynchronousContinuations = true
+                });
+
+            _managerLease = _model.AcquireManagerLease();
+            _session = new NativeSession(_model.NativeModel);
+            _managerRegistration = _model.NativeLifetime.RegisterSession(_registrationTarget);
+
+            var channel = _channel;
+
+            _stopCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var stopToken = _stopCts.Token;
+
+            FlStreamingCallback streamingCallback = (FlStreamingCallbackData data, IntPtr userData) =>
+            {
+                bool errored = false;
+
+                try
+                {
+                    if (data.ItemQueue != IntPtr.Zero)
                     {
-                        using var item = Item.FromNative(itemPtr, ownsHandle: true);
-
-                        LiveAudioTranscriptionResponse? response = null;
-
-                        if (item is SpeechSegmentItem segItem && !string.IsNullOrEmpty(segItem.Text))
+                        while (Api.Item.QueueTryPop(data.ItemQueue, out var itemPtr))
                         {
-                            // Direct streaming path — per-token segments from AudioSession.
-                            // Matches legacy SDK semantics which doesn't conform to either
-                            // OAI transcription streaming or OAI realtime API types/semantics.
-                            // IsFinal here marks the last message in the stream (set by the
-                            // final-Response drain below), not per-segment finality, so we
-                            // intentionally ignore SpeechSegmentKind.Final on intermediate segments.
-                            response = new LiveAudioTranscriptionResponse
+                            using var item = Item.FromNative(itemPtr, ownsHandle: true);
+
+                            LiveAudioTranscriptionResponse? response = null;
+
+                            if (item is SpeechSegmentItem segItem && !string.IsNullOrEmpty(segItem.Text))
                             {
-                                IsFinal = false,
-                                Content =
-                                [
-                                    new ContentPart
-                                    {
-                                        Text = segItem.Text,
-                                        Transcript = segItem.Text
-                                    }
-                                ]
-                            };
-                        }
+                                // Direct streaming path — per-token segments from AudioSession.
+                                // Matches legacy SDK semantics which doesn't conform to either
+                                // OAI transcription streaming or OAI realtime API types/semantics.
+                                // IsFinal here marks the last message in the stream (set by the
+                                // final-Response drain below), not per-segment finality, so we
+                                // intentionally ignore SpeechSegmentKind.Final on intermediate segments.
+                                response = new LiveAudioTranscriptionResponse
+                                {
+                                    IsFinal = false,
+                                    Content =
+                                    [
+                                        new ContentPart
+                                        {
+                                            Text = segItem.Text,
+                                            Transcript = segItem.Text
+                                        }
+                                    ]
+                                };
+                            }
 
-                        if (response != null)
-                        {
-                            channel.Writer.TryWrite(response);
+                            if (response != null)
+                            {
+                                channel.Writer.TryWrite(response);
+                            }
                         }
                     }
                 }
-            }
-            catch (Exception ex)
+                catch (Exception ex)
+                {
+                    errored = true;
+                    channel.Writer.TryComplete(
+                        new FoundryLocalException("Error processing live audio transcription callback data.", ex));
+                }
+
+                return errored || stopToken.IsCancellationRequested ? 1 : 0;
+            };
+
+            _session.SetStreamingCallback(streamingCallback);
+
+            var request = CreateRequest(
+                language,
+                static () => new Request(),
+                static (request, options) => request.SetOptions(options));
+            _request = request;
+
+            request.AddItem(formatDescriptor); // transfers ownership
+
+            // Add queue without taking ownership — we still need to push items into it
+            Api.CheckStatus(Api.Inference.RequestAddItem(request.Ptr, _queue.Ptr, false));
+
+            _processingTask = RunProducerAsync(() =>
             {
-                errored = true;
-                channel.Writer.TryComplete(
-                    new FoundryLocalException("Error processing live audio transcription callback data.", ex));
-            }
-
-            return errored || stopToken.IsCancellationRequested ? 1 : 0;
-        };
-
-        _session.SetStreamingCallback(streamingCallback);
-
-        _request = new Request();
-        _request.AddItem(formatDescriptor); // transfers ownership
-
-        // Add queue without taking ownership — we still need to push items into it
-        Api.CheckStatus(Api.Inference.RequestAddItem(_request.Ptr, _queue.Ptr, false));
-
-        _processingTask = Task.Run(() =>
-        {
-            try
-            {
-                var responsePtr = _session.ProcessRequest(_request.Ptr);
+                var responsePtr = _session.ProcessRequest(request.Ptr);
 
                 // Drain the final Response: it carries the aggregated transcription as a SpeechResultItem
                 using (var response = new Response(responsePtr))
@@ -169,7 +192,8 @@ public sealed class LiveAudioTranscriptionSession : IAsyncDisposable
                     {
                         using (responseItem)
                         {
-                            if (responseItem is SpeechResultItem resultItem && !string.IsNullOrEmpty(resultItem.Text))
+                            if (responseItem is SpeechResultItem resultItem &&
+                                !string.IsNullOrEmpty(resultItem.Text))
                             {
                                 finalText.Append(resultItem.Text);
                             }
@@ -193,35 +217,87 @@ public sealed class LiveAudioTranscriptionSession : IAsyncDisposable
                         });
                     }
                 }
-
-                channel.Writer.TryComplete();
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            }, error =>
             {
-                channel.Writer.TryComplete(
-                    new FoundryLocalException("Error during live audio transcription processing.", ex));
-            }
-            catch (OperationCanceledException)
-            {
-                channel.Writer.TryComplete();
-            }
-        }, ct);
+                if (error != null)
+                {
+                    channel.Writer.TryComplete(
+                        new FoundryLocalException("Error during live audio transcription processing.", error));
+                }
+                else
+                {
+                    channel.Writer.TryComplete();
+                }
+            }, stopToken, () => _model.AcquireManagerLease(trackReentrancy: true));
 
-        _state = SessionState.Started;
-        return Task.CompletedTask;
+            _state = SessionState.Started;
+            return Task.CompletedTask;
+        }
+        catch
+        {
+            formatDescriptor.Dispose();
+            _state = SessionState.Disposed;
+            Cleanup();
+            throw;
+        }
+    }
+
+    internal static TRequest CreateRequest<TRequest>(
+        string? language,
+        Func<TRequest> requestFactory,
+        Action<TRequest, RequestOptions> setOptions)
+        where TRequest : IDisposable
+    {
+        var request = requestFactory();
+
+        try
+        {
+            if (language != null)
+            {
+                setOptions(
+                    request,
+                    new RequestOptions
+                    {
+                        AdditionalOptions = new Dictionary<string, string>
+                        {
+                            ["language"] = language
+                        }
+                    });
+            }
+
+            return request;
+        }
+        catch
+        {
+            request.Dispose();
+            throw;
+        }
     }
 
     public ValueTask AppendAsync(ReadOnlyMemory<byte> pcmData, CancellationToken ct = default)
     {
-        Detail.Throw.IfDisposed(_state == SessionState.Disposed, this);
+        ct.ThrowIfCancellationRequested();
 
-        if (_state != SessionState.Started)
+        lock (_stateSync)
         {
-            throw new FoundryLocalException($"Session must be Started to append audio (was {_state}).");
-        }
+            Detail.Throw.IfDisposed(_state == SessionState.Disposed, this);
 
-        var bytesItem = BytesItem.CreateOwned(pcmData);
-        _queue!.Push(bytesItem); // transfers ownership
+            if (_state != SessionState.Started)
+            {
+                throw new FoundryLocalException($"Session must be Started to append audio (was {_state}).");
+            }
+
+            var bytesItem = BytesItem.CreateOwned(pcmData);
+            try
+            {
+                _queue!.Push(bytesItem); // transfers ownership on success
+                bytesItem = null!;
+            }
+            finally
+            {
+                bytesItem?.Dispose();
+            }
+        }
 
         return default;
     }
@@ -229,14 +305,20 @@ public sealed class LiveAudioTranscriptionSession : IAsyncDisposable
     public async IAsyncEnumerable<LiveAudioTranscriptionResponse> GetStream(
         [EnumeratorCancellation] CancellationToken ct = default)
     {
-        Detail.Throw.IfDisposed(_state == SessionState.Disposed, this);
-
-        if (_state != SessionState.Started)
+        Channel<LiveAudioTranscriptionResponse> channel;
+        lock (_stateSync)
         {
-            throw new FoundryLocalException($"Session must be Started to read stream (was {_state}).");
+            Detail.Throw.IfDisposed(_state == SessionState.Disposed, this);
+
+            if (_state == SessionState.Created)
+            {
+                throw new FoundryLocalException($"Session must be Started to read stream (was {_state}).");
+            }
+
+            channel = _channel!;
         }
 
-        await foreach (var item in _channel!.Reader.ReadAllAsync(ct).ConfigureAwait(false))
+        await foreach (var item in channel.Reader.ReadAllAsync(ct).ConfigureAwait(false))
         {
             yield return item;
         }
@@ -244,59 +326,158 @@ public sealed class LiveAudioTranscriptionSession : IAsyncDisposable
 
     public async Task StopAsync(CancellationToken ct = default)
     {
-        Detail.Throw.IfDisposed(_state == SessionState.Disposed, this);
-
-        if (_state != SessionState.Started)
+        Task? processingTask;
+        lock (_stateSync)
         {
-            // Created (never started) or already Stopped — no-op.
+            Detail.Throw.IfDisposed(_state == SessionState.Disposed, this);
+
+            if (_state != SessionState.Started)
+            {
+                return;
+            }
+
+            _state = SessionState.Stopped;
+            _queue!.MarkFinished();
+            processingTask = _processingTask;
+        }
+
+        if (processingTask != null)
+        {
+            await WaitWithCancellationAsync(processingTask, ct).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task WaitWithCancellationAsync(Task task, CancellationToken ct)
+    {
+        if (!ct.CanBeCanceled)
+        {
+            await task.ConfigureAwait(false);
             return;
         }
 
-        // Signal end-of-input only. Do NOT cancel _stopCts here — the streaming callback
-        // returns 1 (abort) when the stop token is signaled, which would tear down
-        // ProcessRequest before it has drained queued audio and we'd lose the tail of
-        // the transcription. Cancellation is reserved for DisposeAsync's abort path.
-        _queue!.MarkFinished();
-
-        if (_processingTask != null)
+        var cancellation = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var registration = ct.Register(() => cancellation.TrySetResult(true));
+        if (await Task.WhenAny(task, cancellation.Task).ConfigureAwait(false) != task)
         {
-            await _processingTask.ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
         }
 
-        _state = SessionState.Stopped;
+        await task.ConfigureAwait(false);
     }
 
     public async ValueTask DisposeAsync()
     {
-        if (_state == SessionState.Disposed)
+        Task? processingTask;
+        lock (_stateSync)
+        {
+            if (_state == SessionState.Disposed)
+            {
+                return;
+            }
+
+            var wasStarted = _state == SessionState.Started;
+            _state = SessionState.Disposed;
+            if (wasStarted)
+            {
+                _queue?.MarkFinished();
+                try { _stopCts?.Cancel(); } catch { }
+            }
+
+            processingTask = _processingTask;
+        }
+
+        if (processingTask != null)
+        {
+            try
+            {
+                await processingTask.ConfigureAwait(false);
+            }
+            catch
+            {
+                // Best-effort cleanup during dispose
+            }
+        }
+
+        Cleanup();
+        GC.SuppressFinalize(this);
+    }
+
+    private void Cleanup()
+    {
+        if (Interlocked.Exchange(ref _cleanupStarted, 1) != 0)
         {
             return;
         }
 
-        if (_state == SessionState.Started)
+        TryDispose(_request);
+        TryDispose(_queue);
+        TryDispose(_session);
+        TryDispose(_managerRegistration);
+        TryDispose(_managerLease);
+        _managerLease = null;
+        TryDispose(_stopCts);
+    }
+
+    private static void TryDispose(IDisposable? resource)
+    {
+#pragma warning disable IDISP007 // All callers pass resources owned by this session or producer invocation.
+        try { resource?.Dispose(); } catch { }
+#pragma warning restore IDISP007
+    }
+
+    internal static Task RunProducerAsync(Action process, Action<Exception?> complete, CancellationToken token,
+                                          Func<IDisposable>? acquireLifetime = null)
+    {
+        return Task.Run(() =>
         {
-            _queue?.MarkFinished();
-
-            try { _stopCts?.Cancel(); } catch { }
-
-            if (_processingTask != null)
+            Exception? error = null;
+            IDisposable? lifetime = null;
+            try
+            {
+                lifetime = acquireLifetime?.Invoke();
+                token.ThrowIfCancellationRequested();
+                process();
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                error = ex;
+            }
+            finally
             {
                 try
                 {
-                    await _processingTask.ConfigureAwait(false);
+                    complete(error);
                 }
-                catch
+                finally
                 {
-                    // Best-effort cleanup during dispose
+                    TryDispose(lifetime);
                 }
             }
+        }, CancellationToken.None);
+    }
+
+    ~LiveAudioTranscriptionSession()
+    {
+#pragma warning disable IDISP023 // Finalization must release native dependents before their manager lease.
+        Cleanup();
+#pragma warning restore IDISP023
+    }
+
+    private sealed class SessionRegistrationTarget : IDisposable
+    {
+        private LiveAudioTranscriptionSession? _owner;
+
+        internal SessionRegistrationTarget(LiveAudioTranscriptionSession owner)
+        {
+            _owner = owner;
         }
 
-        _queue?.Dispose();
-        _session?.Dispose();
-        _request?.Dispose();
-        _stopCts?.Dispose();
-
-        _state = SessionState.Disposed;
+        public void Dispose()
+        {
+            Interlocked.Exchange(ref _owner, null)?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
     }
 }

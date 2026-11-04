@@ -1,0 +1,31 @@
+# Mirror the baseline's Automake source into vcpkg's download cache.
+# GNU mirrors are unreachable from the CI agents.
+parameters:
+- name: destinationPath
+  type: string
+  default: '$(Build.BinariesDirectory)/vcpkg-downloads'
+
+steps:
+- task: UniversalPackages@0
+  displayName: 'Fetch Automake 1.17 source for vcpkg'
+  inputs:
+    command: download
+    feedsToUse: internal
+    vstsFeed: 'AIFoundryLocal/AIFoundryLocal_PublicPackages'
+    vstsFeedPackage: 'gnu-automake'
+    vstsPackageVersion: '1.17.0'
+    downloadDirectory: '${{ parameters.destinationPath }}'
+
+- task: PowerShell@2
+  displayName: 'Verify Automake source against vcpkg SHA512'
+  inputs:
+    targetType: inline
+    pwsh: true
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $archive = Join-Path '${{ parameters.destinationPath }}' 'automake-1.17.tar.gz'
+      $expected = '11357dfab8cbf4b5d94d9d06e475732ca01df82bef1284888a34bd558afc37b1a239bed1b5eb18a9dbcc326344fb7b1b301f77bb8385131eb8e1e118b677883a'
+      if ((Get-FileHash -LiteralPath $archive -Algorithm SHA512).Hash -ne $expected) {
+        throw 'Mirrored Automake source does not match the vcpkg-make SHA512'
+      }
+      Write-Host 'Automake 1.17 source matches the vcpkg-make SHA512.'

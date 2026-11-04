@@ -10,6 +10,7 @@
                 "native/src/items.cc",
                 "native/src/manager.cc",
                 "native/src/model.cc",
+                "native/src/model_info.cc",
                 "native/src/request.cc",
                 "native/src/request_options.cc",
                 "native/src/session.cc"

@@ -58,10 +58,14 @@ inline const char* Version() noexcept;
 
 namespace detail {
 
-/// Get the API function table (cached on first call).
-/// Returns nullptr if the library does not support the requested API version.
+inline uint32_t api_version() {
+  static const uint32_t version = FoundryLocalGetApi(FOUNDRY_LOCAL_API_VERSION) ? FOUNDRY_LOCAL_API_VERSION : 2;
+  return version;
+}
+
+/// Get the API function table (cached on first call). API v2 remains supported for non-hosted operations.
 inline const flApi* api() {
-  static const flApi* p = FoundryLocalGetApi(FOUNDRY_LOCAL_API_VERSION);
+  static const flApi* p = FoundryLocalGetApi(api_version());
   if (!p) {
     throw std::runtime_error("Foundry Local runtime does not support the API version requested by this header");
   }
@@ -250,6 +254,10 @@ class Configuration {
 
   /// Optional. Add a catalog URL to connect to.
   /// Defaults to the Azure Foundry Local Catalog if none are added.
+  /// Legacy Azure `https://ai.azure.com/.../ux/v1.0` URLs are unsupported. Compatible custom
+  /// catalog endpoints may use a different path.
+  /// Prefix catalog-v2 deployment-option overrides with `deploymentOptions=`. Unqualified
+  /// overrides retain the legacy `foundryLocal` tag semantics.
   Configuration& AddCatalogUrl(const std::string& url,
                                const std::optional<std::string>& filter_override = std::nullopt);
 
@@ -265,6 +273,10 @@ class Configuration {
   /// When set, the catalog reads only from the local disk cache and local-only
   /// operations (StartWebService, session creation) return errors.
   Configuration& SetExternalServiceUrl(const std::string& url);
+
+  /// Optional. Use the packaged native shared host instead of in-process execution. Defaults to false.
+  /// Requires an API v3 runtime when enabled. Cannot be combined with SetExternalServiceUrl.
+  Configuration& SetUseSharedHost(bool enabled);
 
   /// Optional. Azure region for the model registry download endpoint.
   /// Defaults to "centralus" when not set.
@@ -466,6 +478,8 @@ struct MessageContent {
 struct ToolCallContent {
   std::string_view call_id;
   std::string_view name;
+  /// FUNCTION arguments are JSON. CUSTOM arguments are NUL-free UTF-8 text; a generated custom
+  /// payload containing an embedded NUL is invalid and is never truncated.
   std::string_view arguments;
 };
 
@@ -586,7 +600,8 @@ class Item {
   static Item AudioFromUri(const std::string& uri, const std::optional<std::string>& format = std::nullopt,
                            int sample_rate = 0, int channels = 0);
 
-  /// Create a tool call item.
+  /// Create a tool call item. Custom `arguments` must be NUL-free UTF-8 text; an embedded NUL is
+  /// invalid and is rejected rather than truncated.
   static Item ToolCall(const std::string& call_id, const std::string& name, const std::string& arguments);
 
   /// Create a tool result item.
@@ -789,6 +804,7 @@ class ICatalog {
   /// Get every individual model variant currently present in the local cache.
   virtual ModelList GetCachedModels() const = 0;
 
+  /// Get every loaded leaf variant, independently of each alias group's selected variant.
   virtual ModelList GetLoadedModels() const = 0;
   virtual std::unique_ptr<IModel> GetModel(const std::string& alias) const = 0;
   virtual std::unique_ptr<IModel> GetModelVariant(const std::string& model_id) const = 0;
@@ -805,7 +821,10 @@ class ICatalog {
                                      const std::string& variant_name = {},
                                      int max_versions = 50) = 0;
 
-  /// Register existing local model assets. `model_id` must use `<name>:<version>`; metadata is copied.
+  /// Register existing local model assets. `model_id` must use `<name>:<version>` and `metadata.Task()` is required.
+  /// Metadata is copied. Missing display name and modalities receive defaults, while context length comes from
+  /// model.context_length, then search.max_length, when positive. A caller-supplied provider remains the default
+  /// IModel::Load override; when omitted, runtime metadata remains unset and genai_config.json selects the provider.
   /// The catalog does not take ownership of `model_path` and never deletes its contents.
   virtual std::unique_ptr<IModel> RegisterModel(const std::string& model_path, const std::string& model_id,
                                                 const ModelInfo& metadata) = 0;
@@ -920,16 +939,48 @@ class Manager {
 
 /// C++ wrapper for flToolDefinition. Sets the version field automatically.
 struct ToolDefinition {
-  std::string name;         ///< Tool name.
+  std::string name;         ///< Tool name. Must be non-empty, case-sensitive, and unique across kinds.
   std::string description;  ///< Tool description for model context.
-  std::string json_schema;  ///< JSON schema defining the tool's arguments.
+  /// JSON schema defining the tool's arguments. Required for a function tool; must stay empty for a
+  /// custom tool, whose schema is synthesized.
+  std::string json_schema;
+  /// Tool kind. Determines how a generated call's arguments are shaped: JSON for a function tool,
+  /// raw text for a custom tool.
+  flToolKind kind = FOUNDRY_LOCAL_TOOL_KIND_FUNCTION;
 
+  /// Function tool: `json_schema` is required and must be valid JSON.
   ToolDefinition(std::string name, std::string description, std::string json_schema)
       : name(std::move(name)), description(std::move(description)), json_schema(std::move(json_schema)) {}
 
+  /// Custom tool: the model is prompted with a synthesized single-string schema. Generated
+  /// arguments are delivered as NUL-free UTF-8 text; an embedded NUL is invalid and is never
+  /// truncated.
+  static ToolDefinition Custom(std::string name, std::string description) {
+    ToolDefinition definition(std::move(name), std::move(description), std::string{});
+    definition.kind = FOUNDRY_LOCAL_TOOL_KIND_CUSTOM;
+    return definition;
+  }
+
   /// Convert to the C struct for passing across the ABI boundary.
-  flToolDefinition ToC() const noexcept {
-    return {FOUNDRY_LOCAL_API_VERSION, name.c_str(), description.c_str(), json_schema.c_str()};
+  flToolDefinition ToC() const {
+    static_assert(FOUNDRY_LOCAL_TOOL_DEFINITION_VERSION == 2,
+                  "flToolDefinition may have new fields; initialize them here before updating this assertion");
+    if (name.find('\0') != std::string::npos || description.find('\0') != std::string::npos ||
+        json_schema.find('\0') != std::string::npos) {
+      throw Error("Tool definition fields must not contain embedded NUL characters",
+                  FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+    }
+
+    // Zero-initialized and assigned by name rather than aggregate-initialized, so a field appended
+    // to flToolDefinition in a future version defaults to zero (the value that preserves the older
+    // behavior) instead of being left uninitialized.
+    flToolDefinition c_def{};
+    c_def.version = FOUNDRY_LOCAL_TOOL_DEFINITION_VERSION;
+    c_def.name = name.c_str();
+    c_def.description = description.c_str();
+    c_def.json_schema = json_schema.c_str();
+    c_def.kind = kind;
+    return c_def;
   }
 };
 
@@ -993,13 +1044,36 @@ class Request {
   /// Options for this request. Overrides session options for the duration of this request.
   Request& SetOptions(const RequestOptions& options);
 
-  /// Cancel the current request. Inferencing will stop as soon as possible.
+  /// Cancel this request's in-flight invocation. This is a no-op while idle or after completion.
   void Cancel();
 
   const flRequest* native_handle() const noexcept { return handle_.get(); }
 
  private:
   detail::Base<flRequest> handle_;
+};
+
+/// Captured exact token-budget preflight operation.
+///
+/// Capture is separate from execution so callers can capture request and session state on one
+/// thread, then move the operation to a worker for the potentially expensive execution. The
+/// source Request and ChatSession do not need to remain alive after capture. The owning Manager
+/// and model runtime must remain alive until this operation is executed and destroyed.
+class RequestPreflight {
+ public:
+  RequestPreflight(const RequestPreflight&) = delete;
+  RequestPreflight& operator=(const RequestPreflight&) = delete;
+  RequestPreflight(RequestPreflight&&) noexcept = default;
+  RequestPreflight& operator=(RequestPreflight&&) noexcept = default;
+
+  /// Execute the captured preflight operation.
+  flRequestPreflightResult Execute();
+
+ private:
+  friend class ChatSession;
+  explicit RequestPreflight(flRequestPreflight* preflight);
+
+  detail::Base<flRequestPreflight> handle_;
 };
 
 /// Wrapper for an opaque flResponse.
@@ -1034,9 +1108,18 @@ class Session {
   /// Options to apply to all requests on this session.
   Session& SetOptions(const RequestOptions& options);
 
-  /// Set the streaming callback using a std::function.
+  /// Set a callback that receives each streamed item as an owning RAII wrapper.
+  /// The callback may move the item elsewhere to extend its lifetime.
   /// Return 0 to continue, non-zero to cancel.
+  Session& SetStreamingCallback(std::function<int(Item)> callback);
+
+  /// Set the legacy callback that receives the C streaming event and must pop its item manually.
+  /// Return 0 to continue, non-zero to cancel.
+  [[deprecated("Use SetStreamingCallback(std::function<int(Item)>) instead")]]
   Session& SetStreamingCallback(std::function<int(flStreamingCallbackData)> callback);
+
+  /// Clear the streaming callback.
+  Session& SetStreamingCallback(std::nullptr_t);
 
   /// Process the request.
   /// Populates the response with output items, finish reason, and usage.
@@ -1049,11 +1132,14 @@ class Session {
   std::unique_ptr<detail::StreamingCallbackHelper> streaming_callback_helper_;
 };
 
+/// Session for chat-completion, coding (text-only), and vision-language-chat models.
 class ChatSession : public Session {
  public:
   explicit ChatSession(IModel& model);
 
-  /// Add a tool definition that is available for the entire session.
+  /// Add a tool definition that is available for the entire session. Names are case-sensitive and
+  /// unique across kinds — adding a name that is already registered throws. Use
+  /// `ToolDefinition::Custom` for a tool whose arguments are raw text rather than JSON.
   ChatSession& AddToolDefinition(const ToolDefinition& tool_definition);
 
   /// Remove a previously-added tool definition by name.
@@ -1067,6 +1153,16 @@ class ChatSession : public Session {
   /// Undo the last `count` turns and remove their input messages and assistant replies from history.
   /// Retained inference state is reused when it can be restored safely; otherwise it is rebuilt on the next request.
   void UndoTurns(size_t count);
+
+  /// Capture request and session state for a later exact token-budget preflight.
+  /// The returned operation can be moved to a worker and executed after the source request and
+  /// session are destroyed. The owning Manager and model runtime must remain alive until the
+  /// returned operation is executed and destroyed.
+  RequestPreflight CaptureRequestPreflight(const Request& request) const;
+
+  /// Synchronously capture and execute an exact token-budget preflight without mutating the request or session.
+  /// This operation may be expensive. The owning Manager and model runtime must remain alive for the call.
+  flRequestPreflightResult PreflightRequest(const Request& request) const;
 };
 
 /// Session for automatic-speech-recognition (transcription) models.
@@ -1096,17 +1192,30 @@ namespace detail {
 
 /// Adapts a std::function streaming callback for use with the C API's function-pointer + void* interface.
 struct StreamingCallbackHelper {
-  using CallbackFn = std::function<int(flStreamingCallbackData)>;
+  using ItemCallbackFn = std::function<int(Item)>;
+  using LegacyCallbackFn = std::function<int(flStreamingCallbackData)>;
 
-  explicit StreamingCallbackHelper(CallbackFn callback) : callback_(std::move(callback)) {}
+  explicit StreamingCallbackHelper(ItemCallbackFn callback) : item_callback_(std::move(callback)) {}
+  explicit StreamingCallbackHelper(LegacyCallbackFn callback) : legacy_callback_(std::move(callback)) {}
 
   static int CCallback(flStreamingCallbackData data, void* user_data) {
     auto* helper = static_cast<StreamingCallbackHelper*>(user_data);
-    return helper->callback_(data);
+    if (helper->legacy_callback_) {
+      return helper->legacy_callback_(data);
+    }
+
+    flItem* raw_item = nullptr;
+    if (!detail::item_api()->ItemQueue_TryPop(data.item_queue, &raw_item) || !raw_item) {
+      // should never happen. adding item to queue to callback should be 1:1.
+      return 1;
+    }
+
+    return helper->item_callback_(Item(*raw_item));
   }
 
  private:
-  CallbackFn callback_;
+  ItemCallbackFn item_callback_;
+  LegacyCallbackFn legacy_callback_;
 };
 
 /// Adapts a std::function deleter for use with C API data struct deleters.

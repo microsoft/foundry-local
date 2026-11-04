@@ -1,0 +1,151 @@
+// Copyright (c) Microsoft Corporation. Licensed under the MIT License.
+package com.microsoft.foundry.local;
+
+import com.sun.jna.Pointer;
+import com.sun.jna.ptr.IntByReference;
+import java.lang.ref.Reference;
+import java.nio.file.Path;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.DoubleConsumer;
+
+/** Borrowed exact native model. No method implicitly downloads model weights or EPs. */
+public final class Model {
+    final FoundryLocalManager owner;
+    final Pointer handle;
+    Model(FoundryLocalManager owner, Pointer handle) { this.owner = owner; this.handle = handle; }
+
+    public ModelInfo info() {
+        NativeApi.outsideCallback();
+        synchronized (owner) {
+            owner.checkOpen();
+            NativeApi api = owner.api;
+            Pointer info = api.create(api.model, NativeApi.ModelApi.GET_INFO, handle);
+            Map<String, String> strings = new LinkedHashMap<>();
+            for (String key : ModelProperties.STRING_KEYS) {
+                String value = NativeApi.optionalText(
+                        api.model.pointer(NativeApi.ModelApi.INFO_GET_STRING_PROPERTY, info, key));
+                if (value != null) strings.put(key, value);
+            }
+            Map<String, Long> integers = new LinkedHashMap<>();
+            for (String key : ModelProperties.INT_KEYS) {
+                long value = api.model.longValue(
+                        NativeApi.ModelApi.INFO_GET_INT_PROPERTY, info, key, Long.MIN_VALUE);
+                if (value != Long.MIN_VALUE) integers.put(key, value);
+            }
+            String task = NativeApi.text(api.model.pointer(NativeApi.ModelApi.INFO_GET_TASK, info));
+            strings.putIfAbsent(ModelProperties.TASK, task);
+            return new ModelInfo(
+                    NativeApi.text(api.model.pointer(NativeApi.ModelApi.INFO_GET_ID, info)),
+                    NativeApi.text(api.model.pointer(NativeApi.ModelApi.INFO_GET_ALIAS, info)),
+                    NativeApi.text(api.model.pointer(NativeApi.ModelApi.INFO_GET_NAME, info)),
+                    api.model.integer(NativeApi.ModelApi.INFO_GET_VERSION, info),
+                    NativeApi.text(api.model.pointer(NativeApi.ModelApi.INFO_GET_URI, info)),
+                    DeviceType.fromNative(api.model.integer(NativeApi.ModelApi.INFO_GET_DEVICE_TYPE, info)),
+                    NativeApi.optionalText(api.model.pointer(NativeApi.ModelApi.INFO_GET_EXECUTION_PROVIDER, info)),
+                    task,
+                    isCached(),
+                    strings,
+                    integers,
+                    api.keyValuePairs(api.model.pointer(NativeApi.ModelApi.INFO_GET_MODEL_SETTINGS, info)));
+        }
+    }
+
+    public boolean isCached() { return flag(NativeApi.ModelApi.IS_CACHED); }
+    public boolean isLoaded() { return flag(NativeApi.ModelApi.IS_LOADED); }
+    private boolean flag(int slot) {
+        NativeApi.outsideCallback();
+        synchronized (owner) {
+            owner.checkOpen();
+            IntByReference value = new IntByReference();
+            owner.api.check(owner.api.model.pointer(slot, handle, value));
+            return value.getValue() != 0;
+        }
+    }
+
+    public Path path() {
+        NativeApi.outsideCallback();
+        synchronized (owner) {
+            owner.checkOpen();
+            if (!isCached()) throw new IllegalStateException("Model is not cached");
+            return Path.of(NativeApi.text(owner.api.create(owner.api.model, NativeApi.ModelApi.GET_PATH, handle)));
+        }
+    }
+
+    /**
+     * Blocking explicit download. Call only after reviewing the model license.
+     * Progress is 0..100, on native threads; callbacks must not call SDK methods.
+     * Cancellation is observed at native progress checkpoints (not a deadline guarantee).
+     */
+    public void download(CancellationToken cancellation, DoubleConsumer progress) {
+        NativeApi.outsideCallback();
+        Objects.requireNonNull(cancellation);
+        Objects.requireNonNull(progress);
+        synchronized (owner) {
+            owner.checkOpen();
+            if (cancellation.isCancelled()) throw new FoundryLocalException(5, "Download cancelled before start");
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            NativeApi.ProgressCallback callback = (value, userData) -> {
+                NativeApi.IN_CALLBACK.set(true);
+                try {
+                    if (cancellation.isCancelled()) return 1;
+                    progress.accept(value);
+                    return cancellation.isCancelled() ? 1 : 0;
+                } catch (Throwable e) {
+                    // Java exceptions must never escape through a native callback trampoline.
+                    failure.compareAndSet(null, e);
+                    return 1;
+                } finally { NativeApi.IN_CALLBACK.remove(); }
+            };
+            Pointer status;
+            try { status = owner.api.model.pointer(NativeApi.ModelApi.DOWNLOAD, handle, callback, null); }
+            finally { Reference.reachabilityFence(callback); }
+            if (failure.get() != null) {
+                if (status != null) owner.api.root.call(NativeApi.Root.STATUS_RELEASE, status);
+                throw new IllegalStateException("Download progress callback failed", failure.get());
+            }
+            owner.api.check(status);
+        }
+    }
+
+    public void load() {
+        NativeApi.outsideCallback();
+        synchronized (owner) {
+            owner.checkOpen();
+            if (!isCached()) throw new IllegalStateException("Model is not cached; explicitly download it first");
+            owner.api.check(owner.api.model.pointer(NativeApi.ModelApi.LOAD, handle));
+        }
+    }
+
+    public void unload() {
+        NativeApi.outsideCallback();
+        synchronized (owner) {
+            owner.checkOpen();
+            if (owner.sessions.stream().anyMatch(s -> s.model().handle.equals(handle))) {
+                throw new IllegalStateException("Close all sessions for this model before unloading it");
+            }
+            owner.api.check(owner.api.model.pointer(NativeApi.ModelApi.UNLOAD, handle));
+        }
+    }
+
+    /**
+     * Creates a session for the preview streaming-ASR API.
+     *
+     * <p>An ASR task is required, but not every file-oriented ASR model necessarily supports
+     * the native streaming-audio processor used by this API. Unsupported models fail through
+     * the native status returned when transcription starts.
+     */
+    public AudioSession createAudioSession() {
+        NativeApi.outsideCallback();
+        synchronized (owner) {
+            owner.checkOpen();
+            if (!info().task().equals("automatic-speech-recognition")) {
+                throw new IllegalStateException("The selected model is not an ASR model");
+            }
+            if (!isLoaded()) throw new IllegalStateException("Explicitly load the model before creating a session");
+            return new AudioSession(this);
+        }
+    }
+}

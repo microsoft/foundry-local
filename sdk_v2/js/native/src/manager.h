@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 //
-// Napi::ObjectWrap<Manager> over std::unique_ptr<foundry_local::Manager>.
+// Napi::ObjectWrap<Manager> over std::shared_ptr<foundry_local::Manager>.
 //
 // Surface:
 //  - ctor accepts { appName, modelCacheDir?, serviceEndpoint? }
@@ -15,6 +15,7 @@
 
 #include <foundry_local/foundry_local_cpp.h>
 
+#include <atomic>
 #include <memory>
 
 namespace foundry_local_node {
@@ -55,7 +56,8 @@ class Manager : public Napi::ObjectWrap<Manager> {
   // on env and returns true. Callers should return env.Undefined() when true.
   bool ThrowIfDisposed(Napi::Env env);
 
-  std::unique_ptr<foundry_local::Manager> impl_;
+  std::shared_ptr<foundry_local::Manager> impl_;
+  std::shared_ptr<std::atomic_bool> disposed_ = std::make_shared<std::atomic_bool>(false);
 };
 
 }  // namespace foundry_local_node

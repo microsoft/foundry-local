@@ -62,6 +62,30 @@ TEST(ReasoningStreamSplitterTest, EmptyDecodedSpecialMarkersClassifyVisibleAndRe
   EXPECT_EQ(splitter.ReasoningTokenCount(), 1);
 }
 
+TEST(ReasoningStreamSplitterTest, AuthoritativeBoundariesDoNotInterpretOrdinaryTokenSpellings) {
+  ReasoningStreamSplitter splitter("<think>", "</think>", {101}, {102}, {999});
+  splitter.UseTokenBoundariesOnly();
+  std::vector<Segment> segments;
+
+  Append(segments, splitter.Push(1, "<think>literal</think>"));
+  Append(segments, splitter.Push(101, ""));
+  const auto reasoning = splitter.Push(2, "quote </think> and <tool_call>");
+  ASSERT_EQ(reasoning.size(), 1u);
+  EXPECT_EQ(reasoning.front().token_id, 2);
+  Append(segments, reasoning);
+  Append(segments, splitter.Push(999, "ignored"));
+  EXPECT_TRUE(splitter.InsideReasoning());
+  Append(segments, splitter.Push(102, ""));
+  Append(segments, splitter.Push(3, "<think>still visible"));
+  Append(segments, splitter.Flush());
+
+  EXPECT_EQ(Collect(segments, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING), "quote </think> and <tool_call>");
+  EXPECT_EQ(Collect(segments, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT),
+            "<think>literal</think><think>still visible");
+  EXPECT_EQ(splitter.ReasoningTokenCount(), 1);
+  EXPECT_FALSE(splitter.InsideReasoning());
+}
+
 TEST(ReasoningStreamSplitterTest, MissingEndMarkerDisablesReasoningClassification) {
   ReasoningStreamSplitter splitter("<think>", "", {101}, {});
   std::vector<Segment> segments;

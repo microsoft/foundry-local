@@ -39,7 +39,7 @@ use std::task::{Context, Poll};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_util::sync::CancellationToken;
 
-use crate::detail::api::Api;
+use crate::detail::api::{Api, Kvps};
 use crate::detail::ffi::{flItem, flStreamingCallbackData, FOUNDRY_LOCAL_ITEM_BYTES};
 use crate::detail::items::{
     make_audio_item, read_speech_segment, read_text_item, SpeechSegmentText,
@@ -73,6 +73,17 @@ impl Default for LiveAudioTranscriptionOptions {
             language: None,
         }
     }
+}
+
+fn apply_request_options(
+    settings: &LiveAudioTranscriptionOptions,
+    mut set_options: impl FnMut(&[(&str, &str)]) -> Result<()>,
+) -> Result<()> {
+    if let Some(language) = settings.language.as_deref() {
+        set_options(&[("language", language)])?;
+    }
+
+    Ok(())
 }
 
 /// Internal raw deserialization target matching the native core's JSON format.
@@ -498,6 +509,11 @@ fn run_worker(
         request.add_item(format, true)?;
         // The input queue stays owned by us (append pushes into it).
         request.add_item(queue.as_item_ptr(), false)?;
+        apply_request_options(&settings, |request_options| {
+            let options = Kvps::from_pairs(Arc::clone(&api), request_options.iter().copied())?;
+            request.set_options(options.as_ptr())?;
+            Ok(())
+        })?;
 
         let response = session.process_request(&request);
 
@@ -538,4 +554,44 @@ fn run_worker(
     }
     // `queue` Arc clone and `session`/`request` drop here.
     drop(queue);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshotted_language_is_applied_to_native_request() {
+        let settings = LiveAudioTranscriptionOptions {
+            language: Some("fr".into()),
+            ..Default::default()
+        };
+        let mut applied_options = Vec::new();
+
+        apply_request_options(&settings, |options| {
+            applied_options.extend(
+                options
+                    .iter()
+                    .map(|(key, value)| ((*key).to_owned(), (*value).to_owned())),
+            );
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(applied_options, vec![("language".into(), "fr".into())]);
+    }
+
+    #[test]
+    fn unset_language_does_not_apply_native_request_options() {
+        let settings = LiveAudioTranscriptionOptions::default();
+        let mut set_options_called = false;
+
+        apply_request_options(&settings, |_| {
+            set_options_called = true;
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(!set_options_called);
+    }
 }

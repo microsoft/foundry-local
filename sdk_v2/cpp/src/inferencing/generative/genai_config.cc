@@ -52,12 +52,16 @@ size_t ParsePositiveSize(const nlohmann::json& object,
 }  // namespace
 
 bool GenAIConfig::OnnxModel::IsMultiModal() const {
-  return type == "phi3v" || type == "whisper" || type == "phi4mm" || type == "fara" ||
+  return type == "phi3v" || type == "whisper" || type == "parakeet_tdt" || type == "phi4mm" || type == "fara" ||
          type == "qwen2_5_vl" || type == "qwen3_vl" || type == "qwen3_5" || type == "gemma4" ||
          type == "mistral3";
 }
 
 std::string GenAIConfig::DefaultProvider() const {
+  return std::string(DefaultProviderView());
+}
+
+std::string_view GenAIConfig::DefaultProviderView() const {
   if (!model || !model->decoder || !model->decoder->session_options) {
     return "";
   }

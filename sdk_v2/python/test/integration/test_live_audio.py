@@ -49,7 +49,7 @@ def _split_into_chunks(data: bytes, chunk_size: int) -> list[bytes]:
 
 
 @pytest.fixture
-def audio_client(audio_model):
+def audio_client(streaming_audio_model):
     """Function-scoped AudioClient.
 
     ``get_audio_client()`` is a thin Python-side wrapper over the model handle;
@@ -57,7 +57,7 @@ def audio_client(audio_model):
     builds its own native ``AudioSession`` internally. Function scope keeps tests
     isolated and signals that the client is cheap to create.
     """
-    return audio_model.get_audio_client()
+    return streaming_audio_model.get_audio_client()
 
 
 def test_session_factory_returns_session(audio_client):
@@ -183,6 +183,7 @@ def test_stream_recording_in_chunks_and_validate_transcription(audio_client):
     assert len(chunks) > 1
 
     session = audio_client.create_live_transcription_session()
+    session.settings.language = "en"
     try:
         try:
             session.start()

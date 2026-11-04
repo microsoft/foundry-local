@@ -4,11 +4,13 @@
 
 #include "contracts/embeddings.h"
 #include "exception.h"
+#include "inferencing/execution_provider.h"
 #include "inferencing/generative/embeddings/fp16.h"
 #include "inferencing/generative/genai_model_instance.h"
 #include "items/tensor_item.h"
 #include "items/text_item.h"
 #include "model.h"
+#include "telemetry/telemetry_request_metrics.h"
 #include "utils.h"
 
 #include <cmath>
@@ -37,6 +39,10 @@ EmbeddingsSession::~EmbeddingsSession() {
 
 SessionType EmbeddingsSession::Type() const {
   return SessionType::kEmbeddings;
+}
+
+std::string EmbeddingsSession::ExecutionProvider() const {
+  return std::string(EPUtils::EPtoTelemetryName(model_.EP(), model_.GetGenAIConfig().DefaultProviderView()));
 }
 
 void EmbeddingsSession::ProcessRequestImpl(const Request& request, Response& response) {
@@ -101,6 +107,7 @@ void EmbeddingsSession::ProcessEmbeddingsJson(const std::string& request_json,
   // matches AudioSession::ProcessAudioTranscriptionJson behavior.
   auto req_json = nlohmann::json::parse(request_json);
   auto req = req_json.get<EmbeddingCreateRequest>();
+  response.openai_json_message_count = TelemetryInternal::CountParsedJsonMessages(req_json);
 
   // Normalize "input" — variant<string, vector<string>> — into a single vector.
   std::vector<std::string> inputs;

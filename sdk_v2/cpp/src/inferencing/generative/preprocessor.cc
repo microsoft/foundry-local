@@ -6,7 +6,23 @@
 
 #include <ort_genai.h>
 
+#include <nlohmann/json.hpp>
+
 namespace fl {
+
+std::string NormalizeChatTemplateKwargs(std::string_view template_kwargs_json) {
+  if (template_kwargs_json.empty()) {
+    return "{}";
+  }
+
+  auto kwargs = nlohmann::json::parse(template_kwargs_json, nullptr, /*allow_exceptions=*/false);
+  if (!kwargs.is_object()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "chat_template_kwargs must be a valid JSON object");
+  }
+
+  return kwargs.dump();
+}
 
 std::unique_ptr<Preprocessor> Preprocessor::Create(OgaModel& model, bool create_multimodal_processor) {
   std::unique_ptr<OgaTokenizer> tokenizer;
@@ -35,14 +51,15 @@ std::unique_ptr<Preprocessor> Preprocessor::Create(OgaModel& model, bool create_
     }
   }
 
-  return std::unique_ptr<Preprocessor>(
-      new Preprocessor(std::move(tokenizer), std::move(tokenizer_with_special), std::move(multimodal_processor)));
+  return std::unique_ptr<Preprocessor>(new Preprocessor(
+      model, std::move(tokenizer), std::move(tokenizer_with_special), std::move(multimodal_processor)));
 }
 
-Preprocessor::Preprocessor(std::unique_ptr<OgaTokenizer> tokenizer,
+Preprocessor::Preprocessor(OgaModel& model, std::unique_ptr<OgaTokenizer> tokenizer,
                            std::unique_ptr<OgaTokenizer> tokenizer_with_special,
                            std::unique_ptr<OgaMultiModalProcessor> multimodal_processor)
-    : tokenizer_(std::move(tokenizer)),
+    : model_(model),
+      tokenizer_(std::move(tokenizer)),
       tokenizer_with_special_(std::move(tokenizer_with_special)),
       multimodal_processor_(std::move(multimodal_processor)) {
   if (!tokenizer_) {
@@ -62,12 +79,39 @@ std::unique_ptr<OgaSequences> Preprocessor::Encode(const char* text) {
   return sequences;
 }
 
+std::unique_ptr<OgaSequences> Preprocessor::EncodeLiteral(const char* text) {
+  auto sequences = OgaSequences::Create();
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!literal_tokenizer_) {
+    auto tokenizer = OgaTokenizer::Create(model_);
+    KeyValuePairs options;
+    options.Add("literal", "true");
+    tokenizer->UpdateOptions(options.Keys().data(), options.Values().data(), options.size());
+    literal_tokenizer_ = std::move(tokenizer);
+  }
+
+  literal_tokenizer_->Encode(text, *sequences);
+  return sequences;
+}
+
 std::string Preprocessor::ApplyChatTemplate(const char* messages_json,
                                             const char* tools_json,
                                             bool add_generation_prompt) {
+  return ApplyChatTemplateWithOptions(messages_json, tools_json, nullptr, add_generation_prompt);
+}
+
+std::string Preprocessor::ApplyChatTemplateWithOptions(const char* messages_json,
+                                                       const char* tools_json,
+                                                       const char* template_kwargs_json,
+                                                       bool add_generation_prompt) {
+  const std::string normalized_kwargs =
+      NormalizeChatTemplateKwargs(template_kwargs_json ? template_kwargs_json : "");
   std::lock_guard<std::mutex> lock(mutex_);
-  OgaString result = tokenizer_->ApplyChatTemplate(/*template_str=*/nullptr, messages_json, tools_json,
-                                                   add_generation_prompt);
+  KeyValuePairs options;
+  options.Add("chat_template_kwargs", normalized_kwargs);
+  tokenizer_->UpdateOptions(options.Keys().data(), options.Values().data(), options.size());
+  OgaString result = tokenizer_->ApplyChatTemplate(
+      /*template_str=*/nullptr, messages_json, tools_json, add_generation_prompt);
   return std::string(static_cast<const char*>(result));
 }
 

@@ -15,7 +15,7 @@ use crate::detail::api::Api;
 use crate::detail::manager::{EpProgressCallback, NativeManager};
 use crate::detail::task::spawn_blocking;
 use crate::error::{FoundryLocalError, Result};
-use crate::types::{EpDownloadResult, EpInfo};
+use crate::types::{CatalogType, EpDownloadResult, EpInfo};
 
 /// Process-wide bookkeeping for the manager singleton.
 ///
@@ -62,7 +62,6 @@ fn instance_slot() -> &'static Mutex<SharedInstance> {
 pub struct FoundryLocalManager {
     native: Arc<NativeManager>,
     catalog: Catalog,
-    urls: Mutex<Vec<String>>,
     /// Serialises web-service start/stop so concurrent callers cannot race on
     /// the native lifecycle state (which the C++ core mutates without a lock).
     web_service_lock: AsyncMutex<()>,
@@ -129,7 +128,8 @@ impl FoundryLocalManager {
     /// While at least one handle is alive — this `Arc`, or any
     /// [`Model`](crate::Model), client, or session derived from it, each of
     /// which keeps the native manager alive — every call returns a handle to the
-    /// **same** native manager and the `config` passed to later calls is ignored.
+    /// **same** native manager. A conflicting hosting mode is rejected; other
+    /// configuration passed to later calls is ignored.
     /// If the `Arc` returned here is dropped while a derived handle is still
     /// alive, a subsequent call rebuilds a lightweight wrapper around the
     /// still-live native manager rather than creating a second one (the core
@@ -142,6 +142,7 @@ impl FoundryLocalManager {
     /// the C++ SDK's local-`Manager` semantics and avoids the WebGPU
     /// `ReleaseEpFactory` teardown throw (ORT #29206).
     pub fn create(config: FoundryLocalConfig) -> Result<Arc<Self>> {
+        config.validate_hosting_mode()?;
         // Hold the lock across the whole decision so the reuse check, any native
         // creation, and the slot update are atomic; concurrent callers then
         // observe and share the result. A poisoned lock is recoverable: the
@@ -152,6 +153,9 @@ impl FoundryLocalManager {
 
         // 1. A live outer wrapper already exists: share it.
         if let Some(existing) = slot.outer.upgrade() {
+            existing
+                .native
+                .check_hosting_mode(config.shared_host_enabled())?;
             return Ok(existing);
         }
 
@@ -160,6 +164,7 @@ impl FoundryLocalManager {
         //    than calling `Manager_Create` again (the core permits only one live
         //    manager and would reject a second creation).
         if let Some(native) = slot.native.upgrade() {
+            native.check_hosting_mode(config.shared_host_enabled())?;
             let manager = Self::wrap_existing(native, config)?;
             slot.outer = Arc::downgrade(&manager);
             return Ok(manager);
@@ -182,15 +187,20 @@ impl FoundryLocalManager {
         let native = Arc::new(NativeManager::create(
             Arc::clone(&api),
             native_config.as_ptr(),
+            config.shared_host_enabled(),
         )?);
 
         let catalog_ptr = native.catalog_ptr()?;
-        let catalog = Catalog::new(Arc::clone(&api), catalog_ptr, Arc::clone(&native))?;
+        let catalog = Catalog::new(
+            Arc::clone(&api),
+            catalog_ptr,
+            Arc::clone(&native),
+            CatalogType::Public,
+        )?;
 
         Ok(Arc::new(FoundryLocalManager {
             native,
             catalog,
-            urls: Mutex::new(Vec::new()),
             web_service_lock: AsyncMutex::new(()),
             _logger: logger,
         }))
@@ -200,7 +210,7 @@ impl FoundryLocalManager {
     ///
     /// Reuses the existing native manager (and its loaded library), so no second
     /// `Manager_Create` is attempted; only the outer-side state (catalog view,
-    /// URL cache, web-service lock, logger) is rebuilt. The rest of `config` is
+    /// web-service lock and logger) is rebuilt. The rest of `config` is
     /// ignored, matching the process-wide singleton contract.
     fn wrap_existing(
         native: Arc<NativeManager>,
@@ -208,19 +218,16 @@ impl FoundryLocalManager {
     ) -> Result<Arc<Self>> {
         let logger = config.take_logger();
         let catalog_ptr = native.catalog_ptr()?;
-        let catalog = Catalog::new(native.api(), catalog_ptr, Arc::clone(&native))?;
-
-        // The live native manager may already be running a web service (a prior
-        // outer wrapper started it, then was dropped while a derived handle kept
-        // the native alive). Seed the URL cache from native so `urls()` reflects
-        // the running service instead of misreporting it as stopped. This is a
-        // non-throwing native getter that returns empty when nothing is running.
-        let urls = native.web_service_urls().unwrap_or_default();
+        let catalog = Catalog::new(
+            native.api(),
+            catalog_ptr,
+            Arc::clone(&native),
+            CatalogType::Public,
+        )?;
 
         Ok(Arc::new(FoundryLocalManager {
             native,
             catalog,
-            urls: Mutex::new(urls),
             web_service_lock: AsyncMutex::new(()),
             _logger: logger,
         }))
@@ -229,6 +236,22 @@ impl FoundryLocalManager {
     /// Access the model catalog.
     pub fn catalog(&self) -> &Catalog {
         &self.catalog
+    }
+
+    /// Get a catalog by source type. [`CatalogType::Public`] is equivalent to [`Self::catalog`].
+    pub fn get_catalog(&self, catalog_type: CatalogType) -> Result<Catalog> {
+        let ptr = self.native.catalog_ptr_by_type(catalog_type.as_native())?;
+        Catalog::new(
+            self.native.api(),
+            ptr,
+            Arc::clone(&self.native),
+            catalog_type,
+        )
+    }
+
+    /// Get the mutable catalog used for local model registration.
+    pub fn local_catalog(&self) -> Result<Catalog> {
+        self.get_catalog(CatalogType::Local)
     }
 
     /// Begin a graceful shutdown of the local engine.
@@ -245,46 +268,34 @@ impl FoundryLocalManager {
         self.native.shutdown()
     }
 
+    /// Whether native shutdown was requested, including through the web service.
+    /// A serving host should observe this and perform teardown on its own thread.
+    pub fn is_shutdown_requested(&self) -> bool {
+        self.native.is_shutdown_requested()
+    }
+
     /// URLs that the local web service is listening on.
     ///
-    /// Empty until [`Self::start_web_service`] has been called.
+    /// Observes an existing listener without starting the service or acquiring
+    /// shared-host ownership. Empty when no listener is running.
     pub fn urls(&self) -> Result<Vec<String>> {
-        let lock = self.urls.lock().map_err(|_| FoundryLocalError::Internal {
-            reason: "Failed to acquire urls lock".into(),
-        })?;
-        Ok(lock.clone())
+        self.native.web_service_urls()
     }
 
     /// Start the local web service.
     ///
-    /// The listening URLs are stored internally and can be retrieved via
-    /// [`Self::urls`] after this method returns.
+    /// Retrieve listening URLs via [`Self::urls`] after this method returns.
     pub async fn start_web_service(&self) -> Result<()> {
         let _guard = self.web_service_lock.lock().await;
         let native = Arc::clone(&self.native);
-        let urls = spawn_blocking(move || {
-            native.web_service_start()?;
-            native.web_service_urls()
-        })
-        .await?;
-        *self.urls.lock().map_err(|_| FoundryLocalError::Internal {
-            reason: "Failed to acquire urls lock".into(),
-        })? = urls;
-        Ok(())
+        spawn_blocking(move || native.web_service_start()).await
     }
 
     /// Stop the local web service.
     pub async fn stop_web_service(&self) -> Result<()> {
         let _guard = self.web_service_lock.lock().await;
         let native = Arc::clone(&self.native);
-        spawn_blocking(move || native.web_service_stop()).await?;
-        self.urls
-            .lock()
-            .map_err(|_| FoundryLocalError::Internal {
-                reason: "Failed to acquire urls lock".into(),
-            })?
-            .clear();
-        Ok(())
+        spawn_blocking(move || native.web_service_stop()).await
     }
 
     /// Discover available execution providers and their registration status.

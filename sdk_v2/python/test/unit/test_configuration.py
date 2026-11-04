@@ -5,6 +5,9 @@
 """Unit tests for Configuration — pure Python, no native dependency."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import MagicMock, Mock
+
 import pytest
 
 from foundry_local_sdk import Configuration, FoundryLocalException, LogLevel
@@ -29,6 +32,43 @@ class TestConfigurationValidation:
         with pytest.raises(FoundryLocalException):
             c.validate()
 
+    def test_shared_host_rejects_external_service(self):
+        configuration = Configuration(
+            app_name="App",
+            use_shared_host=True,
+            web=Configuration.WebService(external_url="http://127.0.0.1:1234"),
+        )
+        with pytest.raises(FoundryLocalException, match="cannot use an external service"):
+            configuration.validate()
+
+
+class TestSharedHostNativeConfiguration:
+    def test_enabled_setting_is_marshaled_with_v3(self):
+        configuration = Configuration(app_name="App", use_shared_host=True)
+        native_api = MagicMock()
+        native_api.api_version = 3
+        pointer = object()
+
+        assert configuration._apply_settings(pointer, native_api, MagicMock()) is pointer
+        native_api.config.SetUseSharedHost.assert_called_once_with(pointer, True)
+
+    def test_enabled_setting_rejects_v2_before_reading_any_extension(self):
+        configuration = Configuration(app_name="App", use_shared_host=True)
+        legacy_api = SimpleNamespace(api_version=2)
+
+        with pytest.raises(FoundryLocalException, match="requires an API v3") as error:
+            configuration._apply_settings(object(), legacy_api, MagicMock())
+        assert error.value.error_code == 1
+
+    def test_default_mode_uses_only_the_v2_prefix(self):
+        configuration = Configuration(app_name="App")
+        legacy_api = MagicMock()
+        legacy_api.api_version = 2
+        legacy_api.config = SimpleNamespace(SetDefaultLogLevel=Mock(), SetAdditionalOptions=Mock())
+        pointer = object()
+
+        assert configuration._apply_settings(pointer, legacy_api, MagicMock()) is pointer
+
 
 class TestConfigurationDictionary:
     def test_minimal_settings_serialize(self):
@@ -36,6 +76,7 @@ class TestConfigurationDictionary:
         d = c.as_dictionary()
         assert d["AppName"] == "App"
         assert d["LogLevel"] == str(LogLevel.INFORMATION)
+        assert d["UserAgent"].startswith("foundry-local-python/")
         assert "AppDataDir" not in d
 
     def test_all_directory_settings_round_trip(self):
@@ -59,6 +100,11 @@ class TestConfigurationDictionary:
         assert d["Key1"] == "v1"
         assert d["Key2"] == "v2"
         assert "" not in d
+
+    def test_user_agent_can_be_overridden(self):
+        c = Configuration(app_name="App", additional_settings={"UserAgent": "custom-client/1"})
+        d = c.as_dictionary()
+        assert d["UserAgent"] == "custom-client/1"
 
     def test_additional_settings_none_value_becomes_empty(self):
         c = Configuration(app_name="App", additional_settings={"K": None})
@@ -89,10 +135,13 @@ class TestConfigurationExtendedFields:
     def test_new_fields_default_to_none(self):
         c = Configuration(app_name="App")
         assert c.catalog_region is None
+        assert c.disable_nonessential_telemetry is False
 
     def test_new_fields_round_trip(self):
         c = Configuration(
             app_name="App",
             catalog_region="westus2",
+            disable_nonessential_telemetry=True,
         )
         assert c.catalog_region == "westus2"
+        assert c.disable_nonessential_telemetry is True

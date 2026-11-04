@@ -8,6 +8,7 @@
 #include "exception.h"
 #include "inferencing/generative/chat/chat_template.h"
 #include "inferencing/session/request.h"
+#include "inferencing/session/tool_registry.h"
 #include "items/audio_item.h"
 #include "items/image_item.h"
 #include "items/message_item.h"
@@ -21,6 +22,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 using namespace fl;
@@ -94,6 +96,115 @@ TEST(ChatTemplateProjectionTest, MultipleToolCallsKeepEmissionOrder) {
             R"([{"role":"assistant","content":"","tool_calls":[)"
             R"({"id":"call_1","type":"function","function":{"name":"first","arguments":{"a":1}}},)"
             R"({"id":"call_2","type":"function","function":{"name":"second","arguments":{"b":2}}}]}])");
+}
+
+TEST(ChatTemplateProjectionTest, PositionalResultsFollowAssistantCallOrderWithoutMutatingCanonicalMessages) {
+  const std::vector<TranscriptMessage> messages = {
+      MakeAssistant("", {MakeCall("call_first", "first", "{}"), MakeCall("call_second", "second", "{}")}),
+      TranscriptMessage::ToolResult("call_second", "SECOND_SENTINEL"),
+      TranscriptMessage::ToolResult("call_first", "FIRST_SENTINEL"),
+      UserMessage("continue")};
+
+  const auto projected = chat_internal::ProjectPositionalToolResults(messages);
+
+  EXPECT_EQ(projected[1].tool_call_id, "call_first");
+  EXPECT_EQ(projected[1].VisibleText(), "FIRST_SENTINEL");
+  EXPECT_EQ(projected[2].tool_call_id, "call_second");
+  EXPECT_EQ(projected[2].VisibleText(), "SECOND_SENTINEL");
+  EXPECT_EQ(messages[1].tool_call_id, "call_second");
+  EXPECT_EQ(messages[1].VisibleText(), "SECOND_SENTINEL");
+  EXPECT_EQ(messages[2].tool_call_id, "call_first");
+  EXPECT_EQ(messages[2].VisibleText(), "FIRST_SENTINEL");
+}
+
+TEST(ChatTemplateProjectionTest, PositionalResultsUseCompleteCombinedHistoryAndCurrentInput) {
+  std::vector<TranscriptMessage> committed_history = {
+      UserMessage("run both"),
+      MakeAssistant("", {MakeCall("call_first", "first", "{}"), MakeCall("call_second", "second", "{}")})};
+  std::vector<TranscriptMessage> current_input = {
+      TranscriptMessage::ToolResult("call_second", "SECOND_SENTINEL"),
+      TranscriptMessage::ToolResult("call_first", "FIRST_SENTINEL")};
+
+  auto combined = committed_history;
+  combined.insert(combined.end(), current_input.begin(), current_input.end());
+  const auto warm_projection = chat_internal::ProjectPositionalToolResults(combined);
+  const auto cold_projection = chat_internal::ProjectPositionalToolResults(
+      {committed_history[0], committed_history[1], current_input[0], current_input[1]});
+
+  EXPECT_EQ(BuildChatMessagesJson(warm_projection), BuildChatMessagesJson(cold_projection));
+  EXPECT_EQ(warm_projection[2].VisibleText(), "FIRST_SENTINEL");
+  EXPECT_EQ(warm_projection[3].VisibleText(), "SECOND_SENTINEL");
+}
+
+TEST(ChatTemplateProjectionTest, PositionalProjectionLeavesOutstandingMultiCallTurnAtEndUnchanged) {
+  const std::vector<TranscriptMessage> messages = {
+      UserMessage("run both"),
+      MakeAssistant("", {MakeCall("call_first", "first", "{}"), MakeCall("call_second", "second", "{}")})};
+
+  const auto projected = chat_internal::ProjectPositionalToolResults(messages);
+
+  EXPECT_EQ(BuildChatMessagesJson(projected), BuildChatMessagesJson(messages));
+}
+
+TEST(ChatTemplateProjectionTest, PositionalProjectionIgnoresUnrelatedLaterCallResults) {
+  const std::vector<TranscriptMessage> messages = {
+      MakeAssistant("", {MakeCall("call_first", "first", "{}"), MakeCall("call_second", "second", "{}")}),
+      UserMessage("continue without those results"),
+      MakeAssistant("", {MakeCall("call_other", "other", "{}")}),
+      TranscriptMessage::ToolResult("call_other", "unrelated")};
+
+  const auto projected = chat_internal::ProjectPositionalToolResults(messages);
+
+  EXPECT_EQ(BuildChatMessagesJson(projected), BuildChatMessagesJson(messages));
+}
+
+void ExpectAmbiguousPositionalResults(const std::vector<TranscriptMessage>& messages) {
+  try {
+    chat_internal::ProjectPositionalToolResults(messages);
+    FAIL() << "expected ambiguous positional results to be rejected";
+  } catch (const fl::Exception& ex) {
+    EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+    EXPECT_NE(std::string(ex.what()).find(
+                  "positional tool results must immediately follow a multi-call assistant turn and contain each "
+                  "assistant call id exactly once"),
+              std::string::npos)
+        << ex.what();
+  }
+}
+
+TEST(ChatTemplateProjectionTest, AmbiguousPositionalResultTopologiesAreRejected) {
+  const auto calls =
+      MakeAssistant("", {MakeCall("call_first", "first", "{}"), MakeCall("call_second", "second", "{}")});
+  const std::vector<std::pair<std::string, std::vector<TranscriptMessage>>> cases = {
+      {"complete group after intervening message",
+       {calls, UserMessage("intervening"), TranscriptMessage::ToolResult("call_second", "two"),
+        TranscriptMessage::ToolResult("call_first", "one")}},
+      {"duplicate call id",
+       {calls, TranscriptMessage::ToolResult("call_first", "one"),
+        TranscriptMessage::ToolResult("call_first", "duplicate")}},
+      {"missing call id", {calls, TranscriptMessage::ToolResult("call_first", "one")}},
+      {"unknown call id",
+       {calls, TranscriptMessage::ToolResult("call_first", "one"),
+        TranscriptMessage::ToolResult("call_unknown", "unknown")}},
+      {"noncontiguous call ids",
+       {calls, TranscriptMessage::ToolResult("call_first", "one"), UserMessage("intervening"),
+        TranscriptMessage::ToolResult("call_second", "two")}},
+  };
+
+  for (const auto& [name, messages] : cases) {
+    SCOPED_TRACE(name);
+    ExpectAmbiguousPositionalResults(messages);
+  }
+}
+
+TEST(ChatTemplateProjectionTest, PositionalProjectionLeavesSingleCallGroupsInArrivalOrder) {
+  const std::vector<TranscriptMessage> messages = {
+      MakeAssistant("", {MakeCall("call_only", "only", "{}")}),
+      TranscriptMessage::ToolResult("call_other", "normal validation handles this")};
+
+  const auto projected = chat_internal::ProjectPositionalToolResults(messages);
+
+  EXPECT_EQ(BuildChatMessagesJson(projected), BuildChatMessagesJson(messages));
 }
 
 TEST(ChatTemplateProjectionTest, ReasoningIsNotProjectedEvenAlongsideToolCalls) {
@@ -181,7 +292,7 @@ TEST(TranscriptIngestTest, ToolCallItemsFoldIntoAdjacentAssistantMessage) {
   EXPECT_EQ(calls[0]->name, "get_weather");
   EXPECT_EQ(calls[0]->arguments, R"({"city":"Seattle"})");
   EXPECT_EQ(calls[1]->call_id, "call_2");
-  EXPECT_EQ(calls[1]->kind, ToolCallKind::kFunction);
+  EXPECT_EQ(calls[1]->kind, ToolKind::kFunction);
 }
 
 TEST(TranscriptIngestTest, ToolCallItemWithoutAdjacentAssistantStartsNewMessage) {
@@ -292,8 +403,7 @@ TEST(ChatTranscriptTest, TextAfterAToolCallIsRejectedWithInvalidArgument) {
   EXPECT_FALSE(transcript.HasOutstandingCalls());
 }
 
-TEST(ChatTranscriptTest, AReplyThatWouldContinueAPrefilledCallIsRejected) {
-  // Prefill and reply are each renderable on their own; merged they are not, so the check has to run on the merge.
+TEST(ChatTranscriptTest, AReplyAfterASuppliedCallStartsANewAssistantMessage) {
   TranscriptMessage prefill;
   prefill.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
   prefill.AppendText("Let me check.");
@@ -304,8 +414,11 @@ TEST(ChatTranscriptTest, AReplyThatWouldContinueAPrefilledCallIsRejected) {
   reply.AppendText(" One moment.");
 
   ChatTranscript transcript;
-  EXPECT_THROW(transcript.CommitTurn({prefill}, reply, {}), fl::Exception);
-  EXPECT_TRUE(transcript.Empty());
+  ASSERT_NO_THROW(transcript.CommitTurn({prefill}, reply, {}));
+  ASSERT_EQ(transcript.MessageCount(), 2u);
+  EXPECT_EQ(transcript.Messages()[0].ToolCalls().size(), 1u);
+  EXPECT_EQ(transcript.Messages()[1].VisibleText(), " One moment.");
+  EXPECT_TRUE(transcript.IsOutstanding("call_1"));
 }
 
 TEST(ChatTranscriptTest, CommitFailureBeforePublishPreservesEveryObservableState) {
@@ -349,7 +462,7 @@ TEST(ChatTranscriptTest, CommitFailureBeforePublishPreservesEveryObservableState
 // AssistantTurnGuard — the generation-side half of the ordering invariant.
 //
 // ChatSession applies this while a turn is produced, so post-call text is never streamed to the caller and never
-// reaches the transcript. These tests are the only model-free way to pin that behaviour.
+// reaches the transcript.
 // ===========================================================================
 
 TEST(AssistantTurnGuardTest, TextBeforeAnyCallIsEmitted) {
@@ -393,20 +506,22 @@ TEST(AssistantTurnGuardTest, AnEmptyTextEventNeverEndsTheTurn) {
   EXPECT_FALSE(guard.TurnEnded());
 }
 
-TEST(AssistantTurnGuardTest, APrefilledCallClosesVisibleTextBeforeTheFirstToken) {
-  // The reply merges into the prefill, so the two are one assistant turn and the prefill's call already closed it.
-  AssistantTurnGuard guard(/*calls_already_issued=*/true);
-
-  EXPECT_EQ(guard.OfferVisibleText("continuing"), TextDisposition::kEndTurn);
-  EXPECT_TRUE(guard.TurnEnded());
-}
-
 TEST(AssistantTurnGuardTest, ParallelCallsWithNoTextAreUnaffected) {
   AssistantTurnGuard guard;
 
-  guard.RecordToolCall();
-  guard.RecordToolCall();
+  EXPECT_TRUE(guard.RecordToolCall());
+  EXPECT_TRUE(guard.RecordToolCall());
   EXPECT_FALSE(guard.TurnEnded());
+}
+
+TEST(AssistantTurnGuardTest, SerialTurnEndsOnFirstCallEvenInOneFragment) {
+  AssistantTurnGuard guard(/*parallel_tool_calls=*/false);
+
+  EXPECT_EQ(guard.OfferVisibleText("Let me check."), TextDisposition::kEmit);
+  EXPECT_TRUE(guard.RecordToolCall());
+  EXPECT_TRUE(guard.TurnEnded());
+  EXPECT_FALSE(guard.RecordToolCall());
+  EXPECT_EQ(guard.OfferVisibleText(" further text"), TextDisposition::kDropped);
 }
 
 TEST(AssistantTurnGuardTest, WhatTheGuardAllowsIsExactlyWhatTheTranscriptAccepts) {
@@ -437,9 +552,7 @@ TEST(AssistantTurnGuardTest, WhatTheGuardAllowsIsExactlyWhatTheTranscriptAccepts
   EXPECT_EQ(assistant.VisibleText(), "Let me check.\n");
 }
 
-TEST(ChatTranscriptTest, AnEmptyReplyAfterAPrefilledCallCommitsAsTheOneTurn) {
-  // What the guard produces when a caller prefills an unanswered call and asks for more: the text is dropped, so the
-  // reply is empty and merges away. The call stays outstanding, waiting for the result it actually needs.
+TEST(ChatTranscriptTest, AnEmptyReplyAfterASuppliedCallKeepsItsOwnBoundary) {
   TranscriptMessage prefill;
   prefill.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
   prefill.AppendToolCall(MakeSuppliedToolCall("call_1", "get_weather", "{}"));
@@ -450,25 +563,12 @@ TEST(ChatTranscriptTest, AnEmptyReplyAfterAPrefilledCallCommitsAsTheOneTurn) {
   ChatTranscript transcript;
   ASSERT_NO_THROW(transcript.CommitTurn({UserMessage("Weather?"), prefill}, empty_reply, {}));
 
-  ASSERT_EQ(transcript.MessageCount(), 2u);
+  ASSERT_EQ(transcript.MessageCount(), 3u);
   EXPECT_EQ(transcript.Messages()[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
   EXPECT_EQ(transcript.Messages()[1].ToolCalls().size(), 1u);
+  EXPECT_EQ(transcript.Messages()[2].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
+  EXPECT_TRUE(transcript.Messages()[2].entries.empty());
   EXPECT_TRUE(transcript.IsOutstanding("call_1"));
-}
-
-TEST(ChatTranscriptTest, AssistantPrefillForReplyReportsTheMessageTheReplyWouldContinue) {
-  TranscriptMessage user(FOUNDRY_LOCAL_ROLE_USER, "Weather?");
-  TranscriptMessage prefill;
-  prefill.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
-  prefill.AppendText("Let me check.");
-
-  const std::vector<TranscriptMessage> inputs{user, prefill};
-
-  EXPECT_EQ(AssistantPrefillForReply(inputs, 0), &inputs.back());
-  // The floor is the boundary of the current replay segment: an earlier hop's assistant message is off limits.
-  EXPECT_EQ(AssistantPrefillForReply(inputs, inputs.size()), nullptr);
-  // A trailing user message is not a prefill.
-  EXPECT_EQ(AssistantPrefillForReply({prefill, user}, 0), nullptr);
 }
 
 TEST(TranscriptIngestTest, ConsecutiveAssistantMessagesBecomeOneTurn) {
@@ -588,9 +688,7 @@ TEST(TranscriptIngestTest, JoiningInsertsNothingEvenWhenTheFragmentsHaveNoSpacin
   EXPECT_EQ(messages[0].VisibleText(), "onetwo");
 }
 
-TEST(ChatTranscriptTest, AGeneratedReplyJoinsAnAssistantPrefillByTheSameLiteralRule) {
-  // The commit side of the same decision: a caller prefills "The answer is" and the model continues " 42.". One
-  // assistant turn, one message, no separator — which is also what replay rebuilds for that turn.
+TEST(ChatTranscriptTest, AGeneratedReplyPreservesTheBoundaryOpenedByTheTemplate) {
   TranscriptMessage prefill;
   prefill.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
   prefill.AppendText("The answer is");
@@ -602,10 +700,11 @@ TEST(ChatTranscriptTest, AGeneratedReplyJoinsAnAssistantPrefillByTheSameLiteralR
   ChatTranscript transcript;
   transcript.CommitTurn({UserMessage("What is it?"), prefill}, reply, {});
 
-  ASSERT_EQ(transcript.MessageCount(), 2u);
+  ASSERT_EQ(transcript.MessageCount(), 3u);
   EXPECT_EQ(transcript.Messages()[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
-  EXPECT_EQ(transcript.Messages()[1].VisibleText(), "The answer is 42.");
-  ASSERT_EQ(transcript.Messages()[1].entries.size(), 1u);
+  EXPECT_EQ(transcript.Messages()[1].VisibleText(), "The answer is");
+  EXPECT_EQ(transcript.Messages()[2].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
+  EXPECT_EQ(transcript.Messages()[2].VisibleText(), " 42.");
 }
 
 TEST(TranscriptIngestTest, AnUnnamedContinuationAdoptsTheOpenTurnsName) {
@@ -756,23 +855,27 @@ TEST(TranscriptIngestTest, NoSegmentsMeansAdjacencyGrouping) {
 }
 
 // ===========================================================================
-// CommitTurn — the reply continues a trailing assistant input
+// CommitTurn — the reply starts a new assistant message
 // ===========================================================================
 
-TEST(ChatTranscriptTest, ReplyMergesIntoATrailingAssistantInputMessage) {
+TEST(ChatTranscriptTest, ReplyDoesNotInheritTheSuppliedAssistantName) {
   TranscriptMessage prefill;
   prefill.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
   prefill.AppendText("Sure, ");
+  prefill.name = "alice";
 
   ChatTranscript transcript;
   transcript.CommitTurn({UserMessage("Finish this."), prefill}, MakeAssistant("here it is.", {}), {});
 
-  ASSERT_EQ(transcript.MessageCount(), 2u);
-  EXPECT_EQ(transcript.Messages()[1].VisibleText(), "Sure, here it is.");
+  ASSERT_EQ(transcript.MessageCount(), 3u);
+  EXPECT_EQ(transcript.Messages()[1].VisibleText(), "Sure, ");
+  EXPECT_EQ(transcript.Messages()[1].name, "alice");
+  EXPECT_EQ(transcript.Messages()[2].VisibleText(), "here it is.");
+  EXPECT_TRUE(transcript.Messages()[2].name.empty());
   EXPECT_EQ(transcript.TurnCount(), 1u);
 }
 
-TEST(ChatTranscriptTest, ReplyMergedIntoAPrefillKeepsItsToolCalls) {
+TEST(ChatTranscriptTest, ReplyKeepsItsToolCallsSeparateFromAssistantInput) {
   TranscriptMessage prefill;
   prefill.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
   prefill.AppendText("Checking. ");
@@ -781,27 +884,29 @@ TEST(ChatTranscriptTest, ReplyMergedIntoAPrefillKeepsItsToolCalls) {
   transcript.CommitTurn({UserMessage("Weather?"), prefill},
                         MakeAssistant("", {MakeCall("call_1", "get_weather", "{}")}), {});
 
-  ASSERT_EQ(transcript.MessageCount(), 2u);
+  ASSERT_EQ(transcript.MessageCount(), 3u);
   EXPECT_TRUE(transcript.IsOutstanding("call_1"));
-  ASSERT_EQ(transcript.Messages()[1].ToolCalls().size(), 1u);
+  EXPECT_FALSE(transcript.Messages()[1].HasToolCalls());
+  ASSERT_EQ(transcript.Messages()[2].ToolCalls().size(), 1u);
+  EXPECT_TRUE(transcript.Messages()[2].VisibleText().empty());
   EXPECT_EQ(transcript.Messages()[1].VisibleText(), "Checking. ");
 }
 
-TEST(ChatTranscriptTest, ReplyDoesNotMergeAcrossTheReplyMergeFloor) {
+TEST(ChatTranscriptTest, ReplyDoesNotMergeIntoReplayedAssistantHistory) {
   TranscriptMessage replayed;
   replayed.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
   replayed.AppendText("earlier turn");
 
   ChatTranscript transcript;
   // The first input message is replayed history, so the reply must not continue it.
-  transcript.CommitTurn({replayed}, MakeAssistant("new answer", {}), {}, /*reply_merge_floor=*/1);
+  transcript.CommitTurn({replayed}, MakeAssistant("new answer", {}), {});
 
   ASSERT_EQ(transcript.MessageCount(), 2u);
   EXPECT_EQ(transcript.Messages()[0].VisibleText(), "earlier turn");
   EXPECT_EQ(transcript.Messages()[1].VisibleText(), "new answer");
 }
 
-TEST(ChatTranscriptTest, UndoRemovesATurnWhoseReplyWasMergedIntoItsInput) {
+TEST(ChatTranscriptTest, UndoRemovesBothAssistantInputAndItsSeparateReply) {
   TranscriptMessage prefill;
   prefill.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
   prefill.AppendText("Sure, ");
@@ -810,7 +915,7 @@ TEST(ChatTranscriptTest, UndoRemovesATurnWhoseReplyWasMergedIntoItsInput) {
   transcript.CommitTurn({UserMessage("First.")}, MakeAssistant("One.", {}), {});
   transcript.CommitTurn({UserMessage("Finish this."), prefill}, MakeAssistant("here it is.", {}), {});
 
-  ASSERT_EQ(transcript.MessageCount(), 4u);
+  ASSERT_EQ(transcript.MessageCount(), 5u);
   transcript.UndoTurns(1);
 
   ASSERT_EQ(transcript.MessageCount(), 2u);
@@ -1103,10 +1208,10 @@ TEST(ChatTranscriptTest, FailedGenerationCommitsNoOutstandingCall) {
 // Generation has already been streamed to the caller by the time a turn is committed, so unusable model arguments
 // must never fail the request. Each shape the model can get wrong is checked end to end: the turn commits, the raw
 // bytes survive, and the conversation still projects on every later turn.
-class GeneratedArgumentsTest : public ::testing::TestWithParam<std::string> {};
+class GeneratedArgumentsTest : public ::testing::TestWithParam<const char*> {};
 
 TEST_P(GeneratedArgumentsTest, UnusableGeneratedArgumentsCommitAndStayRenderable) {
-  const std::string& raw = GetParam();
+  const std::string raw = GetParam();
 
   auto generated = MakeGeneratedToolCall("call_1", "get_weather", raw);
   EXPECT_FALSE(generated.arguments_usable) << "raw: " << raw;
@@ -1137,11 +1242,7 @@ TEST_P(GeneratedArgumentsTest, UnusableGeneratedArgumentsCommitAndStayRenderable
 }
 
 INSTANTIATE_TEST_SUITE_P(UnusableShapes, GeneratedArgumentsTest,
-                         ::testing::Values(std::string("null"),
-                                           std::string(R"("Seattle")"),
-                                           std::string("[1,2]"),
-                                           std::string("42"),
-                                           std::string(R"({"city":)")));
+                         ::testing::Values("null", R"("Seattle")", "[1,2]", "42", R"({"city":)"));
 
 TEST(ChatTranscriptTest, UsableGeneratedArgumentsKeepRawAndNormalizedInSync) {
   auto generated = MakeGeneratedToolCall("call_1", "get_weather", R"({"city":"Seattle"})");
@@ -1371,4 +1472,161 @@ TEST(ChatTranscriptTest, FullHistoryContinuationProjectsTheWholeConversation) {
             R"({"role":"tool","content":"sunny","tool_call_id":"call_1"},)"
             R"({"role":"assistant","content":"It is sunny."},)"
             R"({"role":"user","content":"And tomorrow?"}])");
+}
+
+// ===========================================================================
+// Custom tools — kind-aware normalization
+//
+// A custom tool's payload is free-form text. It crosses the public API boundary already unwrapped from the
+// synthesized `{"input": ...}` shape the model is prompted with, so the transcript stores that text as the raw
+// arguments and rewraps it for template projection. That keeps the record, the response, and every later prompt in
+// agreement, and makes a replayed call normalize exactly the way the generated one did.
+// ===========================================================================
+
+TEST(TranscriptCustomToolTest, GeneratedCustomCallKeepsRawTextAndWrapsForProjection) {
+  auto generated = MakeGeneratedToolCall("call_1", "run_python", "print('hi')\n", ToolKind::kCustom);
+
+  EXPECT_TRUE(generated.arguments_usable);
+  EXPECT_EQ(generated.call.kind, ToolKind::kCustom);
+  EXPECT_EQ(generated.call.arguments, "print('hi')\n");
+  EXPECT_EQ(generated.call.normalized_arguments, nlohmann::ordered_json({{"input", "print('hi')\n"}}));
+}
+
+TEST(TranscriptCustomToolTest, CustomPayloadIsNeverAModelDefect) {
+  // Text that is not JSON at all, and text that is JSON but not an object, are both valid custom payloads.
+  for (const auto& payload : {std::string("not json {{"), std::string("\"a bare string\""), std::string("42")}) {
+    auto generated = MakeGeneratedToolCall("call_1", "run_python", payload, ToolKind::kCustom);
+
+    EXPECT_TRUE(generated.arguments_usable) << payload;
+    EXPECT_EQ(generated.call.arguments, payload);
+    EXPECT_EQ(generated.call.normalized_arguments, nlohmann::ordered_json({{"input", payload}}));
+  }
+}
+
+TEST(TranscriptCustomToolTest, SuppliedCustomCallAcceptsTextThatIsNotAJsonObject) {
+  // The regression this guards: a caller replaying the text payload the session handed it must not be rejected the
+  // way a malformed function call is.
+  auto call = MakeSuppliedToolCall("call_1", "run_python", "print('hi')", ToolKind::kCustom);
+
+  EXPECT_EQ(call.kind, ToolKind::kCustom);
+  EXPECT_EQ(call.arguments, "print('hi')");
+  EXPECT_EQ(call.normalized_arguments, nlohmann::ordered_json({{"input", "print('hi')"}}));
+}
+
+TEST(TranscriptCustomToolTest, SuppliedAndGeneratedCustomCallsRejectEmbeddedNul) {
+  const std::string payload{"before\0after", 12};
+
+  try {
+    (void)MakeSuppliedToolCall("call_1", "run_python", payload, ToolKind::kCustom);
+    FAIL() << "expected supplied custom payload rejection";
+  } catch (const fl::Exception& ex) {
+    EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  }
+
+  try {
+    (void)MakeGeneratedToolCall("call_1", "run_python", payload, ToolKind::kCustom);
+    FAIL() << "expected generated custom payload rejection";
+  } catch (const fl::Exception& ex) {
+    EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  }
+}
+
+TEST(TranscriptCustomToolTest, SuppliedAndGeneratedCustomCallsRejectInvalidUtf8) {
+  const std::string payload{"\xC3\x28", 2};
+
+  EXPECT_THROW(MakeSuppliedToolCall("call_1", "run_python", payload, ToolKind::kCustom),
+               fl::Exception);
+  EXPECT_THROW(MakeGeneratedToolCall("call_1", "run_python", payload, ToolKind::kCustom),
+               fl::Exception);
+}
+
+TEST(TranscriptCustomToolTest, SuppliedFunctionCallStillRejectsNonObjectArguments) {
+  EXPECT_THROW(MakeSuppliedToolCall("call_1", "get_weather", "not json", ToolKind::kFunction), fl::Exception);
+}
+
+TEST(TranscriptCustomToolTest, GeneratedAndReplayedCustomCallsNormalizeIdentically) {
+  // Round-trip: what the model produced, unwrapped on the way out, replayed by the caller, renders the same bytes
+  // back to the model on the next turn.
+  const std::string payload = "line one\n\ttabbed\tünïcode  ";
+  auto generated = MakeGeneratedToolCall("call_1", "run_python", payload, ToolKind::kCustom);
+  auto replayed = MakeSuppliedToolCall("call_1", "run_python", payload, ToolKind::kCustom);
+
+  EXPECT_EQ(generated.call.arguments, replayed.arguments);
+  EXPECT_EQ(generated.call.normalized_arguments, replayed.normalized_arguments);
+  EXPECT_EQ(generated.call.kind, replayed.kind);
+
+  // And the wrapped form is exactly what the extractor unwraps back to the payload.
+  EXPECT_EQ(ExtractCustomToolInput(replayed.normalized_arguments.dump()), payload);
+}
+
+TEST(TranscriptCustomToolTest, CustomCallProjectsTheSynthesizedInputShape) {
+  // The chat template and the tool-call grammar only understand function-shaped tools, so a custom call must render
+  // as the single-string object the model was prompted with.
+  std::vector<TranscriptMessage> messages = {
+      MakeAssistant("", {MakeSuppliedToolCall("call_1", "run_python", "print('hi')", ToolKind::kCustom)})};
+
+  EXPECT_EQ(BuildChatMessagesJson(messages),
+            R"json([{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function",)json"
+            R"json("function":{"name":"run_python","arguments":{"input":"print('hi')"}}}]}])json");
+}
+
+TEST(TranscriptCustomToolTest, CustomKindSurvivesCommitAndFullHistoryProjection) {
+  ChatTranscript transcript;
+  transcript.CommitTurn({UserMessage("Print hi")},
+                        MakeAssistant("", {MakeSuppliedToolCall("call_1", "run_python", "print('hi')",
+                                                                ToolKind::kCustom)}),
+                        {});
+  transcript.CommitTurn({TranscriptMessage::ToolResult("call_1", "hi")}, MakeAssistant("Done.", {}), {});
+
+  auto calls = transcript.Messages()[1].ToolCalls();
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0]->kind, ToolKind::kCustom);
+  EXPECT_EQ(calls[0]->arguments, "print('hi')");
+
+  EXPECT_EQ(BuildChatMessagesJson(transcript.Messages()),
+            R"json([{"role":"user","content":"Print hi"},)json"
+            R"json({"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function",)json"
+            R"json("function":{"name":"run_python","arguments":{"input":"print('hi')"}}}]},)json"
+            R"json({"role":"tool","content":"hi","tool_call_id":"call_1"},)json"
+            R"json({"role":"assistant","content":"Done."}])json");
+}
+
+// ===========================================================================
+// Item ingestion with a per-request kind snapshot
+// ===========================================================================
+
+TEST(TranscriptIngestTest, ReplayedCustomCallIsNormalizedThroughTheKindSnapshot) {
+  Request request;
+  request.AddOwnedItem(std::make_unique<ToolCallItem>("call_1", "run_python", "print('hi')"));
+
+  const std::unordered_map<std::string, ToolKind> kinds = {{"run_python", ToolKind::kCustom}};
+  auto messages = BuildTranscriptMessages(request.items, kinds);
+
+  ASSERT_FALSE(messages.empty());
+  auto calls = messages.back().ToolCalls();
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0]->kind, ToolKind::kCustom);
+  EXPECT_EQ(calls[0]->arguments, "print('hi')");
+  EXPECT_EQ(calls[0]->normalized_arguments, nlohmann::ordered_json({{"input", "print('hi')"}}));
+}
+
+TEST(TranscriptIngestTest, NamesAbsentFromTheKindSnapshotAreFunctionTools) {
+  Request request;
+  request.AddOwnedItem(std::make_unique<ToolCallItem>("call_1", "get_weather", R"({"city":"Seattle"})"));
+
+  const std::unordered_map<std::string, ToolKind> kinds = {{"run_python", ToolKind::kCustom}};
+  auto messages = BuildTranscriptMessages(request.items, kinds);
+
+  auto calls = messages.back().ToolCalls();
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0]->kind, ToolKind::kFunction);
+  EXPECT_EQ(calls[0]->normalized_arguments, nlohmann::ordered_json({{"city", "Seattle"}}));
+}
+
+TEST(TranscriptIngestTest, ReplayedCustomCallWithoutTheSnapshotIsRejectedAsMalformedJson) {
+  // Documents why the snapshot has to reach ingestion: read as a function call, a text payload is not a JSON object.
+  Request request;
+  request.AddOwnedItem(std::make_unique<ToolCallItem>("call_1", "run_python", "print('hi')"));
+
+  EXPECT_THROW(BuildTranscriptMessages(request.items), fl::Exception);
 }

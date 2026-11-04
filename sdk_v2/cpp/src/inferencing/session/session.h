@@ -6,8 +6,11 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
-#include <unordered_set>
+#include <thread>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <foundry_local/foundry_local_c.h>
@@ -15,7 +18,11 @@
 #include "inferencing/session/callback_handler.h"
 #include "inferencing/session/request.h"
 #include "inferencing/session/response.h"
+#include "inferencing/session/streaming_callback.h"
+#include "inferencing/session/tool_registry.h"
 #include "inferencing/session/types.h"
+#include "inferencing/generative/chat/search_options.h"
+#include "telemetry/invocation_context.h"
 #include "util/key_value_pairs.h"
 
 namespace fl {
@@ -23,6 +30,7 @@ namespace fl {
 class ILogger;     // forward declaration
 class ITelemetry;  // forward declaration
 class Model;       // forward declaration
+struct ModelUsageInfo;
 
 /// Base class for model inference sessions.
 /// Manages lifecycle, request dispatch, streaming callbacks, and tool definitions.
@@ -33,6 +41,21 @@ class Model;       // forward declaration
 ///   - Future: predictive inference, realtime audio, multi-modal
 class Session {
  public:
+  class RequestPreflightOperation {
+   public:
+    virtual ~RequestPreflightOperation() = default;
+
+    RequestPreflightOperation(const RequestPreflightOperation&) = delete;
+    RequestPreflightOperation& operator=(const RequestPreflightOperation&) = delete;
+    RequestPreflightOperation(RequestPreflightOperation&&) = delete;
+    RequestPreflightOperation& operator=(RequestPreflightOperation&&) = delete;
+
+    virtual RequestBudget Execute() = 0;
+
+   protected:
+    RequestPreflightOperation() = default;
+  };
+
   virtual ~Session();
 
   Session(Session&&) = default;
@@ -51,59 +74,77 @@ class Session {
   /// class, then waits for all async streaming callbacks to complete.
   /// Waiting here keeps the Request reference valid for the lifetime of any
   /// in-flight callbacks and ensures the Response is fully populated on return.
-  void ProcessRequest(const Request& request, Response& response);
+  /// Returns the completed turn count before releasing the request serialization lock.
+  size_t ProcessRequest(const Request& request, Response& response,
+                        std::optional<StreamingCallback> callback = std::nullopt);
 
-  /// Signal every in-flight request on this session to cancel. Only sets each request's atomic
-  /// cancel flag — never blocks and never joins — so it is safe to call from a shutdown path while
-  /// another thread holds a manager lock. Generation loops poll the flag and stop within ~one token.
+  /// Capture a chat request and session state under the same serialization boundary as generation and undo.
+  std::unique_ptr<RequestPreflightOperation> CreateRequestPreflight(const Request& request) const;
+
+  /// Signal every in-flight request on this session to cancel. Only updates each request's atomic
+  /// lifecycle — never blocks and never joins — so it is safe to call from a shutdown path while
+  /// another thread holds a manager lock. Generation loops poll the request between backend scheduling quanta.
   void Cancel();
 
-  /// Add a tool definition to this session.
-  /// @throws fl::Exception if tool_def.json_schema is not valid JSON.
+  /// Add a tool definition to this session. Names are case-sensitive and unique across kinds.
+  /// Safe to call while a request is being processed: the registry is internally synchronized and
+  /// generation reads only the snapshot taken when the request started.
+  /// @throws fl::Exception if the name is already registered, a function tool's json_schema is not
+  ///         valid JSON, or a custom tool supplies a json_schema.
   void AddToolDefinition(ToolDefinition tool_def);
 
   /// Remove a previously-added tool definition by name.
   /// Returns true if a matching tool was found and removed, false otherwise.
   bool RemoveToolDefinition(const std::string& tool_name) {
-    auto it = std::find_if(tool_definitions_.begin(), tool_definitions_.end(),
-                           [&](const ToolDefinition& td) { return td.name == tool_name; });
-    if (it == tool_definitions_.end()) {
-      return false;
-    }
-
-    tool_definitions_.erase(it);
-    return true;
+    return tool_registry_.Remove(tool_name);
   }
 
-  /// Get the tool definitions added to this session.
-  const std::vector<ToolDefinition>& ToolDefinitions() const {
-    return tool_definitions_;
+  /// Snapshot of the tool definitions added to this session, in registration order. Returned by
+  /// value: a reference into the registry could be invalidated by a concurrent Add or Remove.
+  /// A request takes this once, before generation, so the calls it replays, the prompt it builds,
+  /// and the calls it produces are all resolved against the same tool set.
+  std::vector<ToolDefinition> ToolDefinitions() const {
+    return tool_registry_.Definitions();
   }
 
   /// Remove all tool definitions from this session. Needed when a session is reused across
   /// requests (e.g. via Responses API `previous_response_id`) and the new request brings its
   /// own tools — the request-is-self-contained model means stale tools must not leak across turns.
   void ClearToolDefinitions() {
-    tool_definitions_.clear();
+    tool_registry_.Clear();
   }
 
   /// Get the number of completed turns. Only meaningful for chat sessions.
   virtual size_t TurnCount() const { return 0; }
 
   /// Undo the last `count` turns. Only meaningful for chat sessions.
+  /// Returns the remaining turn count before releasing the request serialization lock.
   /// @throws fl::Exception if the session type does not support turn management or count > TurnCount().
-  virtual void UndoTurns(size_t count);
+  virtual size_t UndoTurns(size_t count);
 
   /// Session-level parameters overlaid onto each request.
   void SetSessionOptions(const KeyValuePairs& options) {
+    auto lock = TryLockRequestMutex();
     session_options_ = options;
     SetSessionOptionsImpl(session_options_);
   }
 
-  using StreamingCallbackFn = std::function<int(flStreamingCallbackData, void*)>;
+  using StreamingCallbackFn = StreamingCallback::Function;
   void SetStreamingCallback(StreamingCallbackFn callback, void* user_data = nullptr) {
-    callback_fn_ = std::move(callback);
-    callback_user_data_ = user_data;
+    StreamingCallbackFn previous;
+    {
+      std::lock_guard<std::mutex> lock(*active_requests_mutex_);
+      previous = std::exchange(callback_fn_, std::move(callback));
+      callback_user_data_ = user_data;
+    }
+  }
+
+  /// Stage telemetry context for the next operation (including a cached session's next turn).
+  /// HTTP callers exclusively own the session while staging an indirect child of the route context.
+  /// Without a staged context, each ProcessRequest creates an independent direct context.
+  void SetInvocationContext(const InvocationContext& context) {
+    std::lock_guard<std::mutex> lock(*invocation_context_mutex_);
+    invocation_context_ = context.BoundedCopy();
   }
 
  protected:
@@ -120,16 +161,7 @@ class Session {
   /// Returns a copy of session options with request options overlaid (request wins on conflict).
   /// Derived classes call this when they want a single resolved option set.
   KeyValuePairs MergedOptions(const KeyValuePairs& request_options) const {
-    if (request_options.empty()) {
-      return session_options_;
-    }
-
-    KeyValuePairs merged = session_options_;
-    for (const auto& [key, value] : request_options) {
-      merged.Add(key, value);
-    }
-
-    return merged;
+    return MergeKeyValuePairs(session_options_, request_options);
   }
 
   /// Derived classes implement the actual generation logic.
@@ -137,14 +169,30 @@ class Session {
   /// Requests are serialized if the derived class does not opt into concurrency via allow_concurrent_requests_.
   virtual void ProcessRequestImpl(const Request& request, Response& response) = 0;
 
+  virtual std::string ExecutionProvider() const { return {}; }
+
+  /// Called inside the telemetry-only failure boundary after inference has populated the response.
+  virtual void RecordAdditionalModelUsage(const Response& /*response*/, const ModelUsageInfo& /*usage*/) {}
+
+  ITelemetry& Telemetry() { return telemetry_; }
+  static int32_t TelemetryTokenCount(int64_t count);
+
+  virtual std::unique_ptr<RequestPreflightOperation> CreateRequestPreflightImpl(Request request) const;
+
   /// Create a per-request callback handler. Returns nullptr if no callback is set.
   /// The handler is owned by the caller (unique_ptr) and drains+joins on destruction.
   std::unique_ptr<CallbackHandler> CreateCallbackHandler(const Request& request) {
-    if (!callback_fn_) {
+    StreamingCallback callback;
+    {
+      std::lock_guard<std::mutex> lock(*active_requests_mutex_);
+      callback = active_requests_.at(&request);
+    }
+
+    if (!callback.function) {
       return nullptr;
     }
 
-    return std::make_unique<CallbackHandler>(request, callback_fn_, logger_, callback_user_data_);
+    return std::make_unique<CallbackHandler>(request, std::move(callback.function), logger_, callback.user_data);
   }
 
   const KeyValuePairs& SessionOptions() const { return session_options_; }
@@ -152,27 +200,35 @@ class Session {
   /// Serialize a state mutation with ProcessRequest for session types that maintain mutable turn state.
   std::unique_lock<std::mutex> LockRequestMutex() const { return std::unique_lock<std::mutex>(*request_mutex_); }
 
+  std::unique_lock<std::mutex> TryLockRequestMutex() const;
+
  private:
   /// Reject items (and message content parts) whose type the model's task does not advertise as an
   /// input. Currently applies to chat tasks only.
   void ValidateRequestItems(const Request& request) const;
+  InvocationContext TakeInvocationContext();
+  void RecordUsage(const Request& request, const Response& response,
+                   const InvocationContext& context, int64_t total_time_ms, bool streaming);
 
   const fl::Model& catalog_model_;
   ILogger& logger_;
   ITelemetry& telemetry_;
-  std::vector<ToolDefinition> tool_definitions_;
+  ToolRegistry tool_registry_;
   KeyValuePairs session_options_;
   StreamingCallbackFn callback_fn_;
   void* callback_user_data_ = nullptr;
+  std::optional<InvocationContext> invocation_context_;
+  std::unique_ptr<std::mutex> invocation_context_mutex_ = std::make_unique<std::mutex>();
   const bool allow_concurrent_requests_;
   mutable std::unique_ptr<std::mutex> request_mutex_ = std::make_unique<std::mutex>();
 
-  // In-flight requests tracked so Cancel() can flip their cancel flags from another thread. Guarded
-  // by its own mutex (not request_mutex_) because concurrent sessions (e.g. audio) may hold several
-  // at once, and Cancel() must run without waiting on an active generation holding request_mutex_.
+  // In-flight requests tracked so Cancel() can transition their lifecycle state from another thread. Guarded by its
+  // own mutex (not request_mutex_) because concurrent sessions (e.g. embeddings) may hold several at once, and Cancel()
+  // must run without waiting on an active generation holding request_mutex_.
   // unique_ptr<mutex> keeps Session movable (std::mutex is not movable), matching request_mutex_.
-  std::unordered_set<const Request*> active_requests_;
+  std::unordered_map<const Request*, StreamingCallback> active_requests_;
   mutable std::unique_ptr<std::mutex> active_requests_mutex_ = std::make_unique<std::mutex>();
+  std::thread::id processing_thread_;
 
   // Latched by Cancel() under active_requests_mutex_. A request admitted after Cancel() ran (its streaming
   // thread hadn't reached ProcessRequest when the shutdown sweep happened) is stamped canceled on insert,

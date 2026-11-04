@@ -4,13 +4,42 @@ Native bindings around the Foundry Local **C++ SDK**, surfaced as an ESM npm pac
 (`foundry-local-sdk`). This README is the orientation guide for a developer who has just
 cloned the repo and wants to build, test, and debug the JS SDK.
 
+For a user-facing introduction to the inference API and cross-language examples, see
+[Inference with the Foundry Local SDK](../INFERENCING.md).
+
 > The architectural plan lives in [docs/PortJsToSdkV2.md](docs/PortJsToSdkV2.md). The
 > implementation conventions live in
 > [.github/instructions/js-sdk-v2.instructions.md](../../.github/instructions/js-sdk-v2.instructions.md)
 > and [.github/instructions/js-sdk-v2-items.instructions.md](../../.github/instructions/js-sdk-v2-items.instructions.md).
 > Read those before changing the addon or item types.
 
+## Features
+
+- **Model catalog** — browse public models and inspect cached or loaded state
+- **Bring your own model (BYOM)** — register existing local model assets without copying or taking ownership of them
+- **Native inference** — run chat, embeddings, and audio sessions directly through the C++ engine
+- **Streaming and tool calling** — consume streamed items and run multi-turn tool-enabled chat
+- **Embedded web service** — optionally expose OpenAI-compatible HTTP endpoints
+
 ---
+
+## Native shared hosting
+
+Set `useSharedHost: true` in `FoundryLocalManager` configuration to route existing model/session APIs through the
+native host included in the npm package. The default remains in-process. Metadata, discovery and model downloads do
+not start the host; execution, cache removal, EP download/registration or `manager.startWebService()` starts or joins it.
+Clients must match the Foundry native build, IPC protocol, platform and effective catalog, data/cache, provider, web,
+logs directory/level, telemetry and additional settings other than `UserAgent`. Dependency hashes and packaging paths
+do not split hosts; the first starter's verified runtime serves all clients. This cannot be combined with
+`serviceEndpoint`; hosted mode never falls back to in-process execution.
+
+`manager.dispose()` releases only this client. After the final owner, the host drains admitted work, allows a
+five-second reconnect grace and exits normally. Keep the manager alive while using its HTTP endpoint; HTTP
+connections are not owners. Explicit model unload stays shared and rejects in-use models. Web-service Stop rejects
+other owners or active HTTP work.
+
+`manager.urls` observes listeners without starting the service and returns `[]` after disposal. See the
+[shared-host requirements](../cpp/README.md#quick-start) for inherited environment/cwd and Linux prerequisites.
 
 ## 1. Architecture in 30 seconds
 
@@ -35,6 +64,11 @@ your TS/JS code
 
 The addon talks to the **C++ wrapper**, never directly to the C ABI. If the wrapper is
 missing something, fix the wrapper rather than reaching past it.
+
+Request preflight captures state synchronously, executes token counting on a worker, and keeps the
+manager-owned runtime alive until completion.
+`contextLimitTokens` is the Engine's structural request capacity or the Generator's model context.
+`fits` does not reserve cache or guarantee immediate admission while other requests are active.
 
 ---
 
@@ -178,6 +212,11 @@ them into `prebuilds/<platform>-<arch>/`. Three modes are supported:
 Set `FOUNDRY_LOCAL_SKIP_INSTALL=1` to skip the step entirely (e.g. when building from source
 and copying binaries via `copy-native:dev` instead).
 
+By default, HTTP mode tries NuGet.org first, then the Microsoft package feed proxy
+(`https://packagefeedproxy.microsoft.io/nuget/v3/index.json`), then the public ORT-Nightly Azure Artifacts feed.
+The proxy provides a fallback for networks that block direct NuGet.org access. Explicit feed overrides replace
+this list; `dotnet` and `nuget` modes receive the same default sources but control their own source selection.
+
 | Variable                          | Applies to          | Purpose                                                                                             |
 |------------------------------------|--------------------|-------------------------------------------------------------------------------------------------------|
 | `FOUNDRY_LOCAL_NUGET_MODE`         | all                | `http` (default), `dotnet`, or `nuget`. Any other value is rejected.                                  |
@@ -273,6 +312,30 @@ the wrapper behavior, then trace the divergence into the addon.
 
 The other SDKs (`sdk_v2/cs/`, `sdk_v2/python/`) consume the **same** `foundry_local`
 binary. Their tests are an equally valid reference for behavior.
+
+### 4.1 Register local model assets (BYOM)
+
+The backward-compatible `manager.catalog` property and `manager.getCatalog()` return the public catalog. Select the
+mutable local catalog explicitly, build caller-owned metadata, and register an existing model directory:
+
+```ts
+import { CatalogType, FoundryLocalManager, ModelInfoStringProperty, MutableModelInfo } from "foundry-local-sdk";
+
+using manager = FoundryLocalManager.create({ appName: "byom-example" });
+const localCatalog = manager.getCatalog(CatalogType.Local);
+using metadata = new MutableModelInfo().setStringProperty(ModelInfoStringProperty.Task, "chat-completion");
+const model = await localCatalog.registerModel("C:/models/my-model", "my-model-generic-cpu:1", metadata);
+
+// Registration copies metadata and never takes ownership of or deletes model assets.
+console.log(model.info.id);
+await localCatalog.unregisterModel(model.info.id);
+```
+
+Model IDs use `<name>:<version>`. `registerModel()` and `unregisterModel()` dispatch file work off the event loop.
+Explicit `registerModelSync()` and `unregisterModelSync()` variants are available for legacy synchronous workflows.
+
+Models registered with task `coding` use the existing text-only `ChatSession` interface. See
+[coding models](../INFERENCING.md#coding-models) for capability and compatibility details.
 
 ---
 

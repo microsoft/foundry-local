@@ -6,6 +6,9 @@
 
 namespace Microsoft.AI.Foundry.Local;
 
+using System.Runtime.ExceptionServices;
+
+using Microsoft.AI.Foundry.Local.Detail;
 using Microsoft.Extensions.Logging;
 
 using NativeModel = Microsoft.AI.Foundry.Local.Detail.Native.Model;
@@ -13,54 +16,84 @@ using NativeModel = Microsoft.AI.Foundry.Local.Detail.Native.Model;
 public class Model : IModel
 {
     private readonly ILogger _logger;
+    private readonly ManagerLifetime _nativeLifetime;
     internal NativeModel NativeModel { get; }
+    internal ManagerLifetime NativeLifetime => _nativeLifetime;
+    internal Action? BeforeNativeCallForTest { get; set; }
 
     private IReadOnlyList<IModel>? _variants;
 
-    public string Id => NativeModel.GetInfo().Id;
-    public string Alias => NativeModel.GetInfo().Alias;
+    public string Id => WithManagerLock(() => NativeModel.GetInfo().Id);
+    public string Alias => WithManagerLock(() => NativeModel.GetInfo().Alias);
 
     // The native model is the source of truth. Reading fresh every time keeps metadata correct after
     // SelectVariant / download / cache changes. Each read returns a point-in-time ModelInfo snapshot.
-    public ModelInfo Info => ModelInfo.FromNative(NativeModel);
+    public ModelInfo Info => WithManagerLock(() => ModelInfo.FromNative(NativeModel));
+
+    public string? GetStringProperty(string key)
+    {
+        Detail.Throw.IfContainsEmbeddedNul(key);
+        return WithManagerLock(() => NativeModel.GetInfo().GetStringProperty(key));
+    }
+
+    public long GetIntProperty(string key, long defaultValue = 0)
+    {
+        Detail.Throw.IfContainsEmbeddedNul(key);
+        return WithManagerLock(() => NativeModel.GetInfo().GetIntProperty(key, defaultValue));
+    }
 
     public IReadOnlyList<IModel> Variants
     {
         get
         {
+            using var lease = AcquireManagerLease(trackReentrancy: true);
+            BeforeNativeCallForTest?.Invoke();
             if (_variants == null)
             {
                 using var list = NativeModel.GetVariants();
-                _variants = list.Models.Select(m => (IModel)new Model(m, _logger)).ToList();
+                _variants = list.Models.Select(CreateModel).ToList();
             }
 
             return _variants;
         }
     }
 
-    internal Model(NativeModel nativeModel, ILogger logger)
+    internal Model(NativeModel nativeModel, ILogger logger, ManagerLifetime nativeLifetime)
     {
         NativeModel = nativeModel;
         _logger = logger;
+        _nativeLifetime = nativeLifetime;
     }
+
+    internal T WithNativeModel<T>(Func<NativeModel, T> operation) =>
+        WithManagerLock(() => operation(NativeModel));
+
+    internal ManagerLifetime.Lease AcquireManagerLease(bool trackReentrancy = false) =>
+        _nativeLifetime.Acquire(this, trackReentrancy);
+
+    internal bool HasSameManager(Model other) => ReferenceEquals(_nativeLifetime, other._nativeLifetime);
 
     public void SelectVariant(IModel variant)
     {
         var model = (Model)variant;
-        NativeModel.SelectVariant(model.NativeModel);
+        if (!HasSameManager(model))
+        {
+            throw new ArgumentException("Variant must belong to the same manager.", nameof(variant));
+        }
+        WithManagerLock(() => NativeModel.SelectVariant(model.NativeModel));
     }
 
     public async Task<bool> IsCachedAsync(CancellationToken? ct = null)
     {
         return await Utils.CallWithExceptionHandlingAsync(
-            () => NativeModel.IsCached,
+            () => WithManagerLock(() => NativeModel.IsCached),
             "Error checking if model is cached", _logger, ct).ConfigureAwait(false);
     }
 
     public async Task<bool> IsLoadedAsync(CancellationToken? ct = null)
     {
         return await Utils.CallWithExceptionHandlingAsync(
-            () => NativeModel.IsLoaded,
+            () => WithManagerLock(() => NativeModel.IsLoaded),
             "Error checking if model is loaded", _logger, ct).ConfigureAwait(false);
     }
 
@@ -69,7 +102,7 @@ public class Model : IModel
         return await Utils.CallWithExceptionHandlingAsync(
             () =>
             {
-                var path = NativeModel.GetPath();
+                var path = WithManagerLock(() => NativeModel.GetPath());
                 return path ?? throw new FoundryLocalException(
                     $"Error getting path for model {Id}. Has it been downloaded?");
             },
@@ -82,13 +115,33 @@ public class Model : IModel
         await Utils.CallWithExceptionHandlingAsync(
             () =>
             {
+                Exception? callbackException = null;
                 Func<float, int>? progressFunc = (value) =>
                 {
-                    downloadProgress?.Invoke(value);
-                    return (ct?.IsCancellationRequested ?? false) ? 1 : 0; // 0 = continue, 1 = cancel
+                    try
+                    {
+                        downloadProgress?.Invoke(value);
+                        return (ct?.IsCancellationRequested ?? false) ? 1 : 0; // 0 = continue, 1 = cancel
+                    }
+                    catch (Exception ex)
+                    {
+                        callbackException = ex;
+                        return 1;
+                    }
                 };
 
-                NativeModel.Download(progressFunc);
+                try
+                {
+                    WithManagerLock(() => NativeModel.Download(progressFunc));
+                }
+                catch when (callbackException != null)
+                {
+                    ExceptionDispatchInfo.Capture(callbackException).Throw();
+                }
+                if (callbackException != null)
+                {
+                    ExceptionDispatchInfo.Capture(callbackException).Throw();
+                }
 
                 ct?.ThrowIfCancellationRequested();
             },
@@ -98,21 +151,21 @@ public class Model : IModel
     public async Task LoadAsync(CancellationToken? ct = null)
     {
         await Utils.CallWithExceptionHandlingAsync(
-            () => NativeModel.Load(),
+            () => WithManagerLock(() => NativeModel.Load()),
             "Error loading model", _logger, ct).ConfigureAwait(false);
     }
 
     public async Task UnloadAsync(CancellationToken? ct = null)
     {
         await Utils.CallWithExceptionHandlingAsync(
-            () => NativeModel.Unload(),
+            () => WithManagerLock(() => NativeModel.Unload()),
             "Error unloading model", _logger, ct).ConfigureAwait(false);
     }
 
     public async Task RemoveFromCacheAsync(CancellationToken? ct = null)
     {
         await Utils.CallWithExceptionHandlingAsync(
-            () => NativeModel.RemoveFromCache(),
+            () => WithManagerLock(() => NativeModel.RemoveFromCache()),
             $"Error removing model {Id} from cache", _logger, ct).ConfigureAwait(false);
     }
 
@@ -128,7 +181,7 @@ public class Model : IModel
                 }
 
 #pragma warning disable CS0618 // OpenAIChatClient is obsolete
-                return new OpenAIChatClient(Id, NativeModel);
+                return new OpenAIChatClient(Id, this);
 #pragma warning restore CS0618
             },
             "Error getting chat client for model", _logger).ConfigureAwait(false);
@@ -146,7 +199,7 @@ public class Model : IModel
                 }
 
 #pragma warning disable CS0618 // OpenAIAudioClient is obsolete
-                return new OpenAIAudioClient(Id, NativeModel);
+                return new OpenAIAudioClient(Id, this);
 #pragma warning restore CS0618
             },
             "Error getting audio client for model", _logger).ConfigureAwait(false);
@@ -164,9 +217,26 @@ public class Model : IModel
                 }
 
 #pragma warning disable CS0618 // OpenAIEmbeddingClient is obsolete
-                return new OpenAIEmbeddingClient(Id, NativeModel);
+                return new OpenAIEmbeddingClient(Id, this);
 #pragma warning restore CS0618
             },
             "Error getting embedding client for model", _logger).ConfigureAwait(false);
+    }
+
+    private IModel CreateModel(NativeModel model) =>
+        new Model(model, _logger, _nativeLifetime);
+
+    private T WithManagerLock<T>(Func<T> operation)
+    {
+        using var lease = AcquireManagerLease(trackReentrancy: true);
+        BeforeNativeCallForTest?.Invoke();
+        return operation();
+    }
+
+    private void WithManagerLock(Action operation)
+    {
+        using var lease = AcquireManagerLease(trackReentrancy: true);
+        BeforeNativeCallForTest?.Invoke();
+        operation();
     }
 }

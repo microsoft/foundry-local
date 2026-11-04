@@ -110,6 +110,16 @@ TEST_F(LocalModelScannerTest, IncompleteDownloadExcluded) {
   EXPECT_TRUE(results.empty());
 }
 
+TEST_F(LocalModelScannerTest, IncompleteParentExcludesRevisionDirectories) {
+  CreateModelDir("publisher/downloading-model/v3", "downloading-model:3");
+  CreateModelDir("publisher/completed-model/v1", "completed-model:1");
+  CreateFile("publisher/downloading-model/download.tmp", "");
+
+  const auto results = ScanLocalModels(test_dir_, logger_);
+  EXPECT_EQ(results.count("downloading-model:3"), 0u);
+  EXPECT_EQ(results.count("completed-model:1"), 1u);
+}
+
 TEST_F(LocalModelScannerTest, MissingGenaiConfigExcluded) {
   auto dir = fs::path(test_dir_) / "publisher" / "no-genai";
   fs::create_directories(dir);

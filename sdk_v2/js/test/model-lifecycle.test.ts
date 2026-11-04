@@ -55,6 +55,23 @@ describe.skipIf(!haveTestModelCache)("Model lifecycle (real model)", () => {
     2 * 60_000,
   );
 
+  it("download() accepts an AbortSignal and preserves completion when a cache hit wins the race", async () => {
+    const m = fixture?.model;
+    if (m === undefined) throw new Error("fixture missing");
+    const controller = new AbortController();
+
+    await expect(m.download(() => controller.abort(), controller.signal)).resolves.toBeUndefined();
+  });
+
+  it("download() rejects a pre-aborted AbortSignal before native submission", async () => {
+    const m = fixture?.model;
+    if (m === undefined) throw new Error("fixture missing");
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(m.download(undefined, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+  });
+
   it("calling load() on an already-loaded model is idempotent (or surfaces a clear error)", async () => {
     const m = fixture?.model;
     if (m === undefined) throw new Error("fixture missing");

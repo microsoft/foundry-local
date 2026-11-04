@@ -11,6 +11,9 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 
+using FlToolKind = Microsoft.AI.Foundry.Local.Detail.Interop.FlToolKind;
+using NativeSession = Microsoft.AI.Foundry.Local.Detail.Native.Session;
+
 #pragma warning disable CA2000 // Items are transferred to Request via AddItem
 
 [SkipUnlessIntegration]
@@ -64,6 +67,30 @@ internal sealed class ChatSessionTests
         await Assert.That(content).IsNotNull();
         await Assert.That(content!).Contains("42");
         Console.WriteLine($"Response: {content}");
+    }
+
+    [Test]
+    public async Task RequestPreflight_CaptureSurvivesSourceDisposal()
+    {
+        var session = new ChatSession(model!);
+        session.SetOptions(new RequestOptions { Search = new SearchOptions { MaxOutputTokens = 32 } });
+        var request = new Request();
+        request.AddItem(MessageItem.User("Count the tokens in this request."));
+
+        var preflightTask = session.PreflightRequestAsync(request);
+
+        request.Dispose();
+        session.Dispose();
+
+        var result = await preflightTask.ConfigureAwait(false);
+
+        await Assert.That(result.PromptTokens).IsGreaterThan(0L);
+        await Assert.That(result.OutputReserveTokens).IsEqualTo(32L);
+        await Assert.That(result.RequiredTokens)
+            .IsEqualTo(result.PromptTokens + result.OutputReserveTokens);
+        await Assert.That(result.ContextLimitTokens).IsGreaterThan(0L);
+        await Assert.That(result.Fits).IsTrue();
+        await Assert.That(result.DeficitTokens).IsEqualTo(0L);
     }
 
     [Test]
@@ -195,9 +222,13 @@ internal sealed class ChatSessionTests
     {
         using var session = new ChatSession(model!);
         session.SetStreaming(true);
+        session.SetOptions(new RequestOptions
+        {
+            Search = new SearchOptions { Temperature = 0.0f, MaxOutputTokens = 8 },
+        });
 
         using var request = new Request();
-        request.AddItem(MessageItem.User("Name the countries in the United Kingdom."));
+        request.AddItem(MessageItem.User("Count from 1 to 1000, listing every number."));
 
         var stream = session.ProcessStreamingRequestAsync(request);
 
@@ -221,17 +252,38 @@ internal sealed class ChatSessionTests
         using var final = await stream.FinalResponse;
 
         await Assert.That(final).IsNotNull();
-        await Assert.That(final.FinishReason).IsEqualTo(FinishReason.Stop);
+        await Assert.That(final.FinishReason).IsEqualTo(FinishReason.Length);
 
         var usage = final.GetUsage();
         Console.WriteLine($"Usage: prompt={usage.PromptTokens} completion={usage.CompletionTokens} total={usage.TotalTokens}");
         await Assert.That(usage.PromptTokens).IsGreaterThan(0);
-        await Assert.That(usage.CompletionTokens).IsGreaterThan(0);
+        await Assert.That(usage.CompletionTokens).IsEqualTo(8);
         await Assert.That(usage.TotalTokens).IsGreaterThan(0);
     }
 
     [Test]
-    public async Task Chat_Streaming_EarlyBreak_FinalResponse_Cancels()
+    public async Task Chat_Streaming_FinalResponseWithoutEnumeration_ReleasesSession()
+    {
+        using var session = new ChatSession(model!);
+        session.SetStreaming(true);
+
+        using var request = new Request();
+        request.AddItem(MessageItem.User("Reply with one word."));
+
+        var stream = session.ProcessStreamingRequestAsync(request);
+        using var final = await stream.FinalResponse;
+        session.SetStreaming(false);
+
+        using var nextRequest = new Request();
+        nextRequest.AddItem(MessageItem.User("Reply with one word."));
+        using var nextResponse = await session.ProcessRequestAsync(nextRequest).ConfigureAwait(false);
+
+        await Assert.That(final.FinishReason).IsEqualTo(FinishReason.Stop);
+        await Assert.That(nextResponse).IsNotNull();
+    }
+
+    [Test]
+    public async Task Chat_Streaming_EarlyBreak_FinalResponse_CancelsOrCompletes()
     {
         using var session = new ChatSession(model!);
         session.SetStreaming(true);
@@ -248,28 +300,25 @@ internal sealed class ChatSessionTests
             using (item)
             {
                 itemCount++;
-                if (itemCount >= 1)
-                {
-                    break;
-                }
+                break;
             }
         }
 
-        OperationCanceledException? caught = null;
         try
         {
-            using var _ = await stream.FinalResponse;
+            using var final = await stream.FinalResponse;
+            await Assert.That(final.FinishReason).IsEqualTo(FinishReason.Stop);
         }
-        catch (OperationCanceledException oce)
+        catch (OperationCanceledException)
         {
-            caught = oce;
+            // Early-break cancellation may lose the race to an already-completed producer.
         }
 
-        await Assert.That(caught).IsNotNull();
+        await Assert.That(itemCount).IsEqualTo(1);
     }
 
     [Test]
-    public async Task Chat_Streaming_TokenCancellation_FinalResponse_Cancels()
+    public async Task Chat_Streaming_TokenCancellation_FinalResponse_CancelsOrCompletes()
     {
         using var session = new ChatSession(model!);
         session.SetStreaming(true);
@@ -303,18 +352,19 @@ internal sealed class ChatSessionTests
         }
 
         await Assert.That(iteratorEx).IsNotNull();
+        await Assert.That(itemCount).IsGreaterThanOrEqualTo(1);
 
-        OperationCanceledException? finalEx = null;
         try
         {
-            using var _ = await stream.FinalResponse;
+            using var final = await stream.FinalResponse;
+            await Assert.That(final.FinishReason).IsEqualTo(FinishReason.Stop);
         }
-        catch (OperationCanceledException oce)
+        catch (OperationCanceledException)
         {
-            finalEx = oce;
+            // The producer may still be running when the first buffered item is consumed.
+            // In that case cancellation wins and FinalResponse is canceled. If the producer
+            // already completed, its terminal response remains successful.
         }
-
-        await Assert.That(finalEx).IsNotNull();
     }
 
     [Test]
@@ -349,6 +399,52 @@ internal sealed class ChatSessionTests
                 }
             }
             await Assert.That(count).IsGreaterThan(0);
+        }
+    }
+
+    [Test]
+    public async Task Chat_Streaming_DisposeAsync_WaitsForTerminalPublication()
+    {
+        using var session = new ChatSession(model!);
+        session.SetStreaming(true);
+
+        using var request = new Request();
+        request.AddItem(MessageItem.User("Reply with one word."));
+
+        var nativeReturned = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var allowTerminalPublication = new ManualResetEventSlim(false);
+
+        var stream = session.ProcessStreamingRequestCore(
+            request,
+            beforeTerminalPublication: () =>
+            {
+                nativeReturned.TrySetResult(true);
+                allowTerminalPublication.Wait();
+            });
+
+        try
+        {
+            await nativeReturned.Task.ConfigureAwait(false);
+
+            var disposeTask = stream.DisposeAsync().AsTask();
+            await Assert.That(disposeTask.IsCompleted).IsFalse();
+
+            allowTerminalPublication.Set();
+            await disposeTask.ConfigureAwait(false);
+
+            using var disposedFinal = await stream.FinalResponse.ConfigureAwait(false);
+            await Assert.That(disposedFinal.Ptr).IsEqualTo(IntPtr.Zero);
+
+            session.SetStreaming(false);
+            using var nextRequest = new Request();
+            nextRequest.AddItem(MessageItem.User("Reply with one word."));
+            using var nextResponse = await session.ProcessRequestAsync(nextRequest).ConfigureAwait(false);
+            await Assert.That(nextResponse).IsNotNull();
+        }
+        finally
+        {
+            allowTerminalPublication.Set();
+            await stream.DisposeAsync();
         }
     }
 
@@ -649,5 +745,109 @@ internal sealed class ChatSessionTests
         await Assert.That(finalContent).IsNotNull();
         await Assert.That(finalContent!).Contains("42");
         Console.WriteLine($"Final response: {finalContent}");
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Tool registration. These exercise the registry the session keeps rather than generation, so
+    // they need a loaded model (a session cannot exist without one) but never run a turn.
+    // ---------------------------------------------------------------------------------------------
+
+    [Test]
+    public async Task CustomToolDefinition_DuplicateNameAcrossKinds_IsRejected()
+    {
+        using var session = new ChatSession(model!);
+
+        // A custom tool carries no caller-supplied schema: the native layer synthesizes the
+        // representation shown to the model. It registers alongside function tools and returns the
+        // session for chaining.
+        var returned = session.AddCustomToolDefinition("apply_patch", "Applies a patch to a file.");
+        await Assert.That(ReferenceEquals(returned, session)).IsTrue();
+
+        FoundryLocalException? duplicateCustom = null;
+        try
+        {
+            session.AddCustomToolDefinition("apply_patch", "Applies a patch, again.");
+        }
+        catch (FoundryLocalException ex)
+        {
+            duplicateCustom = ex;
+        }
+
+        await Assert.That(duplicateCustom).IsNotNull();
+        await Assert.That(duplicateCustom!.ErrorCode).IsEqualTo(FoundryLocalErrorCode.InvalidArgument);
+        await Assert.That(duplicateCustom!.Message).Contains("already registered");
+
+        // Uniqueness is across kinds, not per kind: a function tool cannot take the name either.
+        FoundryLocalException? duplicateFunction = null;
+        try
+        {
+            session.AddToolDefinition("apply_patch", "A function of the same name.", "{}");
+        }
+        catch (FoundryLocalException ex)
+        {
+            duplicateFunction = ex;
+        }
+
+        await Assert.That(duplicateFunction).IsNotNull();
+        await Assert.That(duplicateFunction!.ErrorCode).IsEqualTo(FoundryLocalErrorCode.InvalidArgument);
+
+        // Names are case-sensitive, so a differently-cased name is a different tool and registers.
+        session.AddCustomToolDefinition("Apply_Patch", "A different tool.");
+    }
+
+    [Test]
+    public async Task CustomToolDefinition_RemoveThenReAdd_Succeeds()
+    {
+        using var session = new ChatSession(model!);
+
+        session.AddCustomToolDefinition("apply_patch", "Applies a patch to a file.");
+
+        await Assert.That(session.RemoveToolDefinition("apply_patch")).IsTrue();
+        await Assert.That(session.RemoveToolDefinition("apply_patch")).IsFalse();
+
+        // Removal frees the name outright — nothing about the removed tool's kind is remembered, so
+        // the name can come back as a function tool.
+        session.AddToolDefinition(
+            "apply_patch",
+            "Now a function tool.",
+            /*lang=json,strict*/
+            """{ "type": "object", "properties": { "patch": { "type": "string" } } }""");
+
+        await Assert.That(session.RemoveToolDefinition("apply_patch")).IsTrue();
+
+        session.AddCustomToolDefinition("apply_patch", "Custom again.");
+    }
+
+    [Test]
+    public async Task CustomToolDefinition_WithSchema_IsRejected()
+    {
+        // The public surface cannot express this: AddCustomToolDefinition takes no schema. The
+        // rejection is native, so it is reached here through the binding overload the public method
+        // itself calls, which is the layer a caller outside this SDK would have to go through.
+        using var native = new NativeSession(((Model)model!).NativeModel);
+
+        FoundryLocalException? caught = null;
+        try
+        {
+            native.AddToolDefinition(
+                "apply_patch",
+                "Applies a patch to a file.",
+                """{ "type": "object" }""",
+                FlToolKind.Custom);
+        }
+        catch (FoundryLocalException ex)
+        {
+            caught = ex;
+        }
+
+        await Assert.That(caught).IsNotNull();
+        await Assert.That(caught!.ErrorCode).IsEqualTo(FoundryLocalErrorCode.InvalidArgument);
+        await Assert.That(caught!.Message).Contains("json_schema");
+
+        // The same name and kind register once the schema is gone, so the rejection is about the
+        // schema rather than the kind, and the failed attempt registered nothing.
+        native.AddToolDefinition("apply_patch", "Applies a patch to a file.", string.Empty, FlToolKind.Custom);
+
+        await Assert.That(native.RemoveToolDefinition("apply_patch")).IsTrue();
     }
 }

@@ -1,25 +1,26 @@
 <#
 .SYNOPSIS
-    Build and test all sdk_v2 SDKs (C++, C#, Python, JS) in one shot.
+    Build and test the C++, C#, Python, JS, and Java SDKs in one shot.
 
 .DESCRIPTION
-    The simple developer "build and run all tests" one-shot script for sdk_v2.
+    The developer "build and run tests" script for the five SDKs listed below.
 
     Order:
       1. C++    — python build.py (configure + build + test)
       2. C#     — dotnet test (builds via project references)
       3. Python — pip install -e . then pytest
       4. JS     — npm install + npm run build + npm test
+      5. Java   — mvn clean verify
 
     Each SDK runs in its own step. The script stops on the first failure
     unless -ContinueOnError is supplied, and prints a per-SDK pass/fail
     summary at the end.
 
 .PARAMETER Skip
-    SDKs to skip. Any of: cpp, cs, python, js.
+    SDKs to skip. Any of: cpp, cs, python, js, java.
 
 .PARAMETER Only
-    Run only the named SDKs. Overrides -Skip. Any of: cpp, cs, python, js.
+    Run only the named SDKs. Overrides -Skip. Any of: cpp, cs, python, js, java.
 
 .PARAMETER ContinueOnError
     Keep going after a failure instead of aborting on the first one.
@@ -39,9 +40,9 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('cpp', 'cs', 'python', 'js')]
+    [ValidateSet('cpp', 'cs', 'python', 'js', 'java')]
     [string[]] $Skip = @(),
-    [ValidateSet('cpp', 'cs', 'python', 'js')]
+    [ValidateSet('cpp', 'cs', 'python', 'js', 'java')]
     [string[]] $Only,
     [switch] $ContinueOnError,
     [switch] $SkipCppTests
@@ -57,9 +58,10 @@ $cppDir    = Join-Path $sdkRoot 'cpp'
 $csDir     = Join-Path $sdkRoot 'cs'
 $pythonDir = Join-Path $sdkRoot 'python'
 $jsDir     = Join-Path $sdkRoot 'js'
+$javaDir   = Join-Path $sdkRoot 'java'
 
 # Resolve which SDKs to run.
-$all = @('cpp', 'cs', 'python', 'js')
+$all = @('cpp', 'cs', 'python', 'js', 'java')
 if ($Only) {
     $targets = $all | Where-Object { $_ -in $Only }
 } else {
@@ -227,6 +229,38 @@ print(sys.executable)
             }
         }
     }
+
+    if ('java' -in $targets) {
+        Invoke-Step 'java' {
+            Push-Location $javaDir
+            try {
+                mvn --batch-mode --no-transfer-progress clean verify
+                if ($LASTEXITCODE -ne 0) { throw "mvn clean verify exit $LASTEXITCODE" }
+
+                $finalName = (& mvn --quiet --no-transfer-progress `
+                    org.apache.maven.plugins:maven-help-plugin:3.5.1:evaluate `
+                    '-Dexpression=project.build.finalName' '-DforceStdout').Trim()
+                if ($LASTEXITCODE -ne 0 -or -not $finalName) {
+                    throw "Could not resolve the Java project.build.finalName."
+                }
+                $mainJar = @(Get-Item (Join-Path target "$finalName.jar") -ErrorAction SilentlyContinue)
+                $sourceJar = @(Get-Item (Join-Path target "$finalName-sources.jar") -ErrorAction SilentlyContinue)
+                if ($mainJar.Count -ne 1 -or $sourceJar.Count -ne 1) {
+                    throw "Expected one SDK JAR and one sources JAR."
+                }
+
+                $entries = @(jar tf $mainJar[0].FullName)
+                if ($LASTEXITCODE -ne 0) { throw "jar inspection exit $LASTEXITCODE" }
+                foreach ($required in @('META-INF/LICENSE', 'META-INF/THIRD_PARTY_NOTICES.md')) {
+                    if ($required -notin $entries) {
+                        throw "Missing $required from $($mainJar[0].Name)"
+                    }
+                }
+            } finally {
+                Pop-Location
+            }
+        }
+    }
 } catch {
     # Already recorded by Invoke-Step. Fall through to summary.
 }
@@ -242,6 +276,6 @@ if ($failed) {
     Write-Host "FAILED: $($failed.Sdk -join ', ')" -ForegroundColor Red
     exit 1
 } else {
-    Write-Host "All SDKs passed." -ForegroundColor Green
+    Write-Host "Selected SDKs passed." -ForegroundColor Green
     exit 0
 }

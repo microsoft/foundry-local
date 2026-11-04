@@ -101,6 +101,7 @@ Mirror that method's wrapper-call sequence in the addon / TS layer. Do not inven
 - **Subclass constructors do an `instanceof Model` guard** on their argument and throw `TypeError` with a
   "expected a Model" message on bad input. The native ctor receives the unwrapped `NativeModel` and
   constructs the underlying `foundry_local::XSession` synchronously.
-- **Manager-pin lifetime** is propagated from the JS `Model` (via `Model::manager()` accessor) into the
-  session ObjectWrap during the native ctor, so disposing the originating `Manager` does not invalidate
-  active sessions.
+- **Manager lifetime** is propagated from the native `Model` into each session ObjectWrap as a shared native-manager
+  lease plus the manager's shared disposed flag. New session calls reject after explicit manager disposal, while each
+  admitted worker copies the native lease until completion. A JS `ObjectReference` alone is insufficient because
+  `Manager.dispose()` resets the native pointer without destroying the JavaScript wrapper.

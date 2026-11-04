@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- JNA reads/writes these public Structure fields through native memory, not Java bytecode. -->
+<FindBugsFilter>
+  <Match>
+    <Class name="~com\.microsoft\.foundry\.local\.NativeApi\$(AudioData|BytesData|CallbackData|ResultData|SegmentData)"/>
+    <Bug pattern="URF_UNREAD_PUBLIC_OR_PROTECTED_FIELD,UUF_UNUSED_PUBLIC_OR_PROTECTED_FIELD,UWF_UNWRITTEN_PUBLIC_OR_PROTECTED_FIELD"/>
+  </Match>
+  <!-- AudioSession intentionally shares the manager's lifecycle monitor with Model and Catalog. -->
+  <Match>
+    <Class name="com.microsoft.foundry.local.AudioSession"/>
+    <Bug pattern="USO_UNSAFE_OBJECT_SYNCHRONIZATION"/>
+  </Match>
+</FindBugsFilter>

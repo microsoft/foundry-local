@@ -118,6 +118,15 @@ class ResponseStore {
 
   /// Everything a completed response contributes to the store.
   struct StoredResponse {
+    StoredResponse(std::string id_in, std::string model_id_in, nlohmann::json response_in,
+                   nlohmann::json input_items_in,
+                   std::unordered_set<std::string> raw_call_ids_in = {})
+        : id(std::move(id_in)),
+          model_id(std::move(model_id_in)),
+          response(std::move(response_in)),
+          input_items(std::move(input_items_in)),
+          raw_envelope_call_ids(std::move(raw_call_ids_in)) {}
+
     std::string id;
     /// Resolved model that produced it. A continuation must resolve to the same model; empty means unbound, which
     /// constrains nothing (only callers that do not participate in model routing store unbound responses).
@@ -126,6 +135,7 @@ class ResponseStore {
     nlohmann::json response;
     /// This hop's own request items — exactly what the /input_items endpoint returns.
     nlohmann::json input_items;
+    std::unordered_set<std::string> raw_envelope_call_ids;
   };
 
   /// Outcome of ResponseStore::BeginResponse.
@@ -180,7 +190,8 @@ class ResponseStore {
   void Store(const std::string& response_id,
              nlohmann::json response,
              nlohmann::json input_items,
-             std::string model_id = {});
+             std::string model_id = {},
+             std::unordered_set<std::string> raw_envelope_call_ids = {});
 
   /// Retrieve a stored response by ID. Returns nullopt if not found.
   std::optional<nlohmann::json> Get(const std::string& response_id);
@@ -257,6 +268,7 @@ class ResponseStore {
     std::string model_id;
     nlohmann::json response;
     nlohmann::json input_items;
+    std::unordered_set<std::string> raw_envelope_call_ids;
     std::shared_ptr<const ReplayPrefix> replay_prefix;
     uint64_t insertion_sequence = 0;
   };

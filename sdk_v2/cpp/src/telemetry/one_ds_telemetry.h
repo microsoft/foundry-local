@@ -21,7 +21,7 @@ class OneDsTelemetry : public ITelemetry {
   /// @param app_name      Configuration::app_name; stamped as AppName on every event.
   /// @param logger        Diagnostic logger; used by the embedded TelemetryLogger mirror.
   /// @param disable_nonessential_telemetry  When true, non-essential uploads are suppressed; ProcessInfo still
-  ///                           uploads and events are still written to the local diagnostic logger.
+  ///                                        uploads and events are still written to the local diagnostic logger.
   OneDsTelemetry(const std::string& app_name,
                  ILogger& logger,
                  bool disable_nonessential_telemetry = false);
@@ -43,7 +43,8 @@ class OneDsTelemetry : public ITelemetry {
   void RecordEpDownloadAndRegister(const EpDownloadAndRegisterInfo& info) override;
   void RecordDownload(const DownloadInfo& info) override;
   void RecordCatalogFetch(const CatalogFetchInfo& info) override;
-  void RecordProcessInfo(const ProcessInfo& info) override;
+  /// Build startup diagnostics from cached process metadata and resolved configuration; configuration is not retained.
+  void RecordProcessInfo(const Configuration& configuration);
   void RecordHardwareInfo(const HardwareInfo& info) override;
   void StartSession() override;
   void EndSession() override;
@@ -60,11 +61,12 @@ class OneDsTelemetry : public ITelemetry {
   std::shared_lock<std::shared_mutex> LockForLogging(bool require_upload = true) const;
 
   TelemetryLogger local_log_;
-  TelemetryMetadata metadata_;       // Cached at construction.
+  TelemetryMetadata metadata_;  // Cached at construction.
+  const bool hard_disabled_;
   std::unique_ptr<Impl> impl_;
   std::atomic<bool> initialized_{false};
   std::atomic<bool> upload_enabled_{true};  // False when non-essential uploads are suppressed.
-  mutable std::shared_mutex mutex_;  // Serializes logging calls with teardown.
+  mutable std::shared_mutex mutex_;         // Serializes logging calls with teardown.
   ILogger& logger_;
 };
 

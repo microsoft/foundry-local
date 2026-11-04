@@ -8,6 +8,8 @@ namespace Microsoft.AI.Foundry.Local;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
+using System.Runtime.ExceptionServices;
 using System.Threading.Tasks;
 
 using Microsoft.AI.Foundry.Local.Detail;
@@ -22,15 +24,19 @@ public class FoundryLocalManager : IDisposable
     private static volatile FoundryLocalManager? instance;
     private static readonly AsyncLock asyncLock = new();
 
-    internal static readonly string AssemblyVersion =
-        typeof(FoundryLocalManager).Assembly.GetName().Version?.ToString() ?? "unknown";
+    internal static readonly string SdkVersion =
+        typeof(FoundryLocalManager).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+            .InformationalVersion
+        ?? typeof(FoundryLocalManager).Assembly.GetName().Version?.ToString()
+        ?? "unknown";
 
     private readonly Configuration _config;
     private NativeConfig _nativeConfig = default!;
     private NativeManager _nativeManager = default!;
-    private Catalog? _catalog;
+    private readonly ManagerLifetime _nativeLifetime = new();
+    private Catalog? _publicCatalog;
+    private Catalog? _localCatalog;
     private readonly AsyncLock _lock = new();
-    private int _disposed;
     private readonly ILogger _logger;
 
     private static readonly char[] s_urlSeparator = { ';' };
@@ -38,6 +44,7 @@ public class FoundryLocalManager : IDisposable
     internal Configuration Configuration => _config;
     internal ILogger Logger => _logger;
     internal NativeManager NativeManager => _nativeManager;
+    internal Action? BeforeNativeDisposeForTest { get; set; }
 
     public static bool IsInitialized => instance != null;
     public static FoundryLocalManager Instance => instance ??
@@ -64,10 +71,17 @@ public class FoundryLocalManager : IDisposable
     }
 
     /// <summary>
-    /// Bound Urls if the web service has been started. Null otherwise.
-    /// See <see cref="StartWebServiceAsync"/>.
+    /// Observe native listening Urls without starting the service or acquiring shared-host ownership.
+    /// Null when no listener is running.
     /// </summary>
-    public string[]? Urls { get; private set; }
+    public string[]? Urls
+    {
+        get
+        {
+            var urls = WithNativeManager(manager => manager.GetServiceUrls());
+            return urls.Length == 0 ? null : urls;
+        }
+    }
 
     /// <summary>
     /// Create the <see cref="FoundryLocalManager"/> singleton instance.
@@ -122,7 +136,18 @@ public class FoundryLocalManager : IDisposable
     /// <returns>The model catalog.</returns>
     public async Task<ICatalog> GetCatalogAsync(CancellationToken? ct = null)
     {
-        return await Utils.CallWithExceptionHandlingAsync(() => GetCatalogImplAsync(ct),
+        return await GetCatalogAsync(CatalogType.Public, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Get a catalog by type. Use <see cref="CatalogType.Local"/> to register caller-owned model assets.
+    /// </summary>
+    /// <param name="catalogType">Catalog type to retrieve.</param>
+    /// <param name="ct">Optional cancellation token.</param>
+    /// <returns>The requested model catalog.</returns>
+    public async Task<ICatalog> GetCatalogAsync(CatalogType catalogType, CancellationToken? ct = null)
+    {
+        return await Utils.CallWithExceptionHandlingAsync(() => GetCatalogImplAsync(catalogType, ct),
                                                           "Error getting Catalog.", _logger).ConfigureAwait(false);
     }
 
@@ -156,7 +181,7 @@ public class FoundryLocalManager : IDisposable
     /// <returns>Array of EP bootstrapper info describing available EPs.</returns>
     public EpInfo[] DiscoverEps()
     {
-        return _nativeManager.GetDiscoverableEps();
+        return WithNativeManager(manager => manager.GetDiscoverableEps());
     }
 
     /// <summary>
@@ -165,13 +190,13 @@ public class FoundryLocalManager : IDisposable
     /// </summary>
     public void Shutdown()
     {
-        _nativeManager.Shutdown();
+        WithNativeManager(manager => manager.Shutdown());
     }
 
     /// <summary>
     /// Whether <see cref="Shutdown"/> has been called on the native manager.
     /// </summary>
-    public bool IsShutdownRequested => _nativeManager.IsShutdownRequested();
+    public bool IsShutdownRequested => WithNativeManager(manager => manager.IsShutdownRequested());
 
     /// <summary>
     /// Downloads and registers all available execution providers.
@@ -228,7 +253,7 @@ public class FoundryLocalManager : IDisposable
         _config.Validate();
 
         // Ensure the native DLL resolver is registered before any P/Invoke calls.
-        DllLoader.Initialize();
+        DllLoader.Initialize(_logger);
 
         await Task.Run(() =>
         {
@@ -265,6 +290,7 @@ public class FoundryLocalManager : IDisposable
             // Merge AdditionalSettings with user-supplied entries.
             // Done as a local dict so we don't mutate the user-supplied AdditionalSettings.
             var additionalSettings = new Dictionary<string, string>(StringComparer.Ordinal);
+            additionalSettings["UserAgent"] = $"foundry-local-csharp/{SdkVersion}";
             if (_config.AdditionalSettings != null)
             {
                 foreach (var kvp in _config.AdditionalSettings)
@@ -312,6 +338,8 @@ public class FoundryLocalManager : IDisposable
                 }
             }
 
+            _nativeConfig.SetUseSharedHost(_config.UseSharedHost);
+
             // Create the native manager
             _nativeManager = new NativeManager(_nativeConfig);
 #pragma warning restore IDISP003
@@ -331,23 +359,49 @@ public class FoundryLocalManager : IDisposable
         _ => FlLogLevel.Warning,
     };
 
-    private async Task<ICatalog> GetCatalogImplAsync(CancellationToken? ct = null)
+    private async Task<ICatalog> GetCatalogImplAsync(CatalogType catalogType, CancellationToken? ct = null)
     {
-        if (_catalog == null)
+        if (catalogType is not CatalogType.Public and not CatalogType.Local)
         {
-            using var disposable = await _lock.LockAsync().ConfigureAwait(false);
+            throw new ArgumentOutOfRangeException(nameof(catalogType), catalogType, "Unknown catalog type.");
+        }
 
-            if (_catalog == null)
+        using (_nativeLifetime.Acquire(this, trackReentrancy: true))
+        {
+        }
+
+        var catalog = catalogType == CatalogType.Public ? _publicCatalog : _localCatalog;
+        if (catalog != null)
+        {
+            return catalog;
+        }
+
+        using var disposable = await _lock.LockAsync().ConfigureAwait(false);
+
+        catalog = catalogType == CatalogType.Public ? _publicCatalog : _localCatalog;
+        if (catalog == null)
+        {
+            catalog = await Task.Run(() =>
             {
-                _catalog = await Task.Run(() =>
+                return WithNativeManager(manager =>
                 {
-                    var nativeCatalog = _nativeManager.GetCatalog();
-                    return new Catalog(nativeCatalog, _logger);
-                }, ct ?? CancellationToken.None).ConfigureAwait(false);
+                    var nativeType = catalogType == CatalogType.Public ? FlCatalogType.Public : FlCatalogType.Local;
+                    var nativeCatalog = manager.GetCatalog(nativeType);
+                    return new Catalog(nativeCatalog, _logger, _nativeLifetime);
+                });
+            }, ct ?? CancellationToken.None).ConfigureAwait(false);
+
+            if (catalogType == CatalogType.Public)
+            {
+                _publicCatalog = catalog;
+            }
+            else
+            {
+                _localCatalog = catalog;
             }
         }
 
-        return _catalog;
+        return catalog;
     }
 
     private async Task<EpDownloadResult> DownloadAndRegisterEpsAsyncImpl(
@@ -358,35 +412,77 @@ public class FoundryLocalManager : IDisposable
         var beforeEps = DiscoverEps();
 
         FlEpProgressCallback? nativeCallback = null;
+        Exception? callbackException = null;
         if (progressCallback != null)
         {
             nativeCallback = (epName, value, _) =>
             {
-                if (ct?.IsCancellationRequested ?? false)
+                try
                 {
+                    if (ct?.IsCancellationRequested ?? false)
+                    {
+                        return 1;
+                    }
+
+                    progressCallback(epName, value);
+                    return 0;
+                }
+                catch (Exception ex)
+                {
+                    callbackException = ex;
                     return 1;
                 }
-
-                progressCallback(epName, value);
-                return 0;
             };
         }
 
         var nameArray = names?.ToArray();
+        if (nameArray is { Length: 0 })
+        {
+            nameArray = null;
+        }
 
         await Task.Run(() =>
         {
-            _nativeManager.DownloadAndRegisterEps(nameArray, nativeCallback);
+            try
+            {
+                WithNativeManager(manager => manager.DownloadAndRegisterEps(nameArray, nativeCallback));
+            }
+            catch when (callbackException != null)
+            {
+                ExceptionDispatchInfo.Capture(callbackException).Throw();
+            }
+            if (callbackException != null)
+            {
+                ExceptionDispatchInfo.Capture(callbackException).Throw();
+            }
         }, ct ?? CancellationToken.None).ConfigureAwait(false);
 
         var afterEps = DiscoverEps();
 
-        var registered = afterEps.Where(e => e.IsRegistered && !beforeEps.Any(b => b.Name == e.Name && b.IsRegistered))
-                                  .Select(e => e.Name).ToArray();
-        var failed = afterEps.Where(e => !e.IsRegistered && (nameArray == null || nameArray.Contains(e.Name)))
-                              .Select(e => e.Name)
-                              .Except(beforeEps.Where(b => !b.IsRegistered).Select(b => b.Name))
-                              .ToArray();
+        return BuildEpDownloadResult(beforeEps, afterEps, nameArray);
+    }
+
+    internal static EpDownloadResult BuildEpDownloadResult(
+        IReadOnlyCollection<EpInfo> beforeEps,
+        IReadOnlyCollection<EpInfo> afterEps,
+        IReadOnlyCollection<string>? requestedNames)
+    {
+        var beforeByName = beforeEps.ToDictionary(ep => ep.Name, StringComparer.Ordinal);
+        var afterByName = afterEps.ToDictionary(ep => ep.Name, StringComparer.Ordinal);
+        var requested = (requestedNames == null || requestedNames.Count == 0
+                             ? beforeEps.Select(ep => ep.Name)
+                             : requestedNames)
+                        .Distinct(StringComparer.Ordinal)
+                        .ToArray();
+
+        var registered = afterEps
+            .Where(ep => ep.IsRegistered &&
+                         (!beforeByName.TryGetValue(ep.Name, out var before) || !before.IsRegistered))
+            .Select(ep => ep.Name)
+            .ToArray();
+        var failed = requested
+            .Where(name => !afterByName.TryGetValue(name, out var ep) || !ep.IsRegistered)
+            .ToArray();
 
         return new EpDownloadResult
         {
@@ -401,48 +497,36 @@ public class FoundryLocalManager : IDisposable
     {
         using var disposable = await asyncLock.LockAsync().ConfigureAwait(false);
 
-        await Task.Run(() => _nativeManager.StartService(), ct ?? CancellationToken.None).ConfigureAwait(false);
+        await Task.Run(() => WithNativeManager(manager => manager.StartService()),
+                   ct ?? CancellationToken.None).ConfigureAwait(false);
 
-        Urls = _nativeManager.GetServiceUrls();
     }
 
     private async Task StopWebServiceImplAsync(CancellationToken? ct = null)
     {
+        using var disposable = await asyncLock.LockAsync().ConfigureAwait(false);
+        using var lease = _nativeLifetime.Acquire(this);
+
         if (Urls == null)
         {
             throw new FoundryLocalException("Web service is not running.", _logger);
         }
 
-        using var disposable = await asyncLock.LockAsync().ConfigureAwait(false);
-
         await Task.Run(() => _nativeManager.StopService(), ct ?? CancellationToken.None).ConfigureAwait(false);
 
-        Urls = null;
     }
 
     protected virtual void Dispose(bool disposing)
     {
-        // this is possibly overly cautious, but we free native handles here so want to make sure we get it right
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+#pragma warning disable IDISP023 // No manager finalizer exists; Dispose(bool) synchronously drains owned leases.
+        if (!_nativeLifetime.TryBeginDispose())
         {
             return;
         }
 
         if (disposing)
         {
-            if (Urls != null)
-            {
-                try
-                {
-                    // Run on a thread-pool thread so that synchronously waiting on the asyncLock
-                    // cannot deadlock with an awaited continuation captured on the caller's context.
-                    Task.Run(() => StopWebServiceImplAsync()).GetAwaiter().GetResult();
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Error stopping web service during Dispose.");
-                }
-            }
+            BeforeNativeDisposeForTest?.Invoke();
 
             if (_nativeManager != null)
             {
@@ -456,9 +540,13 @@ public class FoundryLocalManager : IDisposable
                 }
             }
 
+            _nativeLifetime.DisposeSessions();
+            _nativeLifetime.WaitForLeases();
             _nativeManager?.Dispose();
             _nativeConfig?.Dispose();
+            _nativeLifetime.Dispose();
             _lock.Dispose();
+#pragma warning restore IDISP023
 
             // Allow CreateAsync to construct a fresh instance after dispose. The native singleton
             // (Manager::Shutdown + Manager::Instance) already supports re-creation; the C# static
@@ -478,5 +566,17 @@ public class FoundryLocalManager : IDisposable
     {
         Dispose(disposing: true);
         GC.SuppressFinalize(this);
+    }
+
+    private T WithNativeManager<T>(Func<NativeManager, T> operation)
+    {
+        using var lease = _nativeLifetime.Acquire(this, trackReentrancy: true);
+        return operation(_nativeManager);
+    }
+
+    private void WithNativeManager(Action<NativeManager> operation)
+    {
+        using var lease = _nativeLifetime.Acquire(this, trackReentrancy: true);
+        operation(_nativeManager);
     }
 }

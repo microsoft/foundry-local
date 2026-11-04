@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 pub const DEFAULT_FEEDS: &[&str] = &[
     "https://api.nuget.org/v3/index.json",
+    "https://packagefeedproxy.microsoft.io/nuget/v3/index.json",
     "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json",
 ];
 
@@ -291,7 +292,7 @@ pub fn reset_native_cache_if_stale(
             .file_type()
             .map_err(|error| format!("read native cache entry type: {error}"))?
             .is_file()
-            && entry.path().extension().and_then(|value| value.to_str()) == Some(extension)
+            && is_native_payload(&entry.path(), extension)
         {
             remove_file_if_present(&entry.path())?;
         }
@@ -447,6 +448,14 @@ pub fn collect_native_files(
     Ok(files)
 }
 
+pub fn is_native_payload(path: &Path, extension: &str) -> bool {
+    path.extension().and_then(|value| value.to_str()) == Some(extension)
+        || matches!(
+            path.file_name().and_then(|value| value.to_str()),
+            Some("foundry-local-host" | "foundry-local-host.exe" | "foundry-local-runtime.json")
+        )
+}
+
 fn collect_matching_files(directory: &Path, extension: &str) -> Result<Vec<PathBuf>, String> {
     if !directory.is_dir() {
         return Ok(Vec::new());
@@ -460,7 +469,7 @@ fn collect_matching_files(directory: &Path, extension: &str) -> Result<Vec<PathB
             .file_type()
             .map_err(|error| format!("read native entry type: {error}"))?
             .is_file()
-            && entry.path().extension().and_then(|value| value.to_str()) == Some(extension)
+            && is_native_payload(&entry.path(), extension)
         {
             files.push(entry.path());
         }

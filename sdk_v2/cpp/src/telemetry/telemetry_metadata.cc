@@ -2,9 +2,11 @@
 // Licensed under the MIT License.
 #include "telemetry/telemetry_metadata.h"
 
+#include "configuration.h"
 #include "telemetry/device_id.h"
 #include "telemetry/invocation_context.h"
 #include "telemetry/telemetry_environment.h"
+#include "logger.h"
 #include "version.h"
 
 #include <array>
@@ -13,11 +15,13 @@
 #include <cstring>
 #include <cwchar>
 #include <filesystem>
-#include <string_view>
+#include <fstream>
 #include <thread>
+#include <set>
+#include <utility>
 #include <vector>
 
-#ifdef _WIN32
+#if defined(FOUNDRY_LOCAL_DESKTOP_WINDOWS)
 #include <windows.h>
 #include <sysinfoapi.h>
 #include <winternl.h>
@@ -28,6 +32,7 @@
 #if defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
 #include <stdlib.h>
+#include <sys/sysctl.h>
 #endif
 #endif
 
@@ -35,7 +40,27 @@ namespace fl {
 
 namespace {
 
-#ifdef _WIN32
+struct HostAppMetadata {
+  std::string version;
+  std::string publisher;
+};
+
+std::string JoinTelemetryValues(const std::set<std::string_view>& values) {
+  std::string joined;
+  for (const auto& value : values) {
+    const auto sanitized = TelemetryInternal::SanitizeTelemetryIdentifier(value);
+    if (joined.size() + sanitized.size() + (joined.empty() ? 0 : 1) > kMaxTelemetryStringLength) {
+      return "[oversized inventory]";
+    }
+    if (!joined.empty()) {
+      joined += ",";
+    }
+    joined += sanitized;
+  }
+  return joined;
+}
+
+#if defined(FOUNDRY_LOCAL_DESKTOP_WINDOWS)
 std::string GetProcessPath() {
   std::array<char, MAX_PATH> path{};
   DWORD length = ::GetModuleFileNameA(nullptr, path.data(), static_cast<DWORD>(path.size()));
@@ -51,6 +76,25 @@ std::string GetProcessName() {
     return "unknown";
   }
   return std::filesystem::path(path).filename().string();
+}
+
+std::string ReadRegistryString(HKEY root, const char* subkey, const char* value_name) {
+  constexpr DWORD kMaxProbeBytes = 16 * 1024;
+  DWORD size = 0;
+  const DWORD flags = RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ;
+  if (::RegGetValueA(root, subkey, value_name, flags, nullptr, nullptr, &size) != ERROR_SUCCESS ||
+      size == 0 || size > kMaxProbeBytes) {
+    return {};
+  }
+
+  std::string value(size, '\0');
+  if (::RegGetValueA(root, subkey, value_name, flags, nullptr, value.data(), &size) != ERROR_SUCCESS) {
+    return {};
+  }
+  while (!value.empty() && value.back() == '\0') {
+    value.pop_back();
+  }
+  return value;
 }
 
 std::string TrimVersionString(std::string value) {
@@ -72,16 +116,30 @@ std::string QueryVersionString(const std::vector<unsigned char>& data, uint16_t 
   if (!::VerQueryValueW(data.data(), sub_block, &value, &value_len) || value == nullptr || value_len == 0) {
     return {};
   }
+  if (value_len > kMaxTelemetryInspectionLength + 1) {
+    return "[oversized]";
+  }
 
   auto* wide_value = static_cast<const wchar_t*>(value);
-  const int needed = ::WideCharToMultiByte(CP_UTF8, 0, wide_value, -1, nullptr, 0, nullptr, nullptr);
-  if (needed <= 1) {
+  size_t length = 0;
+  const size_t limit = value_len;
+  while (length < limit && wide_value[length] != L'\0') {
+    ++length;
+  }
+  if (length > 0 && wide_value[length - 1] >= 0xD800 && wide_value[length - 1] <= 0xDBFF) {
+    --length;
+  }
+
+  const int needed = ::WideCharToMultiByte(CP_UTF8, 0, wide_value, static_cast<int>(length),
+                                           nullptr, 0, nullptr, nullptr);
+  if (needed <= 0) {
     return {};
   }
 
   std::string out(static_cast<size_t>(needed), '\0');
-  const int written = ::WideCharToMultiByte(CP_UTF8, 0, wide_value, -1, out.data(), needed, nullptr, nullptr);
-  return written > 0 ? TrimVersionString(std::move(out)) : std::string{};
+  const int written = ::WideCharToMultiByte(CP_UTF8, 0, wide_value, static_cast<int>(length),
+                                            out.data(), needed, nullptr, nullptr);
+  return written > 0 ? TelemetryInternal::SanitizeTelemetryValue(TrimVersionString(std::move(out))) : std::string{};
 }
 
 std::string FormatFixedFileVersion(const VS_FIXEDFILEINFO& info) {
@@ -96,7 +154,7 @@ std::string FormatFixedFileVersion(const VS_FIXEDFILEINFO& info) {
   return std::string(buf);
 }
 
-std::string GetHostAppVersion() {
+HostAppMetadata GetHostAppMetadata() {
   const auto path = GetProcessPath();
   if (path.empty()) {
     return {};
@@ -105,6 +163,10 @@ std::string GetHostAppVersion() {
   DWORD handle = 0;
   const DWORD size = ::GetFileVersionInfoSizeA(path.c_str(), &handle);
   if (size == 0) {
+    return {};
+  }
+  if (size > 1024 * 1024) {
+    StderrLogger{}.Log(LogLevel::Warning, "[Telemetry] Version resource rejected (1 MiB limit)");
     return {};
   }
 
@@ -118,6 +180,7 @@ std::string GetHostAppVersion() {
     WORD code_page;
   };
 
+  HostAppMetadata metadata;
   void* translations = nullptr;
   UINT translations_len = 0;
   if (::VerQueryValueW(data.data(), L"\\VarFileInfo\\Translation", &translations, &translations_len) &&
@@ -125,25 +188,31 @@ std::string GetHostAppVersion() {
     const auto* entries = static_cast<const LangAndCodePage*>(translations);
     const size_t count = translations_len / sizeof(LangAndCodePage);
     for (size_t i = 0; i < count; ++i) {
-      auto version = QueryVersionString(data, entries[i].language, entries[i].code_page, L"ProductVersion");
-      if (!version.empty()) {
-        return version;
+      if (metadata.version.empty()) {
+        metadata.version = QueryVersionString(data, entries[i].language, entries[i].code_page, L"ProductVersion");
+        if (metadata.version.empty()) {
+          metadata.version = QueryVersionString(data, entries[i].language, entries[i].code_page, L"FileVersion");
+        }
       }
-      version = QueryVersionString(data, entries[i].language, entries[i].code_page, L"FileVersion");
-      if (!version.empty()) {
-        return version;
+
+      if (metadata.publisher.empty()) {
+        metadata.publisher = QueryVersionString(data, entries[i].language, entries[i].code_page, L"CompanyName");
+      }
+
+      if (!metadata.version.empty() && !metadata.publisher.empty()) {
+        break;
       }
     }
   }
 
   void* fixed_info = nullptr;
   UINT fixed_info_len = 0;
-  if (::VerQueryValueW(data.data(), L"\\", &fixed_info, &fixed_info_len) &&
+  if (metadata.version.empty() && ::VerQueryValueW(data.data(), L"\\", &fixed_info, &fixed_info_len) &&
       fixed_info != nullptr && fixed_info_len >= sizeof(VS_FIXEDFILEINFO)) {
-    return FormatFixedFileVersion(*static_cast<const VS_FIXEDFILEINFO*>(fixed_info));
+    metadata.version = FormatFixedFileVersion(*static_cast<const VS_FIXEDFILEINFO*>(fixed_info));
   }
 
-  return {};
+  return metadata;
 }
 
 int64_t GetTotalMemoryMB() {
@@ -180,13 +249,66 @@ std::string GetCpuArch() {
   SYSTEM_INFO si{};
   ::GetNativeSystemInfo(&si);
   switch (si.wProcessorArchitecture) {
-    case PROCESSOR_ARCHITECTURE_AMD64: return "amd64";
-    case PROCESSOR_ARCHITECTURE_ARM:   return "arm";
-    case PROCESSOR_ARCHITECTURE_ARM64: return "arm64";
-    case PROCESSOR_ARCHITECTURE_IA64:  return "ia64";
-    case PROCESSOR_ARCHITECTURE_INTEL: return "x86";
-    default:                           return "unknown";
+    case PROCESSOR_ARCHITECTURE_AMD64:
+      return "amd64";
+    case PROCESSOR_ARCHITECTURE_ARM:
+      return "arm";
+    case PROCESSOR_ARCHITECTURE_ARM64:
+      return "arm64";
+    case PROCESSOR_ARCHITECTURE_IA64:
+      return "ia64";
+    case PROCESSOR_ARCHITECTURE_INTEL:
+      return "x86";
+    default:
+      return "unknown";
   }
+}
+
+TelemetryInternal::HostEnvironmentInfo GetHostEnvironmentInfo() {
+  TelemetryInternal::HostEnvironmentEvidence evidence;
+  evidence.kubernetes = !TelemetryEnvironment::GetEnv("KUBERNETES_SERVICE_HOST").empty();
+  evidence.aws_ecs = !TelemetryEnvironment::GetEnv("ECS_CONTAINER_METADATA_URI").empty() ||
+                     !TelemetryEnvironment::GetEnv("ECS_CONTAINER_METADATA_URI_V4").empty();
+  evidence.generic_container =
+      TelemetryEnvironment::IsTruthyValue(TelemetryEnvironment::GetEnv("DOTNET_RUNNING_IN_CONTAINER")) ||
+      !TelemetryEnvironment::GetEnv("CONTAINER_SANDBOX_MOUNT_POINT").empty();
+  constexpr const char* kBiosRegistryPath = "HARDWARE\\DESCRIPTION\\System\\BIOS";
+  evidence.dmi = ReadRegistryString(HKEY_LOCAL_MACHINE, kBiosRegistryPath, "SystemManufacturer") + " " +
+                 ReadRegistryString(HKEY_LOCAL_MACHINE, kBiosRegistryPath, "SystemProductName") + " " +
+                 ReadRegistryString(HKEY_LOCAL_MACHINE, kBiosRegistryPath, "BaseBoardManufacturer");
+  return TelemetryInternal::ClassifyHostEnvironment(evidence);
+}
+#elif defined(_WIN32)
+std::string GetProcessName() {
+  return "unknown";
+}
+
+HostAppMetadata GetHostAppMetadata() {
+  return {};
+}
+
+int64_t GetTotalMemoryMB() {
+  return -1;
+}
+
+std::string GetWindowsVersion() {
+  return "unknown";
+}
+
+std::string GetCpuArch() {
+#if defined(_M_AMD64)
+  return "amd64";
+#elif defined(_M_ARM64)
+  return "arm64";
+#elif defined(_M_IX86)
+  return "x86";
+#else
+  return "unknown";
+#endif
+}
+
+TelemetryInternal::HostEnvironmentInfo GetHostEnvironmentInfo() {
+  return TelemetryInternal::ClassifyHostEnvironment({});
 }
 #else
 std::string GetProcessName() {
@@ -199,7 +321,9 @@ std::string GetProcessName() {
   return std::filesystem::path(std::string(path.data(), static_cast<size_t>(length))).filename().string();
 #elif defined(__APPLE__)
   const char* name = ::getprogname();
-  return (name != nullptr && name[0] != '\0') ? std::string(name) : std::string{"unknown"};
+  return (name != nullptr && name[0] != '\0')
+             ? TelemetryInternal::SanitizeTelemetryValue(BoundedTelemetryCString(name))
+             : std::string{"unknown"};
 #else
   return "unknown";
 #endif
@@ -231,28 +355,75 @@ PosixOsInfo GetPosixOsInfo() {
   return out;
 }
 
+#if defined(__linux__) || defined(__ANDROID__)
+std::string ReadBoundedFile(const char* path) {
+  std::ifstream input(path, std::ios::binary);
+  if (!input) {
+    return {};
+  }
+
+  std::array<char, kMaxTelemetryProbeLength> buffer{};
+  input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+  return std::string(buffer.data(), static_cast<size_t>(input.gcount()));
+}
+
+bool FileExists(const char* path) {
+  std::ifstream input(path);
+  return input.good();
+}
+#endif
+
+TelemetryInternal::HostEnvironmentInfo GetHostEnvironmentInfo() {
+  TelemetryInternal::HostEnvironmentEvidence evidence;
+#if defined(__linux__) || defined(__ANDROID__)
+  evidence.docker_marker = FileExists("/.dockerenv");
+  evidence.podman_marker = FileExists("/run/.containerenv");
+  evidence.kubernetes = !TelemetryEnvironment::GetEnv("KUBERNETES_SERVICE_HOST").empty();
+  evidence.aws_ecs = !TelemetryEnvironment::GetEnv("ECS_CONTAINER_METADATA_URI").empty() ||
+                     !TelemetryEnvironment::GetEnv("ECS_CONTAINER_METADATA_URI_V4").empty();
+  evidence.generic_container =
+      TelemetryEnvironment::IsTruthyValue(TelemetryEnvironment::GetEnv("DOTNET_RUNNING_IN_CONTAINER"));
+  evidence.systemd_container =
+      ReadBoundedFile("/run/systemd/container") + TelemetryEnvironment::GetEnv("container");
+  evidence.cgroup = ReadBoundedFile("/proc/1/cgroup") + ReadBoundedFile("/proc/self/cgroup");
+  evidence.cpu_info = ReadBoundedFile("/proc/cpuinfo");
+  evidence.kernel_release = ReadBoundedFile("/proc/sys/kernel/osrelease");
+  evidence.dmi = ReadBoundedFile("/sys/class/dmi/id/sys_vendor") +
+                 ReadBoundedFile("/sys/class/dmi/id/product_name") +
+                 ReadBoundedFile("/sys/class/dmi/id/board_vendor");
+#if defined(__ANDROID__)
+  const std::string android_properties = ReadBoundedFile("/system/build.prop");
+  evidence.android_emulator = TelemetryInternal::ContainsAscii(android_properties, "ro.kernel.qemu=1") ||
+                              TelemetryInternal::ContainsAscii(android_properties, "ro.boot.qemu=1") ||
+                              TelemetryInternal::ContainsAscii(android_properties,
+                                                               "ro.product.manufacturer=genymotion");
+#endif
+#elif defined(__APPLE__)
+  int is_virtual_machine = 0;
+  size_t size = sizeof(is_virtual_machine);
+  evidence.apple_virtual_machine =
+      ::sysctlbyname("kern.hv_vmm_present", &is_virtual_machine, &size, nullptr, 0) == 0 &&
+      is_virtual_machine != 0;
+#endif
+  return TelemetryInternal::ClassifyHostEnvironment(evidence);
+}
+
 #if defined(__APPLE__)
 std::string CfStringToUtf8(CFStringRef value) {
   if (value == nullptr) {
     return {};
   }
 
-  if (const char* c_str = CFStringGetCStringPtr(value, kCFStringEncodingUTF8); c_str != nullptr) {
-    return std::string(c_str);
+  std::array<UInt8, kMaxTelemetryInspectionLength + 1> buffer{};
+  CFIndex written = 0;
+  const auto length = std::min(CFStringGetLength(value), static_cast<CFIndex>(buffer.size()));
+  const auto converted = CFStringGetBytes(value, CFRangeMake(0, length), kCFStringEncodingUTF8, 0, false,
+                                          buffer.data(), static_cast<CFIndex>(buffer.size()), &written);
+  if (converted < CFStringGetLength(value)) {
+    return "[oversized]";
   }
-
-  const CFIndex length = CFStringGetLength(value);
-  const CFIndex max_size = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8) + 1;
-  if (max_size <= 1) {
-    return {};
-  }
-
-  std::string out(static_cast<size_t>(max_size), '\0');
-  if (!CFStringGetCString(value, out.data(), max_size, kCFStringEncodingUTF8)) {
-    return {};
-  }
-  out.resize(std::strlen(out.c_str()));
-  return out;
+  return TelemetryInternal::SanitizeTelemetryValue(
+      {reinterpret_cast<const char*>(buffer.data()), static_cast<size_t>(written)});
 }
 
 std::string GetBundleString(CFStringRef key) {
@@ -269,15 +440,15 @@ std::string GetBundleString(CFStringRef key) {
   return CfStringToUtf8(static_cast<CFStringRef>(value));
 }
 
-std::string GetHostAppVersion() {
+HostAppMetadata GetHostAppMetadata() {
   auto version = GetBundleString(CFSTR("CFBundleShortVersionString"));
   if (!version.empty()) {
-    return version;
+    return {std::move(version), {}};
   }
-  return GetBundleString(kCFBundleVersionKey);
+  return {GetBundleString(kCFBundleVersionKey), {}};
 }
 #else
-std::string GetHostAppVersion() {
+HostAppMetadata GetHostAppMetadata() {
   return {};
 }
 #endif
@@ -285,15 +456,59 @@ std::string GetHostAppVersion() {
 
 }  // namespace
 
-TelemetryMetadata BuildTelemetryMetadata(std::string app_name) {
+HardwareInfo BuildHardwareInfo(const std::map<std::string, std::vector<std::string>>& devices_to_eps) {
+  HardwareInfo info;
+  info.has_cpu = devices_to_eps.contains("CPU");
+  info.has_gpu = devices_to_eps.contains("GPU");
+  info.has_npu = devices_to_eps.contains("NPU");
+
+  std::set<std::string_view> device_types;
+  std::set<std::string_view> execution_providers;
+  bool complete_devices = devices_to_eps.size() <= kMaxTelemetryInventoryEntries;
+  bool complete_providers = complete_devices;
+  size_t device_entries = 0;
+  size_t provider_entries = 0;
+  for (const auto& [device_type, providers] : devices_to_eps) {
+    if (++device_entries > kMaxTelemetryInventoryEntries) {
+      break;
+    }
+    if (device_type.size() > kMaxTelemetryStringLength) {
+      complete_devices = false;
+    } else {
+      device_types.insert(device_type);
+    }
+
+    const auto count = (std::min)(providers.size(), kMaxTelemetryInventoryEntries - provider_entries);
+    complete_providers &= count == providers.size();
+    for (size_t i = 0; i < count; ++i) {
+      if (providers[i].size() > kMaxTelemetryStringLength) {
+        complete_providers = false;
+      } else {
+        execution_providers.insert(providers[i]);
+      }
+    }
+    provider_entries += count;
+  }
+
+  info.device_type_count = complete_devices ? static_cast<int32_t>(device_types.size()) : -1;
+  info.execution_provider_count = complete_providers ? static_cast<int32_t>(execution_providers.size()) : -1;
+  info.device_types = complete_devices ? JoinTelemetryValues(device_types) : "[oversized inventory]";
+  info.execution_providers = complete_providers ? JoinTelemetryValues(execution_providers) : "[oversized inventory]";
+  return info;
+}
+
+TelemetryMetadata BuildTelemetryMetadata(std::string_view app_name) {
   TelemetryMetadata m;
   m.app_session_guid = GenerateGuidV4();
-  m.version = FOUNDRY_LOCAL_VERSION;
-  m.app_version = GetHostAppVersion();
+  m.version = TelemetryInternal::SanitizeTelemetryValue(FOUNDRY_LOCAL_VERSION);
+  auto host_app = GetHostAppMetadata();
+  m.app_version = std::move(host_app.version);
+  m.publisher = std::move(host_app.publisher);
   if (m.app_version.empty()) {
     m.app_version = m.version;
   }
-  m.app_name = std::move(app_name);
+  m.app_name = TelemetryInternal::SanitizeTelemetryValue(app_name);
+  m.process_name = TelemetryInternal::SanitizeTelemetryValue(GetProcessName());
 
 #ifdef _WIN32
   m.os_name = "Windows";
@@ -309,17 +524,37 @@ TelemetryMetadata BuildTelemetryMetadata(std::string app_name) {
   return m;
 }
 
-ProcessInfo BuildProcessInfo(const TelemetryMetadata& metadata, bool include_device_id_status) {
+ProcessInfo BuildProcessInfo(const TelemetryMetadata& metadata, const Configuration& configuration,
+                             bool include_device_id_status) {
   ProcessInfo info;
-  info.app_name = metadata.app_name;
-  info.app_version = metadata.app_version;
-  info.os_name = metadata.os_name;
-  info.os_version = metadata.os_version;
-  info.cpu_arch = metadata.cpu_arch;
-  info.process_name = GetProcessName();
+  info.app_version = TelemetryInternal::SanitizeTelemetryValue(metadata.app_version);
+  info.publisher = TelemetryInternal::SanitizeTelemetryValue(metadata.publisher);
+  info.os_name = TelemetryInternal::SanitizeTelemetryValue(metadata.os_name);
+  info.os_version = TelemetryInternal::SanitizeTelemetryValue(metadata.os_version);
+  info.cpu_arch = TelemetryInternal::SanitizeTelemetryValue(metadata.cpu_arch);
+  info.process_name = TelemetryInternal::SanitizeTelemetryValue(metadata.process_name);
   info.device_id_status = include_device_id_status ? TelemetryDeviceId::Instance().GetStatusString() : "Disabled";
+  const auto host_environment = GetHostEnvironmentInfo();
+  info.is_container = host_environment.is_container;
+  info.is_virtual_machine = host_environment.is_virtual_machine;
+  info.is_emulator = host_environment.is_emulator;
+  info.container_type = host_environment.container_type;
+  info.virtualization_type = host_environment.virtualization_type;
+  info.host_environment = host_environment.environment_class;
+  info.environment_detection_confidence = host_environment.detection_confidence;
+  info.device_id_scope = host_environment.device_id_scope;
   info.cpu_count = static_cast<int32_t>(std::thread::hardware_concurrency());
   info.total_memory_mb = GetTotalMemoryMB();
+  info.app_data_dir = configuration.app_data_dir
+                          ? TelemetryInternal::SanitizeTelemetryPath(*configuration.app_data_dir)
+                          : "";
+  info.model_cache_dir = configuration.model_cache_dir
+                             ? TelemetryInternal::SanitizeTelemetryPath(*configuration.model_cache_dir)
+                             : "";
+  info.logs_dir = configuration.logs_dir ? TelemetryInternal::SanitizeTelemetryPath(*configuration.logs_dir) : "";
+  info.log_level = configuration.log_level;
+  info.web_service_url_count = static_cast<int64_t>(configuration.web_service_endpoints.size());
+  info.external_url_count = configuration.external_service_url.has_value() ? 1 : 0;
   return info;
 }
 

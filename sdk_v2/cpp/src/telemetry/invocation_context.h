@@ -2,17 +2,20 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "telemetry/telemetry_redaction.h"
+
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace fl {
 
-/// Generate an RFC 4122 v4 UUID, hex-encoded with hyphens. Not a cryptographic
-/// identifier — used for per-operation correlation and per-process session ids.
+/// Generate an RFC 4122 v4 UUID, hex-encoded with hyphens, for per-operation
+/// correlation and per-process session ids.
 std::string GenerateGuidV4();
 
 std::string DefaultUserAgent();
-void SetDefaultUserAgent(std::string user_agent);
+void SetDefaultUserAgent(std::string_view user_agent);
 
 /// Per-operation telemetry context, threaded from an entry point through every
 /// action it triggers.
@@ -31,9 +34,9 @@ struct InvocationContext {
   bool indirect = false;
 
   /// A direct, top-level context with a freshly generated correlation id.
-  static InvocationContext Direct(std::string user_agent = "") {
+  static InvocationContext Direct(std::string_view user_agent = "") {
     InvocationContext ctx;
-    ctx.user_agent = user_agent.empty() ? DefaultUserAgent() : std::move(user_agent);
+    ctx.user_agent = user_agent.empty() ? DefaultUserAgent() : TelemetryInternal::SanitizeTelemetryValue(user_agent);
     ctx.correlation_id = GenerateGuidV4();
     ctx.indirect = false;
     return ctx;
@@ -42,9 +45,13 @@ struct InvocationContext {
   /// Derive a context for an action triggered by this one: same correlation id
   /// and user agent, but marked indirect.
   InvocationContext AsIndirect() const {
-    InvocationContext ctx = *this;
-    ctx.indirect = true;
-    return ctx;
+    return {TelemetryInternal::SanitizeTelemetryValue(user_agent),
+            TelemetryInternal::SanitizeTelemetryIdentifier(correlation_id), true};
+  }
+
+  InvocationContext BoundedCopy() const {
+    return {TelemetryInternal::SanitizeTelemetryValue(user_agent),
+            TelemetryInternal::SanitizeTelemetryIdentifier(correlation_id), indirect};
   }
 
   /// Guarantee a correlation id is present, generating one when empty. Lets an

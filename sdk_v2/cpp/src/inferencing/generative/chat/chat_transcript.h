@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "inferencing/session/types.h"
 #include "items/item.h"
 
 #include <nlohmann/json.hpp>
@@ -11,30 +12,31 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
 namespace fl {
 
-/// Kind of tool invocation recorded in the transcript. Function calls are the only kind produced today; the enum
-/// keeps the internal representation extensible without widening the public ABI.
-enum class ToolCallKind {
-  kFunction,
-};
-
 /// A single tool invocation, carried through the transcript exactly as it was generated or supplied.
 struct TranscriptToolCall {
   std::string call_id;
   std::string name;
-  /// Raw argument bytes exactly as generated or supplied. Never rewritten, so the authoritative record and the
-  /// response always report what actually happened.
+  /// Raw argument bytes exactly as they crossed the public API boundary. Never rewritten, so the authoritative
+  /// record and the response always agree on what actually happened. For a kFunction call these are the JSON
+  /// argument bytes; for a kCustom call they are the free-form text payload, already unwrapped from the synthesized
+  /// `{"input": ...}` shape the model was prompted with.
   std::string arguments;
   /// Object form used for template projection. Always a JSON object, so projecting a committed transcript can never
-  /// fail. For caller-supplied calls this is the parsed `arguments`; for model output that failed to produce an
-  /// object it is an empty object (the raw bytes are still preserved above).
+  /// fail. For kFunction this is the parsed `arguments`, or an empty object when model output failed to produce one.
+  /// For kCustom it is the payload rewrapped as `{"input": arguments}` — the exact shape the model emitted and the
+  /// only shape the chat template and the tool-call grammar understand.
   nlohmann::ordered_json normalized_arguments = nlohmann::ordered_json::object();
-  ToolCallKind kind = ToolCallKind::kFunction;
+  /// Which of the session's tool kinds produced this call. Recorded so the authoritative transcript reports the call
+  /// as what it was, and so a replayed call normalizes the same way the generated one did.
+  ToolKind kind = ToolKind::kFunction;
+  GeneratedCallEncoding generated_encoding = GeneratedCallEncoding::kStructured;
 };
 
 /// One event within a message, stored in the order it occurred.
@@ -115,33 +117,39 @@ struct TranscriptMessage {
 /// JSON object — the caller decides whether that is a client error or a model defect.
 std::optional<nlohmann::ordered_json> ParseToolCallArguments(const std::string& arguments);
 
-/// Build a function tool call supplied by the caller. Arguments are validated strictly: a client that replays a call
-/// with bytes that are not a JSON object gets an explicit error rather than a silently altered conversation.
+/// Build a tool call supplied by the caller. Arguments are validated strictly: a client that replays a kFunction
+/// call with bytes that are not a JSON object gets an explicit error rather than a silently altered conversation.
+/// A kCustom call carries free-form text, so it is always accepted.
 ///
-/// @throws fl::Exception FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT when the arguments are not a JSON object.
-TranscriptToolCall MakeSuppliedToolCall(std::string call_id, std::string name, std::string arguments);
+/// @throws fl::Exception FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT when a kFunction call's arguments are not a JSON
+///         object.
+TranscriptToolCall MakeSuppliedToolCall(std::string call_id, std::string name, std::string arguments,
+                                        ToolKind kind = ToolKind::kFunction);
 
 /// Result of admitting a model-generated tool call into the transcript.
 struct GeneratedToolCall {
   TranscriptToolCall call;
   /// False when the model's raw argument bytes were not a JSON object. The raw bytes are preserved on `call` and the
-  /// normalized form falls back to an empty object; the caller is expected to report the model defect.
+  /// normalized form falls back to an empty object; the caller is expected to report the model defect. Always true
+  /// for kCustom calls, whose payload is text and therefore cannot be malformed.
   bool arguments_usable = true;
 };
 
-/// Build a function tool call from model output.
+/// Build a tool call from model output.
 ///
 /// Generation has already been streamed to the caller by the time a turn is committed, so a model that emits
 /// unusable argument bytes must not fail the request. The raw bytes are preserved verbatim and the normalized form
 /// degrades to an empty object, which keeps the committed transcript renderable on every later turn.
-GeneratedToolCall MakeGeneratedToolCall(std::string call_id, std::string name, std::string arguments);
+GeneratedToolCall MakeGeneratedToolCall(std::string call_id, std::string name, std::string arguments,
+                                        ToolKind kind = ToolKind::kFunction,
+                                        GeneratedCallEncoding encoding = GeneratedCallEncoding::kStructured);
 
 /// Result of turning a request's items into transcript messages.
 struct TranscriptIngest {
   std::vector<TranscriptMessage> messages;
 
-  /// Index into `messages` of the first message the last replay segment produced. Everything before it was
-  /// recorded on an earlier turn, so a reply generated now must never merge into it.
+  /// Index into `messages` of the first message the last replay segment produced. Ingestion must not merge
+  /// assistant items across this boundary.
   size_t last_segment_start = 0;
 };
 
@@ -173,9 +181,8 @@ struct TranscriptIngest {
 /// messages in a row (on Chat Completions, or as typed Responses input) gets one assistant message whose text is
 /// their literal concatenation, with no separator inserted. This is deliberate continuation semantics, not an
 /// accident of the merge: the fragments are two halves of one utterance, exactly as a live session records the text
-/// a model emits either side of a tool call, and the caller owns any spacing between them. A generated reply
-/// continuing an assistant prefill is joined by the same rule (see ChatTranscript::CommitTurn), so a conversation
-/// replayed from storage rebuilds the messages the live session committed.
+/// a model emits, and the caller owns any spacing between them. Generated replies are separate messages: the chat
+/// template opens a new assistant turn after the input, even when the input ends with assistant content.
 ///
 /// `segment_starts` (see Request::item_segment_starts) stops the merge at a recorded-turn boundary: two turns that
 /// each ended and began with assistant output stay two messages, exactly as the live session committed them. With
@@ -185,10 +192,16 @@ struct TranscriptIngest {
 /// An assistant message whose only content is empty text survives as a message with no entries. That is the
 /// assistant-turn boundary of a turn that produced nothing replayable, and dropping it would leave two user turns
 /// adjacent in the rebuilt conversation.
-TranscriptIngest IngestRequestItems(const std::vector<Item*>& items, const std::vector<size_t>& segment_starts);
+///
+/// @param tool_kinds Kind of each named tool for this request, snapshotted from the session's registry. A stored
+///        call carrying its historical kind uses that value; older stored calls and caller-supplied calls resolve
+///        through this map. Names absent from both sources are treated as kFunction.
+TranscriptIngest IngestRequestItems(const std::vector<Item*>& items, const std::vector<size_t>& segment_starts,
+                                    const std::unordered_map<std::string, ToolKind>& tool_kinds = {});
 
 /// IngestRequestItems for an item list with no known segment boundaries.
-std::vector<TranscriptMessage> BuildTranscriptMessages(const std::vector<Item*>& items);
+std::vector<TranscriptMessage> BuildTranscriptMessages(
+    const std::vector<Item*>& items, const std::unordered_map<std::string, ToolKind>& tool_kinds = {});
 
 /// True when any message replays a tool call or answers one.
 ///
@@ -229,12 +242,6 @@ struct TurnContent {
 /// the caller's mistake and nothing else: it is a client error, never a service failure.
 bool TurnCanGenerate(const std::vector<TranscriptMessage>& inputs, const TurnContent& context);
 
-/// The assistant message a reply generated now would merge into, or nullptr when it would start its own message.
-///
-/// Mirrors CommitTurn's merge rule exactly, so a caller can know before generating whether the reply continues an
-/// assistant prefill — and therefore whether that prefill's tool calls already closed the turn's visible text.
-const TranscriptMessage* AssistantPrefillForReply(const std::vector<TranscriptMessage>& inputs, size_t merge_floor);
-
 /// Enforce the assistant-turn ordering invariant on one message.
 ///
 /// **Invariant: within an assistant message, all visible text precedes the first tool call.**
@@ -269,16 +276,20 @@ enum class TextDisposition {
 /// dropped and ends the turn — the caller keeps the calls and a `tool_calls` finish reason. Whitespace is dropped
 /// without ending the turn, so models can still emit subsequent parallel call blocks without replay reordering it.
 ///
-/// Seeded with the calls of an assistant prefill the reply will merge into (see AssistantPrefillForReply): the
-/// prefill and the reply become one message, so the prefill's calls close this turn's visible text too.
+/// Each generated reply starts a new assistant turn. Calls in supplied history do not close its visible text.
 class AssistantTurnGuard {
  public:
-  explicit AssistantTurnGuard(bool calls_already_issued = false) : calls_issued_(calls_already_issued) {}
+  explicit AssistantTurnGuard(bool parallel_tool_calls = true) noexcept
+      : parallel_tool_calls_(parallel_tool_calls) {}
 
-  static AssistantTurnGuard ForReplyTo(const std::vector<TranscriptMessage>& inputs, size_t merge_floor);
-
-  /// Record that the turn issued a tool call. Every later visible text event is now unrepresentable.
-  void RecordToolCall() noexcept { calls_issued_ = true; }
+  bool RecordToolCall() noexcept {
+    if (ended_) {
+      return false;
+    }
+    calls_issued_ = true;
+    ended_ = !parallel_tool_calls_;
+    return true;
+  }
 
   /// Decide what to do with one visible-text event. Reports kEndTurn exactly once per turn.
   TextDisposition OfferVisibleText(std::string_view text) noexcept {
@@ -298,11 +309,11 @@ class AssistantTurnGuard {
     return TextDisposition::kEndTurn;
   }
 
-  /// True once the turn has been ended by post-call text. Generation must stop and the cached generator is no longer
-  /// a usable basis for the next turn: the sequence was cut short with no turn terminator.
+  /// True once post-call text or a serial call ends the turn. The truncated sequence cannot be retained.
   bool TurnEnded() const noexcept { return ended_; }
 
  private:
+  bool parallel_tool_calls_ = true;
   bool calls_issued_ = false;
   bool ended_ = false;
 };
@@ -373,17 +384,9 @@ class ChatTranscript {
   /// Commit one turn atomically: the input messages followed by the assistant reply. Both are validated first, so a
   /// rejected turn leaves the transcript untouched.
   ///
-  /// The reply merges into a trailing assistant input message when the two are one assistant turn: a caller that
-  /// supplied assistant content and had the model continue it produced a single assistant turn, and both the
-  /// committed record and the prompt must show one. This is the same merge rule item ingestion applies, so a
-  /// conversation replayed from storage rebuilds the messages the live session committed.
-  ///
-  /// `reply_merge_floor` indexes into `inputs` and marks the first input message the reply may merge with.
-  /// Everything before it is replayed history from an earlier recorded turn and must stay separate; pass
-  /// `inputs.size()` to forbid merging entirely. The default merges with any input, which is what a warm session
-  /// wants: every one of its input messages belongs to the turn being committed.
-  void CommitTurn(std::vector<TranscriptMessage> inputs, TranscriptMessage output, TurnTokens tokens,
-                  size_t reply_merge_floor = 0);
+  /// The reply is always a separate message, matching the new assistant turn opened by the chat template's
+  /// add_generation_prompt=true. Stored replay must likewise separate each hop's input from its output.
+  void CommitTurn(std::vector<TranscriptMessage> inputs, TranscriptMessage output, TurnTokens tokens);
 
   /// Remove the last `count` turns and restore outstanding-call state to exactly what it was before them.
   ///

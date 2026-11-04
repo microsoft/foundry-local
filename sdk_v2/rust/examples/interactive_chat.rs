@@ -6,7 +6,7 @@ use std::io::{self, Write};
 
 use foundry_local_sdk::{
     ChatSession, FoundryLocalConfig, FoundryLocalManager, Item, Request, RequestOptions,
-    SearchOptions,
+    SearchOptions, TextKind,
 };
 use tokio_stream::StreamExt;
 
@@ -96,7 +96,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let mut stream = session.process_streaming_request(Request::from_items(items));
         while let Some(item) = stream.next().await {
-            if let Some(text) = item?.as_text() {
+            if let Item::Text {
+                text,
+                kind: TextKind::Default,
+            } = item?
+            {
                 print!("{text}");
                 io::stdout().flush().ok();
             }

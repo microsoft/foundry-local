@@ -5,13 +5,46 @@
 from __future__ import annotations
 
 import threading
-from typing import Callable
+import weakref
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 
-from foundry_local_sdk.catalog import Catalog
+from foundry_local_sdk.catalog import Catalog, CatalogType
 from foundry_local_sdk.configuration import Configuration
 from foundry_local_sdk.ep_types import EpDownloadResult, EpInfo
 from foundry_local_sdk.exception import FoundryLocalException
 from foundry_local_sdk.logging_helper import set_default_logger_severity
+
+
+def _build_ep_download_result(
+    before_eps: list[EpInfo],
+    after_eps: list[EpInfo],
+    requested_names: list[str] | None,
+) -> EpDownloadResult:
+    before_by_name = {ep.name: ep.is_registered for ep in before_eps}
+    after_by_name = {ep.name: ep for ep in after_eps}
+    requested = list(
+        dict.fromkeys(
+            requested_names if requested_names is not None else (ep.name for ep in before_eps)
+        )
+    )
+    registered = [
+        ep.name
+        for ep in after_eps
+        if ep.is_registered and not before_by_name.get(ep.name, False)
+    ]
+    failed = [
+        name
+        for name in requested
+        if name not in after_by_name or not after_by_name[name].is_registered
+    ]
+
+    return EpDownloadResult(
+        success=len(failed) == 0,
+        status="All EPs registered" if not failed else "Some EPs failed",
+        registered_eps=registered,
+        failed_eps=failed,
+    )
 
 
 class FoundryLocalManager:
@@ -23,10 +56,10 @@ class FoundryLocalManager:
     Attributes:
         instance: The singleton ``FoundryLocalManager`` instance.
         catalog: The model ``Catalog`` for discovering and managing models.
-        urls: Bound URL(s) after ``start_web_service()`` is called, or ``None``.
+        urls: Current native listening URL(s), or ``None`` when not running.
     """
 
-    _lock: threading.Lock = threading.Lock()
+    _lock = threading.RLock()
     instance: FoundryLocalManager | None = None
 
     @staticmethod
@@ -44,7 +77,13 @@ class FoundryLocalManager:
         # Declared up front so close() / __del__ can run safely even if
         # _initialize() raises before the native handle is assigned.
         self._native_manager: object | None = None
-        self.urls: list[str] | None = None
+        self._catalogs: dict[CatalogType, Catalog] = {}
+        self._native_call_state = threading.local()
+        self._lifetime_changed = threading.Condition(FoundryLocalManager._lock)
+        self._active_native_calls = 0
+        self._sessions: weakref.WeakSet[object] = weakref.WeakSet()
+        self._close_started = threading.Event()
+        self._close_started_lock = threading.Lock()
 
         with FoundryLocalManager._lock:
             if FoundryLocalManager.instance is not None:
@@ -86,16 +125,81 @@ class FoundryLocalManager:
             api.config.Configuration_Release(native_config)
 
         try:
-            cat_out = ffi.new("flCatalog**")
-            api.check_status(api.root.Manager_GetCatalog(self._native_manager, cat_out))
-            self.catalog = Catalog(cat_out[0], parent=self)
+            # Keep the legacy attribute as the public catalog while routing all
+            # new selection through the typed V2 API.
+            self.catalog = self.get_catalog()
         except BaseException:
             # Catalog fetch failed; release the manager handle to avoid leaking it.
             try:
                 api.root.Manager_Release(self._native_manager)
             finally:
                 self._native_manager = None
+                self._catalogs.clear()
             raise
+
+    def get_catalog(self, catalog_type: CatalogType = CatalogType.PUBLIC) -> Catalog:
+        """Get the public or local model catalog.
+
+        Args:
+            catalog_type: Catalog to return. Defaults to :attr:`CatalogType.PUBLIC`
+                for backward compatibility with ``manager.catalog``.
+
+        Returns:
+            A stable catalog wrapper owned by this manager.
+        """
+        with FoundryLocalManager._lock:
+            if not isinstance(catalog_type, CatalogType):
+                raise TypeError("catalog_type must be a CatalogType")
+            if self._native_manager is None or self._close_started.is_set():
+                raise RuntimeError("FoundryLocalManager is closed")
+
+            cached = self._catalogs.get(catalog_type)
+            if cached is not None:
+                return cached
+
+            from foundry_local_sdk._native.api import api, ffi
+
+            out = ffi.new("flCatalog**")
+            api.check_status(api.root.Manager_GetCatalogByType(self._native_manager, int(catalog_type), out))
+            if out[0] == ffi.NULL:
+                raise FoundryLocalException(f"GetCatalogByType returned no {catalog_type.name.lower()} catalog.")
+
+            catalog = Catalog(out[0], catalog_type=catalog_type, parent=self)
+            self._catalogs[catalog_type] = catalog
+            return catalog
+
+    @contextmanager
+    def _native_call(self) -> Iterator[object]:
+        with FoundryLocalManager._lock:
+            if self._native_manager is None or self._close_started.is_set():
+                raise RuntimeError("FoundryLocalManager is closed")
+            native_manager = self._native_manager
+            self._active_native_calls += 1
+            self._native_call_state.depth = getattr(self._native_call_state, "depth", 0) + 1
+        try:
+            yield native_manager
+        finally:
+            self._native_call_state.depth -= 1
+            with FoundryLocalManager._lock:
+                self._active_native_calls -= 1
+                if self._active_native_calls == 0:
+                    self._lifetime_changed.notify_all()
+
+    def _register_session(self, session: object) -> None:
+        with FoundryLocalManager._lock:
+            if self._native_manager is None or self._close_started.is_set():
+                raise RuntimeError("FoundryLocalManager is closed")
+            self._sessions.add(session)
+
+    def _release_session(self, session: object, native_session: object) -> None:
+        from foundry_local_sdk._native.api import api
+
+        with FoundryLocalManager._lock:
+            try:
+                api.inference.Session_Release(native_session)
+            finally:
+                self._sessions.discard(session)
+                self._lifetime_changed.notify_all()
 
     # ------------------------------------------------------------------
     # EP discovery and registration
@@ -109,22 +213,23 @@ class FoundryLocalManager:
         """
         from foundry_local_sdk._native.api import api, ffi
 
-        eps_out = ffi.new("flEpInfo**")
-        count_out = ffi.new("size_t*")
-        api.check_status(
-            api.root.Manager_GetDiscoverableEps(
-                self._native_manager, eps_out, count_out
+        with self._native_call() as native_manager:
+            eps_out = ffi.new("flEpInfo**")
+            count_out = ffi.new("size_t*")
+            api.check_status(
+                api.root.Manager_GetDiscoverableEps(
+                    native_manager, eps_out, count_out
+                )
             )
-        )
 
-        count = int(count_out[0])
-        result: list[EpInfo] = []
-        for i in range(count):
-            entry = eps_out[0][i]
-            name = ffi.string(entry.name).decode("utf-8")
-            is_reg = bool(entry.is_registered)
-            result.append(EpInfo(name=name, is_registered=is_reg))
-        return result
+            count = int(count_out[0])
+            result: list[EpInfo] = []
+            for i in range(count):
+                entry = eps_out[0][i]
+                name = ffi.string(entry.name).decode("utf-8")
+                is_reg = bool(entry.is_registered)
+                result.append(EpInfo(name=name, is_registered=is_reg))
+            return result
 
     def download_and_register_eps(
         self,
@@ -189,36 +294,41 @@ class FoundryLocalManager:
             cb = _ep_cb
             ud = self._ep_cb_handle
 
-        api.check_status(
-            api.root.Manager_DownloadAndRegisterEps(
-                self._native_manager, c_names_arr, num_names, cb, ud
+        with self._native_call() as native_manager:
+            api.check_status(
+                api.root.Manager_DownloadAndRegisterEps(
+                    native_manager, c_names_arr, num_names, cb, ud
+                )
             )
-        )
 
-        # Determine which EPs were newly registered.
         after_eps = self.discover_eps()
-        registered = [
-            ep.name
-            for ep in after_eps
-            if ep.is_registered and not before_eps.get(ep.name, False)
-        ]
-        failed = [
-            ep.name
-            for ep in after_eps
-            if not ep.is_registered and ep.name in (names or [])
-        ]
 
         # Native owns catalog cache invalidation after EP registration; no Python-side action needed.
-        return EpDownloadResult(
-            success=len(failed) == 0,
-            status="Completed",
-            registered_eps=registered,
-            failed_eps=failed,
+        return _build_ep_download_result(
+            [EpInfo(name=name, is_registered=is_registered) for name, is_registered in before_eps.items()],
+            after_eps,
+            names,
         )
 
     # ------------------------------------------------------------------
     # Web service lifecycle
     # ------------------------------------------------------------------
+
+    @property
+    def urls(self) -> list[str] | None:
+        """Observe native URLs without starting the service or owning the shared host."""
+        from foundry_local_sdk._native.api import api, ffi
+
+        with self._native_call() as native_manager:
+            urls_out = ffi.new("char***")
+            count_out = ffi.new("size_t*")
+            api.check_status(
+                api.root.Manager_WebServiceUrls(native_manager, urls_out, count_out)
+            )
+            urls = [
+                ffi.string(urls_out[0][i]).decode("utf-8") for i in range(int(count_out[0]))
+            ]
+            return urls or None
 
     def start_web_service(self) -> None:
         """Start the optional built-in web service.
@@ -227,19 +337,10 @@ class FoundryLocalManager:
         or ``http://127.0.0.1:0`` (a random ephemeral port) if not specified.
         ``FoundryLocalManager.urls`` is updated with the actual bound URL(s).
         """
-        from foundry_local_sdk._native.api import api, ffi
+        from foundry_local_sdk._native.api import api
 
-        with FoundryLocalManager._lock:
-            api.check_status(api.root.Manager_WebServiceStart(self._native_manager))
-
-            urls_out = ffi.new("char***")
-            count_out = ffi.new("size_t*")
-            api.check_status(
-                api.root.Manager_WebServiceUrls(self._native_manager, urls_out, count_out)
-            )
-            self.urls = [
-                ffi.string(urls_out[0][i]).decode("utf-8") for i in range(int(count_out[0]))
-            ]
+        with self._native_call() as native_manager:
+            api.check_status(api.root.Manager_WebServiceStart(native_manager))
 
     def stop_web_service(self) -> None:
         """Stop the optional built-in web service.
@@ -249,12 +350,11 @@ class FoundryLocalManager:
         """
         from foundry_local_sdk._native.api import api
 
-        with FoundryLocalManager._lock:
+        with self._native_call() as native_manager:
             if self.urls is None:
                 raise FoundryLocalException("Web service is not running.")
 
-            api.check_status(api.root.Manager_WebServiceStop(self._native_manager))
-            self.urls = None
+            api.check_status(api.root.Manager_WebServiceStop(native_manager))
 
     # ------------------------------------------------------------------
     # Shutdown
@@ -267,13 +367,15 @@ class FoundryLocalManager:
         """
         from foundry_local_sdk._native.api import api
 
-        api.check_status(api.root.Manager_Shutdown(self._native_manager))
+        with self._native_call() as native_manager:
+            api.check_status(api.root.Manager_Shutdown(native_manager))
 
     def is_shutdown_requested(self) -> bool:
         """Whether ``shutdown()`` has been called on the native manager."""
         from foundry_local_sdk._native.api import api
 
-        return bool(api.root.Manager_IsShutdownRequested(self._native_manager))
+        with self._native_call() as native_manager:
+            return bool(api.root.Manager_IsShutdownRequested(native_manager))
 
     def close(self) -> None:
         """Tear down the native manager and clear the singleton.
@@ -290,6 +392,19 @@ class FoundryLocalManager:
 
         from foundry_local_sdk._native.api import api
 
+        if getattr(self._native_call_state, "depth", 0) > 0:
+            raise RuntimeError("Cannot close FoundryLocalManager during an active native call")
+
+        with self._close_started_lock:
+            owns_close = not self._close_started.is_set()
+            self._close_started.set()
+
+        if not owns_close:
+            with FoundryLocalManager._lock:
+                while self._native_manager is not None:
+                    self._lifetime_changed.wait()
+            return
+
         with FoundryLocalManager._lock:
             # Idempotent — close() called twice or after a failed __init__.
             if self._native_manager is None:
@@ -297,22 +412,32 @@ class FoundryLocalManager:
                     FoundryLocalManager.instance = None
                 return
 
-            # Drive the orchestrated drain on the native side. Log shutdown errors
-            # rather than swallowing them silently — we still need to release the
-            # handle, but the failure must surface somewhere.
+            sessions = list(self._sessions)
+
+        for session in sessions:
+            close = getattr(session, "_close", None)
+            if close is not None:
+                close()
+
+        with FoundryLocalManager._lock:
+            while self._sessions:
+                self._lifetime_changed.wait()
+            while self._active_native_calls:
+                self._lifetime_changed.wait()
             try:
                 api.check_status(api.root.Manager_Shutdown(self._native_manager))
             except Exception as exc:
                 logging.getLogger("foundry_local_sdk").warning(
                     "Manager_Shutdown failed during close(); releasing handle anyway: %s", exc
                 )
-
             try:
                 api.root.Manager_Release(self._native_manager)
             finally:
                 self._native_manager = None
+                self._catalogs.clear()
                 if FoundryLocalManager.instance is self:
                     FoundryLocalManager.instance = None
+                self._lifetime_changed.notify_all()
 
     def __enter__(self) -> "FoundryLocalManager":
         return self

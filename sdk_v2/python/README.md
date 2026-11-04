@@ -2,9 +2,12 @@
 
 The Foundry Local Python SDK is a native Python binding for the Foundry Local C++ SDK. It lets you discover, download, load, and run inference against local AI models — chat completions (streaming and non-streaming), tool calling, embeddings, and audio transcription — directly in-process via a [cffi](https://cffi.readthedocs.io/) binding to the Foundry Local native library. No separate service, no HTTP hop.
 
+For an introduction to models, sessions, requests, responses, items, and streaming input
+and output, see [Inference with the Foundry Local SDK](../INFERENCING.md).
+
 ## Features
 
-- **Model Catalog** – browse and search the Foundry Local model catalog
+- **Model Catalog and BYOM** – browse the public catalog or register existing local model assets without copying them
 - **Model Management** – download, cache, load, and unload models
 - **Chat Completions** – streaming and non-streaming, with first-class tool calling
 - **Embeddings** – text embeddings via a typed tensor API
@@ -69,7 +72,8 @@ foundry-local-install
 ## Requirements
 
 - Python 3.11 or newer (single `cp311-abi3` wheel works on every CPython ≥ 3.11)
-- Windows (x64), Linux (x64), or macOS (arm64)
+- Windows (x64), Linux (x64 or ARM64), or macOS (arm64)
+- Linux: glibc 2.28 or newer on x64; glibc 2.34 or newer on ARM64, including CPU-only usage
 
 ## Quick start
 
@@ -110,6 +114,20 @@ with ChatSession(model) as session:
 model.unload()
 ```
 
+Pass a `threading.Event` as `cancel_event` to cancel an active download at the next native progress checkpoint:
+
+```python
+from threading import Event
+
+cancel_event = Event()
+
+def on_progress(percent: float) -> None:
+    print(f"\rDownloading: {percent:.1f}%", end="", flush=True)
+    cancel_event.set()
+
+model.download(progress_callback=on_progress, cancel_event=cancel_event)
+```
+
 Runnable end-to-end examples live under [`samples/python/`](https://github.com/microsoft/Foundry-Local/tree/main/samples/python).
 
 ## Usage
@@ -130,6 +148,25 @@ FoundryLocalManager.initialize(config)
 manager = FoundryLocalManager.instance
 ```
 
+### Native shared hosting
+
+Set `use_shared_host=True` on `Configuration` to route existing model/session APIs through the native host included
+in the wheel. The default remains in-process. Metadata, discovery and model downloads do not start the host;
+execution, cache removal, EP download/registration or `manager.start_web_service()` starts or joins it. Clients must
+match the Foundry native build, IPC protocol, platform and effective catalog, data/cache, provider, web, logs
+directory/level, telemetry and additional settings other than `UserAgent`. Dependency hashes and packaging paths do
+not split hosts; the first starter's verified runtime serves all clients. Shared hosting cannot be combined with
+`web.external_url`, and never silently falls back to in-process execution.
+
+`manager.close()` releases only this client. After the final owner, the host drains admitted work, allows a
+five-second reconnect grace and exits normally. Keep the manager alive while using its HTTP endpoint; HTTP
+connections are not owners. Explicit model unload stays shared and rejects in-use models. Web-service Stop rejects
+other owners or active HTTP work.
+
+The read-only `manager.urls` property observes listeners without starting the service and rejects access after
+`close()`. See the [shared-host requirements](../cpp/README.md#quick-start) for inherited environment/cwd and Linux
+prerequisites.
+
 ### Discovering models
 
 ```python
@@ -148,6 +185,44 @@ variant = catalog.get_model_variant("qwen2.5-0.5b-instruct-generic-cpu:4")
 cached = catalog.get_cached_models()
 loaded = catalog.get_loaded_models()
 ```
+
+### Bring your own model (BYOM)
+
+Use the local catalog to register an existing ONNX Runtime GenAI model directory. Registration does not copy,
+download, or take ownership of the model assets. The directory must contain `genai_config.json`, and the model ID
+must use the canonical `<name>:<version>` format. The `task` metadata property is required and must be one of
+`chat-completion`, `coding`, `vision-language-chat`, `embeddings`, or `automatic-speech-recognition`.
+
+`coding` models use the existing text-only `ChatSession` interface. See
+[coding models](../INFERENCING.md#coding-models) for capability and compatibility details.
+
+```python
+from foundry_local_sdk import CatalogType, ModelInfoBuilder
+
+local_catalog = manager.get_catalog(CatalogType.LOCAL)
+
+with ModelInfoBuilder() as metadata:
+    metadata.set_string_property("task", "chat-completion")
+    metadata.set_string_property("display_name", "My Local Model")
+    model = local_catalog.register_model(
+        model_path="/path/to/model-directory",
+        model_id="my-model-generic-cpu:1",
+        metadata=metadata,
+    )
+
+print(model.id)
+print(model.info.get_string_property("display_name"))
+
+# Existing model handles remain safe for metadata and cleanup queries after
+# unregistration, while future catalog lookups no longer return the model.
+local_catalog.unregister_model(model.id)
+```
+
+`manager.catalog` and `manager.get_catalog()` both return the public catalog for backward compatibility.
+`ModelInfoBuilder()` owns a mutable native metadata handle; call `close()` or use a `with` block. In contrast,
+`model.info` is a frozen point-in-time `ModelInfo` value that supports normal dataclass operations such as
+`dataclasses.asdict()`. Its declared fields remain safe after the native model or manager is released. Arbitrary
+forward-compatible keys use guarded native lookup and therefore require the owning manager to remain open.
 
 ### Inspecting model metadata
 
@@ -244,6 +319,24 @@ model.unload()
 
 `ChatSession` is stateful across turns. `session.turn_count` reports how many requests have been processed; `session.undo_turns(n)` rewinds history.
 
+Before processing a request, use `preflight_request()` to synchronously ask the native runtime for
+the request's token budget:
+
+```python
+model = manager.catalog.get_model("qwen2.5-0.5b")
+model.load()
+with ChatSession(model) as session:
+    with Request().add_item(MessageItem.user("Summarize this conversation.")) as req:
+        budget = session.preflight_request(req)
+        print(f"Required tokens: {budget.required_tokens}; fits: {budget.fits}")
+model.unload()
+```
+
+The SDK reports the native result without estimating tokens, changing options, truncating context,
+or rewriting the request.
+`context_limit_tokens` is the Engine's structural request capacity or the Generator's model context.
+`fits` does not reserve cache or guarantee immediate admission while other requests are active.
+
 ### Multi-turn conversations
 
 Each call to `process_request` extends the session's turn history. Build a new `Request` per turn:
@@ -293,6 +386,29 @@ with ChatSession(model) as session:
                                     print(it.text)
 ```
 
+For a custom tool, register only its name and description. Its `ToolCallItem.arguments` value is the
+raw text generated by the model, not JSON:
+
+```python
+with ChatSession(model) as session:
+    session.add_custom_tool_definition(
+        name="apply_patch",
+        description="Apply a patch supplied as raw unified-diff text.",
+    )
+
+    with Request().add_item(MessageItem.user("Change the greeting to hello.")) as req:
+        with session.process_request(req) as resp:
+            for item in resp:
+                if isinstance(item, ToolCallItem) and item.name == "apply_patch":
+                    patch_text = item.arguments
+                    print(patch_text)
+```
+
+Tool names, descriptions, and function-tool JSON schemas must be valid UTF-8 strings without an
+embedded NUL (`"\x00"`), because the native C ABI represents them as NUL-terminated strings.
+Removal names have the same restriction. Passing an embedded NUL raises `ValueError` before native
+code is called.
+
 ### Embeddings with `EmbeddingsSession`
 
 `EmbeddingsSession` accepts `TextItem` inputs and returns one `TensorItem` per input containing the embedding vector. Sessions are stateless — reuse one session for many requests.
@@ -325,7 +441,9 @@ model.unload()
 
 ### Audio transcription
 
-`AudioSession` accepts `AudioItem` input (PCM bytes + sample rate / channels) and produces `TextItem` output. See [`samples/python/audio-transcription/`](https://github.com/microsoft/Foundry-Local/tree/main/samples/python/audio-transcription) and [`live-audio-transcription/`](https://github.com/microsoft/Foundry-Local/tree/main/samples/python/live-audio-transcription) for runnable end-to-end examples covering offline files and live PCM streaming through an `ItemQueue`.
+`AudioSession` accepts `AudioItem` input (PCM bytes + sample rate / channels) and produces `TextItem` output. See
+[`samples/python/realtime-transcription/`](https://github.com/microsoft/Foundry-Local/tree/main/samples/python/realtime-transcription)
+for a runnable live PCM streaming example.
 
 ### Web service (optional)
 
@@ -347,8 +465,11 @@ manager.stop_web_service()
 | Class | Description |
 |---|---|
 | `Configuration` | SDK configuration (app name, cache dir, log level, web service settings) |
-| `FoundryLocalManager` | Singleton entry point — initialization, catalog access, EP management, web service |
-| `Catalog` | Model discovery — listing, lookup by alias / ID, cached and loaded queries |
+| `FoundryLocalManager` | Singleton entry point — initialization, typed catalog access, EP management, web service |
+| `CatalogType` | Catalog selection enum: `PUBLIC` or `LOCAL` |
+| `Catalog` | Model discovery plus local `register_model` / `unregister_model` operations |
+| `ModelInfo` | Frozen point-in-time model metadata snapshot |
+| `ModelInfoBuilder` | Caller-owned mutable BYOM registration metadata |
 | `IModel` | Model interface — identity, metadata, lifecycle (`download`, `load`, `unload`), variant selection |
 | `EpInfo` | Discoverable execution provider info (`name`, `is_registered`) |
 | `EpDownloadResult` | Result of EP download / registration (`success`, `status`, `registered_eps`, `failed_eps`) |
@@ -361,7 +482,7 @@ All sessions wrap a native `flSession*` and are context managers. Closing a sess
 | Class | Description |
 |---|---|
 | `Session` | Abstract base class. Provides `process_request`, `process_streaming_request`, `set_options`, `set_streaming`, and the context-manager / `_close` lifecycle. |
-| `ChatSession` | For `chat-completion` and `vision-language-chat` models. Adds `add_tool_definition`, `turn_count`, `undo_turns`. |
+| `ChatSession` | For `chat-completion`, `coding`, and `vision-language-chat` models. Adds function/custom tool registration, removal, `turn_count`, and `undo_turns`. |
 | `EmbeddingsSession` | For `embeddings` models. Stateless — accepts `TextItem` inputs, returns one `TensorItem` per input. |
 | `AudioSession` | For `automatic-speech-recognition` models. Accepts `AudioItem` input (and `ItemQueue` for live streaming), returns `TextItem`. |
 
@@ -394,12 +515,16 @@ Common session methods:
 | `BytesItem` | Raw binary blob (e.g. a base64-decoded payload). |
 | `ImageItem` | Image input for vision models. |
 | `AudioItem` | Audio input (uri or bytes + `format` +  `sample_rate` + `channels`). |
-| `ToolCallItem` | Emitted by the model when invoking a tool. Carries `call_id`, `name`, `arguments` (JSON string). |
-| `ToolResultItem` | Caller-supplied tool result. Carries `call_id` and `content`. |
+| `ToolCallItem` | Emitted by the model when invoking a tool. Carries NUL-free `call_id`, `name`, and `arguments` (JSON object text for function tools, raw UTF-8 text for custom tools). |
+| `ToolResultItem` | Caller-supplied tool result. Carries NUL-free `call_id` and `result`; an empty result is valid. |
 | `TensorItem` | Multi-dimensional tensor. Used for embedding output. Exposes `dimensions`, `data_type` (`TensorDataType`), and `data`. |
 | `ItemQueue` | Streaming-input queue used with `AudioSession` for live PCM. The queue is itself an `Item` and is added to a `Request` with `transfer_ownership=False`. |
 
 Enums: `ItemType`, `TextItemType`, `MessageRole`, `TensorDataType`.
+
+Inline `BytesItem`, `ImageItem`, and `AudioItem` data is copied into item-owned storage. After transferring an item to a
+`Request` or `ItemQueue`, the Python wrapper and original input buffer can be discarded; the bytes remain alive until the
+native item is released.
 
 ### CLI entry point
 

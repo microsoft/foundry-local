@@ -28,7 +28,8 @@ class EmbeddingsHandler : public HttpRequestHandler {
   explicit EmbeddingsHandler(ServiceContext& ctx) : ctx_(ctx) {}
 
   std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest>& request) override {
-    ActionTracker tracker(Action::kOpenAIEmbeddings, ctx_.telemetry);
+    auto route_ctx = InvocationContext::Direct(GetUserAgent(request));
+    ActionTracker tracker(Action::kOpenAIEmbeddings, ctx_.telemetry, route_ctx);
 
     auto body_str = request->readBodyToString();
     if (!body_str || body_str->empty()) {
@@ -75,10 +76,13 @@ class EmbeddingsHandler : public HttpRequestHandler {
 
     tracker.SetModelId(model_name);
 
+    // The session and the inference it drives are indirect children of this route.
+    auto session_ctx = route_ctx.AsIndirect();
+
     // 4. Create session and process each input
     try {
-      EmbeddingsSession session(*model, *loaded, ctx_.logger, ctx_.telemetry);
-      SessionRegistration reg(ctx_.session_manager, session);
+      auto session = CreateSessionWithTelemetry<EmbeddingsSession>(*model, *loaded, ctx_, session_ctx);
+      SessionRegistration reg(ctx_.session_manager, *session);
 
       Request session_request;
       for (const auto& text : inputs) {
@@ -86,7 +90,7 @@ class EmbeddingsHandler : public HttpRequestHandler {
       }
 
       fl::Response session_response;
-      session.ProcessRequest(session_request, session_response);
+      session->ProcessRequest(session_request, session_response);
 
       // 5. Build response
       EmbeddingCreateResponse output;

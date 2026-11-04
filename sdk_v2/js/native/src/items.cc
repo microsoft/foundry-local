@@ -590,6 +590,15 @@ std::string ReqString(Napi::Env env, const Napi::Object& obj, const char* key, c
   return v.As<Napi::String>().Utf8Value();
 }
 
+std::string ReqNulFreeString(Napi::Env env, const Napi::Object& obj, const char* key, const char* item_type_tag) {
+  std::string value = ReqString(env, obj, key, item_type_tag);
+  if (value.find('\0') != std::string::npos) {
+    ThrowShape(env, std::string("Item[type=") + item_type_tag + "]." + key +
+                        " must not contain an embedded NUL character");
+  }
+  return value;
+}
+
 foundry_local::Item JsToTextItem(Napi::Env env, const Napi::Object& obj) {
   std::string text = ReqString(env, obj, "text", "text");
   flTextItemType type = FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT;
@@ -631,15 +640,15 @@ foundry_local::Item JsToMessageItem(Napi::Env env, const Napi::Object& obj) {
 }
 
 foundry_local::Item JsToToolCallItem(Napi::Env env, const Napi::Object& obj) {
-  std::string call_id = ReqString(env, obj, "callId", "toolCall");
-  std::string name = ReqString(env, obj, "name", "toolCall");
-  std::string arguments = ReqString(env, obj, "arguments", "toolCall");
+  std::string call_id = ReqNulFreeString(env, obj, "callId", "toolCall");
+  std::string name = ReqNulFreeString(env, obj, "name", "toolCall");
+  std::string arguments = ReqNulFreeString(env, obj, "arguments", "toolCall");
   return foundry_local::Item::ToolCall(call_id, name, arguments);
 }
 
 foundry_local::Item JsToToolResultItem(Napi::Env env, const Napi::Object& obj) {
-  std::string call_id = ReqString(env, obj, "callId", "toolResult");
-  std::string result = ReqString(env, obj, "result", "toolResult");
+  std::string call_id = ReqNulFreeString(env, obj, "callId", "toolResult");
+  std::string result = ReqNulFreeString(env, obj, "result", "toolResult");
   return foundry_local::Item::ToolResult(call_id, result);
 }
 

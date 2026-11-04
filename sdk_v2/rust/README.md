@@ -2,6 +2,9 @@
 
 The Foundry Local Rust SDK provides an async Rust interface for running AI models locally on your machine. Discover, download, load, and run inference — all without cloud dependencies.
 
+For the v2 typed inference API, session state, and streaming examples across languages,
+see [Inference with the Foundry Local SDK](../INFERENCING.md).
+
 > **v2 — built on the Foundry Local C++ engine.** This is the v2 binding, layered on the
 > `foundry_local` C ABI (the same native engine used by the v2 Python and C# SDKs). Its public
 > API is **fully backwards-compatible** with the v1 Rust SDK (`sdk/rust`) — existing code
@@ -11,6 +14,7 @@ The Foundry Local Rust SDK provides an async Rust interface for running AI model
 
 - **Local-first AI** — Run models entirely on your machine with no cloud calls
 - **Model catalog** — Browse and discover available models; check what's cached or loaded
+- **Bring your own model (BYOM)** — Register existing local model assets without copying or taking ownership of them
 - **Automatic model management** — Download, load, unload, and remove models from cache
 - **Chat completions** — OpenAI-compatible chat API with both non-streaming and streaming responses
 - **Embeddings** — Generate text embeddings via OpenAI-compatible API
@@ -21,6 +25,7 @@ The Foundry Local Rust SDK provides an async Rust interface for running AI model
 - **Embedded web service** — Start a local HTTP server for OpenAI-compatible API access
 - **WinML support** — Automatic execution provider download on Windows for NPU/GPU acceleration
 - **Configurable inference** — Control temperature, max tokens, top-k, top-p, frequency penalty, random seed, and more
+- **Exact request preflight** — Capture a chat request and session state, then asynchronously query its native token budget before generation
 - **Async-first** — Every operation is `async`; designed for use with the `tokio` runtime
 - **Safe FFI** — Dynamically loads the native Foundry Local engine (`foundry_local`) with a safe Rust wrapper
 
@@ -144,6 +149,30 @@ model
 
 Catalog access does not block on EP downloads. Call `download_and_register_eps` when you need hardware-accelerated execution providers.
 
+## Native shared serving
+
+Opt in through normal SDK configuration; no separate host installation or control API is needed:
+
+```rust
+let manager = FoundryLocalManager::create(
+    FoundryLocalConfig::new("my-app").use_shared_host(true),
+)?;
+```
+
+In-process remains the default. Metadata, discovery and model downloads do not start a host; execution, cache removal,
+EP download/registration or `start_web_service()` starts or joins it. Clients must match the Foundry native build, IPC
+protocol, platform and effective catalog, data/cache, provider, web, logs directory/level, telemetry and additional
+settings other than `UserAgent`. Dependency hashes and packaging paths do not split hosts; the first starter's verified
+runtime serves all clients. Hosted mode cannot be combined with `service_endpoint` and never falls back to in-process
+execution.
+
+Shutdown/drop is client-local. Retained handles and admitted work keep their required native lifetime.
+After the final owner, the host drains admitted work, allows a five-second reconnect grace and exits normally.
+Keep the manager alive while using HTTP: connections are not owners. Explicit model unload stays shared and
+rejects in-use models; web-service Stop rejects other owners or active HTTP work.
+
+See the [shared-host requirements](../cpp/README.md#quick-start) for inherited environment/cwd and Linux prerequisites.
+
 ## Quick Start
 
 ```rust
@@ -208,6 +237,39 @@ let cached = catalog.get_cached_models().await?;
 // See what's currently loaded in memory
 let loaded = catalog.get_loaded_models().await?;
 ```
+
+### Registering a Local Model (BYOM)
+
+Use the local catalog to register an existing ONNX GenAI model directory. Registration does not copy or take
+ownership of the model assets.
+
+```rust
+use foundry_local_sdk::{
+    FoundryLocalConfig, FoundryLocalManager, ModelInfoBuilder,
+};
+
+let manager = FoundryLocalManager::create(FoundryLocalConfig::new("my_app"))?;
+let local_catalog = manager.local_catalog()?;
+
+let mut metadata = local_catalog.create_model_info()?;
+metadata
+    .set_string_property("task", "chat-completion")?
+    .set_string_property("device_type", "CPU")?
+    .set_string_property("execution_provider", "CPUExecutionProvider")?;
+
+let model = local_catalog
+    .register_model("C:/models/my-model", "my-model:1", metadata)
+    .await?;
+
+// The external model directory is left untouched.
+local_catalog.unregister_model(model.id()).await?;
+```
+
+The existing `manager.catalog()` accessor remains the default public catalog. Use
+`manager.get_catalog(CatalogType::Public)` when explicit catalog selection is preferred.
+
+Models registered with task `coding` use the existing text-only `ChatSession` interface. See
+[coding models](../INFERENCING.md#coding-models) for capability and compatibility details.
 
 ### Model Lifecycle
 
@@ -564,6 +626,11 @@ When `FOUNDRY_LOCAL_RUNTIME_VERSION` is set, the NuGet acquisition path supports
 - **`nuget`** — runs `nuget install` once per package. Use this when authentication depends on a
   NuGet or Visual Studio credential provider that the standalone NuGet CLI can host.
 
+By default, HTTP mode tries NuGet.org first, then the Microsoft package feed proxy
+(`https://packagefeedproxy.microsoft.io/nuget/v3/index.json`), then the public ORT-Nightly Azure Artifacts feed.
+The proxy provides a fallback for networks that block direct NuGet.org access. Explicit feed overrides replace
+this list; `dotnet` and `nuget` modes receive the same default sources but control their own source selection.
+
 | Variable | Applies to | Purpose |
 |----------|------------|---------|
 | `FOUNDRY_LOCAL_NUGET_MODE` | all | `http` (default), `dotnet`, or `nuget`. |
@@ -611,8 +678,8 @@ engine's dependencies regardless of rpath/search-path setup. On platforms where 
 ### Runtime Loading
 
 At runtime, the SDK uses `libloading` to dynamically load the `foundry_local` library, resolve the
-API function table via `FoundryLocalGetApi`, and cache the sub-API tables. No static linking or
-system-wide installation is required.
+API version 2 function table via `FoundryLocalGetApi`, and cache the sub-API tables. No static
+linking or system-wide installation is required.
 
 ## Platform Support
 
@@ -630,16 +697,17 @@ Sample applications are available in [`samples/rust/`](../../samples/rust/):
 
 | Sample | Description |
 |--------|-------------|
-| `native-chat-completions` | Non-streaming and streaming chat completions |
-| `tool-calling-foundry-local` | Function/tool calling with multi-turn conversations |
-| `audio-transcription-example` | Audio transcription (non-streaming and streaming) |
-| `foundry-local-webserver` | Embedded OpenAI-compatible REST API server |
+| `hello-world` | Complete manager, catalog, model, inference, and cleanup lifecycle |
+| `realtime-transcription` | Native live PCM transcription |
+| `embeddings` | Native embedding generation and comparison |
+| `tool-calling` | Function/tool calling with multi-turn conversations |
+| `web-server` | Embedded OpenAI-compatible REST API server |
 
 Run a sample with:
 
 ```sh
 cd samples/rust
-cargo run -p native-chat-completions
+cargo run -p hello-world
 ```
 
 ## License

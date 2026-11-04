@@ -4,15 +4,20 @@
 #include "platform/cross_process_file_lock.h"
 #include "download/inference_model_writer.h"
 #include "exception.h"
+#include "inferencing/model_load_manager.h"
 #include "log_level.h"
 #include "logger.h"
+#include "telemetry/download_tracker.h"
+#include "telemetry/telemetry.h"
 #include "util/path_safety.h"
 #include "util/region_fallback.h"
 #include "utils.h"
 
 #include <foundry_local/foundry_local_c.h>
+#include <nlohmann/json.hpp>
 
 #include <cctype>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -28,6 +33,84 @@ const char* kDownloadSignalFileName = "download.tmp";
 const char* kGenAIConfigFileName = "genai_config.json";
 const char* kInferenceModelFileName = "inference_model.json";
 const char* kDefaultRegistryRegion = "centralus";
+
+bool IsRevisionName(const std::filesystem::path& name) {
+  const auto value = name.string();
+  if (value.size() < 2 || value.front() != 'v') {
+    return false;
+  }
+
+  for (size_t i = 1; i < value.size(); ++i) {
+    if (value[i] < '0' || value[i] > '9') {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+std::string ReadModelIdForRemoval(const std::filesystem::path& metadata_path) {
+  std::ifstream metadata(metadata_path);
+  if (!metadata.is_open()) {
+    return {};
+  }
+
+  const auto json = nlohmann::json::parse(metadata, nullptr, false);
+  if (!json.is_object() || !json.contains("Name") || !json["Name"].is_string()) {
+    return {};
+  }
+
+  auto model_id = json["Name"].get<std::string>();
+  if (!model_id.empty() && model_id.find(':') == std::string::npos) {
+    model_id += ":0";
+  }
+
+  return model_id;
+}
+
+void ValidateRemovalOwnership(const std::filesystem::path& root, const std::string& model_id) {
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(root)) {
+    if (!entry.is_regular_file() || entry.path().filename() != kInferenceModelFileName) {
+      continue;
+    }
+
+    const auto metadata_id = ReadModelIdForRemoval(entry.path());
+    if (!metadata_id.empty() && metadata_id != model_id) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+               "cannot remove model cache containing another model: " + metadata_id + " at " + entry.path().string());
+    }
+  }
+}
+
+// The caller must hold the parent's download lock throughout inspection and removal.
+bool CanRemoveNonstandardParent(const std::filesystem::path& parent, const std::string& model_id) {
+  bool has_ownership_evidence = false;
+  for (const auto& entry : std::filesystem::directory_iterator(parent)) {
+    const auto name = entry.path().filename();
+    if (entry.is_regular_file() && (name == kDownloadSignalFileName || name == ".download.progress")) {
+      has_ownership_evidence = true;
+    } else if (entry.is_regular_file() && name == ".download.lock") {
+      continue;
+    } else if (entry.is_regular_file() && name == kInferenceModelFileName) {
+      const auto metadata_id = ReadModelIdForRemoval(entry.path());
+      if (!metadata_id.empty() && metadata_id != model_id) {
+        return false;
+      }
+
+      has_ownership_evidence = has_ownership_evidence || metadata_id == model_id;
+    } else if (entry.is_directory() && !entry.is_symlink() && IsRevisionName(name)) {
+      const auto metadata_id = ReadModelIdForRemoval(entry.path() / kInferenceModelFileName);
+      // Corrupt metadata must not prevent cleanup, but a known different model must never be removed.
+      if (!metadata_id.empty() && metadata_id != model_id) {
+        return false;
+      }
+    } else {
+      return false;
+    }
+  }
+
+  return has_ownership_evidence;
+}
 
 /// Check whether inference_model.json exists at the root or in any immediate
 /// subdirectory.  This is the definitive proof that a download completed
@@ -177,24 +260,21 @@ std::string ResolveRegion(const std::string& config_region, const ModelInfo& inf
 }  // anonymous namespace
 
 DownloadManager::DownloadManager(std::string cache_directory, std::string_view catalog_region, int max_concurrency,
-                                 ILogger& logger, bool disable_region_fallback)
+                                 ILogger& logger, ITelemetry& telemetry, bool disable_region_fallback,
+                                 std::unique_ptr<ModelRegistryClient> registry_client,
+                                 std::unique_ptr<IBlobDownloader> blob_downloader)
     : cache_directory_(std::move(cache_directory)),
       config_region_(NormalizeConfiguredRegion(catalog_region)),
       max_concurrency_(max_concurrency),
       logger_(logger),
-      registry_client_(std::make_unique<ModelRegistryClient>(
-          kDefaultRegistryRegion, logger, std::make_unique<RegionFallback>(logger, !disable_region_fallback))),
-      blob_downloader_(std::make_unique<AzureBlobDownloader>(logger)) {}
+      registry_client_(registry_client ? std::move(registry_client)
+                                       : std::make_unique<ModelRegistryClient>(
+                                             kDefaultRegistryRegion, logger,
+                                             std::make_unique<RegionFallback>(logger, !disable_region_fallback))),
+      blob_downloader_(blob_downloader ? std::move(blob_downloader) : std::make_unique<AzureBlobDownloader>(logger)),
+      telemetry_(telemetry) {}
 
 DownloadManager::~DownloadManager() = default;
-
-void DownloadManager::SetModelRegistryClient(std::unique_ptr<ModelRegistryClient> client) {
-  registry_client_ = std::move(client);
-}
-
-void DownloadManager::SetBlobDownloader(std::unique_ptr<IBlobDownloader> downloader) {
-  blob_downloader_ = std::move(downloader);
-}
 
 std::string DownloadManager::ComputeModelPath(const ModelInfo& info) const {
   // Get publisher from string properties
@@ -238,12 +318,36 @@ std::string DownloadManager::ComputeModelPath(const ModelInfo& info) const {
 }
 
 std::string DownloadManager::DownloadModel(const ModelInfo& info,
-                                           std::function<int(float)> progress_cb) {
+                                           std::function<int(float)> progress_cb,
+                                           const std::string& user_agent) {
+  using clock = std::chrono::steady_clock;
+  auto lock_wait_start = clock::now();
+
   // Serialize all model downloads in this process: only one runs at a time, so it
   // gets the full network and disk instead of competing with another download.
   // The cross-process file lock taken below extends the guarantee across every
   // process and app that shares this cache directory.
   std::unique_lock<std::mutex> download_guard(download_mutex_);
+
+  // RAII telemetry tracker — emits a "Download" event on destruction with whatever
+  // fields have been populated. Default status is kFailure so abrupt exits (exceptions)
+  // are recorded as failures; the happy path explicitly sets kSuccess / kSkipped.
+  DownloadTracker tracker(info.model_id, user_agent, telemetry_);
+  tracker.SetMaxConcurrency(static_cast<int32_t>(max_concurrency_));
+  auto record_lock_wait = [&]() {
+    tracker.SetLockWaitMs(std::chrono::duration_cast<std::chrono::milliseconds>(
+                              clock::now() - lock_wait_start)
+                              .count());
+  };
+  auto record_stats = [&](const BlobDownloadStats& stats) {
+    tracker.SetEnumerationMs(stats.enumeration_ms);
+    tracker.SetDownloadMs(stats.download_ms);
+    tracker.SetFileCount(stats.file_count);
+    tracker.SetTotalSizeBytes(stats.total_size_bytes);
+    tracker.SetAlreadyCachedBytes(stats.already_cached_bytes);
+    tracker.SetSkippedFileCount(stats.skipped_file_count);
+  };
+
   auto model_path = ComputeModelPath(info);
 
   // Fast path: serve the cache without taking the cross-process lock.
@@ -258,10 +362,14 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
       progress_cb(100.0f);
     }
 
+    record_lock_wait();
+    tracker.SetStatus(ActionStatus::kSkipped);
     return ResolveEffectiveModelPath(model_path);
   }
 
   if (info.uri.empty()) {
+    auto ex = std::runtime_error("cannot download model: empty URI (asset_id)");
+    tracker.RecordException(ex);
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "cannot download model: empty URI (asset_id)");
   }
 
@@ -301,9 +409,29 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
     // (WaitForDirectoryLock) never runs while the mutex is held — the in-line acquire
     // at the top is the non-blocking TryAcquireForDirectory. Keep it that way.
     download_guard.unlock();
-    lock = CrossProcessFileLock::WaitForDirectoryLock(model_path, cancel_pred, logger_);
+    CrossProcessFileLock::WaitExitReason wait_exit_reason = CrossProcessFileLock::WaitExitReason::kNone;
+    try {
+      lock = CrossProcessFileLock::WaitForDirectoryLock(
+          model_path, cancel_pred, logger_, std::chrono::milliseconds{1250}, std::chrono::hours{3}, &wait_exit_reason);
+    } catch (const std::exception& ex) {
+      record_lock_wait();
+      switch (wait_exit_reason) {
+        case CrossProcessFileLock::WaitExitReason::kCanceled:
+          tracker.SetDownloadWaitResult("Canceled");
+          break;
+        case CrossProcessFileLock::WaitExitReason::kTimedOut:
+          tracker.SetDownloadWaitResult("TimedOut");
+          break;
+        default:
+          tracker.SetDownloadWaitResult("Failed");
+          break;
+      }
+      tracker.RecordException(ex);
+      throw;
+    }
     download_guard.lock();
   }
+  record_lock_wait();
 
   // Another process may have just completed the download we were waiting on.
   // Re-check the cache now that we hold the lock.
@@ -312,6 +440,8 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
     if (progress_cb) {
       progress_cb(100.0f);
     }
+    tracker.SetStatus(ActionStatus::kSkipped);
+    tracker.SetDownloadWaitResult("CompletedByOtherProcess");
     return ResolveEffectiveModelPath(model_path);
   }
 
@@ -321,13 +451,14 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
     // Empty file — its presence indicates download is in progress
   }
 
-  // Emit 0% immediately so callers know the download process has started.
-  // This provides a heartbeat during the silent container resolution phase.
-  if (progress_cb && progress_cb(0.0f) != 0) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "download cancelled by user progress callback");
-  }
-
+  BlobDownloadStats stats;
   try {
+    // Emit 0% immediately so callers know the download process has started.
+    // This provides a heartbeat during the silent container resolution phase.
+    if (progress_cb && progress_cb(0.0f) != 0) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "download cancelled by user progress callback");
+    }
+
     // Step 1: Resolve SAS URI from the region that served this model's catalog entry
     // (or the explicit override / default registry-region fallback).
     auto container = registry_client_->ResolveModelContainer(info.uri, ResolveRegion(config_region_, info));
@@ -350,7 +481,10 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
     }
 
     DownloadBlobsToDirectory(*blob_downloader_, container.blob_sas_uri,
-                             model_path, download_opts);
+                             model_path, download_opts, stats, logger_);
+
+    record_stats(stats);
+    tracker.SetDownloadWaitResult("Completed");
 
     // Step 3: Write inference_model.json — use model_id (includes version) so the
     // local model scanner can match it back to catalog entries during startup.
@@ -362,8 +496,12 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
     // Step 5: Remove download signal — marks download as complete
     std::filesystem::remove(signal_path);
 
+    tracker.SetStatus(ActionStatus::kSuccess);
     return ResolveEffectiveModelPath(model_path);
-  } catch (...) {
+  } catch (const std::exception& e) {
+    record_stats(stats);
+    tracker.SetDownloadWaitResult(ActionStatusFromException(e) == ActionStatus::kCanceled ? "Canceled" : "Failed");
+    tracker.RecordException(e);
     // Leave the signal file in place so the incomplete download is detected
     throw;
   }
@@ -389,6 +527,83 @@ std::string DownloadManager::GetModelCachePath(const ModelInfo& info) const {
   }
 
   return {};
+}
+
+std::string DownloadManager::GetCompletedModelCachePath(const ModelInfo& info) const {
+  if (!IsModelCached(info)) {
+    return {};
+  }
+
+  return ResolveEffectiveModelPath(ComputeModelPath(info));
+}
+
+void DownloadManager::RemoveModelFromCache(const ModelInfo& info, const std::string& local_path,
+                                           ModelLoadManager& model_load_manager) {
+  // The download lock coordinates cache mutations, not model use. Both Model::Download's cached-state shortcut and
+  // DownloadModel's on-disk cache-hit path bypass it, so another instance can report download success while removal
+  // deletes the files it considers cached. Its cached flag/path can then remain stale, and a later load can fail.
+  // Loaded models in other processes do not hold this lock either. Applications sharing a cache must coordinate
+  // removal with other instances using that model.
+  auto model_path = std::filesystem::path(ComputeModelPath(info));
+  // Downloads can return a revision subdirectory. Remove their computed root, but preserve support for models
+  // discovered by the scanner at a different location within the configured cache.
+  const bool nonstandard_path = !local_path.empty() && !IsPathWithinDirectory(local_path, model_path);
+  if (nonstandard_path) {
+    model_path = local_path;
+  }
+
+  const auto cache_root = std::filesystem::path(cache_directory_);
+  const auto validate_path = [&]() {
+    if (!IsPathWithinDirectory(model_path, cache_root) || IsPathWithinDirectory(cache_root, model_path)) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model removal path is not inside the cache: " + model_path.string());
+    }
+  };
+
+  validate_path();
+  std::unique_ptr<CrossProcessFileLock> parent_lock;
+  const auto parent = model_path.parent_path();
+  if (nonstandard_path && IsRevisionName(model_path.filename()) && IsPathWithinDirectory(parent, cache_root) &&
+      !IsPathWithinDirectory(cache_root, parent) && std::filesystem::is_directory(parent)) {
+    parent_lock = CrossProcessFileLock::TryAcquireForDirectory(parent, logger_);
+    if (!parent_lock) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot remove model cache while a download is in progress");
+    }
+
+    if (CanRemoveNonstandardParent(parent, info.model_id)) {
+      model_path = parent;
+    }
+  }
+
+  if (!std::filesystem::exists(model_path)) {
+    if (local_path.empty()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is not cached locally");
+    }
+    return;
+  }
+
+  // Keep the parent lock even when ownership checks restrict deletion to the inference directory.
+  std::unique_ptr<CrossProcessFileLock> lock;
+  if (parent_lock && model_path == parent) {
+    lock = std::move(parent_lock);
+  } else {
+    lock = CrossProcessFileLock::TryAcquireForDirectory(model_path, logger_);
+  }
+
+  if (!lock) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot remove model cache while a download is in progress");
+  }
+
+  validate_path();
+  ValidateRemovalOwnership(model_path, info.model_id);
+  // Keep the root and its live lock intact: unlinking the lock during protected work would let another downloader
+  // acquire a different lock file. The lock removes itself on release; an empty root is not a cache hit.
+  model_load_manager.RunWithUnloadedModelsInDirectory(model_path.string(), [&]() {
+    for (const auto& entry : std::filesystem::directory_iterator(model_path)) {
+      if (entry.path() != lock->path()) {
+        std::filesystem::remove_all(entry.path());
+      }
+    }
+  });
 }
 
 }  // namespace fl

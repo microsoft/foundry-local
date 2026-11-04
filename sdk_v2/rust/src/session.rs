@@ -11,16 +11,23 @@
 
 use std::ops::Deref;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use tokio::sync::{mpsc::UnboundedReceiver, oneshot};
 
 use crate::detail::api::{Api, Kvps};
+use crate::detail::ffi::{
+    flRequestPreflightResult, FOUNDRY_LOCAL_TOOL_KIND_CUSTOM, FOUNDRY_LOCAL_TOOL_KIND_FUNCTION,
+};
 use crate::detail::model::Model;
 use crate::detail::session::{run_item_streaming, NativeItemQueue, NativeRequest, NativeSession};
 use crate::detail::task::spawn_blocking;
-use crate::error::{FoundryLocalError, Result};
+use crate::error::{FoundryLocalError, NativeErrorCode, Result};
 use crate::item::Item;
 use crate::item_queue::ItemQueue;
 use crate::request::{Request, RequestOptions};
@@ -40,6 +47,36 @@ use crate::response::Response;
 #[derive(Clone)]
 pub struct Session {
     inner: Arc<NativeSession>,
+}
+
+/// Exact token-budget preflight for a request captured against a chat session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequestPreflightResult {
+    /// Exact prompt tokens after native request preparation.
+    pub prompt_tokens: i64,
+    /// Tokens reserved for generated output.
+    pub output_reserve_tokens: i64,
+    /// Total tokens required by the request.
+    pub required_tokens: i64,
+    /// Structural request limit: Engine capacity or Generator model context.
+    pub context_limit_tokens: i64,
+    /// Structural fit only; does not reserve cache or guarantee live admission.
+    pub fits: bool,
+    /// Tokens over budget, or zero when the request fits.
+    pub deficit_tokens: i64,
+}
+
+impl From<flRequestPreflightResult> for RequestPreflightResult {
+    fn from(value: flRequestPreflightResult) -> Self {
+        Self {
+            prompt_tokens: value.prompt_tokens,
+            output_reserve_tokens: value.output_reserve_tokens,
+            required_tokens: value.required_tokens,
+            context_limit_tokens: value.context_limit_tokens,
+            fits: value.fits,
+            deficit_tokens: value.deficit_tokens,
+        }
+    }
 }
 
 impl Session {
@@ -77,16 +114,26 @@ impl Session {
         // shared with the drop guard before the blocking work begins.
         let native = Arc::new(NativeRequest::new(Arc::clone(&inner.api))?);
         let native_task = Arc::clone(&native);
+        let cancel_state = Arc::new(CancelState::new(Arc::clone(&native)));
+        let worker_cancel_state = Arc::clone(&cancel_state);
+        let cancellation_retry = cancellation_retry_sender()?;
         let handle = tokio::task::spawn_blocking(move || {
+            let _completion = WorkerCompletion::new(Arc::clone(&worker_cancel_state));
             let _guard = inner.lock_ops();
             populate_native_request(&inner.api, &native_task, &request)?;
+            if worker_cancel_state.cancel_requested.load(Ordering::Acquire) {
+                return Err(FoundryLocalError::Native {
+                    code: NativeErrorCode::OperationCancelled,
+                    message: "request canceled before native processing".into(),
+                });
+            }
             let response = inner.process_request(&native_task)?;
             Response::from_native(&response)
         });
 
         // Cancel the in-flight request if this future is dropped before the
         // worker finishes; disarmed on normal completion. See `CancelGuard`.
-        let guard = CancelGuard::new(native);
+        let guard = CancelGuard::new(cancel_state, cancellation_retry);
         let joined = handle.await;
         guard.disarm();
         joined.map_err(|e| FoundryLocalError::Internal {
@@ -179,14 +226,16 @@ fn populate_native_request(
 /// completion on the detached worker. Disarmed once the worker completes
 /// normally.
 struct CancelGuard {
-    native: Arc<NativeRequest>,
+    state: Arc<CancelState>,
+    cancellation_retry: Sender<Arc<CancelState>>,
     armed: bool,
 }
 
 impl CancelGuard {
-    fn new(native: Arc<NativeRequest>) -> Self {
+    fn new(state: Arc<CancelState>, cancellation_retry: Sender<Arc<CancelState>>) -> Self {
         Self {
-            native,
+            state,
+            cancellation_retry,
             armed: true,
         }
     }
@@ -199,8 +248,89 @@ impl CancelGuard {
 impl Drop for CancelGuard {
     fn drop(&mut self) {
         if self.armed {
-            self.native.cancel();
+            self.state.cancel_requested.store(true, Ordering::Release);
+            self.state.native.cancel();
+            let _ = self.cancellation_retry.send(Arc::clone(&self.state));
         }
+    }
+}
+
+struct CancelState {
+    native: Arc<NativeRequest>,
+    cancel_requested: AtomicBool,
+    worker_finished: AtomicBool,
+}
+
+impl CancelState {
+    fn new(native: Arc<NativeRequest>) -> Self {
+        Self {
+            native,
+            cancel_requested: AtomicBool::new(false),
+            worker_finished: AtomicBool::new(false),
+        }
+    }
+
+    fn mark_worker_finished(&self) {
+        self.worker_finished.store(true, Ordering::Release);
+    }
+}
+
+struct WorkerCompletion {
+    state: Arc<CancelState>,
+}
+
+impl WorkerCompletion {
+    fn new(state: Arc<CancelState>) -> Self {
+        Self { state }
+    }
+}
+
+impl Drop for WorkerCompletion {
+    fn drop(&mut self) {
+        self.state.mark_worker_finished();
+    }
+}
+
+fn cancellation_retry_sender() -> Result<Sender<Arc<CancelState>>> {
+    static DISPATCHER: OnceLock<std::result::Result<Sender<Arc<CancelState>>, String>> =
+        OnceLock::new();
+    match DISPATCHER.get_or_init(|| {
+        let (tx, rx) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("foundry-local-cancel".into())
+            .spawn(move || run_cancellation_retries(rx))
+            .map(|_| tx)
+            .map_err(|error| error.to_string())
+    }) {
+        Ok(sender) => Ok(sender.clone()),
+        Err(reason) => Err(FoundryLocalError::Internal {
+            reason: format!("failed to start cancellation dispatcher: {reason}"),
+        }),
+    }
+}
+
+fn run_cancellation_retries(rx: mpsc::Receiver<Arc<CancelState>>) {
+    let mut pending = Vec::new();
+    loop {
+        let received = if pending.is_empty() {
+            rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
+        } else {
+            rx.recv_timeout(Duration::from_millis(10))
+        };
+        match received {
+            Ok(state) => pending.push(state),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
+        pending.extend(rx.try_iter());
+        pending.retain(|state| {
+            if state.worker_finished.load(Ordering::Acquire) {
+                false
+            } else {
+                state.native.cancel();
+                true
+            }
+        });
     }
 }
 
@@ -310,6 +440,32 @@ impl ToolDefinition {
     }
 }
 
+/// A custom text tool the model may call, registered on a [`ChatSession`].
+///
+/// Unlike a [`ToolDefinition`], a custom tool has no caller-supplied schema. The native runtime
+/// synthesizes the model-facing schema, and generated calls contain the model's raw text payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CustomToolDefinition {
+    name: String,
+    description: Option<String>,
+}
+
+impl CustomToolDefinition {
+    /// Create a custom text tool with the given unique name.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            description: None,
+        }
+    }
+
+    /// Attach a description (builder-style).
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+}
+
 /// Reject a model whose task is not one of `allowed` before a typed session is
 /// created.
 ///
@@ -362,12 +518,12 @@ impl ChatSession {
     /// Open a chat session on a loaded model.
     ///
     /// Returns [`FoundryLocalError::Validation`] if the model's task is not
-    /// `"chat-completion"` or `"vision-language-chat"`.
+    /// `"chat-completion"`, `"coding"`, or `"vision-language-chat"`.
     pub async fn new(model: &Model) -> Result<ChatSession> {
         validate_session_task(
             model,
             "ChatSession",
-            &["chat-completion", "vision-language-chat"],
+            &["chat-completion", "coding", "vision-language-chat"],
         )?;
 
         Ok(ChatSession {
@@ -376,6 +532,10 @@ impl ChatSession {
     }
 
     /// Register a [`ToolDefinition`] for the lifetime of the session.
+    ///
+    /// Names are case-sensitive and unique across all tool types; re-registering a name fails until
+    /// the existing definition is removed. Names, descriptions, and schemas cannot contain an
+    /// interior NUL byte.
     pub async fn add_tool_definition(&self, definition: ToolDefinition) -> Result<()> {
         let inner = Arc::clone(&self.session.inner);
         spawn_blocking(move || {
@@ -383,12 +543,31 @@ impl ChatSession {
                 &definition.name,
                 definition.description.as_deref(),
                 &definition.json_schema,
+                FOUNDRY_LOCAL_TOOL_KIND_FUNCTION,
             )
         })
         .await
     }
 
-    /// Remove a previously-registered tool by name. Returns whether one was removed.
+    /// Register a [`CustomToolDefinition`] for the lifetime of the session.
+    ///
+    /// Names are case-sensitive and unique across all tool types. Names and descriptions cannot
+    /// contain an interior NUL byte.
+    pub async fn add_custom_tool_definition(&self, definition: CustomToolDefinition) -> Result<()> {
+        let inner = Arc::clone(&self.session.inner);
+        spawn_blocking(move || {
+            inner.add_tool_definition(
+                &definition.name,
+                definition.description.as_deref(),
+                "",
+                FOUNDRY_LOCAL_TOOL_KIND_CUSTOM,
+            )
+        })
+        .await
+    }
+
+    /// Remove a previously-registered tool by name. Returns whether one was removed. The name
+    /// cannot contain an interior NUL byte.
     pub async fn remove_tool_definition(&self, name: impl Into<String>) -> Result<bool> {
         let inner = Arc::clone(&self.session.inner);
         let name = name.into();
@@ -404,6 +583,31 @@ impl ChatSession {
     pub async fn undo_turns(&self, count: usize) -> Result<()> {
         let inner = Arc::clone(&self.session.inner);
         spawn_blocking(move || inner.undo_turns(count)).await
+    }
+
+    /// Capture this request and the current conversation state, then execute an exact token-budget
+    /// preflight on a blocking worker.
+    ///
+    /// Capture is completed synchronously before this method returns its future. The native
+    /// operation owns its in-memory state independently of later source-handle mutation or
+    /// destruction. URI-backed media is resolved during execution and is not frozen at capture.
+    /// Execution is one-shot. The captured operation may execute and be released on a worker thread,
+    /// but exclusive Rust ownership prevents execution from racing with release.
+    pub fn preflight_request(
+        &self,
+        request: Request,
+    ) -> impl std::future::Future<Output = Result<RequestPreflightResult>> + Send + 'static {
+        let inner = &self.session.inner;
+        let captured = (|| {
+            let native = NativeRequest::new(Arc::clone(&inner.api))?;
+            populate_native_request(&inner.api, &native, &request)?;
+            inner.create_request_preflight(&native)
+        })();
+
+        async move {
+            let preflight = captured?;
+            spawn_blocking(move || preflight.execute().map(RequestPreflightResult::from)).await
+        }
     }
 
     /// Consume this handle, yielding the underlying base [`Session`].
@@ -572,6 +776,30 @@ mod tests {
         fn wake(self: Arc<Self>) {}
     }
 
+    #[test]
+    fn preflight_result_maps_every_native_field() {
+        let mapped = RequestPreflightResult::from(flRequestPreflightResult {
+            version: crate::detail::ffi::FOUNDRY_LOCAL_API_VERSION,
+            prompt_tokens: 93,
+            output_reserve_tokens: 17,
+            required_tokens: 110,
+            context_limit_tokens: 100,
+            fits: false,
+            deficit_tokens: 10,
+        });
+        assert_eq!(
+            mapped,
+            RequestPreflightResult {
+                prompt_tokens: 93,
+                output_reserve_tokens: 17,
+                required_tokens: 110,
+                context_limit_tokens: 100,
+                fits: false,
+                deficit_tokens: 10,
+            }
+        );
+    }
+
     #[tokio::test]
     async fn item_stream_returns_terminal_response_once() {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -636,18 +864,11 @@ mod tests {
 
     #[test]
     fn check_task_accepts_allowed_tasks() {
-        assert!(check_task(
-            Some("chat-completion"),
-            "ChatSession",
-            &["chat-completion", "vision-language-chat"]
-        )
-        .is_ok());
-        assert!(check_task(
-            Some("vision-language-chat"),
-            "ChatSession",
-            &["chat-completion", "vision-language-chat"]
-        )
-        .is_ok());
+        let chat_tasks = ["chat-completion", "coding", "vision-language-chat"];
+        for task in chat_tasks {
+            assert!(check_task(Some(task), "ChatSession", &chat_tasks).is_ok());
+        }
+
         assert!(check_task(Some("embeddings"), "EmbeddingsSession", &["embeddings"]).is_ok());
     }
 

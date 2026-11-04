@@ -36,6 +36,7 @@ from foundry_local_sdk import (
     RequestOptions,
     SearchOptions,
     TextItem,
+    TextItemType,
 )
 
 
@@ -250,9 +251,13 @@ def collect_response_text(response: Any) -> str:
     text = ""
     for item in response:
         if isinstance(item, TextItem):
-            text += item.text
+            if item.type == TextItemType.DEFAULT:
+                text += item.text
         elif isinstance(item, MessageItem):
-            text += "".join(part.text for part in item.parts if isinstance(part, TextItem))
+            text += "".join(
+                part.text for part in item.parts
+                if isinstance(part, TextItem) and part.type == TextItemType.DEFAULT
+            )
     return text
 
 

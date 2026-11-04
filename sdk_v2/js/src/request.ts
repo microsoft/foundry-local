@@ -50,6 +50,7 @@ export class Request {
       // check fires and routes through the borrow path (take_ownership=false).
       this.#native.addItem(unwrapNativeItemQueue(item));
     } else {
+      rejectToolPayloadNul(item);
       rejectSharedArrayBuffer(item);
       this.#native.addItem(item);
     }
@@ -73,10 +74,9 @@ export class Request {
   }
 
   /**
-   * Cancel an in-flight request. Safe to call at any time — if the request
-   * is not currently being processed by a session, this is a no-op.
-   * Cancellation makes the matching `Session.processRequest()` reject with a
-   * `FoundryLocalError` whose `code === FlErrorCode.OperationCancelled`.
+   * Cancel this request's invocation only while it is inside native `Session::ProcessRequest`. Calling this while the
+   * request is idle, waiting in the addon's per-session queue, or already completed has no effect. Active cancellation
+   * makes the matching `Session.processRequest()` reject with `code === FlErrorCode.OperationCancelled`.
    */
   cancel(): void {
     this.#native.cancel();
@@ -87,9 +87,31 @@ export class Request {
 export function unwrapNativeRequest(request: Request): NativeRequest {
   const n = nativeByRequest.get(request);
   if (n === undefined) {
-    throw new TypeError("Session.processRequest: argument is not a valid Request");
+    throw new TypeError("Session request argument is not a valid Request");
   }
   return n;
+}
+
+function rejectToolPayloadNul(item: Item): void {
+  const fields =
+    item.type === "toolCall"
+      ? ([
+          ["callId", item.callId],
+          ["name", item.name],
+          ["arguments", item.arguments],
+        ] as const)
+      : item.type === "toolResult"
+        ? ([
+            ["callId", item.callId],
+            ["result", item.result],
+          ] as const)
+        : [];
+
+  for (const [name, value] of fields) {
+    if (value.includes("\0")) {
+      throw new TypeError(`${name} must not contain an embedded NUL character`);
+    }
+  }
 }
 
 // Raw-bytes Item inputs are pinned zero-copy by the native addon. We only
