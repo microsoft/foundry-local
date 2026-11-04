@@ -108,6 +108,7 @@ TEST_F(WindowsDllLoaderTest, ReportsInvalidFirstPathCandidateWithoutTryingAnothe
   ASSERT_FALSE(logger.messages.empty());
   EXPECT_NE(logger.messages.back().find("failed to load"), std::string::npos);
   EXPECT_NE(logger.messages.back().find("(193)"), std::string::npos);
+  EXPECT_EQ(logger.messages.back().find("CUDA 12"), std::string::npos);
 }
 
 TEST_F(WindowsDllLoaderTest, ReportsMissingDependencyWithoutLeakingModules) {
@@ -116,6 +117,15 @@ TEST_F(WindowsDllLoaderTest, ReportsMissingDependencyWithoutLeakingModules) {
   EXPECT_EQ(::GetModuleHandleW(kDependency.data()), nullptr);
   ASSERT_EQ(logger.messages.size(), 1u);
   EXPECT_NE(logger.messages.back().find("(126)"), std::string::npos);
+  EXPECT_NE(logger.messages.back().find("one of its dependencies"), std::string::npos);
+  EXPECT_NE(logger.messages.back().find("CUDA 12"), std::string::npos);
+  EXPECT_NE(logger.messages.back().find("PATH or AddDllDirectory"), std::string::npos);
+  EXPECT_NE(logger.messages.back().find("CUDA 13"), std::string::npos);
+
+  logger.messages.clear();
+  EXPECT_EQ(LoadSharedLibrary(library, logger), nullptr);
+  ASSERT_EQ(logger.messages.size(), 1u);
+  EXPECT_EQ(logger.messages.back().find("CUDA 12"), std::string::npos);
 }
 
 }  // namespace

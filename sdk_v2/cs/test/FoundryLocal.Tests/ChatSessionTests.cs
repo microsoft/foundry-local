@@ -222,9 +222,13 @@ internal sealed class ChatSessionTests
     {
         using var session = new ChatSession(model!);
         session.SetStreaming(true);
+        session.SetOptions(new RequestOptions
+        {
+            Search = new SearchOptions { Temperature = 0.0f, MaxOutputTokens = 8 },
+        });
 
         using var request = new Request();
-        request.AddItem(MessageItem.User("Name the countries in the United Kingdom."));
+        request.AddItem(MessageItem.User("Count from 1 to 1000, listing every number."));
 
         var stream = session.ProcessStreamingRequestAsync(request);
 
@@ -248,12 +252,12 @@ internal sealed class ChatSessionTests
         using var final = await stream.FinalResponse;
 
         await Assert.That(final).IsNotNull();
-        await Assert.That(final.FinishReason).IsEqualTo(FinishReason.Stop);
+        await Assert.That(final.FinishReason).IsEqualTo(FinishReason.Length);
 
         var usage = final.GetUsage();
         Console.WriteLine($"Usage: prompt={usage.PromptTokens} completion={usage.CompletionTokens} total={usage.TotalTokens}");
         await Assert.That(usage.PromptTokens).IsGreaterThan(0);
-        await Assert.That(usage.CompletionTokens).IsGreaterThan(0);
+        await Assert.That(usage.CompletionTokens).IsEqualTo(8);
         await Assert.That(usage.TotalTokens).IsGreaterThan(0);
     }
 

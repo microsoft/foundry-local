@@ -74,8 +74,9 @@ class Session {
   /// class, then waits for all async streaming callbacks to complete.
   /// Waiting here keeps the Request reference valid for the lifetime of any
   /// in-flight callbacks and ensures the Response is fully populated on return.
-  void ProcessRequest(const Request& request, Response& response,
-                      std::optional<StreamingCallback> callback = std::nullopt);
+  /// Returns the completed turn count before releasing the request serialization lock.
+  size_t ProcessRequest(const Request& request, Response& response,
+                        std::optional<StreamingCallback> callback = std::nullopt);
 
   /// Capture a chat request and session state under the same serialization boundary as generation and undo.
   std::unique_ptr<RequestPreflightOperation> CreateRequestPreflight(const Request& request) const;
@@ -117,8 +118,9 @@ class Session {
   virtual size_t TurnCount() const { return 0; }
 
   /// Undo the last `count` turns. Only meaningful for chat sessions.
+  /// Returns the remaining turn count before releasing the request serialization lock.
   /// @throws fl::Exception if the session type does not support turn management or count > TurnCount().
-  virtual void UndoTurns(size_t count);
+  virtual size_t UndoTurns(size_t count);
 
   /// Session-level parameters overlaid onto each request.
   void SetSessionOptions(const KeyValuePairs& options) {

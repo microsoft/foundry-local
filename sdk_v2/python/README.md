@@ -441,7 +441,9 @@ model.unload()
 
 ### Audio transcription
 
-`AudioSession` accepts `AudioItem` input (PCM bytes + sample rate / channels) and produces `TextItem` output. See [`samples/python/audio-transcription/`](https://github.com/microsoft/Foundry-Local/tree/main/samples/python/audio-transcription) and [`live-audio-transcription/`](https://github.com/microsoft/Foundry-Local/tree/main/samples/python/live-audio-transcription) for runnable end-to-end examples covering offline files and live PCM streaming through an `ItemQueue`.
+`AudioSession` accepts `AudioItem` input (PCM bytes + sample rate / channels) and produces `TextItem` output. See
+[`samples/python/realtime-transcription/`](https://github.com/microsoft/Foundry-Local/tree/main/samples/python/realtime-transcription)
+for a runnable live PCM streaming example.
 
 ### Web service (optional)
 

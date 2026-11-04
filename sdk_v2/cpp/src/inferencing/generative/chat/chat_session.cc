@@ -1203,7 +1203,6 @@ ToolCallContext BuildToolCallContextForRequest(const Request& request,
       if (!request.raw_envelope_descriptor && !tool_ctx.forced_tool) {
         tool_ctx.raw_envelope.reset();
       }
-
     }
   }
 
@@ -1348,7 +1347,8 @@ std::unique_ptr<PreparedChatRequest> PrepareChatRequest(
     return prepared;
   }
 
-  const auto effective_kvp = MergeKeyValuePairs(base_session_options, request.options);
+  auto effective_kvp = MergeKeyValuePairs(base_session_options, request.options);
+  chat_completions::ApplyCatalogDefaults(effective_kvp, model_info.model_settings);
   prepared->media = CollectMediaInput(request);
   const bool media_turn = !prepared->media.Empty();
   if (media_turn) {
@@ -1663,9 +1663,10 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       generator = OnnxChatGenerator::CreatePrepared(std::move(prepared->prompt), effective_options, Model(), tool_ctx,
                                                     /*use_full_context=*/false);
     } else {
+      // Reasoning generators are discarded after each turn, so reserving the full context cannot help continuation.
+      const bool use_full_context = backend_kind == ChatBackendKind::kEngine || !tool_ctx.supports_reasoning;
       generator = CreatePreparedTextChatGenerator(prepared_messages, std::move(prepared->prompt), effective_options,
-                                                  Model(), tool_ctx, /*use_full_context=*/true,
-                                                  text_generator_factory_);
+                                                  Model(), tool_ctx, use_full_context, text_generator_factory_);
     }
 
     prompt_tokens = generator->PromptTokenCount();
@@ -1837,7 +1838,8 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
     if (chat_session_internal::PushDecodedFragment(
             token, token_id, active_stop_filter, splitter, emit_segments,
-            cached_tool_ctx_.tool_plan && inside_payload) || stop_sequence_matched) {
+            cached_tool_ctx_.tool_plan && inside_payload) ||
+        stop_sequence_matched) {
       stop_sequence_matched = true;
       break;
     }
@@ -2235,7 +2237,8 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
 
     if (chat_session_internal::PushDecodedFragment(
             token, token_id, active_stop_filter, splitter, process_segments,
-            tool_ctx.tool_plan && inside_payload) || stop_sequence_matched) {
+            tool_ctx.tool_plan && inside_payload) ||
+        stop_sequence_matched) {
       stop_sequence_matched = true;
       break;
     }
@@ -2429,11 +2432,11 @@ size_t ChatSession::TurnCount() const {
   return transcript_.TurnCount();
 }
 
-void ChatSession::UndoTurns(size_t count) {
+size_t ChatSession::UndoTurns(size_t count) {
   auto request_lock = LockRequestMutex();
 
   if (count == 0) {
-    return;
+    return transcript_.TurnCount();
   }
 
   const bool undo_all = count == transcript_.TurnCount();
@@ -2442,7 +2445,7 @@ void ChatSession::UndoTurns(size_t count) {
   auto tokens = transcript_.UndoTurns(count);
 
   if (!cached_generator_) {
-    return;
+    return transcript_.TurnCount();
   }
 
   if (chat_session_internal::ShouldInvalidateRetainedGeneratorForUndo(
@@ -2451,7 +2454,7 @@ void ChatSession::UndoTurns(size_t count) {
     // has no usable boundary matching the target state. A non-rewindable backend must likewise rebuild from the
     // already-truncated transcript.
     InvalidateCachedGenerator();
-    return;
+    return transcript_.TurnCount();
   }
 
   // The transcript is already truncated. A failed rewind would leave the KV cache describing a conversation the
@@ -2459,6 +2462,7 @@ void ChatSession::UndoTurns(size_t count) {
   ScopeGuard invalidate_on_failed_rewind([this]() noexcept { InvalidateCachedGenerator(); });
   cached_generator_->RewindTo(*tokens.pre_turn);
   invalidate_on_failed_rewind.Dismiss();
+  return transcript_.TurnCount();
 }
 
 size_t ChatSession::MessageCount() const {

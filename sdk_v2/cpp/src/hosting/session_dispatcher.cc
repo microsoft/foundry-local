@@ -245,8 +245,7 @@ void SessionDispatcher::Dispatch(const std::shared_ptr<IncomingCall>& call) {
           break;
         case Operation::UndoTurns:
           RejectCallbackMutation(*call, *session);
-          session->implementation->UndoTurns(InputNumber(call->Payload().at("count")));
-          result.value = session->implementation->TurnCount();
+          result.value = session->implementation->UndoTurns(InputNumber(call->Payload().at("count")));
           break;
         case Operation::CapturePreflight: {
           RejectCallbackMutation(*call, *session);
@@ -311,8 +310,8 @@ void SessionDispatcher::Process(const std::shared_ptr<IncomingCall>& call,
     }
 
     Response response;
-    session->implementation->ProcessRequest(*run->request, response,
-                                            StreamingCallback{streaming ? RequestRun::Stream : nullptr, run.get()});
+    const auto turns = session->implementation->ProcessRequest(
+        *run->request, response, StreamingCallback{streaming ? RequestRun::Stream : nullptr, run.get()});
     {
       std::lock_guard lock(run->mutex);
       if (run->input_error) {
@@ -320,7 +319,7 @@ void SessionDispatcher::Process(const std::shared_ptr<IncomingCall>& call,
       }
     }
 
-    result.value = {{"response", EncodeResponse(response, {})}, {"turns", session->implementation->TurnCount()}};
+    result.value = {{"response", EncodeResponse(response, {})}, {"turns", turns}};
   } catch (...) {
     auto error = std::current_exception();
     {

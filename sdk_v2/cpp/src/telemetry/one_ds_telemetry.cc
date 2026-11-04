@@ -224,7 +224,7 @@ OneDsTelemetry::OneDsTelemetry(const std::string& app_name,
   }
   if (disabled_by_environment) {
     logger_.Log(LogLevel::Information,
-                "[Telemetry] Disabled via ORT_TELEMETRY_DISABLED; non-essential 1DS upload disabled "
+                "[Telemetry] Disabled via ORT_DISABLE_TELEMETRY; non-essential 1DS upload disabled "
                 "(ProcessInfo still uploads)");
   } else if (disable_nonessential_telemetry) {
     logger_.Log(LogLevel::Information,
@@ -539,6 +539,7 @@ void OneDsTelemetry::RecordProcessInfo(const Configuration& configuration) {
   }
   auto ev = MakeEvent("ProcessInfo");
   ev.SetProperty("appVersion", info.app_version);
+  ev.SetProperty("publisher", info.publisher);
   ev.SetProperty("osName", info.os_name);
   ev.SetProperty("osVersion", info.os_version);
   ev.SetProperty("architecture", info.cpu_arch);

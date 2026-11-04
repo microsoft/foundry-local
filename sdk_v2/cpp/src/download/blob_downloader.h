@@ -2,12 +2,20 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "download/blob_download_state.h"
+#include "download/file_writer.h"
+
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
+
+namespace Azure::Core::Http {
+class HttpTransport;
+}
 
 namespace fl {
 
@@ -36,6 +44,14 @@ struct BlobDownloadOptions {
 struct BlobItemInfo {
   std::string name;
   int64_t content_length = 0;
+  std::vector<uint8_t> content_md5{};
+  std::string etag{};
+};
+
+/// Listing identity and in-memory repair state validated by this download invocation.
+struct BlobDownloadValidation {
+  const BlobItemInfo* expected_blob = nullptr;
+  std::unique_ptr<BlobDownloadState> verified_state;
 };
 
 /// Interface for blob download operations. Enables testing via mock implementations.
@@ -49,13 +65,16 @@ class IBlobDownloader {
   /// Download a single blob to a local file path.
   /// The sas_uri is the container SAS URI; blob_name identifies the blob within it.
   /// If bytes_written_cb is provided, it is called after each chunk with the cumulative byte count.
+  /// Verification also polls it without advancing the byte count, so callbacks can request cancellation.
   /// If cancelled is non-null, the download checks the flag and aborts promptly when set.
+  /// Validation binds HEAD/ranges to the listing and transfers already-verified repair state without rescanning.
   virtual void DownloadBlob(const std::string& sas_uri,
                             const std::string& blob_name,
                             const std::string& local_path,
                             int max_concurrency,
                             BlobBytesWrittenFn bytes_written_cb = nullptr,
-                            std::atomic<bool>* cancelled = nullptr) = 0;
+                            std::atomic<bool>* cancelled = nullptr,
+                            BlobDownloadValidation validation = {}) = 0;
 };
 
 /// Azure Storage Blobs SDK-based implementation of IBlobDownloader.
@@ -64,6 +83,8 @@ class IBlobDownloader {
 /// chunks have completed, and DownloadBlob picks up where a prior aborted run
 /// left off. A linked cancellation token cascades the first chunk-level
 /// failure to every other in-flight chunk so the worker pool drains quickly.
+/// Completed chunks are checked against service range MD5, persisted with the blob ETag, and rechecked on disk.
+/// A `<file>.dlverified` receipt allows verified completed files to be reused when the model download is retried.
 ///
 /// Chunks stream from the blob client into the local file in ~64 KB pieces
 /// via a sink callback, so each worker holds a single 64 KB scratch buffer
@@ -74,7 +95,8 @@ class AzureBlobDownloader : public IBlobDownloader {
  public:
   /// `logger` receives diagnostics only (state-file save/load events). It is required:
   /// the orchestrator always has a logger, so there is no optional/null case to handle.
-  explicit AzureBlobDownloader(ILogger& logger);
+  explicit AzureBlobDownloader(ILogger& logger, std::shared_ptr<Azure::Core::Http::HttpTransport> transport = nullptr,
+                               FileWriter::CloseFileFn close_file = nullptr);
 
   std::vector<BlobItemInfo> ListBlobs(const std::string& sas_uri) override;
 
@@ -83,7 +105,8 @@ class AzureBlobDownloader : public IBlobDownloader {
                     const std::string& local_path,
                     int max_concurrency,
                     BlobBytesWrittenFn bytes_written_cb = nullptr,
-                    std::atomic<bool>* cancelled = nullptr) override;
+                    std::atomic<bool>* cancelled = nullptr,
+                    BlobDownloadValidation validation = {}) override;
 
  protected:
   /// Opaque per-blob context. Defined in `blob_downloader.cc`; holds the Azure
@@ -102,11 +125,12 @@ class AzureBlobDownloader : public IBlobDownloader {
   ///
   /// Must throw on failure. Implementations should observe the cancellation
   /// flag accessible via `ctx` and exit promptly when cancellation is requested.
-  virtual void DownloadChunkStreaming(ChunkContext& ctx,
-                                      int64_t offset,
-                                      int64_t size,
-                                      std::vector<uint8_t>& scratch,
-                                      const std::function<void(const uint8_t*, size_t)>& sink);
+  /// Returns the 16-byte MD5 of the delivered bytes after checking the service checksum.
+  virtual std::vector<uint8_t> DownloadChunkStreaming(ChunkContext& ctx,
+                                                      int64_t offset,
+                                                      int64_t size,
+                                                      std::vector<uint8_t>& scratch,
+                                                      const std::function<void(const uint8_t*, size_t)>& sink);
 
   /// Reports whether cooperative cancellation has been requested for this
   /// download. The orchestrator calls `Azure::Core::Context::Cancel()` after a
@@ -116,6 +140,8 @@ class AzureBlobDownloader : public IBlobDownloader {
 
  private:
   ILogger& logger_;
+  std::shared_ptr<Azure::Core::Http::HttpTransport> transport_;
+  FileWriter::CloseFileFn close_file_;
 };
 
 /// Aggregate statistics from one DownloadBlobsToDirectory call. Used by callers to
@@ -138,6 +164,7 @@ void DownloadBlobsToDirectory(IBlobDownloader& downloader,
                               const std::string& sas_uri,
                               const std::string& output_directory,
                               const BlobDownloadOptions& options,
-                              BlobDownloadStats& stats);
+                              BlobDownloadStats& stats,
+                              ILogger& logger);
 
 }  // namespace fl

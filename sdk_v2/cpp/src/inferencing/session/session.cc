@@ -131,7 +131,7 @@ std::unique_ptr<Session> Session::Create(const fl::Model& model) {
   }
 }
 
-void Session::UndoTurns(size_t /*count*/) {
+size_t Session::UndoTurns(size_t /*count*/) {
   FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "UndoTurns is not supported for this session type");
 }
 
@@ -218,8 +218,8 @@ void Session::ValidateRequestItems(const Request& request) const {
   }
 }
 
-void Session::ProcessRequest(const Request& request, Response& response,
-                             std::optional<StreamingCallback> callback) {
+size_t Session::ProcessRequest(const Request& request, Response& response,
+                               std::optional<StreamingCallback> callback) {
   // Serialize requests unless the derived class opted into concurrency.
   std::unique_lock<std::mutex> lock(*request_mutex_, std::defer_lock);
   if (!allow_concurrent_requests_) {
@@ -332,6 +332,7 @@ void Session::ProcessRequest(const Request& request, Response& response,
   RecordUsage(request, response, tracker.Context(),
               std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
               static_cast<bool>(callback->function));
+  return TurnCount();
 }
 
 InvocationContext Session::TakeInvocationContext() {

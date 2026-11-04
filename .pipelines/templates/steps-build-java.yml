@@ -124,7 +124,7 @@ steps:
     FOUNDRY_TEST_DATA_DIR: '${{ parameters.testDataSharedDir }}'
     FOUNDRY_TEST_WAV: '$(Build.SourcesDirectory)/sdk_v2/testdata/Recording.wav'
     FOUNDRY_TEST_MODEL: '${{ parameters.testModel }}'
-    ORT_TELEMETRY_DISABLED: '1'
+    ORT_DISABLE_TELEMETRY: '1'
     ${{ if eq(parameters.rid, 'win-x64') }}:
       FOUNDRY_TEST_LEGACY_BIN_DIR: $(foundryLegacyNativeDir)
 
@@ -151,7 +151,7 @@ steps:
       FOUNDRY_TEST_DATA_DIR: '${{ parameters.testDataSharedDir }}'
       FOUNDRY_TEST_APP_DATA_DIR: '$(Build.BinariesDirectory)/java-language-model-app'
       FOUNDRY_TEST_MODEL: '${{ parameters.languageTestModel }}'
-      ORT_TELEMETRY_DISABLED: '1'
+      ORT_DISABLE_TELEMETRY: '1'
 
   - task: Maven@4
     displayName: 'Verify fixed language and auto with multilingual speech'
@@ -175,4 +175,4 @@ steps:
       FOUNDRY_LOCAL_NATIVE_BIN_DIR: $(flNativeDir)
       FOUNDRY_TEST_DATA_DIR: '${{ parameters.testDataSharedDir }}'
       FOUNDRY_TEST_MODEL: '${{ parameters.languageTestModel }}'
-      ORT_TELEMETRY_DISABLED: '1'
+      ORT_DISABLE_TELEMETRY: '1'

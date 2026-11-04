@@ -56,7 +56,8 @@ void EnsureFileExistsAtSize(const fs::path& path, int64_t expected_size) {
 
 }  // namespace
 
-FileWriter::FileWriter(ILogger& logger) : logger_(logger) {}
+FileWriter::FileWriter(ILogger& logger, CloseFileFn close_file)
+    : logger_(logger), close_file_(close_file ? close_file : platform::CloseFile) {}
 
 FileWriter::~FileWriter() { Close(); }
 
@@ -77,10 +78,23 @@ void FileWriter::WriteAt(int64_t offset, const uint8_t* data, size_t len) {
   }
 }
 
+void FileWriter::Finish() {
+  if (handle_ == platform::kInvalidFileHandle) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "FileWriter cannot finish without an open file");
+  }
+
+  std::string error;
+  const auto handle = handle_;
+  handle_ = platform::kInvalidFileHandle;
+  if (!close_file_(handle, error)) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "FileWriter " + error);
+  }
+}
+
 void FileWriter::Close() {
   if (handle_ != platform::kInvalidFileHandle) {
     std::string error;
-    if (!platform::CloseFile(handle_, error)) {
+    if (!close_file_(handle_, error)) {
       logger_.Log(LogLevel::Warning, "FileWriter: " + error);
     }
     handle_ = platform::kInvalidFileHandle;

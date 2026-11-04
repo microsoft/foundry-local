@@ -64,8 +64,8 @@ class RecordingSession final : public fl::api::SessionBackend {
     calls_.option = value ? value : "";
   }
 
-  void ProcessRequest(const fl::Request& request, fl::Response& response,
-                      std::optional<fl::StreamingCallback> = std::nullopt) override {
+  size_t ProcessRequest(const fl::Request& request, fl::Response& response,
+                        std::optional<fl::StreamingCallback> = std::nullopt) override {
     if (request.items.size() != 1 || request.items.front()->type != FOUNDRY_LOCAL_ITEM_TEXT) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "expected one local text item");
     }
@@ -74,6 +74,7 @@ class RecordingSession final : public fl::api::SessionBackend {
         std::make_unique<fl::TextItem>(static_cast<const fl::TextItem&>(*request.items.front()).text + ":hosted"));
     response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
     response.usage = {7, 3, 10};
+    return 2;
   }
 
   void AddToolDefinition(fl::ToolDefinition definition) override { calls_.tool = std::move(definition.name); }
@@ -87,7 +88,7 @@ class RecordingSession final : public fl::api::SessionBackend {
   }
 
   size_t TurnCount() const override { return 2; }
-  void UndoTurns(size_t) override { FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "remote session is busy"); }
+  size_t UndoTurns(size_t) override { FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "remote session is busy"); }
   std::unique_ptr<fl::api::PreflightBackend> CreateRequestPreflight(const fl::Request&) const override {
     return std::make_unique<RecordingPreflight>(calls_);
   }

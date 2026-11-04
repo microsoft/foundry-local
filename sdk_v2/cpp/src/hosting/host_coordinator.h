@@ -14,6 +14,7 @@ class HostCoordinator {
   HostCoordinator(const Configuration& configuration, RuntimeAssets assets, std::filesystem::path root = {},
                   std::chrono::milliseconds startup_timeout = std::chrono::seconds{30});
   std::shared_ptr<api::HostedContext> Connect(bool acquire) const;
+  const Configuration& EffectiveConfiguration() const noexcept { return profile_.configuration; }
   const HostStateStore& Store() const noexcept { return store_; }
 
  private:
@@ -24,7 +25,5 @@ class HostCoordinator {
   const HostStateStore store_;
   const std::chrono::milliseconds startup_timeout_;
 };
-
-api::HostedConnector CreateNativeHostConnector(const Configuration& configuration);
 
 }  // namespace fl::hosting

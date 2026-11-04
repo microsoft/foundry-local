@@ -70,12 +70,13 @@ class SessionBackend : public BackendObject {
   using BackendObject::BackendObject;
   virtual void SetStreamingCallback(flStreamingCallback callback, void* user_data) = 0;
   virtual void SetSessionOptions(const KeyValuePairs& options) = 0;
-  virtual void ProcessRequest(const Request& request, Response& response,
-                              std::optional<StreamingCallback> callback = std::nullopt) = 0;
+  // Return the completed turn count captured within the operation's native serialization boundary.
+  virtual size_t ProcessRequest(const Request& request, Response& response,
+                                std::optional<StreamingCallback> callback = std::nullopt) = 0;
   virtual void AddToolDefinition(ToolDefinition definition) = 0;
   virtual bool RemoveToolDefinition(const std::string& name) = 0;
   virtual size_t TurnCount() const = 0;
-  virtual void UndoTurns(size_t count) = 0;
+  virtual size_t UndoTurns(size_t count) = 0;
   virtual std::unique_ptr<PreflightBackend> CreateRequestPreflight(const Request& request) const = 0;
 };
 

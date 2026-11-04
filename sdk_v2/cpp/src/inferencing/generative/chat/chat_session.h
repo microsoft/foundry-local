@@ -196,7 +196,8 @@ class ChatSession : public Session {
   /// Blocks until any in-flight request on this session completes.
   ///
   /// @param count  Number of turns to undo. Must be <= TurnCount().
-  void UndoTurns(size_t count) override;
+  /// @return Number of completed turns remaining.
+  size_t UndoTurns(size_t count) override;
 
  private:
   // populate session_options_

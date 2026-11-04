@@ -1,7 +1,8 @@
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
-RUN dnf install -y \
+# These build prerequisites come from AlmaLinux, not EPEL.
+RUN dnf --disablerepo='epel*' install -y \
         kernel-headers \
         make \
         perl-core \

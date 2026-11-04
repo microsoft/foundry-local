@@ -231,6 +231,57 @@ TEST(ChatCompletionsConverterTest, ApplyCatalogDefaults_InvalidOverriddenSetting
   EXPECT_FALSE(req.max_tokens.has_value());
 }
 
+TEST(ChatCompletionsConverterTest, TypedCatalogDefaultsMatchJsonDefaults) {
+  KeyValuePairs settings;
+  settings.Add("temperature", "0.6");
+  settings.Add("top_p", "0.95");
+  settings.Add("top_k", "20");
+  settings.Add("random_seed", "42");
+  settings.Add("max_tokens", "512");
+  settings.Add("unrecognized_setting", "not-an-option");
+
+  KeyValuePairs options;
+  ApplyCatalogDefaults(options, settings);
+
+  ChatCompletionRequest json_request;
+  ApplyCatalogDefaults(json_request, settings);
+  Request mapped_request;
+  MapRequestParameters(json_request, mapped_request);
+
+  EXPECT_EQ(options.size(), 5u);
+  for (const auto& [key, value] : options) {
+    ASSERT_NE(mapped_request.options.Find(key.c_str()), nullptr) << key;
+    if (key == "temperature" || key == "top_p") {
+      EXPECT_FLOAT_EQ(std::stof(value), std::stof(mapped_request.options.Find(key.c_str()))) << key;
+    } else {
+      EXPECT_EQ(value, mapped_request.options.Find(key.c_str())) << key;
+    }
+  }
+}
+
+TEST(ChatCompletionsConverterTest, TypedCatalogDefaultsPreserveOverridesAndRejectInvalidDefaults) {
+  for (const auto& [key, option] : {std::pair{"temperature", "temperature"}, std::pair{"top_p", "top_p"},
+                                    std::pair{"top_k", "top_k"}, std::pair{"random_seed", "seed"},
+                                    std::pair{"max_tokens", "max_output_tokens"}}) {
+    KeyValuePairs settings;
+    settings.Add(key, "invalid");
+    KeyValuePairs options;
+    options.Add(option, "1");
+
+    EXPECT_NO_THROW(ApplyCatalogDefaults(options, settings));
+    EXPECT_STREQ(options.Find(option), "1");
+
+    options.Remove(option);
+    try {
+      ApplyCatalogDefaults(options, settings);
+      FAIL() << "Expected an error for catalog setting " << key;
+    } catch (const fl::Exception& ex) {
+      EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INTERNAL) << key;
+      EXPECT_NE(std::string(ex.what()).find(key), std::string::npos) << ex.what();
+    }
+  }
+}
+
 // ========================================================================
 // MapFinishReason
 // ========================================================================

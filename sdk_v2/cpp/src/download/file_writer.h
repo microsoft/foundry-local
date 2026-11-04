@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <string>
 
 namespace fl {
 
@@ -19,7 +20,9 @@ class ILogger;
 /// live in `src/platform/file_io.*`.
 class FileWriter {
  public:
-  explicit FileWriter(ILogger& logger);
+  using CloseFileFn = bool (*)(std::intptr_t handle, std::string& error);
+
+  explicit FileWriter(ILogger& logger, CloseFileFn close_file = nullptr);
   ~FileWriter();
 
   FileWriter(const FileWriter&) = delete;
@@ -34,11 +37,15 @@ class FileWriter {
   /// concurrent calls targeting disjoint ranges.
   void WriteAt(int64_t offset, const uint8_t* data, size_t len);
 
+  /// Close and surface close errors. Buffered writes are not explicitly synchronized to durable storage.
+  void Finish();
+
   /// Release the underlying OS handle. Implicitly called by the destructor.
   void Close();
 
  private:
   ILogger& logger_;
+  CloseFileFn close_file_;
   // Native file handle (Win32 HANDLE or POSIX fd) as an integer; see
   // src/platform/file_io.h. kInvalidFileHandle (-1) when not open.
   std::intptr_t handle_ = -1;

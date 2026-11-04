@@ -41,12 +41,18 @@ stages:
         ortVersion: ${{ parameters.ortVersion }}
         genaiVersion: ${{ parameters.genaiVersion }}
 
+    - task: PipAuthenticate@1
+      displayName: 'Authenticate AIFoundryLocal_PublicPackages for pip'
+      inputs:
+        artifactFeeds: 'AIFoundryLocal/AIFoundryLocal_PublicPackages'
+
     - bash: |
         set -euo pipefail
         git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
         python -m venv "$ENGINE_VENV"
         python="$ENGINE_VENV/bin/python"
         export PATH="$ENGINE_VENV/bin:$PATH"
+        : "${PIP_INDEX_URL:?PipAuthenticate did not set PIP_INDEX_URL}"
         "$python" -m pip install "cmake==3.31.6"
         "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
         git clone --depth 1 --branch v3.10.281.1 \
