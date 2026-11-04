@@ -75,21 +75,6 @@ group. The Foundry additional option
 defaults to one, preventing simultaneous large CUDA captures while allowing
 CPU and CUDA packages to initialize independently.
 
-Optional `component_runtime.json` contains generic component execution policy:
-
-```json
-{
-  "schema_version": 1,
-  "components": {
-    "backbone": {"cuda_graph_max_signatures": 4}
-  }
-}
-```
-
-A zero limit disables capture. Positive limits enable bounded multi-signature
-capture with persistent buffers; unseen signatures execute eagerly after the
-budget is exhausted.
-
 Register the root through the local catalog with a matching model ID and task.
 `POST /v1/rank` and `POST /v1/systemone` accept a `model` containing either the
 registered ID or alias. Runtimes are cached by resolved model ID, canonical
@@ -102,3 +87,10 @@ explicit package path by examples and internal integrations. Unknown explicit na
 silently using an environment package. When fallback metadata is present it is
 validated and the response reports its actual package model ID. No remote
 catalog submission is performed.
+
+Ranking results include `id` and zero-based `index` separately from candidate
+text. Probabilities are relative to the submitted candidate set; ties preserve
+input order. KEV `choice` criteria preserve caller-provided IDs and object
+order. KEV `score` criteria are an ordered non-empty array, and the returned
+score is the selected zero-based level index rather than a normalized
+probability. Decision temperature is fixed at `1.0`.

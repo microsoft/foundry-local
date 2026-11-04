@@ -114,6 +114,24 @@ find_package(OnnxRuntimeGenAI REQUIRED)
 
 find_package(OnnxRuntime REQUIRED)
 
+include(CheckCXXSourceCompiles)
+set(CMAKE_REQUIRED_INCLUDES "${ORT_GENAI_HEADER_DIR}")
+set(CMAKE_REQUIRED_LIBRARIES OnnxRuntimeGenAI::OnnxRuntimeGenAI)
+check_cxx_source_compiles(
+    "#include <ort_genai_c.h>
+     int main() {
+       OgaNonGenerativeSession* session = nullptr;
+       return OgaCreateNonGenerativeSession(nullptr, &session) != nullptr;
+     }"
+    FOUNDRY_LOCAL_HAS_REQUIRED_NON_GENERATIVE_ORT_GENAI
+)
+unset(CMAKE_REQUIRED_INCLUDES)
+unset(CMAKE_REQUIRED_LIBRARIES)
+if(NOT FOUNDRY_LOCAL_HAS_REQUIRED_NON_GENERATIVE_ORT_GENAI)
+    message(FATAL_ERROR
+        "The configured ONNX Runtime GenAI headers/library do not provide the required NonGenerativeSession ABI")
+endif()
+
 # WinML EP Catalog — Windows-only, for hardware EP discovery and download. The
 # WinML 2.x runtime is reg-free, delay-loaded, and degrades gracefully when the
 # DLL is absent, so it is always included on Windows; other platforms skip it.

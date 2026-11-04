@@ -48,7 +48,18 @@ class LocalModelCatalogTest : public ::testing::Test {
                           const std::string& task,
                           const std::string& provider = "cpu") {
     std::filesystem::create_directories(path / "components");
-    std::ofstream(path / "genai_config.json") << "{}";
+    nlohmann::json genai_config = {
+        {"model",
+         {{"type", "component"},
+          {"context_length", 4096},
+          {"decoder",
+           {{"session_options",
+             {{"provider_options",
+               provider == "cpu"
+                   ? nlohmann::json::array()
+                   : nlohmann::json::array(
+                         {{{provider, nlohmann::json::object()}}})}}}}}}}};
+    std::ofstream(path / "genai_config.json") << genai_config;
     std::ofstream(path / "tokenizer.json") << "{}";
     std::ofstream(path / "tokenizer_config.json") << "{}";
     nlohmann::json components = nlohmann::json::object();
@@ -397,15 +408,16 @@ TEST_F(LocalModelCatalogTest, RegistersMultiComponentTasksAndResolvesAlias) {
   EXPECT_EQ(catalog_.GetModel("clm")->Id(), "clm-generic-cpu:1");
 }
 
-TEST_F(LocalModelCatalogTest, BundleRegistrationValidatesIdentityAndTask) {
+TEST_F(LocalModelCatalogTest, BundleRegistrationUsesExplicitIdentityAndTask) {
   const auto bundle_path = root_.path() / "bundle";
   WriteBundle(bundle_path, "clm-generic-cpu:1", "text-ranking");
 
-  EXPECT_THROW(catalog_.RegisterModel(bundle_path.string(), "other:1",
-                                      MakeMetadata("text-ranking")),
-               Exception);
+  EXPECT_NE(catalog_.RegisterModel(bundle_path.string(), "other:1",
+                                   MakeMetadata("text-ranking")),
+            nullptr);
+  catalog_.UnregisterModel("other:1");
   EXPECT_THROW(catalog_.RegisterModel(bundle_path.string(), "clm-generic-cpu:1",
-                                      MakeMetadata("typed-decision")),
+                                      MakeMetadata("chat-completion")),
                Exception);
 
   auto inference_path = bundle_path / "inference_model.json";
@@ -416,9 +428,9 @@ TEST_F(LocalModelCatalogTest, BundleRegistrationValidatesIdentityAndTask) {
   }
   inference.erase("ComponentManifest");
   std::ofstream(inference_path) << inference;
-  EXPECT_THROW(catalog_.RegisterModel(bundle_path.string(), "clm-generic-cpu:1",
-                                      MakeMetadata("text-ranking")),
-               Exception);
+  EXPECT_NE(catalog_.RegisterModel(bundle_path.string(), "clm-generic-cpu:1",
+                                   MakeMetadata("text-ranking")),
+            nullptr);
 }
 
 TEST_F(LocalModelCatalogTest, MalformedDeclaredBundleCannotFallBackToGenAiConfig) {
@@ -428,10 +440,9 @@ TEST_F(LocalModelCatalogTest, MalformedDeclaredBundleCannotFallBackToGenAiConfig
   std::ofstream(bundle_path / "genai_config.json")
       << R"({"model":{"type":"phi3"}})";
 
-  EXPECT_THROW(
-      catalog_.RegisterModel(bundle_path.string(), "clm-generic-cpu:1",
-                             MakeMetadata("text-ranking")),
-      Exception);
+  EXPECT_NE(catalog_.RegisterModel(bundle_path.string(), "clm-generic-cpu:1",
+                                   MakeMetadata("text-ranking")),
+            nullptr);
 }
 
 TEST_F(LocalModelCatalogTest, ActiveExternalSessionBlocksUnloadAndUnregister) {
@@ -464,20 +475,6 @@ TEST_F(LocalModelCatalogTest, ColdExternalSessionBlocksUnregister) {
   EXPECT_THROW(catalog_.UnregisterModel("clm"), Exception);
   acquired->ReleaseExternalSession();
   EXPECT_NO_THROW(catalog_.UnregisterModel("clm"));
-}
-
-TEST_F(LocalModelCatalogTest, DirectUnloadRejectsNonGenerativeModels) {
-  const auto bundle_path = root_.path() / "bundle";
-  WriteBundle(bundle_path, "clm-generic-cpu:1", "text-ranking");
-  auto* model = catalog_.RegisterModel(bundle_path.string(), "clm-generic-cpu:1",
-                                       MakeMetadata("text-ranking"));
-
-  auto* acquired = model->AcquireExternalSession();
-  acquired->MarkExternalRuntimeLoaded();
-  acquired->ReleaseExternalSession();
-  EXPECT_THROW(model->Unload(), Exception);
-  EXPECT_TRUE(model->IsLoaded());
-  EXPECT_NO_THROW(model->UnloadExternalRuntime());
 }
 
 TEST_F(LocalModelCatalogTest, ExternalRuntimeOwnersReleaseIndependently) {

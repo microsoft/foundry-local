@@ -17,14 +17,12 @@ struct NonGenerativePackageMetadata {
   std::string task;
   std::filesystem::path component_manifest;
   std::string execution_provider;
-  std::string provider_variant;
   std::vector<std::string> capabilities;
   uint64_t package_bytes{};
   uint64_t estimated_resident_bytes{};
 };
 
-/// Return true when a directory contains any non-generative package signal:
-/// the standard manifest file, ComponentManifest metadata, or a supported task.
+/// Return true when a directory contains the standard component manifest.
 bool DeclaresNonGenerativePackage(const std::filesystem::path& package_root);
 
 /// Parse and validate a multi-component package root. Returns nullopt when the

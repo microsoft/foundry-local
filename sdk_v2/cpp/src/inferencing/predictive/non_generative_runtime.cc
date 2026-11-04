@@ -166,6 +166,8 @@ nlohmann::json RankingRuntime::Rank(const RankingRequest& request) {
     const std::string key = item.at("key");
     json ranked_item = json::object();
     ranked_item["rank"] = item.at("rank");
+    ranked_item["id"] = key;
+    ranked_item["index"] = std::stoull(key);
     ranked_item["candidate"] =
         request.answers.at(static_cast<size_t>(std::stoull(key)));
     ranked_item["prob"] = item.at("probability");

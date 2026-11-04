@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "catalog/non_generative_package.h"
+#include "inferencing/generative/genai_config.h"
 
 #include <nlohmann/json.hpp>
 
@@ -9,7 +10,6 @@
 #include <cctype>
 #include <limits>
 #include <stdexcept>
-#include <unordered_set>
 
 namespace fl {
 namespace {
@@ -17,6 +17,7 @@ namespace {
 namespace fs = std::filesystem;
 
 std::string NormalizeProvider(std::string_view provider) {
+  if (provider.empty()) return {};
   std::string name(provider);
   std::transform(name.begin(), name.end(), name.begin(),
                  [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -28,14 +29,6 @@ std::string NormalizeProvider(std::string_view provider) {
   throw std::invalid_argument(
       "non-generative packages support only CPU and CUDA execution providers: " +
       std::string(provider));
-}
-
-std::string RequiredString(const nlohmann::json& object, const char* key) {
-  if (!object.contains(key) || !object[key].is_string() ||
-      object[key].get_ref<const std::string&>().empty()) {
-    throw std::invalid_argument(std::string("inference_model.json requires non-empty ") + key);
-  }
-  return object[key].get<std::string>();
 }
 
 fs::path SafeRelativePath(const std::string& relative, const char* field) {
@@ -106,20 +99,7 @@ uint64_t MeasureContainedPackage(const fs::path& canonical_root) {
 
 bool DeclaresNonGenerativePackage(const fs::path& package_root) {
   std::error_code ec;
-  if (fs::exists(package_root / "component_manifest.json", ec)) return true;
-  const auto inference_path = package_root / "inference_model.json";
-  if (!fs::is_regular_file(inference_path, ec)) return false;
-  try {
-    std::ifstream stream(inference_path);
-    const auto inference = nlohmann::json::parse(stream);
-    if (!inference.is_object()) return false;
-    if (inference.contains("ComponentManifest")) return true;
-    if (!inference.contains("Task") || !inference["Task"].is_string()) return false;
-    const auto task = inference["Task"].get<std::string>();
-    return task == "text-ranking" || task == "typed-decision";
-  } catch (...) {
-    return false;
-  }
+  return fs::is_regular_file(package_root / "component_manifest.json", ec);
 }
 
 std::optional<NonGenerativePackageMetadata> ReadNonGenerativePackage(
@@ -127,98 +107,41 @@ std::optional<NonGenerativePackageMetadata> ReadNonGenerativePackage(
   std::error_code ec;
   const auto canonical_root = fs::canonical(package_root, ec);
   if (ec || !fs::is_directory(canonical_root, ec)) return std::nullopt;
-  if (!fs::exists(canonical_root / "inference_model.json")) return std::nullopt;
-  const auto inference_path =
-      ContainedRegularFile(canonical_root, "inference_model.json", "inference_model.json");
-
-  nlohmann::json inference;
-  try {
-    std::ifstream stream(inference_path);
-    if (!stream) throw std::invalid_argument("cannot open inference_model.json");
-    stream >> inference;
-  } catch (const nlohmann::json::exception& error) {
-    throw std::invalid_argument(std::string("invalid inference_model.json: ") + error.what());
-  }
-  if (!inference.is_object()) {
-    return std::nullopt;
-  }
-  if (!inference.contains("ComponentManifest")) {
-    if (DeclaresNonGenerativePackage(canonical_root)) {
-      throw std::invalid_argument("inference_model.json requires ComponentManifest");
-    }
-    return std::nullopt;
-  }
+  if (!DeclaresNonGenerativePackage(canonical_root)) return std::nullopt;
   if (fs::exists(canonical_root / "download.tmp")) {
     throw std::invalid_argument("package contains download.tmp");
   }
 
   NonGenerativePackageMetadata result;
-  result.model_id = RequiredString(inference, "Name");
-  result.alias = RequiredString(inference, "Alias");
-  result.task = RequiredString(inference, "Task");
-  if (result.task != "text-ranking" && result.task != "typed-decision") {
-    throw std::invalid_argument("Task must be text-ranking or typed-decision");
-  }
-  RequiredString(inference, "License");
-
-  if (!inference.contains("Provenance") || !inference["Provenance"].is_object()) {
-    throw std::invalid_argument("inference_model.json requires Provenance");
-  }
-  const auto& provenance = inference["Provenance"];
-  RequiredString(provenance, "source");
-  RequiredString(provenance, "artifact_revision");
-  RequiredString(provenance, "base_model");
-  RequiredString(provenance, "base_revision");
-
-  if (!inference.contains("Provider") || !inference["Provider"].is_object()) {
-    throw std::invalid_argument("inference_model.json requires Provider");
-  }
-  result.execution_provider = NormalizeProvider(
-      RequiredString(inference["Provider"], "execution_provider"));
-  result.provider_variant = RequiredString(inference["Provider"], "variant");
-
-  uint64_t estimated_resident_bytes{};
-  if (inference.contains("Resources")) {
-    const auto& resources = inference["Resources"];
-    if (!resources.is_object() ||
-        !resources.contains("estimated_resident_bytes") ||
-        !resources["estimated_resident_bytes"].is_number_unsigned()) {
-      throw std::invalid_argument(
-          "Resources.estimated_resident_bytes must be an unsigned integer");
+  const auto inference_path = canonical_root / "inference_model.json";
+  if (fs::is_regular_file(inference_path, ec)) {
+    try {
+      std::ifstream stream(inference_path);
+      const auto inference = nlohmann::json::parse(stream);
+      result.model_id = inference.value("Name", std::string{});
+      result.alias = inference.value("Alias", std::string{});
+      result.task = inference.value("Task", std::string{});
+      if (const auto found = inference.find("Capabilities");
+          found != inference.end() && found->is_array()) {
+        for (const auto& capability : *found)
+          if (capability.is_string())
+            result.capabilities.push_back(capability.get<std::string>());
+      }
+    } catch (const nlohmann::json::exception&) {
+      // Discovery metadata remains owned by the existing catalog writer.
     }
-    estimated_resident_bytes =
-        resources["estimated_resident_bytes"].get<uint64_t>();
-    if (!estimated_resident_bytes)
-      throw std::invalid_argument(
-          "Resources.estimated_resident_bytes must be positive");
-  }
-
-  if (!inference.contains("Capabilities") || !inference["Capabilities"].is_array() ||
-      inference["Capabilities"].empty()) {
-    throw std::invalid_argument("inference_model.json requires non-empty Capabilities");
-  }
-  std::unordered_set<std::string> unique_capabilities;
-  for (const auto& capability : inference["Capabilities"]) {
-    if (!capability.is_string() || capability.get_ref<const std::string&>().empty()) {
-      throw std::invalid_argument("Capabilities entries must be non-empty strings");
-    }
-    auto value = capability.get<std::string>();
-    if (!unique_capabilities.insert(value).second) {
-      throw std::invalid_argument("Capabilities must not contain duplicates");
-    }
-    result.capabilities.push_back(std::move(value));
-  }
-
-  const auto manifest_relative = RequiredString(inference, "ComponentManifest");
-  if (manifest_relative != "component_manifest.json") {
-    throw std::invalid_argument(
-        "ComponentManifest must be exactly component_manifest.json");
   }
   result.component_manifest =
-      ContainedRegularFile(canonical_root, manifest_relative, "ComponentManifest");
-  ContainedRegularFile(canonical_root, "genai_config.json", "genai_config.json");
+      ContainedRegularFile(canonical_root, "component_manifest.json",
+                           "component_manifest.json");
+  const auto config_path =
+      ContainedRegularFile(canonical_root, "genai_config.json",
+                           "genai_config.json");
   ContainedRegularFile(canonical_root, "tokenizer.json", "tokenizer.json");
   ContainedRegularFile(canonical_root, "tokenizer_config.json", "tokenizer_config.json");
+  result.execution_provider =
+      NormalizeProvider(GenAIConfig::LoadFromFile(config_path.string())
+                            .DefaultProvider());
 
   nlohmann::json manifest;
   try {
@@ -233,35 +156,21 @@ std::optional<NonGenerativePackageMetadata> ReadNonGenerativePackage(
     throw std::invalid_argument(
         "component manifest requires schema_version 1 and non-empty components");
   }
-  std::unordered_set<std::string> component_names;
   for (const auto& [name, component] : manifest["components"].items()) {
     if (name.empty() || !component.is_object()) {
       throw std::invalid_argument("component manifest contains an invalid component");
     }
-    component_names.insert(name);
-    const auto filename = RequiredString(component, "filename");
+    if (!component.contains("filename") ||
+        !component["filename"].is_string() ||
+        component["filename"].get_ref<const std::string&>().empty()) {
+      throw std::invalid_argument(
+          "component manifest component requires a non-empty filename");
+    }
+    const auto filename = component["filename"].get<std::string>();
     ContainedRegularFile(canonical_root, filename, "component filename");
   }
-  const auto has = [&](std::string_view name) {
-    return component_names.contains(std::string(name));
-  };
-  if (result.task == "text-ranking") {
-    const bool has_backbone = has("encoder") || has("backbone");
-    const bool has_heads = has("clm_heads") ||
-                           (has("state_head") && has("action_head") && has("scorer"));
-    if (!has_backbone || !has_heads) {
-      throw std::invalid_argument(
-          "text-ranking requires encoder/backbone and clm_heads or "
-          "state_head/action_head/scorer");
-    }
-  } else if (!has("backbone") || (!has("pointer_head") && !has("kev_head"))) {
-    throw std::invalid_argument(
-        "typed-decision requires backbone and pointer_head/kev_head");
-  }
   result.package_bytes = MeasureContainedPackage(canonical_root);
-  result.estimated_resident_bytes =
-      estimated_resident_bytes ? estimated_resident_bytes
-                               : result.package_bytes;
+  result.estimated_resident_bytes = result.package_bytes;
   return result;
 }
 

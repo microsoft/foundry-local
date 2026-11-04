@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "inferencing/predictive/non_generative_admission.h"
+#include "model.h"
 
 #include <fmt/format.h>
 
@@ -77,6 +78,108 @@ NonGenerativeReadinessLease::NonGenerativeReadinessLease(
 
 NonGenerativeReadinessLease::~NonGenerativeReadinessLease() {
   coordinator_->EndReadiness(group_);
+}
+
+NonGenerativeRuntimeState::NonGenerativeRuntimeState(
+    std::shared_ptr<NonGenerativeAdmissionCoordinator> admission)
+    : admission_(std::move(admission)) {
+  if (!admission_)
+    throw std::invalid_argument(
+        "non-generative admission coordinator is required");
+}
+
+NonGenerativeRuntimeState::ManagedRuntime::~ManagedRuntime() {
+  runtime.reset();
+  if (owner) owner->ReleaseExternalRuntime();
+  reservation.reset();
+}
+
+std::shared_ptr<void> NonGenerativeRuntimeState::Acquire(
+    const std::string& identity, const std::string& model_id, Model* owner,
+    uint64_t estimated_resident_bytes, const std::string& readiness_group,
+    const std::function<std::shared_ptr<void>()>& factory) {
+  std::shared_future<std::shared_ptr<ManagedRuntime>> future;
+  std::shared_ptr<std::promise<std::shared_ptr<ManagedRuntime>>> promise;
+  {
+    std::lock_guard lock(mutex_);
+    if (shutting_down_)
+      throw std::runtime_error(
+          "cannot acquire non-generative runtime during shutdown");
+    const auto found = runtimes_.find(identity);
+    if (found != runtimes_.end()) {
+      future = found->second.runtime;
+    } else {
+      promise =
+          std::make_shared<std::promise<std::shared_ptr<ManagedRuntime>>>();
+      future = promise->get_future().share();
+      runtimes_.emplace(identity,
+                        RuntimeEntry{model_id, owner, future});
+    }
+  }
+
+  if (promise) {
+    try {
+      auto reservation =
+          std::make_shared<NonGenerativeAdmissionReservation>(
+              admission_, estimated_resident_bytes, model_id);
+      NonGenerativeReadinessLease readiness(admission_, readiness_group);
+      auto runtime = factory();
+      promise->set_value(std::make_shared<ManagedRuntime>(
+          ManagedRuntime{std::move(reservation), std::move(runtime), owner}));
+    } catch (...) {
+      promise->set_exception(std::current_exception());
+      std::lock_guard lock(mutex_);
+      runtimes_.erase(identity);
+      throw;
+    }
+  }
+
+  auto managed = future.get();
+  return std::shared_ptr<void>(managed, managed->runtime.get());
+}
+
+bool NonGenerativeRuntimeState::Remove(Model& model) {
+  std::lock_guard lock(mutex_);
+  auto* leaf = model.SelectedLeaf();
+  bool removed{};
+  for (auto it = runtimes_.begin(); it != runtimes_.end();) {
+    if (it->second.owner == leaf) {
+      it = runtimes_.erase(it);
+      removed = true;
+    } else {
+      ++it;
+    }
+  }
+  return removed;
+}
+
+void NonGenerativeRuntimeState::Clear() {
+  std::lock_guard lock(mutex_);
+  runtimes_.clear();
+}
+
+void NonGenerativeRuntimeState::RejectNewAcquisitions() {
+  std::lock_guard lock(mutex_);
+  shutting_down_ = true;
+}
+
+std::shared_ptr<NonGenerativeAdmissionCoordinator>
+CreateNonGenerativeAdmissionCoordinator(
+    uint64_t memory_budget_bytes, size_t readiness_concurrency) {
+  return std::make_shared<NonGenerativeAdmissionCoordinator>(
+      memory_budget_bytes, readiness_concurrency);
+}
+
+std::shared_ptr<NonGenerativeRuntimeState> CreateNonGenerativeRuntimeState(
+    std::shared_ptr<NonGenerativeAdmissionCoordinator> admission) {
+  return std::make_shared<NonGenerativeRuntimeState>(std::move(admission));
+}
+
+std::shared_ptr<NonGenerativeRuntimeState> CreateNonGenerativeRuntimeState(
+    uint64_t memory_budget_bytes, size_t readiness_concurrency) {
+  return CreateNonGenerativeRuntimeState(
+      CreateNonGenerativeAdmissionCoordinator(
+          memory_budget_bytes, readiness_concurrency));
 }
 
 }  // namespace fl

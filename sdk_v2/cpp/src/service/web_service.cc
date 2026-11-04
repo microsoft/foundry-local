@@ -260,8 +260,6 @@ struct WebService::Impl {
   ResponseStore local_response_store;
   StreamingThreadTracker thread_tracker;
   std::function<void()> shutdown_callback;
-  std::shared_ptr<NonGenerativeAdmissionCoordinator>
-      non_generative_admission;
   std::shared_ptr<hosting::HostLifetime> shared_host_lifetime;
   std::unique_ptr<ServiceContext> public_context;
   std::unique_ptr<ServiceContext> local_context;
@@ -292,8 +290,6 @@ struct WebService::Impl {
         public_response_store(ResponseStore::kDefaultCapacity, &session_cache),
         local_response_store(ResponseStore::kDefaultCapacity, &session_cache),
         shutdown_callback(std::move(shutdown_callback)),
-        non_generative_admission(
-            model_load_manager.NonGenerativeAdmission()),
         shared_host_lifetime(std::move(shared_lifetime)),
         public_context(std::make_unique<ServiceContext>(
             ServiceContext{public_catalog,
@@ -305,8 +301,7 @@ struct WebService::Impl {
                            public_response_store,
                            telemetry,
                            thread_tracker,
-                           CreateNonGenerativeRuntimeState(
-                               non_generative_admission)
+                           model_load_manager.NonGenerativeRuntimes()
             })),
         local_context(std::make_unique<ServiceContext>(
             ServiceContext{local_catalog,
@@ -318,8 +313,7 @@ struct WebService::Impl {
                            local_response_store,
                            telemetry,
                            thread_tracker,
-                           CreateNonGenerativeRuntimeState(
-                               non_generative_admission)
+                           model_load_manager.NonGenerativeRuntimes()
             })) {
   }
 };

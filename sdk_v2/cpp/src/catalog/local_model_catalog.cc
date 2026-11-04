@@ -261,31 +261,20 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
   const auto model_path = std::filesystem::absolute(supplied_path).lexically_normal();
   const auto config_path = model_path / "genai_config.json";
   auto resolved_input_metadata = metadata;
-  std::string package_alias;
   GenAIConfig genai_config;
   try {
     const auto package = ReadNonGenerativePackage(model_path);
     if (package) {
-      if (package->model_id != model_id) {
-        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-                 "inference_model.json Name must match model_id");
-      }
       const auto* task = metadata.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR);
-      if (!task || *task != package->task) {
+      if (!task ||
+          (*task != "text-ranking" && *task != "typed-decision")) {
         FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-                 "registration task must match inference_model.json Task");
+                 "multi-component registration requires text-ranking or typed-decision task");
       }
-      package_alias = package->alias;
       resolved_input_metadata.execution_provider = package->execution_provider;
       resolved_input_metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR,
                                              package->execution_provider);
-      std::string capabilities;
-      for (const auto& capability : package->capabilities) {
-        if (!capabilities.empty()) capabilities += ",";
-        capabilities += capability;
-      }
-      resolved_input_metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR,
-                                             std::move(capabilities));
+      genai_config = GenAIConfig::LoadFromFile(config_path.string());
     } else if (!DeclaresNonGenerativePackage(model_path) &&
                std::filesystem::is_regular_file(config_path, ec)) {
       genai_config = GenAIConfig::LoadFromFile(config_path.string());
@@ -314,7 +303,7 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
 
     registration = {
         ResolveMetadata(resolved_input_metadata, model_id, parsed_id.name, parsed_id.version, genai_config,
-                        package_alias),
+                        {}),
         model_path.string()};
 
     registrations.push_back(registration);

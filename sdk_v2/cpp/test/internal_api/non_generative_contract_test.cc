@@ -12,14 +12,14 @@ namespace {
 TEST(NonGenerativeContractTest, ParsesTypedRequest) {
   auto request = nlohmann::ordered_json{
       {"state", {{"enabled", true}}},
-      {"temperature", 0.5},
+      {"temperature", 1.0},
       {"questions",
        {{"quality",
          {{"type", "choice"},
           {"instructions", "Choose"},
           {"criteria", {{"good", "Good"}, {"bad", "Bad"}}}}}}}}
                      .get<NonGenerativeRequest>();
-  EXPECT_FLOAT_EQ(request.temperature, 0.5f);
+  EXPECT_FLOAT_EQ(request.temperature, 1.0f);
   ASSERT_EQ(request.questions.size(), 1u);
   EXPECT_EQ(request.questions.front().first, "quality");
   EXPECT_EQ(request.questions.front().second.type, "choice");
@@ -33,10 +33,27 @@ TEST(NonGenerativeContractTest, RejectsEmptyQuestionsAndBadTemperature) {
                                        {"questions", {{"q", {{"type", "noul"}}}}}}
                     .get<NonGenerativeRequest>()),
                nlohmann::json::exception);
+  EXPECT_THROW((nlohmann::ordered_json{{"temperature", 0.5},
+                                       {"questions", {{"q", {{"type", "noul"}}}}}}
+                    .get<NonGenerativeRequest>()),
+               nlohmann::json::exception);
 }
 
 TEST(NonGenerativeContractTest, RejectsUnknownQuestionType) {
   EXPECT_THROW((nlohmann::ordered_json{{"questions", {{"q", {{"type", "freeform"}}}}}}
+                    .get<NonGenerativeRequest>()),
+               nlohmann::json::exception);
+}
+
+TEST(NonGenerativeContractTest, RejectsInvalidDecisionCriteria) {
+  EXPECT_THROW((nlohmann::ordered_json{
+                    {"questions", {{"q", {{"type", "choice"}}}}}}
+                    .get<NonGenerativeRequest>()),
+               nlohmann::json::exception);
+  EXPECT_THROW((nlohmann::ordered_json{
+                    {"questions",
+                     {{"q", {{"type", "score"},
+                              {"criteria", nlohmann::ordered_json::object()}}}}}}
                     .get<NonGenerativeRequest>()),
                nlohmann::json::exception);
 }

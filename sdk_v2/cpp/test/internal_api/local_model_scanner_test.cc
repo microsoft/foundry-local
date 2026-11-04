@@ -235,7 +235,7 @@ TEST_F(LocalModelScannerTest, BundleWithoutGenAiConfigIsExcluded) {
   EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
 }
 
-TEST_F(LocalModelScannerTest, ReadsDeclaredResidentMemoryEstimate) {
+TEST_F(LocalModelScannerTest, UsesContainedPackageSizeForAdmission) {
   CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
   const auto root = fs::path(test_dir_) / "microsoft/clm";
   nlohmann::json metadata;
@@ -248,11 +248,11 @@ TEST_F(LocalModelScannerTest, ReadsDeclaredResidentMemoryEstimate) {
 
   const auto package = ReadNonGenerativePackage(root);
   ASSERT_TRUE(package.has_value());
-  EXPECT_EQ(package->estimated_resident_bytes, 123456u);
   EXPECT_GT(package->package_bytes, 0u);
+  EXPECT_EQ(package->estimated_resident_bytes, package->package_bytes);
 }
 
-TEST_F(LocalModelScannerTest, InvalidResidentMemoryEstimateIsExcluded) {
+TEST_F(LocalModelScannerTest, IgnoresDescriptiveResidentMemoryMetadata) {
   CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
   const auto root = fs::path(test_dir_) / "microsoft/clm";
   nlohmann::json metadata;
@@ -263,10 +263,10 @@ TEST_F(LocalModelScannerTest, InvalidResidentMemoryEstimateIsExcluded) {
   metadata["Resources"] = {{"estimated_resident_bytes", 0}};
   std::ofstream(root / "inference_model.json") << metadata;
 
-  EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
+  EXPECT_FALSE(ScanLocalModels(test_dir_, logger_).empty());
 }
 
-TEST_F(LocalModelScannerTest, AlternateManifestNameIsExcluded) {
+TEST_F(LocalModelScannerTest, IgnoresDescriptiveManifestMetadata) {
   CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
   auto metadata_path = fs::path(test_dir_) / "microsoft/clm/inference_model.json";
   nlohmann::json metadata;
@@ -276,10 +276,10 @@ TEST_F(LocalModelScannerTest, AlternateManifestNameIsExcluded) {
   }
   metadata["ComponentManifest"] = "other.json";
   std::ofstream(metadata_path) << metadata;
-  EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
+  EXPECT_FALSE(ScanLocalModels(test_dir_, logger_).empty());
 }
 
-TEST_F(LocalModelScannerTest, ManifestFileWithoutMetadataKeyCannotFallBackToGenerative) {
+TEST_F(LocalModelScannerTest, ManifestDoesNotRequireMetadataKey) {
   CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
   CreateFile("microsoft/clm/genai_config.json");
   auto metadata_path = fs::path(test_dir_) / "microsoft/clm/inference_model.json";
@@ -291,7 +291,7 @@ TEST_F(LocalModelScannerTest, ManifestFileWithoutMetadataKeyCannotFallBackToGene
   metadata.erase("ComponentManifest");
   std::ofstream(metadata_path) << metadata;
 
-  EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
+  EXPECT_FALSE(ScanLocalModels(test_dir_, logger_).empty());
 }
 
 TEST_F(LocalModelScannerTest, NonGenerativeTaskWithoutManifestCannotFallBackToGenerative) {
@@ -307,10 +307,10 @@ TEST_F(LocalModelScannerTest, NonGenerativeTaskWithoutManifestCannotFallBackToGe
   fs::remove(root / "component_manifest.json");
   std::ofstream(root / "inference_model.json") << metadata;
 
-  EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
+  EXPECT_FALSE(ScanLocalModels(test_dir_, logger_).empty());
 }
 
-TEST_F(LocalModelScannerTest, TaskSpecificIncompleteLayoutIsExcluded) {
+TEST_F(LocalModelScannerTest, BackendOwnsComponentTopologyValidation) {
   CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
   auto manifest_path = fs::path(test_dir_) / "microsoft/clm/component_manifest.json";
   nlohmann::json manifest;
@@ -320,7 +320,7 @@ TEST_F(LocalModelScannerTest, TaskSpecificIncompleteLayoutIsExcluded) {
   }
   manifest["components"].erase("scorer");
   std::ofstream(manifest_path) << manifest;
-  EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
+  EXPECT_FALSE(ScanLocalModels(test_dir_, logger_).empty());
 }
 
 #ifndef _WIN32

@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "model.h"
+#include "catalog/non_generative_package.h"
 
 #include "download/download_manager.h"
 #include "exception.h"
@@ -453,7 +454,7 @@ Model* Model::AcquireExternalSession() {
   if (Model* sv = selected_variant_.load(std::memory_order_acquire)) {
     return sv->AcquireExternalSession();
   }
-  std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+  std::unique_lock<std::mutex> lifecycle_lock(lifecycle_mutex_);
   if (!active_ || unregistering_) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
   }
@@ -490,7 +491,7 @@ void Model::MarkExternalRuntimeLoaded() {
     sv->MarkExternalRuntimeLoaded();
     return;
   }
-  std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+  std::unique_lock<std::mutex> lifecycle_lock(lifecycle_mutex_);
   if (!active_ || unregistering_)
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
              "model is no longer registered");
@@ -502,7 +503,10 @@ void Model::ReleaseExternalRuntime() noexcept {
     sv->ReleaseExternalRuntime();
     return;
   }
-  external_runtime_count_.fetch_sub(1);
+  auto count = external_runtime_count_.load();
+  while (count != 0 &&
+         !external_runtime_count_.compare_exchange_weak(count, count - 1)) {
+  }
 }
 
 void Model::UnloadExternalRuntime() {
@@ -648,7 +652,7 @@ void Model::Load(ExecutionProvider ep, std::optional<std::string_view> expected_
     return;
   }
 
-  std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+  std::unique_lock<std::mutex> lifecycle_lock(lifecycle_mutex_);
 
   if (!active_ || unregistering_) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
@@ -667,6 +671,17 @@ void Model::Load(ExecutionProvider ep, std::optional<std::string_view> expected_
   // in the load manager's map, so no need for a local short-circuit.
   const auto path = LocalPathSnapshot();
   RequireSelectedArtifact(path, expected_path);
+  if (info.task == "text-ranking" || info.task == "typed-decision") {
+    const auto package = ReadNonGenerativePackage(path);
+    if (!package)
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+               "model is not a non-generative package");
+    lifecycle_lock.unlock();
+    model_load_manager_->AcquireNonGenerativeRuntime(
+        *this, info.task, package->execution_provider,
+        package->estimated_resident_bytes);
+    return;
+  }
   auto result = model_load_manager_->LoadModel(path, Info().model_id, ep);
 
   if (result.status == ModelLoadManager::LoadStatus::kModelNotFound) {
@@ -681,17 +696,14 @@ void Model::Unload() {
   }
 
   std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
-  if (Info().task == "text-ranking" || Info().task == "typed-decision") {
-    FL_THROW(
-        FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
-        "non-generative models must be unloaded through the service model-unload route");
-  }
-
   if (external_session_count_.load() != 0) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
              "cannot unload model while non-generative sessions are active");
   }
-  external_runtime_count_.store(0);
+  if (Info().task == "text-ranking" || Info().task == "typed-decision") {
+    model_load_manager_->UnloadNonGenerativeRuntime(*this);
+    return;
+  }
 
   // Path qualification lets a retired handle clean up its own instance without unloading a later registration that
   // reused the same model ID at a different path. UnloadModel is idempotent when no matching instance is loaded.

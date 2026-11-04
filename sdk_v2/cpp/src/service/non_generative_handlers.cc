@@ -23,62 +23,6 @@
 
 namespace fl {
 
-NonGenerativeRuntimeState::NonGenerativeRuntimeState(
-    std::shared_ptr<NonGenerativeAdmissionCoordinator> admission)
-    : admission_(std::move(admission)) {
-  if (!admission_)
-    throw std::invalid_argument(
-        "non-generative admission coordinator is required");
-}
-
-NonGenerativeRuntimeState::~NonGenerativeRuntimeState() = default;
-
-std::shared_ptr<void> NonGenerativeRuntimeState::Acquire(
-    const std::string& identity, const std::string& model_id, Model* owner,
-    const std::function<std::shared_ptr<void>()>& factory) {
-  return Acquire(identity, model_id, owner, 0, "", factory);
-}
-
-std::shared_ptr<void> NonGenerativeRuntimeState::Acquire(
-    const std::string& identity, const std::string& model_id, Model* owner,
-    uint64_t estimated_resident_bytes, const std::string& readiness_group,
-    const std::function<std::shared_ptr<void>()>& factory) {
-  std::shared_future<std::shared_ptr<void>> future;
-  std::shared_ptr<std::promise<std::shared_ptr<void>>> promise;
-  std::shared_ptr<NonGenerativeAdmissionReservation> reservation;
-  {
-    std::lock_guard lock(mutex_);
-    const auto found = runtimes_.find(identity);
-    if (found != runtimes_.end()) {
-      future = found->second.runtime;
-    } else {
-      reservation = std::make_shared<NonGenerativeAdmissionReservation>(
-          admission_, estimated_resident_bytes, model_id);
-      promise = std::make_shared<std::promise<std::shared_ptr<void>>>();
-      future = promise->get_future().share();
-      runtimes_.emplace(
-          identity,
-          RuntimeEntry{model_id, owner, reservation, future});
-    }
-  }
-
-  if (promise) {
-    try {
-      NonGenerativeReadinessLease readiness(admission_, readiness_group);
-      promise->set_value(factory());
-    } catch (...) {
-      promise->set_exception(std::current_exception());
-      std::lock_guard lock(mutex_);
-      const auto found = runtimes_.find(identity);
-      if (found != runtimes_.end() &&
-          found->second.reservation == reservation)
-        runtimes_.erase(found);
-      throw;
-    }
-  }
-  return future.get();
-}
-
 namespace {
 struct ResolvedPackage {
   std::string identity;
@@ -115,10 +59,6 @@ ResolvedPackage ResolvePackage(ServiceContext& ctx, const std::string& requested
     throw std::invalid_argument(
         "selected catalog model is not a multi-component package");
   }
-  if (package->model_id != model->Id()) {
-    throw std::invalid_argument(
-        "selected catalog model ID does not match package metadata");
-  }
   auto provider = package->execution_provider;
   auto canonical =
       std::filesystem::weakly_canonical(model->GetPath()).string();
@@ -146,17 +86,10 @@ std::pair<std::shared_ptr<Runtime>, std::unique_ptr<ModelSessionLease>>
 AcquireRuntime(ServiceContext& ctx, const ResolvedPackage& package) {
   Model* acquired = package.model->AcquireExternalSession();
   auto lease = std::make_unique<ModelSessionLease>(acquired);
-  auto state = ctx.non_generative_runtimes;
-  auto runtime = std::static_pointer_cast<Runtime>(state->Acquire(
-      package.identity, package.model_id, package.model,
-      package.estimated_resident_bytes,
-      package.provider.empty() ? "cpu" : package.provider,
-      [&] {
-        package.model->PrepareExternalProvider(package.provider);
-        auto runtime = std::make_shared<Runtime>(package.path);
-        package.model->MarkExternalRuntimeLoaded();
-        return runtime;
-      }));
+  auto runtime = std::static_pointer_cast<Runtime>(
+      ctx.model_load_manager.AcquireNonGenerativeRuntime(
+          *package.model, package.model->Info().task, package.provider,
+          package.estimated_resident_bytes));
   return {std::move(runtime), std::move(lease)};
 }
 
@@ -214,49 +147,12 @@ class NonGenerativeHandler final : public HttpRequestHandler {
 
 }  // namespace
 
-std::shared_ptr<NonGenerativeAdmissionCoordinator>
-CreateNonGenerativeAdmissionCoordinator(
-    uint64_t memory_budget_bytes, size_t readiness_concurrency) {
-  return std::make_shared<NonGenerativeAdmissionCoordinator>(
-      memory_budget_bytes, readiness_concurrency);
-}
-
-std::shared_ptr<NonGenerativeRuntimeState> CreateNonGenerativeRuntimeState(
-    std::shared_ptr<NonGenerativeAdmissionCoordinator> admission) {
-  return std::make_shared<NonGenerativeRuntimeState>(std::move(admission));
-}
-
-std::shared_ptr<NonGenerativeRuntimeState> CreateNonGenerativeRuntimeState(
-    uint64_t memory_budget_bytes, size_t readiness_concurrency) {
-  return CreateNonGenerativeRuntimeState(
-      CreateNonGenerativeAdmissionCoordinator(
-          memory_budget_bytes, readiness_concurrency));
-}
-
 bool UnloadNonGenerativeRuntime(ServiceContext& ctx, Model& model) {
-  auto state = ctx.non_generative_runtimes;
-  std::lock_guard lock(state->mutex_);
-  auto* leaf = model.SelectedLeaf();
-  leaf->UnloadExternalRuntime();
-  bool removed = false;
-  for (auto it = state->runtimes_.begin(); it != state->runtimes_.end();) {
-    if (it->second.owner == leaf) {
-      it = state->runtimes_.erase(it);
-      removed = true;
-    } else {
-      ++it;
-    }
-  }
-  return removed;
+  return ctx.model_load_manager.UnloadNonGenerativeRuntime(model);
 }
 
 void ClearNonGenerativeRuntimes(ServiceContext& ctx) {
-  auto state = ctx.non_generative_runtimes;
-  std::lock_guard lock(state->mutex_);
-  for (auto& [_, entry] : state->runtimes_) {
-    if (entry.owner) entry.owner->ReleaseExternalRuntime();
-  }
-  state->runtimes_.clear();
+  ctx.model_load_manager.NonGenerativeRuntimes()->Clear();
 }
 
 std::shared_ptr<oatpp::web::server::HttpRequestHandler> CreateSystemOneHandler(

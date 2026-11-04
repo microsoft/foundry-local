@@ -23,6 +23,8 @@
 
 namespace fl {
 
+class Model;
+
 /// Manages the lifecycle of loaded ORT GenAI models.
 /// Thread-safe. Owns all GenAIModelInstance instances.
 ///
@@ -71,6 +73,14 @@ class ModelLoadManager {
   NonGenerativeAdmission() const {
     return non_generative_admission_;
   }
+  std::shared_ptr<NonGenerativeRuntimeState>
+  NonGenerativeRuntimes() const {
+    return non_generative_runtimes_;
+  }
+  std::shared_ptr<void> AcquireNonGenerativeRuntime(
+      Model& model, std::string_view task, std::string_view provider,
+      uint64_t estimated_resident_bytes);
+  bool UnloadNonGenerativeRuntime(Model& model);
 
   /// Unload a previously loaded model.
   /// @returns true if the model was found and unloaded; false if the model was not loaded
@@ -140,6 +150,7 @@ class ModelLoadManager {
   ILogger& logger_;
   std::shared_ptr<NonGenerativeAdmissionCoordinator>
       non_generative_admission_;
+  std::shared_ptr<NonGenerativeRuntimeState> non_generative_runtimes_;
   std::atomic<bool> shutdown_{false};
   mutable std::mutex mutex_;
   std::map<std::string, std::unique_ptr<GenAIModelInstance>> loaded_models_;

@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "inferencing/model_load_manager.h"
+#include "inferencing/predictive/non_generative_runtime.h"
+#include "model.h"
 
 #include "exception.h"
 #include "inferencing/generative/chat/onnx_chat_engine.h"
@@ -95,7 +97,10 @@ ModelLoadManager::ModelLoadManager(
       non_generative_admission_(
           std::make_shared<NonGenerativeAdmissionCoordinator>(
               non_generative_memory_budget_bytes,
-              non_generative_readiness_concurrency)) {}
+              non_generative_readiness_concurrency)),
+      non_generative_runtimes_(
+          std::make_shared<NonGenerativeRuntimeState>(
+              non_generative_admission_)) {}
 
 ModelLoadManager::~ModelLoadManager() {
   // Destroy all loaded models under the lock.
@@ -134,11 +139,46 @@ void ModelLoadManager::PrepareProviderForModelLoad(
                      "model '", model_id, "' requires ", registration_name,
                      " which is not registered. Call DownloadAndRegisterEps() first.");
   }
+
   if (!ep_detector_.PrepareForModelLoad(registration_name)) {
     FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INTERNAL,
                      "failed to prepare ", registration_name,
                      " for model loading");
   }
+}
+
+std::shared_ptr<void> ModelLoadManager::AcquireNonGenerativeRuntime(
+    Model& model, std::string_view task, std::string_view provider,
+    uint64_t estimated_resident_bytes) {
+  const auto canonical =
+      std::filesystem::weakly_canonical(model.GetPath()).string();
+  const auto provider_name = std::string(provider);
+  const auto identity = model.Id() + "|" + canonical + "|" + provider_name;
+  return non_generative_runtimes_->Acquire(
+      identity, model.Id(), &model, estimated_resident_bytes,
+      provider.empty() ? "cpu" : provider_name,
+      [&]() -> std::shared_ptr<void> {
+        const auto registration =
+            provider.empty()
+                ? std::string_view{}
+                : EPUtils::EPtoRegistrationName(
+                      EPUtils::StringtoEP(provider));
+        PrepareProviderForModelLoad(registration, model.Id());
+        std::shared_ptr<void> runtime;
+        if (task == "text-ranking")
+          runtime = std::make_shared<RankingRuntime>(canonical);
+        else if (task == "typed-decision")
+          runtime = std::make_shared<DecisionRuntime>(canonical);
+        else
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                   "unsupported non-generative task: ", task);
+        model.MarkExternalRuntimeLoaded();
+        return runtime;
+      });
+}
+
+bool ModelLoadManager::UnloadNonGenerativeRuntime(Model& model) {
+  return non_generative_runtimes_->Remove(model);
 }
 
 // ---------------------------------------------------------------------------
@@ -296,6 +336,7 @@ bool ModelLoadManager::UnloadModel(std::string_view model_id, const std::string*
 
 void ModelLoadManager::RejectNewLoads() {
   shutdown_.store(true);
+  non_generative_runtimes_->RejectNewAcquisitions();
 }
 
 void ModelLoadManager::UnloadAll(std::chrono::milliseconds timeout) {
