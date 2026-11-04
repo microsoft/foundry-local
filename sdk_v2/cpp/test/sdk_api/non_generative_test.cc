@@ -2,25 +2,31 @@
 // Licensed under the MIT License.
 
 #include "foundry_local/foundry_local_cpp.h"
+#include "utils/safe_getenv.h"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
 #include <chrono>
-#include <cstdlib>
 #include <filesystem>
 #include <string>
 #include <string_view>
 
 namespace {
 
+TEST(NonGenerativeSdkTest, RejectsEmbeddedNullBeforeNativeDispatch) {
+  const std::string request{"{}\0trailing", 11};
+  EXPECT_THROW(
+      foundry_local::detail::ValidateNonGenerativeJsonInput(request),
+      std::invalid_argument);
+}
+
 TEST(NonGenerativeSdkTest, ExportedPackagesRunWhenConfigured) {
-  const char* root_value =
-      std::getenv("FOUNDRY_LOCAL_NON_GENERATIVE_TEST_ROOT");
-  if (!root_value || !*root_value) {
-    if (const char* required =
-            std::getenv("FOUNDRY_LOCAL_REQUIRE_NON_GENERATIVE_TESTS");
-        required && std::string_view(required) == "1")
+  const auto root_value =
+      fl::test::SafeGetEnv("FOUNDRY_LOCAL_NON_GENERATIVE_TEST_ROOT");
+  if (root_value.empty()) {
+    if (fl::test::SafeGetEnv(
+            "FOUNDRY_LOCAL_REQUIRE_NON_GENERATIVE_TESTS") == "1")
       FAIL() << "required non-generative package root is not configured";
     GTEST_SKIP() << "set FOUNDRY_LOCAL_NON_GENERATIVE_TEST_ROOT";
   }

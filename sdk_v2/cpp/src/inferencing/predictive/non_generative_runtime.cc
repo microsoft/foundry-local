@@ -95,7 +95,7 @@ class SessionExecutor {
   SessionExecutor& operator=(const SessionExecutor&) = delete;
 
   template <typename Function>
-  auto Invoke(Function&& function)
+  auto Invoke(Function&& function, std::function<bool()> is_canceled = {})
       -> std::invoke_result_t<Function, Session&> {
     using Result = std::invoke_result_t<Function, Session&>;
     auto promise = std::make_shared<std::promise<Result>>();
@@ -105,9 +105,13 @@ class SessionExecutor {
       if (stopping_)
         throw std::runtime_error("typed runtime is stopping");
       tasks_.emplace_back(
-          [promise, function = std::forward<Function>(function)](
+          [promise, function = std::forward<Function>(function),
+           is_canceled = std::move(is_canceled)](
               Session& session) mutable {
             try {
+              if (is_canceled && is_canceled())
+                throw std::runtime_error(
+                    "non-generative request was canceled before execution");
               if constexpr (std::is_void_v<Result>) {
                 std::invoke(function, session);
                 promise->set_value();
@@ -146,7 +150,8 @@ RankingRuntime::RankingRuntime(const std::string& package_path)
     : impl_(std::make_unique<Impl>(package_path)) {}
 RankingRuntime::~RankingRuntime() = default;
 
-nlohmann::json RankingRuntime::Rank(const RankingRequest& request) {
+nlohmann::json RankingRuntime::Rank(
+    const RankingRequest& request, std::function<bool()> is_canceled) {
   json candidates = json::object();
   for (size_t i = 0; i < request.answers.size(); ++i)
     candidates[std::to_string(i)] = request.answers[i];
@@ -159,7 +164,8 @@ nlohmann::json RankingRuntime::Rank(const RankingRequest& request) {
   const auto response = impl_->executor.Invoke(
       [request_json](::NonGenerativeSession& session) {
         return session.Run(request_json);
-      });
+      },
+      std::move(is_canceled));
   const auto result = json::parse(response);
   json ranked = json::array();
   for (const auto& item : result.at("ranked")) {
@@ -186,12 +192,15 @@ DecisionRuntime::DecisionRuntime(const std::string& package_path)
     : impl_(std::make_unique<Impl>(package_path)) {}
 DecisionRuntime::~DecisionRuntime() = default;
 
-nlohmann::json DecisionRuntime::Decide(const NonGenerativeRequest& request) {
+nlohmann::json DecisionRuntime::Decide(
+    const NonGenerativeRequest& request,
+    std::function<bool()> is_canceled) {
   const auto request_json = StructuredRequestJson(request).dump();
   const auto response = impl_->executor.Invoke(
       [request_json](::NonGenerativeSession& session) {
         return session.Run(request_json);
-      });
+      },
+      std::move(is_canceled));
   return json::parse(response).at("answers");
 }
 

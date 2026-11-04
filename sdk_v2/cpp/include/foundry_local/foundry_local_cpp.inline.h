@@ -1406,8 +1406,17 @@ inline IModel& RequireTask(IModel& model, std::string_view expected) {
   return model;
 }
 
+inline void ValidateNonGenerativeJsonInput(
+    const std::string& request_json) {
+  if (request_json.find('\0') != std::string::npos) {
+    throw std::invalid_argument(
+        "non-generative JSON requests cannot contain embedded NUL bytes");
+  }
+}
+
 inline std::string ProcessNonGenerativeJson(
     Session& session, const std::string& request_json) {
+  ValidateNonGenerativeJsonInput(request_json);
   Request request(Item::Text(request_json));
   auto response = session.ProcessRequest(request);
   if (response.GetItems().size() != 1 ||

@@ -10,8 +10,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <future>
 #include <limits>
 #include <map>
 #include <memory>
@@ -24,6 +26,25 @@
 namespace fl {
 
 class Model;
+class ModelLoadManager;
+class ManagedModelRuntime;
+class ModelLoadManagerTestAccess;
+
+/// Keeps an admitted hosted load's selection stable until it succeeds or unwinds. The manager must outlive the lease.
+class LoadedSelectionReservation {
+ public:
+  ~LoadedSelectionReservation();
+  LoadedSelectionReservation(const LoadedSelectionReservation&) = delete;
+  LoadedSelectionReservation& operator=(const LoadedSelectionReservation&) = delete;
+  void Commit() noexcept;
+
+ private:
+  friend class ModelLoadManager;
+  LoadedSelectionReservation(ModelLoadManager& manager, std::pair<std::string, std::string> identity);
+  ModelLoadManager& manager_;
+  const std::pair<std::string, std::string> identity_;
+  bool active_ = false;
+};
 
 /// Manages the lifecycle of loaded ORT GenAI models.
 /// Thread-safe. Owns all GenAIModelInstance instances.
@@ -43,6 +64,22 @@ class ModelLoadManager {
   struct LoadResult {
     LoadStatus status;
     GenAIModelInstance* model = nullptr;  // non-owning pointer; lifetime managed by this class
+  };
+
+  class PredictiveRequestLease {
+   public:
+    PredictiveRequestLease(PredictiveRequestLease&& other) noexcept;
+    PredictiveRequestLease& operator=(PredictiveRequestLease&&) = delete;
+    ~PredictiveRequestLease();
+
+    PredictiveRequestLease(const PredictiveRequestLease&) = delete;
+    PredictiveRequestLease& operator=(const PredictiveRequestLease&) = delete;
+
+   private:
+    friend class ModelLoadManager;
+    explicit PredictiveRequestLease(ModelLoadManager& manager)
+        : manager_(&manager) {}
+    ModelLoadManager* manager_;
   };
 
   ModelLoadManager(
@@ -69,18 +106,19 @@ class ModelLoadManager {
   /// dependencies before constructing an ORT GenAI model or session.
   void PrepareProviderForModelLoad(std::string_view registration_name,
                                    std::string_view model_id);
-  std::shared_ptr<NonGenerativeAdmissionCoordinator>
-  NonGenerativeAdmission() const {
-    return non_generative_admission_;
-  }
-  std::shared_ptr<NonGenerativeRuntimeState>
-  NonGenerativeRuntimes() const {
-    return non_generative_runtimes_;
-  }
   std::shared_ptr<void> AcquireNonGenerativeRuntime(
       Model& model, std::string_view task, std::string_view provider,
       uint64_t estimated_resident_bytes);
   bool UnloadNonGenerativeRuntime(Model& model);
+  bool IsModelLoaded(const Model& model) const;
+  bool IsModelArtifactLoaded(std::string_view model_id,
+                             std::string_view model_path) const;
+  bool UnloadModelArtifact(std::string_view model_id,
+                           std::string_view model_path);
+  void RegisterPredictiveSession(void* identity,
+                                 std::function<void()> cancel);
+  void UnregisterPredictiveSession(void* identity) noexcept;
+  PredictiveRequestLease AcquirePredictiveRequest();
 
   /// Unload a previously loaded model.
   /// @returns true if the model was found and unloaded; false if the model was not loaded
@@ -100,6 +138,15 @@ class ModelLoadManager {
 
   /// Get a loaded model for an immediate query only when its normalized path matches `model_path`.
   GenAIModelInstance* GetLoadedModel(std::string_view model_id, std::string_view model_path);
+
+  /// Preserve hosted selection by artifact identity without reporting locally loaded weights.
+  /// Returns whether that artifact already had a committed pin.
+  bool PreserveLoadedSelection(std::string_view model_id, std::string_view model_path, bool preserve);
+  bool HasPreservedLoadedSelection(std::string_view model_id, std::string_view model_path) const;
+  std::unique_ptr<LoadedSelectionReservation> ReserveLoadedSelection(std::string_view model_id,
+                                                                     std::string_view model_path);
+  /// Recheck committed hosted pins without holding the manager lock across remote calls.
+  void ReconcileLoadedSelections(const std::function<bool(const std::string&, const std::string&)>& is_loaded);
 
   struct SessionReferenceDeleter {
     void operator()(GenAIModelInstance* model) const noexcept { model->ReleaseSession(); }
@@ -141,7 +188,16 @@ class ModelLoadManager {
   void UnloadAll(std::chrono::milliseconds timeout = std::chrono::seconds(10));
 
  private:
+  friend class LoadedSelectionReservation;
+  friend class ModelLoadManagerTestAccess;
+  void CompleteSelectionReservation(const std::pair<std::string, std::string>& identity, bool commit) noexcept;
+  std::shared_ptr<void> AcquireManagedRuntime(
+      std::string identity, std::string model_id, std::string model_path,
+      uint64_t estimated_resident_bytes, std::string readiness_group,
+      const std::function<std::shared_ptr<void>()>& factory);
+
   bool HasEP(const std::string& ep_name) const;
+  void ReleasePredictiveRequest() noexcept;
   bool UnloadModel(std::string_view model_id, const std::string* normalized_model_path);
   GenAIModelInstance* GetLoadedModel(std::string_view model_id, const std::string* normalized_model_path);
   GenAIModelInstance* FindLoadedModelLocked(std::string_view model_id, const std::string* normalized_model_path);
@@ -150,10 +206,26 @@ class ModelLoadManager {
   ILogger& logger_;
   std::shared_ptr<NonGenerativeAdmissionCoordinator>
       non_generative_admission_;
-  std::shared_ptr<NonGenerativeRuntimeState> non_generative_runtimes_;
   std::atomic<bool> shutdown_{false};
   mutable std::mutex mutex_;
-  std::map<std::string, std::unique_ptr<GenAIModelInstance>> loaded_models_;
+  std::map<std::string, std::shared_ptr<ManagedModelRuntime>> loaded_runtimes_;
+  struct LoadingRuntimeEntry {
+    std::string model_id;
+    std::string model_path;
+    std::shared_future<std::shared_ptr<ManagedModelRuntime>> runtime;
+  };
+  std::map<std::string, LoadingRuntimeEntry> loading_runtimes_;
+  std::mutex predictive_mutex_;
+  std::condition_variable predictive_condition_;
+  std::map<void*, std::function<void()>> predictive_sessions_;
+  size_t active_predictive_requests_{};
+  struct SelectionState {
+    bool preserved = false;
+    size_t reservations = 0;
+    uint64_t generation = 0;
+  };
+  std::map<std::pair<std::string, std::string>, SelectionState> preserved_selections_;
+  uint64_t selection_generation_ = 0;
 };
 
 }  // namespace fl

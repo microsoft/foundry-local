@@ -41,19 +41,23 @@ class ModelNotFoundError : public std::runtime_error {
 };
 
 NonGenerativePackageMetadata CachedPackageMetadata(
+    ModelLoadManager& model_load_manager, Model& model,
     const std::string& path) {
   static std::mutex mutex;
   static std::unordered_map<std::string, NonGenerativePackageMetadata> cache;
   const auto canonical =
       std::filesystem::weakly_canonical(path).string();
   std::lock_guard lock(mutex);
-  if (const auto found = cache.find(canonical); found != cache.end())
-    return found->second;
+  if (model_load_manager.IsModelLoaded(model)) {
+    if (const auto found = cache.find(canonical); found != cache.end())
+      return found->second;
+  }
   const auto package = ReadNonGenerativePackage(canonical);
   if (!package)
     throw std::invalid_argument(
         "selected catalog model is not a multi-component package");
-  return cache.emplace(canonical, *package).first->second;
+  cache.insert_or_assign(canonical, *package);
+  return *package;
 }
 
 ResolvedPackage ResolvePackage(ServiceContext& ctx, const std::string& requested,
@@ -72,7 +76,8 @@ ResolvedPackage ResolvePackage(ServiceContext& ctx, const std::string& requested
   if (!model->IsCached()) {
     throw std::invalid_argument("selected model package is not available locally");
   }
-  const auto package = CachedPackageMetadata(model->GetPath());
+  const auto package = CachedPackageMetadata(
+      ctx.model_load_manager, *model, model->GetPath());
   auto provider = package.execution_provider;
   auto canonical =
       std::filesystem::weakly_canonical(model->GetPath()).string();
@@ -82,29 +87,13 @@ ResolvedPackage ResolvePackage(ServiceContext& ctx, const std::string& requested
           package.estimated_resident_bytes, model};
 }
 
-class ModelSessionLease {
- public:
-  explicit ModelSessionLease(Model* model) : model_(model) {}
-  ~ModelSessionLease() {
-    if (model_) model_->ReleaseExternalSession();
-  }
-  ModelSessionLease(const ModelSessionLease&) = delete;
-  ModelSessionLease& operator=(const ModelSessionLease&) = delete;
-
- private:
-  Model* model_;
-};
-
 template <typename Runtime>
-std::pair<std::shared_ptr<Runtime>, std::unique_ptr<ModelSessionLease>>
-AcquireRuntime(ServiceContext& ctx, const ResolvedPackage& package) {
-  Model* acquired = package.model->AcquireExternalSession();
-  auto lease = std::make_unique<ModelSessionLease>(acquired);
-  auto runtime = std::static_pointer_cast<Runtime>(
+std::shared_ptr<Runtime> AcquireRuntime(
+    ServiceContext& ctx, const ResolvedPackage& package) {
+  return std::static_pointer_cast<Runtime>(
       ctx.model_load_manager.AcquireNonGenerativeRuntime(
           *package.model, package.model->Info().task, package.provider,
           package.estimated_resident_bytes));
-  return {std::move(runtime), std::move(lease)};
 }
 
 template <typename Runtime, typename Request, bool IsRank>
@@ -126,7 +115,7 @@ class NonGenerativeHandler final : public HttpRequestHandler {
     }
     try {
       const auto package = ResolvePackage(ctx_, input.model, task_);
-      auto [runtime, lease] = AcquireRuntime<Runtime>(ctx_, package);
+      auto runtime = AcquireRuntime<Runtime>(ctx_, package);
       auto output = [&]() {
         if constexpr (IsRank) {
           auto result = runtime->Rank(input);
@@ -160,14 +149,6 @@ class NonGenerativeHandler final : public HttpRequestHandler {
 };
 
 }  // namespace
-
-bool UnloadNonGenerativeRuntime(ServiceContext& ctx, Model& model) {
-  return ctx.model_load_manager.UnloadNonGenerativeRuntime(model);
-}
-
-void ClearNonGenerativeRuntimes(ServiceContext& ctx) {
-  ctx.model_load_manager.NonGenerativeRuntimes()->Clear();
-}
 
 std::shared_ptr<oatpp::web::server::HttpRequestHandler> CreateSystemOneHandler(
     ServiceContext& ctx) {

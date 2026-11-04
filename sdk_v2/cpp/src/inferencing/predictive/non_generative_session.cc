@@ -5,6 +5,7 @@
 #include "catalog/non_generative_package.h"
 #include "contracts/non_generative.h"
 #include "exception.h"
+#include "inferencing/model_load_manager.h"
 #include "items/text_item.h"
 #include "model.h"
 
@@ -44,10 +45,11 @@ void ApplyOptions(const KeyValuePairs& options,
 }
 
 void ValidateBoundModel(const nlohmann::ordered_json& payload,
-                        const Model& model) {
+                        std::string_view model_id,
+                        std::string_view model_alias) {
   if (!payload.contains("model")) return;
   const auto selected = payload.at("model").get<std::string>();
-  if (selected != model.Id() && selected != model.Info().alias)
+  if (selected != model_id && selected != model_alias)
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
              "request model does not match the bound session model");
 }
@@ -55,43 +57,38 @@ void ValidateBoundModel(const nlohmann::ordered_json& payload,
 }  // namespace
 
 NonGenerativeSession::NonGenerativeSession(
-    const Model& model, ILogger& logger, ITelemetry& telemetry)
-    : Session(model, logger, telemetry) {
-  model_ = const_cast<Model&>(model).AcquireExternalSession();
-  try {
-    model_id_ = model_->Id();
-    const auto package = ReadNonGenerativePackage(model_->GetPath());
-    if (!package)
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-               "model is not a non-generative package");
-    provider_ = package->execution_provider;
-    auto runtime = model_->AcquireExternalRuntime();
-    if (model_->Info().task == "text-ranking")
-      ranking_ = std::static_pointer_cast<RankingRuntime>(runtime);
-    else if (model_->Info().task == "typed-decision")
-      decision_ = std::static_pointer_cast<DecisionRuntime>(runtime);
-    else
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-               "unsupported non-generative model task: ",
-               model_->Info().task);
-  } catch (...) {
-    ranking_.reset();
-    decision_.reset();
-    model_->ReleaseExternalSession();
-    model_ = nullptr;
-    throw;
-  }
+    const Model& model, ModelLoadManager& model_load_manager, ILogger& logger,
+    ITelemetry& telemetry)
+    : Session(model, logger, telemetry),
+      model_load_manager_(model_load_manager),
+      model_id_(model.Id()),
+      model_alias_(model.Info().alias) {
+  const auto package = ReadNonGenerativePackage(model.GetPath());
+  if (!package)
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "model is not a non-generative package");
+  provider_ = package->execution_provider;
+  auto runtime = model_load_manager_.AcquireNonGenerativeRuntime(
+      const_cast<Model&>(model), model.Info().task, provider_,
+      package->estimated_resident_bytes);
+  if (model.Info().task == "text-ranking")
+    ranking_ = std::static_pointer_cast<IRankingRuntime>(runtime);
+  else if (model.Info().task == "typed-decision")
+    decision_ = std::static_pointer_cast<IDecisionRuntime>(runtime);
+  else
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "unsupported non-generative model task: ", model.Info().task);
+  model_load_manager_.RegisterPredictiveSession(
+      this, [this] { Cancel(); });
 }
 
 NonGenerativeSession::~NonGenerativeSession() {
-  ranking_.reset();
-  decision_.reset();
-  if (!model_) return;
-  model_->ReleaseExternalSession();
+  model_load_manager_.UnregisterPredictiveSession(this);
 }
 
 void NonGenerativeSession::ProcessRequestImpl(
     const Request& request, Response& response) {
+  auto active_request = model_load_manager_.AcquirePredictiveRequest();
   if (request.items.size() != 1 ||
       request.items.front()->type != FOUNDRY_LOCAL_ITEM_TEXT) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
@@ -110,7 +107,7 @@ void NonGenerativeSession::ProcessRequestImpl(
   try {
     payload = nlohmann::ordered_json::parse(item.text);
     ApplyOptions(MergedOptions(request.options), payload);
-    ValidateBoundModel(payload, *model_);
+    ValidateBoundModel(payload, model_id_, model_alias_);
   } catch (const nlohmann::json::exception& error) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
              "invalid non-generative request: ", error.what());
@@ -123,7 +120,8 @@ void NonGenerativeSession::ProcessRequestImpl(
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
                "invalid ranking request: ", error.what());
     }
-    result = ranking_->Rank(parsed);
+    result = ranking_->Rank(
+        parsed, [&request] { return request.IsCancellationRequested(); });
     result["model"] = model_id_;
   } else {
     NonGenerativeRequest parsed;
@@ -135,7 +133,10 @@ void NonGenerativeSession::ProcessRequestImpl(
     }
     result = {
         {"model", model_id_},
-        {"answers", decision_->Decide(parsed)},
+        {"answers",
+         decision_->Decide(
+             parsed,
+             [&request] { return request.IsCancellationRequested(); })},
         {"usage", {{"billing_units", 0}}},
     };
   }

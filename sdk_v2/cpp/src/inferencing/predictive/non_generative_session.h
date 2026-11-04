@@ -10,9 +10,12 @@
 
 namespace fl {
 
+class ModelLoadManager;
+
 class NonGenerativeSession final : public Session {
  public:
-  NonGenerativeSession(const Model& model, ILogger& logger, ITelemetry& telemetry);
+  NonGenerativeSession(const Model& model, ModelLoadManager& model_load_manager,
+                       ILogger& logger, ITelemetry& telemetry);
   ~NonGenerativeSession() override;
 
   SessionType Type() const override { return SessionType::kPredictive; }
@@ -22,11 +25,12 @@ class NonGenerativeSession final : public Session {
   std::string ExecutionProvider() const override { return provider_; }
 
  private:
-  Model* model_{};
+  ModelLoadManager& model_load_manager_;
   std::string model_id_;
+  std::string model_alias_;
   std::string provider_;
-  std::shared_ptr<RankingRuntime> ranking_;
-  std::shared_ptr<DecisionRuntime> decision_;
+  std::shared_ptr<IRankingRuntime> ranking_;
+  std::shared_ptr<IDecisionRuntime> decision_;
 };
 
 }  // namespace fl

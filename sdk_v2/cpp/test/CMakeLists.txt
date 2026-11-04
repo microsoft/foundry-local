@@ -397,6 +397,7 @@ add_executable(non_generative_sdk_tests
 )
 set_target_properties(non_generative_sdk_tests PROPERTIES CXX_STANDARD 17)
 target_compile_options(non_generative_sdk_tests PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+target_include_directories(non_generative_sdk_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(non_generative_sdk_tests
     PRIVATE
         foundry_local_cpp

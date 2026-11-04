@@ -136,7 +136,8 @@ std::unique_ptr<Session> Session::Create(const fl::Model& model) {
 
     if (non_generative) {
       auto session =
-          std::make_unique<NonGenerativeSession>(model, logger, telemetry);
+          std::make_unique<NonGenerativeSession>(
+              model, mgr.GetModelLoadManager(), logger, telemetry);
       tracker.SetStatus(ActionStatus::kSuccess);
       return session;
     }
