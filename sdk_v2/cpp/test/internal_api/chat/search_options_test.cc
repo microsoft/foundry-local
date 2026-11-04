@@ -51,6 +51,8 @@ TEST(SearchOptionsParsingTest, AutomaticReasoningUsesWholeTurnGuidanceWithoutDel
 
   context.text_output = true;
   context.supports_reasoning = false;
+  EXPECT_FALSE(ResolveTurnGuidanceOptions(context, false).has_value());
+
   context.tool_body_grammar = context.tool_plan->Grammar();
   EXPECT_FALSE(ResolveTurnGuidanceOptions(context, false).has_value());
 }

@@ -143,6 +143,10 @@ std::optional<TurnGuidanceOptions> ResolveTurnGuidanceOptions(const ToolCallCont
   std::string guidance_type;
   std::string guidance_data;
   const bool user_specified_guidance = tool_ctx.HasExplicitGuidance();
+  if (!user_specified_guidance && tool_ctx.text_output && tool_ctx.tool_output &&
+      !tool_ctx.supports_reasoning) {
+    return std::nullopt;
+  }
 
   if (user_specified_guidance) {
     guidance_type = tool_ctx.guidance_type;
