@@ -61,7 +61,8 @@ class ProviderBackend final : public api::ManagerBackend {
   api::CatalogBackend& GetCatalog(CatalogType) override {
     FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED, "provider fixture has no catalog");
   }
-  std::unique_ptr<api::ModelBackend> CaptureModel(const api::ModelBackend&) override {
+  std::unique_ptr<api::ModelBackend> CaptureModel(
+      const api::ModelBackend&, std::unique_ptr<LoadedSelectionReservation>*) override {
     FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED, "provider fixture has no model");
   }
   bool IsModelArtifactLoaded(const std::string&, const std::string&) const override { return false; }
@@ -552,6 +553,38 @@ TEST_F(SdkSessionTest, HostedAliasLoadIsReleasedByVariantAndCapturedHandleUnload
     ASSERT_NE(catalog.RegisterModel(path, alias + ":3", info), nullptr);
     EXPECT_EQ(catalog.GetModel(alias), model);
     EXPECT_EQ(model->Info().model_id, alias + ":3");
+  }
+}
+
+TEST_F(SdkSessionTest, FailedHostedLoadRollsBackItsReservationWithoutClearingAnExistingPin) {
+  auto hosted = api::CreateHostedBackend(manager_, [](bool acquire) -> std::shared_ptr<api::HostedContext> {
+    if (acquire) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK, "configured host acquisition failure");
+    }
+    return nullptr;
+  });
+  auto& source = manager_->GetCatalog(CatalogType::kLocal);
+  auto& catalog = hosted->GetCatalog(CatalogType::kLocal);
+  const auto path = (std::filesystem::path(FOUNDRY_LOCAL_TEST_DATA_DIR) / "tiny-paged-attention").string();
+  ModelInfo info;
+  info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "coding");
+  for (const bool preserved : {false, true}) {
+    SCOPED_TRACE(preserved);
+    const std::string alias = preserved ? "existing-failed-pin" : "new-failed-pin";
+    auto* variant = source.RegisterModel(path, alias + ":1", info);
+    auto* model = catalog.GetModel(alias);
+    ASSERT_NE(model, nullptr);
+    ASSERT_NE(variant, nullptr);
+    if (preserved) {
+      EXPECT_FALSE(variant->PreserveLoadedSelection(true));
+    }
+
+    EXPECT_THROW(model->Load("mismatched-path"), Exception);
+    EXPECT_THROW(model->Load(), Exception);
+    ASSERT_NE(source.RegisterModel(path, alias + ":2", info), nullptr);
+    EXPECT_EQ(catalog.GetModel(alias)->Info().model_id, alias + (preserved ? ":1" : ":2"));
+    EXPECT_EQ(variant->PreserveLoadedSelection(false), preserved);
+    EXPECT_EQ(catalog.GetModel(alias)->Info().model_id, alias + ":2");
   }
 }
 

@@ -48,6 +48,7 @@ class AzureModelCatalog : public BaseModelCatalog {
   virtual std::unique_ptr<ICatalogClient> CreateCatalogClient(const std::string& url,
                                                               const std::string& filter) const;
   VariantEligibility MakeVariantEligibility() const override;
+  void RefreshRetainedVariantCache(Model& model) const override;
 
  private:
   using LocalModels = std::map<std::string, std::string>;
@@ -71,6 +72,7 @@ class AzureModelCatalog : public BaseModelCatalog {
 
   std::vector<std::pair<std::string, std::optional<std::string>>> catalog_urls_;
   std::string cache_dir_;
+  mutable LocalModels scanned_local_models_;  // guarded by the base catalog mutex
   ModelFactory model_factory_;
   class CatalogDevices;
   std::unique_ptr<CatalogDevices> catalog_devices_;

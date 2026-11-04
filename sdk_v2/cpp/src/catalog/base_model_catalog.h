@@ -93,6 +93,10 @@ class BaseModelCatalog : public ICatalog {
   /// Authoritative catalogs reconcile removals and replacements from every fetched snapshot.
   virtual bool IsAuthoritativeSnapshot() const { return false; }
 
+  /// Reconcile a retained ID absent from metadata against the cache inventory collected by FetchModels().
+  /// Called under the catalog mutex; the default leaves source-specific cache state unchanged.
+  virtual void RefreshRetainedVariantCache(Model&) const {}
+
   /// Each selection pass uses one provider snapshot; an empty predicate makes every variant eligible.
   using VariantEligibility = std::function<bool(const Model&)>;
   virtual VariantEligibility MakeVariantEligibility() const { return {}; }

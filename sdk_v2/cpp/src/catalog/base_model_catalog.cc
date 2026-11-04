@@ -28,7 +28,7 @@ void BaseModelCatalog::SelectDefaultVariant(Model& model, const VariantEligibili
   }
 
   const bool selected_default = model.SelectDefaultVariant(
-      [&](const Model& variant) {
+      [this, is_eligible](const Model& variant) {
         if (!is_eligible || is_eligible(variant)) {
           return true;
         }
@@ -132,6 +132,19 @@ void BaseModelCatalog::PopulateModels(std::vector<Model> variants) const {
             existing->second->AddVariant(std::move(*variant));
           } else {
             known->second->UpdateCachedState(variant->LocalPathSnapshot());
+            existing_variants.erase(known);
+          }
+        }
+
+        for (const auto& [id, variant] : existing_variants) {
+          RefreshRetainedVariantCache(*variant);
+        }
+      }
+
+      for (const auto& [alias, existing] : existing_aliases) {
+        if (!alias_to_model.contains(alias)) {
+          for (auto* variant : existing->Variants()) {
+            RefreshRetainedVariantCache(*variant);
           }
         }
       }

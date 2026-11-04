@@ -21,6 +21,7 @@ struct Configuration;
 struct EpDownloadResult;
 struct Item;
 class KeyValuePairs;
+class LoadedSelectionReservation;
 struct ModelInfo;
 struct Request;
 struct RequestBudget;
@@ -122,7 +123,9 @@ class ManagerBackend : public BackendObject {
   using BackendObject::BackendObject;
   virtual CatalogBackend& GetCatalog(CatalogType type) = 0;
   // Capture an active selection for admitted execution, not for retaining catalog/discovery handles.
-  virtual std::unique_ptr<ModelBackend> CaptureModel(const ModelBackend& model) = 0;
+  // A requested reservation is published atomically with capture and rolls back unless committed after Load.
+  virtual std::unique_ptr<ModelBackend> CaptureModel(
+      const ModelBackend& model, std::unique_ptr<LoadedSelectionReservation>* reservation = nullptr) = 0;
   // Loaded artifacts can outlive their catalog registrations. These operations remain exactly path-qualified.
   virtual bool IsModelArtifactLoaded(const std::string& model_id, const std::string& path) const = 0;
   virtual void UnloadModelArtifact(const std::string& model_id, const std::string& path) = 0;

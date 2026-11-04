@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <fmt/format.h>
 #include <thread>
+#include <utility>
 
 namespace fl {
 
@@ -32,6 +33,23 @@ std::pair<std::string, std::string> SelectionIdentity(std::string_view model_id,
 }
 
 }  // namespace
+
+LoadedSelectionReservation::LoadedSelectionReservation(ModelLoadManager& manager,
+                                                       std::pair<std::string, std::string> identity)
+    : manager_(manager), identity_(std::move(identity)) {}
+
+LoadedSelectionReservation::~LoadedSelectionReservation() {
+  if (active_) {
+    manager_.CompleteSelectionReservation(identity_, false);
+  }
+}
+
+void LoadedSelectionReservation::Commit() noexcept {
+  if (active_) {
+    manager_.CompleteSelectionReservation(identity_, true);
+    active_ = false;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Construction / Destruction
@@ -306,16 +324,47 @@ bool ModelLoadManager::PreserveLoadedSelection(std::string_view model_id, std::s
   const auto identity = SelectionIdentity(model_id, model_path);
   std::lock_guard lock(mutex_);
   if (preserve) {
-    return !preserved_selections_.insert(identity).second;
+    return std::exchange(preserved_selections_[identity].preserved, true);
   }
 
-  return preserved_selections_.erase(identity) != 0;
+  const auto found = preserved_selections_.find(identity);
+  if (found == preserved_selections_.end()) {
+    return false;
+  }
+
+  const bool previous = std::exchange(found->second.preserved, false);
+  if (found->second.reservations == 0) {
+    preserved_selections_.erase(found);
+  }
+  return previous;
 }
 
 bool ModelLoadManager::HasPreservedLoadedSelection(std::string_view model_id, std::string_view model_path) const {
   const auto identity = SelectionIdentity(model_id, model_path);
   std::lock_guard lock(mutex_);
   return preserved_selections_.contains(identity);
+}
+
+std::unique_ptr<LoadedSelectionReservation> ModelLoadManager::ReserveLoadedSelection(std::string_view model_id,
+                                                                                     std::string_view model_path) {
+  auto reservation = std::unique_ptr<LoadedSelectionReservation>(
+      new LoadedSelectionReservation(*this, SelectionIdentity(model_id, model_path)));
+  std::lock_guard lock(mutex_);
+  ++preserved_selections_[reservation->identity_].reservations;
+  reservation->active_ = true;
+  return reservation;
+}
+
+void ModelLoadManager::CompleteSelectionReservation(const std::pair<std::string, std::string>& identity,
+                                                    bool commit) noexcept {
+  std::lock_guard lock(mutex_);
+  const auto found = preserved_selections_.find(identity);
+  auto& state = found->second;
+  state.preserved = state.preserved || commit;
+  --state.reservations;
+  if (!state.preserved && state.reservations == 0) {
+    preserved_selections_.erase(found);
+  }
 }
 
 GenAIModelInstance* ModelLoadManager::GetLoadedModel(std::string_view model_id,

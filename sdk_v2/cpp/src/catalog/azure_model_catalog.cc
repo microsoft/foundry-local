@@ -340,9 +340,15 @@ std::vector<Model> AzureModelCatalog::FetchModels() const {
   }
 
   auto models = CreateModelsWithLocalPaths(catalog_result.model_infos, local_models);
+  scanned_local_models_ = std::move(local_models);
   logger_.Log(LogLevel::Information, fmt::format("Populated model info for {} models.", models.size()));
 
   return models;
+}
+
+void AzureModelCatalog::RefreshRetainedVariantCache(Model& model) const {
+  const auto found = scanned_local_models_.find(model.Id());
+  model.UpdateCachedState(found == scanned_local_models_.end() ? std::string{} : found->second);
 }
 
 std::vector<Model> AzureModelCatalog::FetchModelVersions(

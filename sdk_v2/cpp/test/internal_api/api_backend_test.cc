@@ -145,7 +145,8 @@ class RecordingManager final : public fl::api::ManagerBackend {
   fl::api::CatalogBackend& GetCatalog(fl::CatalogType) override {
     FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED, "catalog is not used by this test");
   }
-  std::unique_ptr<fl::api::ModelBackend> CaptureModel(const fl::api::ModelBackend&) override {
+  std::unique_ptr<fl::api::ModelBackend> CaptureModel(
+      const fl::api::ModelBackend&, std::unique_ptr<fl::LoadedSelectionReservation>*) override {
     FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED, "model capture is not used by this test");
   }
   bool IsModelArtifactLoaded(const std::string&, const std::string&) const override { return false; }

@@ -6,6 +6,7 @@
 #include "ep_detection/ep_types.h"
 #include "exception.h"
 #include "hosting/sdk_values.h"
+#include "inferencing/model_load_manager.h"
 #include "items/item.h"
 #include "items/text_item.h"
 #include "util/path_safety.h"
@@ -206,16 +207,12 @@ class HostedModel final : public ModelBackend {
   void Load(std::optional<std::string_view> expected_path) override {
     state_.RefreshCatalog(catalog_);
     std::lock_guard lock(state_.selection_mutex);
-    const auto selected = state_.metadata->CaptureModel(source_);
+    std::unique_ptr<LoadedSelectionReservation> reservation;
+    const auto selected = state_.metadata->CaptureModel(source_, &reservation);
     RequirePath(selected->GetPath(), expected_path);
     const auto payload = Json{{"model", EncodeModelSelection(catalog_, *selected)}};
-    const bool previously_preserved = selected->PreserveLoadedSelection(true);
-    try {
-      state_.Connect(true)->Call(Operation::Load, payload);
-    } catch (...) {
-      selected->PreserveLoadedSelection(previously_preserved);
-      throw;
-    }
+    state_.Connect(true)->Call(Operation::Load, payload);
+    reservation->Commit();
   }
 
   void Unload() override {
@@ -489,7 +486,8 @@ class HostedManager final : public ManagerBackend {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
   }
 
-  std::unique_ptr<ModelBackend> CaptureModel(const ModelBackend& model) override {
+  std::unique_ptr<ModelBackend> CaptureModel(
+      const ModelBackend& model, std::unique_ptr<LoadedSelectionReservation>* reservation) override {
     state_->RequireOpen();
     const auto* hosted = dynamic_cast<const HostedModel*>(&model);
     if (!hosted) {
@@ -498,8 +496,8 @@ class HostedManager final : public ManagerBackend {
 
     const auto& selected = models_.Unwrap(hosted->Catalog(), model);
     std::lock_guard lock(state_->selection_mutex);
-    return std::make_unique<HostedModel>(selected.Catalog(), state_->metadata->CaptureModel(selected.Source()), models_,
-                                         state_);
+    return std::make_unique<HostedModel>(
+        selected.Catalog(), state_->metadata->CaptureModel(selected.Source(), reservation), models_, state_);
   }
 
   bool IsModelArtifactLoaded(const std::string& id, const std::string& path) const override {

@@ -224,8 +224,10 @@ class EmbeddedManager final : public ManagerBackend {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
   }
 
-  std::unique_ptr<ModelBackend> CaptureModel(const ModelBackend& model) override {
-    auto captured = std::make_shared<Model>(EmbeddedModel::Unwrap(model, models_).CaptureExecutionModel());
+  std::unique_ptr<ModelBackend> CaptureModel(
+      const ModelBackend& model, std::unique_ptr<LoadedSelectionReservation>* reservation) override {
+    auto captured =
+        std::make_shared<Model>(EmbeddedModel::Unwrap(model, models_).CaptureExecutionModel(reservation));
     return std::make_unique<EmbeddedModel>(std::move(captured), models_);
   }
 
