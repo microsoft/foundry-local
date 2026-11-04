@@ -527,6 +527,34 @@ TEST_F(SdkSessionTest, HostedManagerDisposalClosesOnlyTheClientAndInvalidatesIts
   EXPECT_EQ(AssistantText(response).size(), 17);
 }
 
+TEST_F(SdkSessionTest, HostedAliasLoadIsReleasedByVariantAndCapturedHandleUnloads) {
+  auto context = ClientContext();
+  auto hosted = api::CreateHostedBackend(manager_, [&](bool) { return context; });
+  auto& catalog = hosted->GetCatalog(CatalogType::kLocal);
+  const auto path = (std::filesystem::path(FOUNDRY_LOCAL_TEST_DATA_DIR) / "tiny-paged-attention").string();
+  ModelInfo info;
+  info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "coding");
+  for (const bool capture : {false, true}) {
+    const std::string alias = capture ? "captured-pin" : "variant-pin";
+    SCOPED_TRACE(alias);
+    auto* variant = catalog.RegisterModel(path, alias + ":1", info);
+    auto* model = catalog.GetModel(alias);
+    ASSERT_NE(model, nullptr);
+    ASSERT_NE(variant, nullptr);
+    auto captured = capture ? hosted->CaptureModel(*variant) : nullptr;
+    model->Load();
+    EXPECT_TRUE(model->IsLoaded());
+
+    ASSERT_NE(catalog.RegisterModel(path, alias + ":2", info), nullptr);
+    EXPECT_EQ(model->Info().model_id, alias + ":1");
+    (capture ? captured.get() : variant)->Unload();
+    EXPECT_FALSE(variant->IsLoaded());
+    ASSERT_NE(catalog.RegisterModel(path, alias + ":3", info), nullptr);
+    EXPECT_EQ(catalog.GetModel(alias), model);
+    EXPECT_EQ(model->Info().model_id, alias + ":3");
+  }
+}
+
 TEST_F(SdkSessionTest, HostedManagerNeverReconnectsOrFallsBackAfterLosingItsOwner) {
   auto context = ClientContext();
   int connections = 0;

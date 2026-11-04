@@ -15,6 +15,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -76,6 +77,11 @@ class ModelLoadManager {
   /// Get a loaded model for an immediate query only when its normalized path matches `model_path`.
   GenAIModelInstance* GetLoadedModel(std::string_view model_id, std::string_view model_path);
 
+  /// Preserve hosted selection by artifact identity without reporting locally loaded weights.
+  /// Returns whether that artifact was already preserved.
+  bool PreserveLoadedSelection(std::string_view model_id, std::string_view model_path, bool preserve);
+  bool HasPreservedLoadedSelection(std::string_view model_id, std::string_view model_path) const;
+
   struct SessionReferenceDeleter {
     void operator()(GenAIModelInstance* model) const noexcept { model->ReleaseSession(); }
   };
@@ -126,6 +132,7 @@ class ModelLoadManager {
   std::atomic<bool> shutdown_{false};
   mutable std::mutex mutex_;
   std::map<std::string, std::unique_ptr<GenAIModelInstance>> loaded_models_;
+  std::set<std::pair<std::string, std::string>> preserved_selections_;
 };
 
 }  // namespace fl

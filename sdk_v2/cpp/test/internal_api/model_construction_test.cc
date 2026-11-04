@@ -11,8 +11,12 @@
 
 #include <string>
 #include <atomic>
+#include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <future>
+#include <thread>
 #include <type_traits>
 #include <utility>
 
@@ -142,6 +146,122 @@ TEST(ModelConstructionTest, ExecutionCaptureRejectsRetiredCatalogSelections) {
   auto source = MakeLeaf();
   source.Deactivate();
   EXPECT_THROW(source.CaptureExecutionModel(), Exception);
+}
+
+TEST(ModelConstructionTest, HostedPreservationIsSharedOnlyByMatchingModelIdsAndPaths) {
+  test::FakeServiceBindings services;
+  auto info = MakeLeaf("shared-model:1").Info();
+  auto make_model = [&](const ModelInfo& metadata, const std::string& path) {
+    return Model::FromModelInfo(metadata, path, services.download_manager, services.model_load_manager);
+  };
+  auto model = Model::MakeContainer(make_model(info, "original"));
+  auto matching = make_model(info, "original");
+  auto other_path = make_model(info, "replacement");
+  auto other_info = info;
+  other_info.model_id = "shared-model:2";
+  other_info.version = 2;
+  auto other_id = make_model(other_info, "original");
+
+  EXPECT_FALSE(model.PreserveLoadedSelection(true));
+  model.AddVariant(make_model(other_info, "replacement"));
+  EXPECT_FALSE(other_path.PreserveLoadedSelection(false));
+  EXPECT_FALSE(other_id.PreserveLoadedSelection(false));
+  EXPECT_FALSE(model.SelectDefaultVariant({}, true));
+  EXPECT_EQ(model.Id(), info.model_id);
+  EXPECT_TRUE(matching.PreserveLoadedSelection(false));
+  EXPECT_TRUE(model.SelectDefaultVariant({}, true));
+  EXPECT_EQ(model.Id(), other_info.model_id);
+}
+
+class ModelLifecycleDeathTest : public testing::TestWithParam<bool> {};
+
+TEST_P(ModelLifecycleDeathTest, AliasOperationDoesNotHoldGroupStateWhileWaitingForUnregister) {
+  ASSERT_EXIT(
+      {
+        std::thread watchdog([] {
+          std::this_thread::sleep_for(std::chrono::seconds(5));
+          std::_Exit(2);
+        });
+        auto model = Model::MakeContainer(MakeLeaf());
+        model.BeginUnregister();
+        const bool load = GetParam();
+        std::promise<void> started;
+        auto operation = std::async(std::launch::async, [&] {
+          started.set_value();
+          try {
+            if (load) {
+              model.Load();
+            } else {
+              model.Unload();
+            }
+            return false;
+          } catch (const Exception&) {
+            return true;
+          }
+        });
+        started.get_future().wait();
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        // Unregister owns the lifecycle locks before it enumerates and retires the group.
+        if (model.Variants().size() != 1) {
+          std::_Exit(3);
+        }
+
+        model.Deactivate();
+        model.EndUnregister();
+        std::_Exit(operation.get() == load ? 0 : 4);
+      },
+      testing::ExitedWithCode(0), "");
+}
+
+INSTANTIATE_TEST_SUITE_P(LoadAndUnload, ModelLifecycleDeathTest, testing::Bool(),
+                         [](const testing::TestParamInfo<bool>& info) { return info.param ? "Load" : "Unload"; });
+
+TEST(ModelLifecycleDeathTest, DefaultRefreshKeepsTheArtifactWhoseLoadIsInProgress) {
+  ASSERT_EXIT(
+      {
+        std::thread watchdog([] {
+          std::this_thread::sleep_for(std::chrono::seconds(5));
+          std::_Exit(2);
+        });
+        class BlockingLogger final : public ILogger {
+         public:
+          void Log(LogLevel, std::string_view message) override {
+            if (message.starts_with("loading model from ")) {
+              entered.set_value();
+              release.get_future().wait();
+            }
+          }
+          std::promise<void> entered;
+          std::promise<void> release;
+        } logger;
+        test::FakeServiceBindings services;
+        ModelLoadManager loader(services.ep_detector, logger);
+        auto cpu = MakeLeaf("model-generic-cpu:1").Info();
+        const auto path = (std::filesystem::path(FOUNDRY_LOCAL_TEST_DATA_DIR) / "tiny-paged-attention").string();
+        auto model =
+            Model::MakeContainer(Model::FromModelInfo(cpu, path, services.download_manager, loader));
+        auto loading = std::async(std::launch::async, [&] { model.Load(); });
+        logger.entered.get_future().wait();
+        auto gpu = MakeLeaf("model-generic-gpu:1").Info();
+        model.AddVariant(Model::FromModelInfo(gpu, path, services.download_manager, loader));
+        if (model.SelectDefaultVariant({}, true) || model.Id() != cpu.model_id) {
+          std::_Exit(3);
+        }
+
+        logger.release.set_value();
+        loading.get();
+        if (!model.IsLoaded()) {
+          std::_Exit(4);
+        }
+
+        model.Unload();
+        if (!model.SelectDefaultVariant({}, true) || model.Id() != "model-generic-gpu:1") {
+          std::_Exit(5);
+        }
+
+        std::_Exit(0);
+      },
+      testing::ExitedWithCode(0), "");
 }
 
 TEST(ModelConstructionTest, CacheRefreshObservesCompletedRevisionWithoutDownloadingOrAdoptingPartialAssets) {

@@ -205,18 +205,22 @@ class HostedModel final : public ModelBackend {
 
   void Load(std::optional<std::string_view> expected_path) override {
     state_.RefreshCatalog(catalog_);
-    const bool previously_preserved = source_.PreserveLoadedSelection(true);
+    std::lock_guard lock(state_.selection_mutex);
+    const auto selected = state_.metadata->CaptureModel(source_);
+    RequirePath(selected->GetPath(), expected_path);
+    const auto payload = Json{{"model", EncodeModelSelection(catalog_, *selected)}};
+    const bool previously_preserved = selected->PreserveLoadedSelection(true);
     try {
-      const auto payload = Payload(true, expected_path);
       state_.Connect(true)->Call(Operation::Load, payload);
     } catch (...) {
-      source_.PreserveLoadedSelection(previously_preserved);
+      selected->PreserveLoadedSelection(previously_preserved);
       throw;
     }
   }
 
   void Unload() override {
-    const auto payload = Payload(false);
+    std::lock_guard lock(state_.selection_mutex);
+    const auto payload = Json{{"model", EncodeModelSelection(catalog_, source_)}};
     if (state_.Connect(false)) {
       state_.Connect(true)->Call(Operation::Unload, payload);
     }

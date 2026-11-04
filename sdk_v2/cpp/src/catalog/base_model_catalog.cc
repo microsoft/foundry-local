@@ -121,14 +121,17 @@ void BaseModelCatalog::PopulateModels(std::vector<Model> variants) const {
           continue;
         }
 
-        std::unordered_set<std::string> existing_ids;
-        for (const auto* variant : existing->second->Variants()) {
-          existing_ids.insert(variant->Id());
+        std::unordered_map<std::string, Model*> existing_variants;
+        for (auto* variant : existing->second->Variants()) {
+          existing_variants.emplace(variant->Id(), variant);
         }
 
         for (auto* variant : incoming.Variants()) {
-          if (!existing_ids.contains(variant->Id())) {
+          const auto known = existing_variants.find(variant->Id());
+          if (known == existing_variants.end()) {
             existing->second->AddVariant(std::move(*variant));
+          } else {
+            known->second->UpdateCachedState(variant->LocalPathSnapshot());
           }
         }
       }

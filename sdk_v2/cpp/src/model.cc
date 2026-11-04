@@ -148,7 +148,6 @@ Model::Model(Model&& other) noexcept
       selected_variant_(other.selected_variant_.load(std::memory_order_relaxed)),
       selection_is_explicit_(other.selection_is_explicit_),
       has_eligible_default_variant_(other.has_eligible_default_variant_),
-      preserve_loaded_selection_(other.preserve_loaded_selection_),
       default_variant_refresh_(std::move(other.default_variant_refresh_)) {
   // The mutex and unregistering state are intentionally not moved; moving while unregistering is invalid.
   // After vector move, selected_variant_ still points into the transferred buffer.
@@ -171,7 +170,6 @@ Model& Model::operator=(Model&& other) noexcept {
     selected_variant_.store(other.selected_variant_.load(std::memory_order_relaxed), std::memory_order_relaxed);
     selection_is_explicit_ = other.selection_is_explicit_;
     has_eligible_default_variant_ = other.has_eligible_default_variant_;
-    preserve_loaded_selection_ = other.preserve_loaded_selection_;
     default_variant_refresh_ = std::move(other.default_variant_refresh_);
     unregistering_ = false;
     other.download_manager_ = nullptr;
@@ -242,7 +240,8 @@ bool Model::TryReconcileVariants(Model& incoming) {
 
   auto* previous_selection = selected_variant_.load(std::memory_order_acquire);
   const bool was_explicit = selection_is_explicit_;
-  const bool preserve_selection = was_explicit || preserve_loaded_selection_ || previous_selection->IsLoaded();
+  const bool preserve_selection =
+      was_explicit || previous_selection->HasPreservedLoadedSelection() || previous_selection->IsLoaded();
 
   for (auto current = variants_.begin(); current != variants_.end();) {
     const auto match = std::find_if(incoming.variants_.begin(), incoming.variants_.end(), [&](const auto& candidate) {
@@ -355,7 +354,9 @@ bool Model::SelectDefaultVariant(const std::function<bool(const Model&)>& is_eli
   std::lock_guard<std::mutex> lock(state_mutex_);
   const auto* selected = selected_variant_.load(std::memory_order_acquire);
   const bool preserve_selection =
-      preserve_explicit_selection && (selection_is_explicit_ || preserve_loaded_selection_ || selected->IsLoaded());
+      preserve_explicit_selection &&
+      (selection_is_explicit_ || selected == loading_variant_ || selected->HasPreservedLoadedSelection() ||
+       selected->IsLoaded());
 
   Model* best_eligible = nullptr;
   Model* best_cached = nullptr;
@@ -396,12 +397,15 @@ void Model::SetDefaultVariantRefresh(std::function<void()> refresh) {
 }
 
 bool Model::PreserveLoadedSelection(bool preserve) {
-  if (preserve) {
-    RefreshDefaultVariant();
+  if (Model* selected = selected_variant_.load(std::memory_order_acquire)) {
+    return selected->PreserveLoadedSelection(preserve);
   }
 
-  std::lock_guard lock(state_mutex_);
-  return std::exchange(preserve_loaded_selection_, preserve);
+  return model_load_manager_->PreserveLoadedSelection(Id(), LocalPathSnapshot(), preserve);
+}
+
+bool Model::HasPreservedLoadedSelection() const {
+  return model_load_manager_->HasPreservedLoadedSelection(Id(), LocalPathSnapshot());
 }
 
 void Model::RefreshDefaultVariant() const {
@@ -418,7 +422,9 @@ void Model::RefreshDefaultVariant() const {
   if (refresh) {
     refresh();
     std::lock_guard lock(state_mutex_);
-    if (!has_eligible_default_variant_ && !selection_is_explicit_ && !preserve_loaded_selection_ &&
+    if (!has_eligible_default_variant_ && !selection_is_explicit_ &&
+        selected_variant_.load(std::memory_order_acquire) != loading_variant_ &&
+        !selected_variant_.load(std::memory_order_acquire)->HasPreservedLoadedSelection() &&
         !selected_variant_.load(std::memory_order_acquire)->IsLoaded()) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
                "model has no variant with an available execution provider; call DownloadAndRegisterEps first");
@@ -588,6 +594,19 @@ Model Model::CaptureExecutionModel() const {
   return snapshot;
 }
 
+void Model::UpdateCachedState(std::string local_path) {
+  std::unique_lock lifecycle_lock(lifecycle_mutex_, std::try_to_lock);
+  if (!lifecycle_lock.owns_lock() || !active_ || external_registration_ || active_downloads_.load() != 0 ||
+      HasPreservedLoadedSelection() || IsLoaded()) {
+    return;
+  }
+
+  std::lock_guard state_lock(state_mutex_);
+  cached_.store(false, std::memory_order_release);
+  local_path_ = std::move(local_path);
+  cached_.store(!local_path_.empty(), std::memory_order_release);
+}
+
 void Model::RefreshCachedState() {
   if (Model* selected = selected_variant_.load(std::memory_order_acquire)) {
     selected->RefreshCachedState();
@@ -634,8 +653,18 @@ std::string Model::LocalPathSnapshot() const {
 void Model::Load(ExecutionProvider ep, std::optional<std::string_view> expected_path) {
   RefreshDefaultVariant();
   if (IsContainer()) {
-    std::lock_guard lock(state_mutex_);
-    auto* sv = selected_variant_.load(std::memory_order_acquire);
+    std::lock_guard lifecycle_lock(lifecycle_mutex_);
+    Model* sv;
+    {
+      std::lock_guard state_lock(state_mutex_);
+      sv = selected_variant_.load(std::memory_order_acquire);
+      loading_variant_ = sv;
+    }
+
+    ScopeGuard loading_guard([this]() noexcept {
+      std::lock_guard state_lock(state_mutex_);
+      loading_variant_ = nullptr;
+    });
     sv->Load(ep, expected_path);
     return;
   }
@@ -668,7 +697,7 @@ void Model::Load(ExecutionProvider ep, std::optional<std::string_view> expected_
 
 void Model::Unload() {
   if (IsContainer()) {
-    std::lock_guard lock(state_mutex_);
+    std::lock_guard lifecycle_lock(lifecycle_mutex_);
     auto* sv = selected_variant_.load(std::memory_order_acquire);
     sv->Unload();
     return;

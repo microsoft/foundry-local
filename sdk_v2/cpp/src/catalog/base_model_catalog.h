@@ -38,7 +38,9 @@ class BaseModelCatalog : public ICatalog {
   CatalogType GetType() const override { return type_; }
 
   // ICatalog implementations — query/lookup layer
+  /// Inventory includes aliases with no eligible default so their variants remain inspectable by ID.
   std::vector<Model*> ListModels() const override;
+  /// Returns null when an alias has no variant with an available execution provider.
   Model* GetModel(const std::string& alias) const override;
   Model* GetModelVariant(const std::string& model_id) const override;
   Model* GetLatestVersion(const Model* model) const override;

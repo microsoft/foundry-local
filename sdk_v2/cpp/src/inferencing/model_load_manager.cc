@@ -23,6 +23,14 @@ namespace {
 /// The expected config filename inside a model directory.
 constexpr const char* kGenAIConfigFileName = "genai_config.json";
 
+std::pair<std::string, std::string> SelectionIdentity(std::string_view model_id, std::string_view model_path) {
+  auto path = NormalizeModelPath(model_path);
+#ifdef _WIN32
+  path = ToLower(std::move(path));
+#endif
+  return {std::string(model_id), std::move(path)};
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -292,6 +300,22 @@ GenAIModelInstance* ModelLoadManager::GetLoadedModel(std::string_view model_id) 
 GenAIModelInstance* ModelLoadManager::GetLoadedModel(std::string_view model_id, std::string_view model_path) {
   const auto normalized_model_path = NormalizeModelPath(model_path);
   return GetLoadedModel(model_id, &normalized_model_path);
+}
+
+bool ModelLoadManager::PreserveLoadedSelection(std::string_view model_id, std::string_view model_path, bool preserve) {
+  const auto identity = SelectionIdentity(model_id, model_path);
+  std::lock_guard lock(mutex_);
+  if (preserve) {
+    return !preserved_selections_.insert(identity).second;
+  }
+
+  return preserved_selections_.erase(identity) != 0;
+}
+
+bool ModelLoadManager::HasPreservedLoadedSelection(std::string_view model_id, std::string_view model_path) const {
+  const auto identity = SelectionIdentity(model_id, model_path);
+  std::lock_guard lock(mutex_);
+  return preserved_selections_.contains(identity);
 }
 
 GenAIModelInstance* ModelLoadManager::GetLoadedModel(std::string_view model_id,
