@@ -23,6 +23,7 @@ bool ManagerDispatcher::Handles(Operation operation) noexcept {
   switch (operation) {
     case Operation::WebServiceStart:
     case Operation::WebServiceUrls:
+    case Operation::WebServiceActivity:
     case Operation::WebServiceStop:
     case Operation::DiscoverableEps:
     case Operation::RuntimeDevices:
@@ -57,6 +58,10 @@ void ManagerDispatcher::Dispatch(const std::shared_ptr<SdkConnection::IncomingCa
 
 Json ManagerDispatcher::Execute(SdkConnection::IncomingCall& call, std::optional<HostLifetime::OwnerId> owner) {
   switch (call.Op()) {
+    case Operation::WebServiceActivity: {
+      const auto snapshot = manager_->GetWebServiceActivity();
+      return {{"active_requests", snapshot.active_requests}, {"idle_milliseconds", snapshot.idle_milliseconds}};
+    }
     case Operation::RuntimeDevices:
       return manager_->GetRuntimeDevices();
     case Operation::WebServiceStart: {

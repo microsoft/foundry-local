@@ -392,10 +392,23 @@ await FoundryLocalManager.CreateAsync(
 await FoundryLocalManager.Instance.StartWebServiceAsync();
 Console.WriteLine($"Listening on: {string.Join(", ", FoundryLocalManager.Instance.Urls!)}");
 
+var activity = FoundryLocalManager.Instance.GetWebServiceActivity();
+Console.WriteLine($"Active HTTP requests: {activity.ActiveRequests}; idle: {activity.IdleDuration}");
+
 // ... use the service ...
 
 await FoundryLocalManager.Instance.StopWebServiceAsync();
 ```
+
+`GetWebServiceActivity()` returns a read-only `WebServiceActivity` snapshot (`ulong ActiveRequests`,
+`TimeSpan IdleDuration`). It does not start the service, acquire shared-host ownership, or reset idle time.
+All requests count, including errors and `/catalogs/local` routes. Streaming requests remain active until both
+response delivery and worker cleanup complete, including client cancellation. Idle duration is monotonic time
+since the last completion (or service start before any requests), and zero while any request is active.
+Before first start, or with no reachable shared host, the baseline is manager creation. Stop preserves the last
+completion baseline; restart establishes a new one. The method rejects disposed managers and requires a native
+runtime supporting C API table version 4; older native runtimes throw `NotSupportedException` for this new method
+without disabling existing APIs. Builds without web service support report `NotImplemented`.
 
 ### Configuration
 

@@ -413,6 +413,20 @@ FL_API_STATUS_IMPL(Manager_WebServiceStartImpl, flManager* manager) {
   API_IMPL_END
 }
 
+FL_API_STATUS_IMPL(Manager_WebServiceActivityImpl, const flManager* manager, uint64_t* active_requests,
+                   uint64_t* idle_milliseconds) {
+  API_IMPL_BEGIN
+  if (!manager || !active_requests || !idle_milliseconds) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
+  }
+
+  const auto snapshot = manager->impl.GetWebServiceActivity();
+  *active_requests = snapshot.active_requests;
+  *idle_milliseconds = snapshot.idle_milliseconds;
+  return nullptr;
+  API_IMPL_END
+}
+
 FL_API_STATUS_IMPL(Manager_WebServiceUrlsImpl, const flManager* manager,
                    const char* const** out_urls, size_t* out_num_urls) {
   API_IMPL_BEGIN
@@ -2063,12 +2077,14 @@ static const flApi g_api = {
     Manager_ShutdownImpl,
     Manager_IsShutdownRequestedImpl,
     Manager_GetCatalogByTypeImpl,
+    Manager_WebServiceActivityImpl,
 };
 
 static_assert(offsetof(flApi, Manager_IsShutdownRequested) / sizeof(void*) == 28,
               "Size of version 1 API cannot change");
 static_assert(offsetof(flApi, Manager_GetCatalogByType) / sizeof(void*) == 29,
               "Size of version 2 API cannot change");
+static_assert(offsetof(flApi, Manager_WebServiceActivity) / sizeof(void*) == 30, "Size of version 3 API cannot change");
 
 // ========================================================================
 // Exported symbols — the ONLY symbols the library exports

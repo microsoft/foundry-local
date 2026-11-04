@@ -540,10 +540,9 @@ void Manager::StartWebService() {
   ActionTracker tracker(Action::kCoreServiceStart, *telemetry_);
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
-  web_service_ = std::make_unique<WebService>(*public_catalog_, *local_catalog_, *logger_, *config_.model_cache_dir,
-                                              *model_load_manager_,
-                                              *session_manager_, *telemetry_,
-                                              [this]() { RequestShutdown(); }, shared_host_lifetime_);
+  web_service_ = std::make_unique<WebService>(
+      *public_catalog_, *local_catalog_, *logger_, *config_.model_cache_dir, *model_load_manager_, *session_manager_,
+      *telemetry_, [this]() { RequestShutdown(); }, shared_host_lifetime_, http_activity_);
 
   auto endpoints = config_.web_service_endpoints;
   if (endpoints.empty()) {
@@ -585,6 +584,14 @@ void Manager::SetSharedHostLifetime(std::shared_ptr<hosting::HostLifetime> lifet
 const std::vector<std::string>& Manager::GetWebServiceUrls() const {
   std::lock_guard lock(urls_mutex_);
   return *url_snapshots_.insert(bound_urls_).first;
+}
+
+WebServiceActivity Manager::GetWebServiceActivity() const {
+#ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
+  return http_activity_->Snapshot();
+#else
+  FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED, "web service support is not built");
+#endif
 }
 
 void Manager::StopWebService() {

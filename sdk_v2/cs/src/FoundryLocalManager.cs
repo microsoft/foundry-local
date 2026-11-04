@@ -84,6 +84,13 @@ public class FoundryLocalManager : IDisposable
     }
 
     /// <summary>
+    /// Observe all HTTP requests, including errors and local-catalog routes, without starting the web service
+    /// or acquiring shared-host ownership. Streaming work remains active through response and worker cleanup.
+    /// An unavailable shared host reports no active requests and idle time since this manager was created.
+    /// </summary>
+    public WebServiceActivity GetWebServiceActivity() => WithNativeManager(manager => manager.GetWebServiceActivity());
+
+    /// <summary>
     /// Create the <see cref="FoundryLocalManager"/> singleton instance.
     /// </summary>
     /// <param name="configuration">Configuration to use.</param>

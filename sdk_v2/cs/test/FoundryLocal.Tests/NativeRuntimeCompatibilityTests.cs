@@ -15,6 +15,29 @@ internal sealed class NativeRuntimeCompatibilityTests
 {
     [Test]
     [NotInParallel]
+    public async Task WebServiceActivityDoesNotStartServiceAndRejectsDisposedManager()
+    {
+        await FoundryLocalManager.CreateAsync(new PublicConfiguration
+        {
+            AppName = "http-activity-test",
+            AppDataDir = Path.Combine(AppContext.BaseDirectory, "TestResults", "http-activity-test"),
+            DisableNonessentialTelemetry = true,
+            UseSharedHost = true
+        }, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+        using var manager = FoundryLocalManager.Instance;
+        await Assert.That(manager.Urls).IsNull();
+        var first = manager.GetWebServiceActivity();
+        await Task.Delay(20);
+        var second = manager.GetWebServiceActivity();
+        await Assert.That(second.ActiveRequests).IsEqualTo(0UL);
+        await Assert.That(second.IdleDuration).IsGreaterThanOrEqualTo(first.IdleDuration);
+        await Assert.That(manager.Urls).IsNull();
+        manager.Dispose();
+        await Assert.That(() => manager.GetWebServiceActivity()).Throws<ObjectDisposedException>();
+    }
+
+    [Test]
+    [NotInParallel]
     [SkipUnlessIntegration]
     public async Task UrlsObserveNativeListenerChanges()
     {
@@ -61,6 +84,13 @@ internal sealed class NativeRuntimeCompatibilityTests
     public async Task Version2DoesNotReadTheAppendedConfigurationSetting()
     {
         await Assert.That(Api.ReadSharedHostSetting(IntPtr.Zero, 2)).IsNull();
+    }
+
+    [Test]
+    public async Task OlderRuntimesDoNotReadTheAppendedActivityMethod()
+    {
+        await Assert.That(Api.ReadWebServiceActivity(IntPtr.Zero, 2)).IsNull();
+        await Assert.That(Api.ReadWebServiceActivity(IntPtr.Zero, 3)).IsNull();
     }
 
     [Test]

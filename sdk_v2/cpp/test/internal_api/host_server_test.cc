@@ -168,6 +168,13 @@ TEST_F(HostServerTest, ObservationHasNoOwnershipAndCannotLoadOrExtendUnusedStart
   const auto status = observer->Call(Operation::Observe, {});
   EXPECT_EQ(status.at("owners"), 0);
   EXPECT_EQ(status.at("state"), static_cast<int>(State::kAwaitingFirstOwner));
+#ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
+  const auto activity = observer->Call(Operation::WebServiceActivity, {});
+  EXPECT_EQ(activity.at("active_requests"), 0u);
+  EXPECT_TRUE(activity.at("idle_milliseconds").is_number_unsigned());
+  EXPECT_TRUE(manager_->GetWebServiceUrls().empty());
+  EXPECT_EQ(observer->Call(Operation::Observe, {}).at("owners"), 0);
+#endif
   const Json selection{{"model", EncodeModelSelection(CatalogType::kLocal, *model_)}};
   EXPECT_EQ(observer->Call(Operation::IsLoaded, selection), false);
   EXPECT_THROW(observer->Call(Operation::Load, selection), Exception);

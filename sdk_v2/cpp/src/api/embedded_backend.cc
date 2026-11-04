@@ -246,6 +246,7 @@ class EmbeddedManager final : public ManagerBackend {
 
   void StartWebService() override { owner_.manager.StartWebService(); }
   const std::vector<std::string>& GetWebServiceUrls() const override { return owner_.manager.GetWebServiceUrls(); }
+  WebServiceActivity GetWebServiceActivity() const override { return owner_.manager.GetWebServiceActivity(); }
   void StopWebService() override { owner_.manager.StopWebService(); }
 
   std::span<const flEpInfo> GetDiscoverableEps() const override {

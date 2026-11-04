@@ -403,6 +403,28 @@ std::string WebServiceTest::base_url_;
 // GET /status
 // ========================================================================
 
+TEST_F(WebServiceTest, HttpActivityIncludesLocalCatalogAndRoutingErrorsWithoutCountingQueries) {
+  httplib::Client client(base_url_);
+  for (const auto* path : {"/status", "/catalogs/local/v1/models", "/no-such-route"}) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    const auto before = service_->GetActivity();
+    ASSERT_EQ(before.active_requests, 0u);
+    auto response = client.Get(path);
+    ASSERT_TRUE(response);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (service_->GetActivity().active_requests != 0 && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const auto after = service_->GetActivity();
+    EXPECT_EQ(after.active_requests, 0u);
+    EXPECT_LT(after.idle_milliseconds, before.idle_milliseconds);
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  const auto first = service_->GetActivity();
+  EXPECT_GE(first.idle_milliseconds, 10u);
+  EXPECT_GE(service_->GetActivity().idle_milliseconds, first.idle_milliseconds);
+}
+
 TEST_F(WebServiceTest, StatusAdvertisesArtifactQualifiedModelManagementAsBoolean) {
   const auto body = Get("/status");
   ASSERT_TRUE(body.contains("artifact_qualified_model_management"));
@@ -1985,6 +2007,9 @@ TEST_F(WebServiceTest, ClosingResponsesStreamCancelsInferenceAndPreservesConvers
         }
 
         received_delta = true;
+        const auto activity = service_->GetActivity();
+        EXPECT_EQ(activity.active_requests, 1u);
+        EXPECT_EQ(activity.idle_milliseconds, 0u);
         return false;  // close the socket before the generation completes
       });
 
@@ -1997,6 +2022,10 @@ TEST_F(WebServiceTest, ClosingResponsesStreamCancelsInferenceAndPreservesConvers
   }
 
   EXPECT_EQ(session_manager_->ActiveCount(), 0u) << "Disconnected inference did not stop";
+  while (service_->GetActivity().active_requests != 0 && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  EXPECT_EQ(service_->GetActivity().active_requests, 0u) << "Canceled HTTP activity did not complete";
   ASSERT_FALSE(created_response_id.empty());
   EXPECT_EQ(GetJson(base_url_ + "/v1/responses/" + created_response_id).status, 404)
       << "Canceled inference must not publish a completed response";

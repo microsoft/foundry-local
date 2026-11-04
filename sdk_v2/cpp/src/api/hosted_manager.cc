@@ -558,6 +558,16 @@ class HostedManager final : public ManagerBackend {
     RetainUrls({});
   }
 
+  WebServiceActivity GetWebServiceActivity() const override {
+    const auto context = state_->Connect(false);
+    if (!context) {
+      return state_->metadata->GetWebServiceActivity();
+    }
+
+    const auto snapshot = context->Call(Operation::WebServiceActivity, Json::object());
+    return {snapshot.at("active_requests").get<std::uint64_t>(), snapshot.at("idle_milliseconds").get<std::uint64_t>()};
+  }
+
   std::span<const flEpInfo> GetDiscoverableEps() const override {
     const auto context = state_->Connect(false);
     std::vector<EpInfo> values;

@@ -263,6 +263,16 @@ inline void Manager::StopWebService() {
   Check(detail::api()->Manager_WebServiceStop(handle_.get_mutable()));
 }
 
+inline WebServiceActivity Manager::GetWebServiceActivity() const {
+  if (detail::api_version() < 4) {
+    throw Error("HTTP activity requires C API table version 4", FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED);
+  }
+  uint64_t active_requests = 0;
+  uint64_t idle_milliseconds = 0;
+  Check(detail::api()->Manager_WebServiceActivity(handle_.get(), &active_requests, &idle_milliseconds));
+  return {active_requests, std::chrono::milliseconds(idle_milliseconds)};
+}
+
 inline std::vector<EpInfo> Manager::GetDiscoverableEps() const {
   const flEpInfo* eps = nullptr;
   size_t count = 0;

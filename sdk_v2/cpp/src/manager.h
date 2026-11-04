@@ -5,6 +5,7 @@
 #include "configuration.h"
 #include "ep_detection/ep_detector.h"
 #include "logger.h"
+#include "service/request_lifetime.h"
 
 #include <atomic>
 #include <functional>
@@ -94,6 +95,7 @@ class Manager {
   /// Get the bound service URLs. The returned reference is valid as long as
   /// the web service is running. Throws if web service is not running.
   const std::vector<std::string>& GetWebServiceUrls() const;
+  WebServiceActivity GetWebServiceActivity() const;
 
   /// Stop the embedded web service.
   void StopWebService();
@@ -162,6 +164,7 @@ class Manager {
   mutable std::mutex urls_mutex_;
   mutable std::set<std::vector<std::string>> url_snapshots_;
   std::shared_ptr<hosting::HostLifetime> shared_host_lifetime_;
+  std::shared_ptr<HttpActivityTracker> http_activity_ = std::make_shared<HttpActivityTracker>();
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
   std::unique_ptr<WebService> web_service_;

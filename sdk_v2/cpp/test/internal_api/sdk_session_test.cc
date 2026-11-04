@@ -70,6 +70,7 @@ class ProviderBackend final : public api::ManagerBackend {
   void UnloadModelArtifact(const std::string&, const std::string&) override {}
   void StartWebService() override {}
   const std::vector<std::string>& GetWebServiceUrls() const override { return urls_; }
+  WebServiceActivity GetWebServiceActivity() const override { return {3, 0}; }
   void StopWebService() override {}
   std::span<const flEpInfo> GetDiscoverableEps() const override { return eps_; }
   api::DeviceProviders GetRuntimeDevices() const override {
@@ -841,6 +842,9 @@ TEST_F(SdkSessionTest, HostedRuntimeDeviceObservationDoesNotAcquireOrRegisterPro
   });
   const auto local_devices = manager_->GetRuntimeDevices();
   const auto remote_devices = hosted->GetRuntimeDevices();
+  const auto activity = hosted->GetWebServiceActivity();
+  EXPECT_EQ(activity.active_requests, 3u);
+  EXPECT_EQ(activity.idle_milliseconds, 0u);
   EXPECT_EQ(remote_devices.at("GPU"), (std::vector<std::string>{"wire-ep"}));
   hosted->SetCatalogRuntimeDevices(remote_devices);
   EXPECT_EQ(manager_->GetRuntimeDevices(), local_devices);

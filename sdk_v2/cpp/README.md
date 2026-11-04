@@ -640,6 +640,18 @@ for (const std::string& endpoint : manager.GetWebServiceEndpoints()) {
 manager.StopWebService();
 ```
 
+`manager.GetWebServiceActivity()` returns a coherent `WebServiceActivity` with `active_requests` and
+`idle_duration` (`std::chrono::milliseconds`). The C API exposes the same snapshot through
+`Manager_WebServiceActivity(manager, &active_requests, &idle_milliseconds)` in API table version 4.
+Observation never starts the service, acquires shared-host ownership, or resets the idle clock.
+Every HTTP request counts, including errors, unknown routes, and `/catalogs/local` routes. Requests remain active
+until response delivery and associated streaming worker cleanup finish, including client cancellation.
+Idle time uses a monotonic clock, is zero while requests are active, and starts at the last request completion
+(or service start before any requests). Before first start or when no shared host is reachable, it instead measures
+time since manager creation. Stopping the service preserves the last completion baseline; restarting sets a new one.
+Builds without HTTP service support report `NOT_IMPLEMENTED`. Older runtimes remain usable for existing APIs, but
+the new observation API requires a matching runtime supporting table version 4.
+
 Model management accepts exact versioned model IDs as well as legacy aliases:
 `GET /models/load/{name}` and `GET /models/unload/{name}` use the public catalog;
 `GET /catalogs/local/models/load/{name}` and `GET /catalogs/local/models/unload/{name}` use the local catalog.
