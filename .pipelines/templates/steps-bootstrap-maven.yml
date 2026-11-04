@@ -65,28 +65,10 @@ steps:
       </settings>
       '@ | Set-Content -LiteralPath $settings -Encoding utf8
 
-      # Resolver's HTTP retry handler does not cover failures while reading a response body.
-      # Install a download-only transport decorator; never replay Maven build/test goals.
-      $retrySource = Join-Path '$(Build.SourcesDirectory)' '.pipelines/maven-transfer-retry'
-      $retryClasses = Join-Path $tools 'maven-transfer-retry-classes'
-      New-Item -ItemType Directory -Path $retryClasses -Force | Out-Null
-      $jdk = Join-Path '$(foundryJavaHome)' 'bin'
-      & (Join-Path $jdk 'javac') --release 8 -cp (Join-Path $mavenHome 'lib/*') `
-        -d $retryClasses (Join-Path $retrySource 'RetryingHttpTransporterFactory.java')
-      if ($LASTEXITCODE -ne 0) { throw 'Could not compile Maven download retry transport.' }
-      Copy-Item -LiteralPath (Join-Path $retrySource 'META-INF') -Destination $retryClasses -Recurse -Force
-      $retryJar = Join-Path $tools 'maven-transfer-retry.jar'
-      & (Join-Path $jdk 'jar') --create --file $retryJar -C $retryClasses .
-      if ($LASTEXITCODE -ne 0) { throw 'Could not package Maven download retry transport.' }
-      $extensions = Join-Path $mavenHome 'lib/ext'
-      New-Item -ItemType Directory -Path $extensions -Force | Out-Null
-      Move-Item -LiteralPath $retryJar -Destination $extensions -Force
-
       # Maven 3.9 uses Resolver's native HTTP transport, not Wagon. Retry downloads, not builds or tests.
       $mavenArgs = @(
         $env:MAVEN_ARGS
         '--errors'
-        '-Dmaven.resolver.transport=auto'
         '-Daether.connector.http.retryHandler.count=5'
         '-Daether.connector.http.retryHandler.intervalMax=30000'
         '-Daether.connector.http.retryHandler.serviceUnavailable=429,500,502,503,504'
