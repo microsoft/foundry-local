@@ -17,6 +17,7 @@
 namespace fl {
 
 class Model;
+class ManagedModelRuntime;
 
 class NonGenerativeAdmissionCoordinator {
  public:
@@ -91,17 +92,10 @@ class NonGenerativeRuntimeState {
   void RejectNewAcquisitions();
 
  private:
-  struct ManagedRuntime {
-    std::shared_ptr<NonGenerativeAdmissionReservation> reservation;
-    std::shared_ptr<void> runtime;
-    Model* owner{};
-    ~ManagedRuntime();
-  };
-
   struct RuntimeEntry {
     std::string model_id;
     Model* owner;
-    std::shared_future<std::shared_ptr<ManagedRuntime>> runtime;
+    std::shared_future<std::shared_ptr<ManagedModelRuntime>> runtime;
   };
 
   std::mutex mutex_;

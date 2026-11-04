@@ -10,6 +10,46 @@
 
 namespace fl {
 
+class ManagedModelRuntime {
+ public:
+  virtual ~ManagedModelRuntime() = default;
+  virtual std::shared_ptr<void> Lease() = 0;
+  virtual Model* Owner() const noexcept = 0;
+};
+
+namespace {
+
+class ManagedTypedRuntime final
+    : public ManagedModelRuntime,
+      public std::enable_shared_from_this<ManagedTypedRuntime> {
+ public:
+  ManagedTypedRuntime(
+      std::shared_ptr<NonGenerativeAdmissionReservation> reservation,
+      std::shared_ptr<void> runtime, Model* owner)
+      : reservation_(std::move(reservation)),
+        runtime_(std::move(runtime)),
+        owner_(owner) {}
+
+  ~ManagedTypedRuntime() override {
+    runtime_.reset();
+    if (owner_) owner_->ReleaseExternalRuntime();
+    reservation_.reset();
+  }
+
+  std::shared_ptr<void> Lease() override {
+    return std::shared_ptr<void>(shared_from_this(), runtime_.get());
+  }
+
+  Model* Owner() const noexcept override { return owner_; }
+
+ private:
+  std::shared_ptr<NonGenerativeAdmissionReservation> reservation_;
+  std::shared_ptr<void> runtime_;
+  Model* owner_;
+};
+
+}  // namespace
+
 NonGenerativeAdmissionCoordinator::NonGenerativeAdmissionCoordinator(
     uint64_t memory_budget_bytes, size_t readiness_concurrency)
     : memory_budget_bytes_(memory_budget_bytes),
@@ -88,18 +128,12 @@ NonGenerativeRuntimeState::NonGenerativeRuntimeState(
         "non-generative admission coordinator is required");
 }
 
-NonGenerativeRuntimeState::ManagedRuntime::~ManagedRuntime() {
-  runtime.reset();
-  if (owner) owner->ReleaseExternalRuntime();
-  reservation.reset();
-}
-
 std::shared_ptr<void> NonGenerativeRuntimeState::Acquire(
     const std::string& identity, const std::string& model_id, Model* owner,
     uint64_t estimated_resident_bytes, const std::string& readiness_group,
     const std::function<std::shared_ptr<void>()>& factory) {
-  std::shared_future<std::shared_ptr<ManagedRuntime>> future;
-  std::shared_ptr<std::promise<std::shared_ptr<ManagedRuntime>>> promise;
+  std::shared_future<std::shared_ptr<ManagedModelRuntime>> future;
+  std::shared_ptr<std::promise<std::shared_ptr<ManagedModelRuntime>>> promise;
   {
     std::lock_guard lock(mutex_);
     if (shutting_down_)
@@ -110,7 +144,8 @@ std::shared_ptr<void> NonGenerativeRuntimeState::Acquire(
       future = found->second.runtime;
     } else {
       promise =
-          std::make_shared<std::promise<std::shared_ptr<ManagedRuntime>>>();
+          std::make_shared<
+              std::promise<std::shared_ptr<ManagedModelRuntime>>>();
       future = promise->get_future().share();
       runtimes_.emplace(identity,
                         RuntimeEntry{model_id, owner, future});
@@ -119,14 +154,13 @@ std::shared_ptr<void> NonGenerativeRuntimeState::Acquire(
 
   if (promise) {
     try {
-      auto managed = std::make_shared<ManagedRuntime>();
-      managed->owner = owner;
-      managed->reservation =
+      auto reservation =
           std::make_shared<NonGenerativeAdmissionReservation>(
               admission_, estimated_resident_bytes, model_id);
       NonGenerativeReadinessLease readiness(admission_, readiness_group);
-      managed->runtime = factory();
-      promise->set_value(std::move(managed));
+      auto managed = std::make_shared<ManagedTypedRuntime>(
+          std::move(reservation), factory(), owner);
+      promise->set_value(managed);
     } catch (...) {
       promise->set_exception(std::current_exception());
       std::lock_guard lock(mutex_);
@@ -136,7 +170,7 @@ std::shared_ptr<void> NonGenerativeRuntimeState::Acquire(
   }
 
   auto managed = future.get();
-  return std::shared_ptr<void>(managed, managed->runtime.get());
+  return managed->Lease();
 }
 
 bool NonGenerativeRuntimeState::Remove(Model& model) {
