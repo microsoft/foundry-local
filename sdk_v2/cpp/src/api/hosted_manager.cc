@@ -6,6 +6,7 @@
 #include "ep_detection/ep_types.h"
 #include "exception.h"
 #include "hosting/sdk_values.h"
+#include "inferencing/model_load_manager.h"
 #include "items/item.h"
 #include "items/text_item.h"
 #include "util/path_safety.h"
@@ -82,6 +83,14 @@ class HostedState {
 
   void RefreshCatalog(CatalogType catalog) const {
     RequireOpen();
+    metadata->ReconcileLoadedSelections([this](const std::string& id, const std::string& path) {
+      const auto context = Connect(false);
+      ModelInfo info;
+      info.model_id = id;
+      return context &&
+             context->Call(Operation::IsLoaded, {{"model", EncodeModelSelection({CatalogType::kLocal, info, path})}})
+                 .get<bool>();
+    });
     if (catalog == CatalogType::kPublic) {
       const auto context = Connect(false);
       metadata->SetCatalogRuntimeDevices(
@@ -192,6 +201,7 @@ class HostedModel final : public ModelBackend {
   void Download(std::function<int(float)> progress) override {
     state_.RequireOpen();
     const auto owner = state_.metadata;
+    state_.RefreshCatalog(catalog_);
     source_.Download(std::move(progress));
   }
 
@@ -200,16 +210,35 @@ class HostedModel final : public ModelBackend {
     return context && context->Call(Operation::IsLoaded, Payload(false)).get<bool>();
   }
 
+  bool PreserveLoadedSelection(bool preserve) override { return source_.PreserveLoadedSelection(preserve); }
+
   void Load(std::optional<std::string_view> expected_path) override {
-    const auto payload = Payload(true, expected_path);
+    state_.RefreshCatalog(catalog_);
+    std::lock_guard lock(state_.selection_mutex);
+    std::unique_ptr<LoadedSelectionReservation> reservation;
+    const auto selected = state_.metadata->CaptureModel(source_, &reservation);
+    RequirePath(selected->GetPath(), expected_path);
+    const auto payload = Json{{"model", EncodeModelSelection(catalog_, *selected)}};
     state_.Connect(true)->Call(Operation::Load, payload);
+    reservation->Commit();
   }
 
   void Unload() override {
-    const auto payload = Payload(false);
+    std::lock_guard lock(state_.selection_mutex);
+    const auto payload = Json{{"model", EncodeModelSelection(catalog_, source_)}};
+    const auto selection = DecodeModelSelection(payload.at("model"));
     if (state_.Connect(false)) {
       state_.Connect(true)->Call(Operation::Unload, payload);
     }
+
+    state_.metadata->ReconcileLoadedSelections([&](const std::string& id, const std::string& path) {
+      if (id != selection.info.model_id || !ModelPathsEqual(path, selection.path)) {
+        return true;
+      }
+
+      const auto context = state_.Connect(false);
+      return context && context->Call(Operation::IsLoaded, payload).get<bool>();
+    });
   }
 
   void RemoveFromCache(std::optional<std::string_view> expected_path) override {
@@ -290,6 +319,10 @@ class HostedModel final : public ModelBackend {
   }
 
   Json Payload(bool capture, std::optional<std::string_view> expected_path = std::nullopt) const {
+    if (capture) {
+      state_.RefreshCatalog(catalog_);
+    }
+
     std::lock_guard lock(state_.selection_mutex);
     if (capture) {
       const auto selected = state_.metadata->CaptureModel(source_);
@@ -469,7 +502,8 @@ class HostedManager final : public ManagerBackend {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
   }
 
-  std::unique_ptr<ModelBackend> CaptureModel(const ModelBackend& model) override {
+  std::unique_ptr<ModelBackend> CaptureModel(
+      const ModelBackend& model, std::unique_ptr<LoadedSelectionReservation>* reservation) override {
     state_->RequireOpen();
     const auto* hosted = dynamic_cast<const HostedModel*>(&model);
     if (!hosted) {
@@ -478,8 +512,8 @@ class HostedManager final : public ManagerBackend {
 
     const auto& selected = models_.Unwrap(hosted->Catalog(), model);
     std::lock_guard lock(state_->selection_mutex);
-    return std::make_unique<HostedModel>(selected.Catalog(), state_->metadata->CaptureModel(selected.Source()), models_,
-                                         state_);
+    return std::make_unique<HostedModel>(
+        selected.Catalog(), state_->metadata->CaptureModel(selected.Source(), reservation), models_, state_);
   }
 
   bool IsModelArtifactLoaded(const std::string& id, const std::string& path) const override {
@@ -489,6 +523,12 @@ class HostedManager final : public ManagerBackend {
     return context &&
            context->Call(Operation::IsLoaded, {{"model", EncodeModelSelection({CatalogType::kLocal, info, path})}})
                .get<bool>();
+  }
+
+  void ReconcileLoadedSelections(
+      const std::function<bool(const std::string&, const std::string&)>& is_loaded) override {
+    state_->RequireOpen();
+    state_->metadata->ReconcileLoadedSelections(is_loaded);
   }
 
   void UnloadModelArtifact(const std::string& id, const std::string& path) override {

@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <fmt/format.h>
 #include <thread>
+#include <utility>
 
 namespace fl {
 
@@ -23,64 +24,32 @@ namespace {
 /// The expected config filename inside a model directory.
 constexpr const char* kGenAIConfigFileName = "genai_config.json";
 
-/// Maps model_id substrings to their required execution provider registration name.
-/// If a model_id contains one of these keys, the corresponding EP must be registered.
-struct ModelIdEpRequirement {
-  std::string_view model_id_substr;
-  std::string_view required_ep;
-};
-
-constexpr ModelIdEpRequirement kModelIdEpRequirements[] = {
-    {"cuda-gpu", "CUDAExecutionProvider"},
-    {"openvino-npu", "OpenVINOExecutionProvider"},
-    {"openvino-gpu", "OpenVINOExecutionProvider"},
-    {"qnn-npu", "QNNExecutionProvider"},
-    {"trtrtx-gpu", "NvTensorRTRTXExecutionProvider"},
-    {"vitis-npu", "VitisAIExecutionProvider"},
-};
-
-/// Returns the required EP registration name for a model_id, or empty if none required.
-std::string_view RequiredEpForModelId(std::string_view model_id) {
-  for (const auto& req : kModelIdEpRequirements) {
-    if (model_id.find(req.model_id_substr) != std::string_view::npos) {
-      return req.required_ep;
-    }
-  }
-
-  return {};
-}
-
-/// Returns whether the provider is DirectML, which is supplied by WinML rather than a downloadable EP bootstrapper.
-bool IsDmlProvider(std::string_view provider) {
-  return provider == "dml" || provider == "DML" || provider == "DmlExecutionProvider" ||
-         provider == "DMLExecutionProvider";
-}
-
-/// Returns the required EP registration name for a provider declared in genai_config.json.
-std::string RequiredEpForConfigProvider(std::string_view provider) {
-  if (provider.empty() || IsDmlProvider(provider)) {
-    return {};
-  }
-
-  auto ep = EPUtils::StringtoEP(provider);
-  if (provider == "WebGpuExecutionProvider") {
-    ep = ExecutionProvider::kWebGPU;
-  }
-
-  if (ep == ExecutionProvider::kCPU) {
-    return {};
-  }
-  if (ep != ExecutionProvider::kUnknown) {
-    return std::string(EPUtils::EPtoRegistrationName(ep));
-  }
-
-  // Configs may name WinML/OGA providers that are intentionally outside the public override enum, such as
-  // RyzenAILightExecutionProvider. Canonical registration names can still be guarded.
-  constexpr std::string_view suffix = "ExecutionProvider";
-  return provider.ends_with(suffix) ? std::string(provider) : std::string{};
+std::pair<std::string, std::string> SelectionIdentity(std::string_view model_id, std::string_view model_path) {
+  auto path = NormalizeModelPath(model_path);
+#ifdef _WIN32
+  path = ToLower(std::move(path));
+#endif
+  return {std::string(model_id), std::move(path)};
 }
 
 }  // namespace
+
+LoadedSelectionReservation::LoadedSelectionReservation(ModelLoadManager& manager,
+                                                       std::pair<std::string, std::string> identity)
+    : manager_(manager), identity_(std::move(identity)) {}
+
+LoadedSelectionReservation::~LoadedSelectionReservation() {
+  if (active_) {
+    manager_.CompleteSelectionReservation(identity_, false);
+  }
+}
+
+void LoadedSelectionReservation::Commit() noexcept {
+  if (active_) {
+    manager_.CompleteSelectionReservation(identity_, true);
+    active_ = false;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Construction / Destruction
@@ -192,8 +161,8 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
     required_ep = EPUtils::EPtoRegistrationName(resolved_ep);
   } else {
     const auto config_provider = genai_config.DefaultProvider();
-    required_ep = config_provider.empty() ? std::string(RequiredEpForModelId(id_str))
-                                          : RequiredEpForConfigProvider(config_provider);
+    required_ep = config_provider.empty() ? std::string(EPUtils::RequiredEpForModelId(id_str))
+                                          : EPUtils::RequiredEpForConfigProvider(config_provider);
   }
 
   // OGA can crash or hang if a model is loaded with an unregistered EP.
@@ -349,6 +318,85 @@ GenAIModelInstance* ModelLoadManager::GetLoadedModel(std::string_view model_id) 
 GenAIModelInstance* ModelLoadManager::GetLoadedModel(std::string_view model_id, std::string_view model_path) {
   const auto normalized_model_path = NormalizeModelPath(model_path);
   return GetLoadedModel(model_id, &normalized_model_path);
+}
+
+bool ModelLoadManager::PreserveLoadedSelection(std::string_view model_id, std::string_view model_path, bool preserve) {
+  const auto identity = SelectionIdentity(model_id, model_path);
+  std::lock_guard lock(mutex_);
+  if (preserve) {
+    auto& state = preserved_selections_[identity];
+    state.generation = ++selection_generation_;
+    return std::exchange(state.preserved, true);
+  }
+
+  const auto found = preserved_selections_.find(identity);
+  if (found == preserved_selections_.end()) {
+    return false;
+  }
+
+  const bool previous = std::exchange(found->second.preserved, false);
+  if (found->second.reservations == 0) {
+    preserved_selections_.erase(found);
+  }
+  return previous;
+}
+
+bool ModelLoadManager::HasPreservedLoadedSelection(std::string_view model_id, std::string_view model_path) const {
+  const auto identity = SelectionIdentity(model_id, model_path);
+  std::lock_guard lock(mutex_);
+  return preserved_selections_.contains(identity);
+}
+
+std::unique_ptr<LoadedSelectionReservation> ModelLoadManager::ReserveLoadedSelection(std::string_view model_id,
+                                                                                     std::string_view model_path) {
+  auto reservation = std::unique_ptr<LoadedSelectionReservation>(
+      new LoadedSelectionReservation(*this, SelectionIdentity(model_id, model_path)));
+  std::lock_guard lock(mutex_);
+  ++preserved_selections_[reservation->identity_].reservations;
+  reservation->active_ = true;
+  return reservation;
+}
+
+void ModelLoadManager::ReconcileLoadedSelections(
+    const std::function<bool(const std::string&, const std::string&)>& is_loaded) {
+  std::vector<std::pair<std::pair<std::string, std::string>, uint64_t>> selections;
+  {
+    std::lock_guard lock(mutex_);
+    for (const auto& [identity, state] : preserved_selections_) {
+      if (state.preserved && state.reservations == 0) {
+        selections.emplace_back(identity, state.generation);
+      }
+    }
+  }
+
+  for (const auto& [identity, generation] : selections) {
+    if (is_loaded(identity.first, identity.second)) {
+      continue;
+    }
+
+    std::lock_guard lock(mutex_);
+    const auto found = preserved_selections_.find(identity);
+    // A load admitted or committed during the remote observation owns a newer selection.
+    if (found != preserved_selections_.end() && found->second.reservations == 0 &&
+        found->second.generation == generation) {
+      preserved_selections_.erase(found);
+    }
+  }
+}
+
+void ModelLoadManager::CompleteSelectionReservation(const std::pair<std::string, std::string>& identity,
+                                                    bool commit) noexcept {
+  std::lock_guard lock(mutex_);
+  const auto found = preserved_selections_.find(identity);
+  auto& state = found->second;
+  state.preserved = state.preserved || commit;
+  if (commit) {
+    state.generation = ++selection_generation_;
+  }
+  --state.reservations;
+  if (!state.preserved && state.reservations == 0) {
+    preserved_selections_.erase(found);
+  }
 }
 
 GenAIModelInstance* ModelLoadManager::GetLoadedModel(std::string_view model_id,

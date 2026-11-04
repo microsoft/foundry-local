@@ -10,6 +10,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -111,6 +112,7 @@ class RecordingModel final : public fl::api::ModelBackend {
   const std::string& GetPath() const override { return path_; }
   void Download(std::function<int(float)>) override {}
   bool IsLoaded() const override { return calls_.loads > calls_.unloads; }
+  bool PreserveLoadedSelection(bool preserve) override { return std::exchange(preserve_selection_, preserve); }
   void Load(std::optional<std::string_view> = std::nullopt) override {
     if (calls_.reject_load) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK, "host connection was lost");
@@ -133,6 +135,7 @@ class RecordingModel final : public fl::api::ModelBackend {
   Calls& calls_;
   fl::ModelInfo info_;
   std::string path_ = "hosted-model";
+  bool preserve_selection_ = false;
 };
 
 class RecordingManager final : public fl::api::ManagerBackend {
@@ -142,10 +145,12 @@ class RecordingManager final : public fl::api::ManagerBackend {
   fl::api::CatalogBackend& GetCatalog(fl::CatalogType) override {
     FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED, "catalog is not used by this test");
   }
-  std::unique_ptr<fl::api::ModelBackend> CaptureModel(const fl::api::ModelBackend&) override {
+  std::unique_ptr<fl::api::ModelBackend> CaptureModel(
+      const fl::api::ModelBackend&, std::unique_ptr<fl::LoadedSelectionReservation>*) override {
     FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED, "model capture is not used by this test");
   }
   bool IsModelArtifactLoaded(const std::string&, const std::string&) const override { return false; }
+  void ReconcileLoadedSelections(const std::function<bool(const std::string&, const std::string&)>&) override {}
   void UnloadModelArtifact(const std::string&, const std::string&) override {
     FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED, "model unloading is not used by this test");
   }

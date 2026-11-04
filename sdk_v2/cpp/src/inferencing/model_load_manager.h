@@ -21,6 +21,24 @@
 
 namespace fl {
 
+class ModelLoadManager;
+
+/// Keeps an admitted hosted load's selection stable until it succeeds or unwinds. The manager must outlive the lease.
+class LoadedSelectionReservation {
+ public:
+  ~LoadedSelectionReservation();
+  LoadedSelectionReservation(const LoadedSelectionReservation&) = delete;
+  LoadedSelectionReservation& operator=(const LoadedSelectionReservation&) = delete;
+  void Commit() noexcept;
+
+ private:
+  friend class ModelLoadManager;
+  LoadedSelectionReservation(ModelLoadManager& manager, std::pair<std::string, std::string> identity);
+  ModelLoadManager& manager_;
+  const std::pair<std::string, std::string> identity_;
+  bool active_ = false;
+};
+
 /// Manages the lifecycle of loaded ORT GenAI models.
 /// Thread-safe. Owns all GenAIModelInstance instances.
 ///
@@ -76,6 +94,15 @@ class ModelLoadManager {
   /// Get a loaded model for an immediate query only when its normalized path matches `model_path`.
   GenAIModelInstance* GetLoadedModel(std::string_view model_id, std::string_view model_path);
 
+  /// Preserve hosted selection by artifact identity without reporting locally loaded weights.
+  /// Returns whether that artifact already had a committed pin.
+  bool PreserveLoadedSelection(std::string_view model_id, std::string_view model_path, bool preserve);
+  bool HasPreservedLoadedSelection(std::string_view model_id, std::string_view model_path) const;
+  std::unique_ptr<LoadedSelectionReservation> ReserveLoadedSelection(std::string_view model_id,
+                                                                     std::string_view model_path);
+  /// Recheck committed hosted pins without holding the manager lock across remote calls.
+  void ReconcileLoadedSelections(const std::function<bool(const std::string&, const std::string&)>& is_loaded);
+
   struct SessionReferenceDeleter {
     void operator()(GenAIModelInstance* model) const noexcept { model->ReleaseSession(); }
   };
@@ -116,6 +143,9 @@ class ModelLoadManager {
   void UnloadAll(std::chrono::milliseconds timeout = std::chrono::seconds(10));
 
  private:
+  friend class LoadedSelectionReservation;
+  void CompleteSelectionReservation(const std::pair<std::string, std::string>& identity, bool commit) noexcept;
+
   bool HasEP(const std::string& ep_name) const;
   bool UnloadModel(std::string_view model_id, const std::string* normalized_model_path);
   GenAIModelInstance* GetLoadedModel(std::string_view model_id, const std::string* normalized_model_path);
@@ -126,6 +156,13 @@ class ModelLoadManager {
   std::atomic<bool> shutdown_{false};
   mutable std::mutex mutex_;
   std::map<std::string, std::unique_ptr<GenAIModelInstance>> loaded_models_;
+  struct SelectionState {
+    bool preserved = false;
+    size_t reservations = 0;
+    uint64_t generation = 0;
+  };
+  std::map<std::pair<std::string, std::string>, SelectionState> preserved_selections_;
+  uint64_t selection_generation_ = 0;
 };
 
 }  // namespace fl
