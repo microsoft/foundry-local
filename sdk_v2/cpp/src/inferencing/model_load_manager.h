@@ -108,9 +108,11 @@ class ModelLoadManager {
                                    std::string_view model_id);
   std::shared_ptr<void> AcquireNonGenerativeRuntime(
       Model& model, std::string_view task, std::string_view provider,
-      uint64_t estimated_resident_bytes);
+      uint64_t estimated_resident_bytes,
+      const std::function<void()>& on_admitted = {});
   bool UnloadNonGenerativeRuntime(Model& model);
   bool IsModelLoaded(const Model& model) const;
+  bool IsModelLoading(const Model& model) const;
   bool IsModelArtifactLoaded(std::string_view model_id,
                              std::string_view model_path) const;
   bool UnloadModelArtifact(std::string_view model_id,
@@ -119,6 +121,7 @@ class ModelLoadManager {
                                  std::function<void()> cancel);
   void UnregisterPredictiveSession(void* identity) noexcept;
   PredictiveRequestLease AcquirePredictiveRequest();
+  void WaitForPredictiveRequests();
 
   /// Unload a previously loaded model.
   /// @returns true if the model was found and unloaded; false if the model was not loaded
@@ -194,7 +197,8 @@ class ModelLoadManager {
   std::shared_ptr<void> AcquireManagedRuntime(
       std::string identity, std::string model_id, std::string model_path,
       uint64_t estimated_resident_bytes, std::string readiness_group,
-      const std::function<std::shared_ptr<void>()>& factory);
+      const std::function<std::shared_ptr<void>()>& factory,
+      const std::function<void()>& on_admitted = {});
 
   bool HasEP(const std::string& ep_name) const;
   void ReleasePredictiveRequest() noexcept;

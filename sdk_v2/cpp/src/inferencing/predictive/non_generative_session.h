@@ -25,6 +25,7 @@ class NonGenerativeSession final : public Session {
   std::string ExecutionProvider() const override { return provider_; }
 
  private:
+  std::unique_ptr<Model> execution_model_;
   ModelLoadManager& model_load_manager_;
   std::string model_id_;
   std::string model_alias_;

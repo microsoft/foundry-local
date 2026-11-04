@@ -157,6 +157,49 @@ TEST(ManagedModelRuntimeTest, FailedColdLoadIsRemovedAndCanBeRetried) {
   EXPECT_EQ(constructions.load(), 2);
 }
 
+TEST(ManagedModelRuntimeTest,
+     LoadingIsBusyButNotLoadedAndBlocksRetirement) {
+  test::FakeServiceBindings service;
+  const auto root =
+      test::TempPath::CreateTempDir("fl_loading_runtime_");
+  ModelInfo info;
+  info.model_id = "loading:1";
+  info.name = "loading";
+  info.alias = "loading";
+  info.task = "text-ranking";
+  auto model = Model::FromLocalRegistration(
+      std::move(info), root.string(), service.download_manager,
+      service.model_load_manager);
+  std::promise<void> entered;
+  std::promise<void> release;
+  auto release_future = release.get_future().share();
+  auto loading = std::async(std::launch::async, [&] {
+    return ModelLoadManagerTestAccess::AcquireArtifact(
+        service.model_load_manager, "loading-key", model.Id(), root.string(),
+        [&]() -> std::shared_ptr<void> {
+          entered.set_value();
+          release_future.wait();
+          return std::make_shared<int>(42);
+        });
+  });
+  entered.get_future().wait();
+
+  EXPECT_FALSE(model.IsLoaded());
+  EXPECT_TRUE(service.model_load_manager.IsModelLoading(model));
+  EXPECT_THROW(
+      service.model_load_manager.RunWithUnloadedModelsInDirectory(
+          root.string(), [] {}),
+      std::exception);
+  EXPECT_THROW(model.BeginUnregister(), std::exception);
+
+  release.set_value();
+  auto lease = loading.get();
+  EXPECT_TRUE(model.IsLoaded());
+  lease.reset();
+  EXPECT_TRUE(
+      service.model_load_manager.UnloadNonGenerativeRuntime(model));
+}
+
 TEST(ManagedModelRuntimeTest, RejectsLoadsBeyondMemoryBudget) {
   test::CpuOnlyEpDetector detector;
   ModelLoadManager manager(detector, test::NullLog(), 100, 1);
@@ -170,6 +213,59 @@ TEST(ManagedModelRuntimeTest, RejectsLoadsBeyondMemoryBudget) {
   EXPECT_THROW(ModelLoadManagerTestAccess::Acquire(
                    manager, "second", 21, "cpu", factory),
                std::runtime_error);
+}
+
+TEST(ManagedModelRuntimeTest, ArtifactOperationsIncludeTypedRuntimes) {
+  test::FakeServiceBindings service;
+  const auto root =
+      test::TempPath::CreateTempDir("fl_typed_artifact_");
+  std::ofstream(root.path() / "genai_config.json")
+      << R"({"model":{"type":"component","context_length":4096}})";
+  const auto canonical =
+      std::filesystem::weakly_canonical(root.path()).string();
+  auto lease = ModelLoadManagerTestAccess::AcquireArtifact(
+      service.model_load_manager, "artifact-key", "typed:1", canonical,
+      []() -> std::shared_ptr<void> { return std::make_shared<int>(42); });
+  lease.reset();
+
+  EXPECT_TRUE(service.model_load_manager.IsModelArtifactLoaded(
+      "typed:1", canonical));
+  const auto state = service.model_load_manager.GetLoadedModelState(
+      "typed:1", canonical);
+  ASSERT_TRUE(state.has_value());
+  EXPECT_EQ(state->model_path, canonical);
+  EXPECT_EQ(state->context_length, 4096u);
+  EXPECT_TRUE(service.model_load_manager.UnloadModelArtifact(
+      "typed:1", canonical));
+  EXPECT_FALSE(service.model_load_manager.IsModelArtifactLoaded(
+      "typed:1", canonical));
+}
+
+TEST(ManagedModelRuntimeTest, RetiredHandleDoesNotObserveReplacementRuntime) {
+  test::FakeServiceBindings service;
+  const auto root =
+      test::TempPath::CreateTempDir("fl_replaced_artifact_");
+  ModelInfo old_info;
+  old_info.model_id = "typed:1";
+  old_info.name = "typed";
+  old_info.alias = "typed";
+  old_info.task = "text-ranking";
+  auto old_model = Model::FromLocalRegistration(
+      old_info, root.string(), service.download_manager,
+      service.model_load_manager);
+  auto replacement = Model::FromLocalRegistration(
+      std::move(old_info), root.string(), service.download_manager,
+      service.model_load_manager);
+  old_model.Deactivate();
+  const auto canonical =
+      std::filesystem::weakly_canonical(root.path()).string();
+  auto lease = ModelLoadManagerTestAccess::AcquireArtifact(
+      service.model_load_manager, "replacement-key", "typed:1", canonical,
+      []() -> std::shared_ptr<void> { return std::make_shared<int>(42); });
+  lease.reset();
+
+  EXPECT_FALSE(old_model.IsLoaded());
+  EXPECT_TRUE(replacement.IsLoaded());
 }
 
 TEST(ManagedModelRuntimeTest, ReleasesAdmissionAfterRuntimeDestruction) {
@@ -238,13 +334,14 @@ TEST(ManagedModelRuntimeTest, ShutdownCancelsAndDrainsPredictiveRequests) {
 
   manager.RejectNewLoads();
   EXPECT_TRUE(canceled);
-  auto shutdown = std::async(std::launch::async, [&] {
-    manager.UnloadAll(std::chrono::seconds(1));
+  manager.UnloadAll(std::chrono::milliseconds(1));
+  auto destruction_wait = std::async(std::launch::async, [&] {
+    manager.WaitForPredictiveRequests();
   });
-  EXPECT_EQ(shutdown.wait_for(std::chrono::milliseconds(20)),
+  EXPECT_EQ(destruction_wait.wait_for(std::chrono::milliseconds(20)),
             std::future_status::timeout);
   active.reset();
-  EXPECT_EQ(shutdown.wait_for(std::chrono::seconds(1)),
+  EXPECT_EQ(destruction_wait.wait_for(std::chrono::seconds(1)),
             std::future_status::ready);
   manager.UnregisterPredictiveSession(&session_identity);
 }
@@ -303,6 +400,15 @@ TEST(NonGenerativeSessionTest,
   auto model = Model::FromLocalRegistration(
       std::move(info), path, service.download_manager,
       service.model_load_manager);
+  const auto io = model.GetInputOutputInfo();
+  ASSERT_EQ(io.num_inputs, 1u);
+  ASSERT_EQ(io.num_outputs, 1u);
+  EXPECT_EQ(io.inputs[0]->type, FOUNDRY_LOCAL_ITEM_TEXT);
+  EXPECT_EQ(static_cast<const TextItem*>(io.inputs[0])->text_type,
+            FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON);
+  EXPECT_EQ(io.outputs[0]->type, FOUNDRY_LOCAL_ITEM_TEXT);
+  EXPECT_EQ(static_cast<const TextItem*>(io.outputs[0])->text_type,
+            FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON);
   const auto canonical = std::filesystem::weakly_canonical(path).string();
   const auto identity =
       "non-generative|" + std::string(model_id) + "|" + canonical + "|";
@@ -341,6 +447,27 @@ TEST(NonGenerativeSessionTest,
   }
 
   EXPECT_TRUE(service.model_load_manager.UnloadNonGenerativeRuntime(model));
+}
+
+TEST(NonGenerativeSessionTest, RejectsPackageTaskMismatchBeforeAcquisition) {
+  test::FakeServiceBindings service;
+  const auto root =
+      test::TempPath::CreateTempDir("fl_predictive_task_mismatch_");
+  WriteRankingBundle(root.string(), "clm-generic-cpu:1");
+  ModelInfo info;
+  info.model_id = "clm-generic-cpu:1";
+  info.name = "clm-generic-cpu";
+  info.alias = "clm";
+  info.task = "typed-decision";
+  auto model = Model::FromLocalRegistration(
+      std::move(info), root.string(), service.download_manager,
+      service.model_load_manager);
+
+  EXPECT_THROW(
+      NonGenerativeSession(model, service.model_load_manager, service.logger,
+                           service.telemetry),
+      std::exception);
+  EXPECT_FALSE(model.IsLoaded());
 }
 
 TEST(NonGenerativeRuntimeTest, ExportedPackagesRunWhenConfigured) {

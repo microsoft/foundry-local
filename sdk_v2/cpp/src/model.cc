@@ -515,7 +515,7 @@ bool Model::IsLoaded() const {
     return sv->IsLoaded();
   }
 
-  return model_load_manager_->IsModelLoaded(*this);
+  return active_ && model_load_manager_->IsModelLoaded(*this);
 }
 
 Model* Model::SelectedLeaf() const {
@@ -523,6 +523,28 @@ Model* Model::SelectedLeaf() const {
     return sv->SelectedLeaf();
   }
   return const_cast<Model*>(this);
+}
+
+std::shared_ptr<void> Model::AcquireNonGenerativeRuntime(
+    std::string_view task, std::string_view provider,
+    uint64_t estimated_resident_bytes) {
+  if (IsContainer()) {
+    Model* selected;
+    {
+      std::lock_guard lifecycle_lock(lifecycle_mutex_);
+      selected = selected_variant_.load(std::memory_order_acquire);
+    }
+    return selected->AcquireNonGenerativeRuntime(
+        task, provider, estimated_resident_bytes);
+  }
+
+  std::unique_lock lifecycle_lock(lifecycle_mutex_);
+  if (!active_ || unregistering_)
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "model is no longer registered");
+  return model_load_manager_->AcquireNonGenerativeRuntime(
+      *this, task, provider, estimated_resident_bytes,
+      [&] { lifecycle_lock.unlock(); });
 }
 
 // ---------------------------------------------------------------------------
@@ -735,10 +757,10 @@ void Model::Load(ExecutionProvider ep, std::optional<std::string_view> expected_
     if (!package)
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
                "model is not a non-generative package");
-    lifecycle_lock.unlock();
     model_load_manager_->AcquireNonGenerativeRuntime(
         *this, info.task, package->execution_provider,
-        package->estimated_resident_bytes);
+        package->estimated_resident_bytes,
+        [&] { lifecycle_lock.unlock(); });
     return;
   }
   auto result = model_load_manager_->LoadModel(path, Info().model_id, ep);
@@ -856,6 +878,11 @@ void Model::BeginUnregister() {
     lifecycle_mutex_.unlock();
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
   }
+  if (model_load_manager_->IsModelLoading(*this)) {
+    lifecycle_mutex_.unlock();
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "cannot unregister model while it is loading");
+  }
   unregistering_ = true;
 }
 
@@ -930,6 +957,20 @@ const StaticIOCache& ChatCompletionIO() {
   return cache;
 }
 
+const StaticIOCache& NonGenerativeIO() {
+  static const StaticIOCache cache = [] {
+    StaticIOCache c;
+    c.input_items.push_back(std::make_unique<TextItem>(
+        "", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+    c.output_items.push_back(std::make_unique<TextItem>(
+        "", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+    c.input_ptrs.push_back(c.input_items.front().get());
+    c.output_ptrs.push_back(c.output_items.front().get());
+    return c;
+  }();
+  return cache;
+}
+
 const StaticIOCache& VisionLanguageChatIO() {
   static const StaticIOCache cache = [] {
     StaticIOCache c;
@@ -1000,6 +1041,10 @@ Model::IOInfo Model::GetInputOutputInfo() const {
 
   if (task == "automatic-speech-recognition") {
     return IOInfoFromCache(AutomaticSpeechRecognitionIO());
+  }
+
+  if (task == "text-ranking" || task == "typed-decision") {
+    return IOInfoFromCache(NonGenerativeIO());
   }
 
   FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED,

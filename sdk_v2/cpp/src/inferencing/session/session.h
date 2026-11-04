@@ -151,7 +151,8 @@ class Session {
   Session(const fl::Model& catalog_model, ILogger& logger, ITelemetry& telemetry,
           bool allow_concurrent_requests = false);
 
-  const fl::Model& CatalogModel() const { return catalog_model_; }
+  const fl::Model& CatalogModel() const { return *catalog_model_; }
+  void SetCatalogModel(const fl::Model& model) { catalog_model_ = &model; }
 
   ILogger& Logger() { return logger_; }
 
@@ -210,7 +211,7 @@ class Session {
   void RecordUsage(const Request& request, const Response& response,
                    const InvocationContext& context, int64_t total_time_ms, bool streaming);
 
-  const fl::Model& catalog_model_;
+  const fl::Model* catalog_model_;
   ILogger& logger_;
   ITelemetry& telemetry_;
   ToolRegistry tool_registry_;

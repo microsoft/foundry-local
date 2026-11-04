@@ -261,6 +261,7 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
   const auto model_path = std::filesystem::absolute(supplied_path).lexically_normal();
   const auto config_path = model_path / "genai_config.json";
   auto resolved_input_metadata = metadata;
+  std::string package_alias;
   GenAIConfig genai_config;
   try {
     const auto package = ReadNonGenerativePackage(model_path);
@@ -274,6 +275,7 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
       resolved_input_metadata.execution_provider = package->execution_provider;
       resolved_input_metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR,
                                              package->execution_provider);
+      package_alias = package->alias;
       genai_config = GenAIConfig::LoadFromFile(config_path.string());
     } else if (!DeclaresNonGenerativePackage(model_path) &&
                std::filesystem::is_regular_file(config_path, ec)) {
@@ -310,7 +312,7 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
 
     registration = {
         ResolveMetadata(resolved_input_metadata, model_id, parsed_id.name, parsed_id.version, genai_config,
-                        {}),
+                        package_alias),
         model_path.string()};
 
     registrations.push_back(registration);
@@ -500,6 +502,9 @@ std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistration
 
       RemoveLegacyRegistrationProperties(info);
       info.alias = DeriveAlias(parsed_id.name);
+      if (const auto package = ReadNonGenerativePackage(model_path);
+          package && !package->alias.empty())
+        info.alias = package->alias;
       info.name = parsed_id.name;
       info.version = parsed_id.version;
       info.model_id = model_id;

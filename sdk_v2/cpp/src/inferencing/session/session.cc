@@ -74,7 +74,7 @@ uint64_t CountTypedRequestMessages(const Request& request) {
 
 Session::Session(const fl::Model& catalog_model, ILogger& logger, ITelemetry& telemetry,
                  bool allow_concurrent_requests)
-    : catalog_model_(catalog_model),
+    : catalog_model_(&catalog_model),
       logger_(logger),
       telemetry_(telemetry),
       allow_concurrent_requests_(allow_concurrent_requests) {
@@ -191,13 +191,13 @@ void Session::AddToolDefinition(ToolDefinition tool_def) {
 void Session::ValidateRequestItems(const Request& request) const {
   // Only chat tasks are validated: other tasks either have no IO descriptor (embeddings) or accept
   // transport items that the descriptor does not advertise (the ASR streaming QUEUE item).
-  const auto& task = catalog_model_.Info().task;
+  const auto& task = catalog_model_->Info().task;
   if (task != "chat-completion" && task != "coding" && task != "vision-language-chat") {
     return;
   }
 
   // The model's task metadata is the source of truth for which input modalities are accepted.
-  const auto io_info = catalog_model_.GetInputOutputInfo();
+  const auto io_info = catalog_model_->GetInputOutputInfo();
 
   // An item type is accepted only if it matches one of the advertised inputs.
   auto check = [&](flItemType type) {
@@ -206,7 +206,7 @@ void Session::ValidateRequestItems(const Request& request) const {
     if (!supported) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
                fmt::format("{} input is not supported by model task '{}'",
-                           Item::TypeName(type), catalog_model_.Info().task));
+                           Item::TypeName(type), catalog_model_->Info().task));
     }
   };
 

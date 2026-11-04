@@ -60,24 +60,33 @@ NonGenerativeSession::NonGenerativeSession(
     const Model& model, ModelLoadManager& model_load_manager, ILogger& logger,
     ITelemetry& telemetry)
     : Session(model, logger, telemetry),
-      model_load_manager_(model_load_manager),
-      model_id_(model.Id()),
-      model_alias_(model.Info().alias) {
-  const auto package = ReadNonGenerativePackage(model.GetPath());
+      execution_model_(
+          std::make_unique<Model>(model.CaptureExecutionModel())),
+      model_load_manager_(model_load_manager) {
+  SetCatalogModel(*execution_model_);
+  auto construction = model_load_manager_.AcquirePredictiveRequest();
+  const auto& selected = *execution_model_;
+  model_id_ = selected.Id();
+  model_alias_ = selected.Info().alias;
+  const auto package = ReadNonGenerativePackage(selected.GetPath());
   if (!package)
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
              "model is not a non-generative package");
+  if (!package->task.empty() && package->task != selected.Info().task)
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "package task does not match registered model task");
   provider_ = package->execution_provider;
-  auto runtime = model_load_manager_.AcquireNonGenerativeRuntime(
-      const_cast<Model&>(model), model.Info().task, provider_,
+  auto runtime = execution_model_->AcquireNonGenerativeRuntime(
+      selected.Info().task, provider_,
       package->estimated_resident_bytes);
-  if (model.Info().task == "text-ranking")
+  if (selected.Info().task == "text-ranking")
     ranking_ = std::static_pointer_cast<IRankingRuntime>(runtime);
-  else if (model.Info().task == "typed-decision")
+  else if (selected.Info().task == "typed-decision")
     decision_ = std::static_pointer_cast<IDecisionRuntime>(runtime);
   else
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             "unsupported non-generative model task: ", model.Info().task);
+             "unsupported non-generative model task: ",
+             selected.Info().task);
   model_load_manager_.RegisterPredictiveSession(
       this, [this] { Cancel(); });
 }

@@ -22,7 +22,8 @@ struct NonGenerativePackageMetadata {
   uint64_t estimated_resident_bytes{};
 };
 
-/// Return true when a directory contains the standard component manifest.
+/// Return true when package entries or metadata declare a non-generative
+/// package, even when the declared manifest is missing or invalid.
 bool DeclaresNonGenerativePackage(const std::filesystem::path& package_root);
 
 /// Parse and validate a multi-component package root. Returns nullopt when the
