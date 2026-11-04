@@ -12,6 +12,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
+from foundry_local_sdk.request import _cancellable_lock
+
 if TYPE_CHECKING:
     from foundry_local_sdk.imodel import IModel
     from foundry_local_sdk.items import Item
@@ -85,21 +87,24 @@ class StreamingResponse:
         self._lock_released = False
         self._thread: threading.Thread | None = None
 
-        session._stream_queue = self._queue
         worker_started = threading.Event()
 
         def _run() -> None:
             try:
                 with (
-                    session._native_lifetime() as ptr,
-                    request._native_lifetime() as request_ptr,
+                    session._native_lifetime(cancel_event) as ptr,
+                    request._native_lifetime(cancel_event) as request_ptr,
                     request._cancellation(cancel_event),
                 ):
-                    worker_started.set()
-                    out = ffi.new("flResponse**")
-                    api.check_status(
-                        api.inference.Session_ProcessRequest(ptr, request_ptr, out)
-                    )
+                    session._stream_queue = self._queue
+                    try:
+                        worker_started.set()
+                        out = ffi.new("flResponse**")
+                        api.check_status(
+                            api.inference.Session_ProcessRequest(ptr, request_ptr, out)
+                        )
+                    finally:
+                        session._stream_queue = None
                 from foundry_local_sdk.response import Response
 
                 # Response takes ownership of out[0]; wrapper releases it.
@@ -109,7 +114,6 @@ class StreamingResponse:
                 self._error = exc
                 self._queue.put(_StreamError(exc))
             finally:
-                session._stream_queue = None
                 self._queue.put(_DONE)
 
         t = threading.Thread(target=_run, daemon=True)
@@ -305,8 +309,8 @@ class Session(abc.ABC):
             )
 
     @contextmanager
-    def _native_lifetime(self) -> Iterator[object]:
-        with self._operation_lock:
+    def _native_lifetime(self, cancel_event: threading.Event | None = None) -> Iterator[object]:
+        with self._operation_lock if cancel_event is None else _cancellable_lock(self._operation_lock, cancel_event):
             self._check_open()
             state = self._native_call_state
             state.depth = getattr(state, "depth", 0) + 1
@@ -422,8 +426,9 @@ class Session(abc.ABC):
         the session is ready for the next request. Use ``with`` on the
         returned wrapper to guarantee cleanup of the terminal Response.
 
-        Setting ``cancel_event`` cancels native processing without requiring another output item. An event already set
-        before processing starts rejects without submitting inference. Native completion can win a cancellation race.
+        Setting ``cancel_event`` cancels admission waits or native processing without requiring another output item.
+        An event already set before processing starts rejects without submitting inference. Native completion can win
+        a cancellation race. Native non-interruptible stages can delay cancellation and cleanup.
 
         Requires ``set_streaming(True)`` to have been called first.
 
@@ -460,15 +465,17 @@ class Session(abc.ABC):
     ) -> "Response":
         """Run synchronously; setting ``cancel_event`` from another thread cancels native processing.
 
-        An event already set rejects without submitting inference. Native completion can win a cancellation race.
+        Cancellation also interrupts waits for the session or request to become available. An event already set rejects
+        without submitting inference. Native completion can win a cancellation race, and native non-interruptible
+        stages can delay cancellation and cleanup.
         """
         from foundry_local_sdk._native import ffi
         from foundry_local_sdk._native.api import api
         from foundry_local_sdk.response import Response
 
         with (
-            self._native_lifetime() as ptr,
-            request._native_lifetime() as request_ptr,
+            self._native_lifetime(cancel_event) as ptr,
+            request._native_lifetime(cancel_event) as request_ptr,
             request._cancellation(cancel_event),
         ):
             out = ffi.new("flResponse**")

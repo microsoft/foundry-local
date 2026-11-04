@@ -17,7 +17,7 @@ import pytest
 from foundry_local_sdk import RequestPreflightResult
 from foundry_local_sdk._native import ffi
 from foundry_local_sdk.exception import FoundryLocalException
-from foundry_local_sdk.request import Request
+from foundry_local_sdk.request import Request, _CancellationState
 from foundry_local_sdk.session import ChatSession, _API_VERSION
 
 _SESSION_PTR = ffi.cast("flSession *", 1)
@@ -31,6 +31,7 @@ def _fake_session() -> ChatSession:
     session._ptr = _SESSION_PTR
     session._stream_thread = None
     session._stream_request = None
+    session._stream_queue = None
     session._operation_lock = threading.RLock()
     session._native_call_state = threading.local()
     session._manager = None
@@ -251,6 +252,103 @@ def test_pre_set_cancellation_event_never_submits_inference(monkeypatch: pytest.
         with pytest.raises(FoundryLocalException) as error:
             session.process_request(request, cancel_event=cancel_event)
         assert error.value.error_code == 5
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("shared_request", [False, True])
+def test_queued_cancellation_leaves_owner_running_and_allows_reuse(
+    monkeypatch: pytest.MonkeyPatch, streaming: bool, shared_request: bool
+) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    queued = threading.Event()
+
+    class ObservedCancelEvent(threading.Event):
+        def is_set(self) -> bool:
+            queued.set()
+            return super().is_set()
+
+    cancel_event = ObservedCancelEvent()
+    process_calls = []
+    streamed_items = []
+    response = object()
+
+    def process(_session, _request, _out):
+        process_calls.append(_request)
+        entered.set()
+        assert release.wait(timeout=5)
+        return ffi.NULL
+
+    fake_api = SimpleNamespace(
+        inference=SimpleNamespace(
+            Session_ProcessRequest=process,
+            Request_Cancel=lambda _ptr: pytest.fail("Queued cancellation must not cancel the owner"),
+            Request_Release=lambda _ptr: None,
+            Session_Release=lambda _ptr: None,
+        ),
+        check_status=assert_null,
+    )
+    _install_native(monkeypatch, fake_api)
+    response_module = importlib.import_module("foundry_local_sdk.response")
+    monkeypatch.setattr(response_module, "Response", lambda _ptr: response)
+
+    with (
+        _fake_session() as owner,
+        _fake_session() as other_session,
+        _fake_request() as request,
+        _fake_request() as other_request,
+        ThreadPoolExecutor(max_workers=2) as pool,
+    ):
+        contender_session = other_session if shared_request else owner
+        contender_request = request if shared_request else other_request
+
+        def run_contender():
+            if streaming:
+                with contender_session.process_streaming_request(contender_request, cancel_event=cancel_event) as stream:
+                    for item in stream:
+                        streamed_items.append(item)
+            else:
+                contender_session.process_request(contender_request, cancel_event=cancel_event)
+
+        active = pool.submit(owner.process_request, request)
+        pending = None
+        try:
+            assert entered.wait(timeout=2)
+            pending = pool.submit(run_contender)
+            assert queued.wait(timeout=2)
+            if streaming and not shared_request and owner._stream_queue is not None:
+                # Simulate the active owner's callback while the other request is still queued.
+                owner._stream_queue.put(object())
+            cancel_event.set()
+            with pytest.raises(FoundryLocalException) as error:
+                pending.result(timeout=2)
+            assert error.value.error_code == 5
+            assert not active.done()
+            assert len(process_calls) == 1
+            assert streamed_items == []
+        finally:
+            release.set()
+            assert active.result(timeout=2) is response
+            if pending is not None:
+                try:
+                    pending.result(timeout=2)
+                except FoundryLocalException:
+                    pass
+
+        assert contender_session.process_request(contender_request) is response
+        assert len(process_calls) == 2
+
+
+def test_unset_event_does_not_wait_for_cancellation_cleanup_lock() -> None:
+    request = _fake_request()
+    request._closed = True
+    state = _CancellationState(request, threading.Event())
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        state.lock.acquire()
+        try:
+            pool.submit(state.retry).result(timeout=2)
+        finally:
+            state.lock.release()
 
 
 def test_completed_request_wakes_cancellation_cleanup_without_waiting_for_cancel_event() -> None:

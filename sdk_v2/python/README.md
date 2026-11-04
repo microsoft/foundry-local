@@ -494,9 +494,13 @@ Common session methods:
 - `set_streaming(enabled)` — install or remove the native streaming callback.
 
 Pass a `threading.Event` as `cancel_event` and set it from another thread to cancel inference. A pre-set event
-prevents submission. Cancellation raises `FoundryLocalException` with `error_code == 5`; native completion may win
-the race and return normally. The compatibility chat, audio, and embedding methods accept the same keyword argument.
+prevents submission. Cancellation also interrupts waits for a busy session or request without canceling its current
+owner. Cancellation raises `FoundryLocalException` with `error_code == 5`; native completion may win the race and
+return normally. The compatibility chat, audio, and embedding methods accept the same keyword argument.
 Cancellation helpers stop before the call returns, so the request can be reused without a late cancellation.
+Cancellation is cooperative: native generator construction and an individual embedding forward pass may not be
+interruptible. Cancellation and cleanup (including closing a stream or session) wait for native processing to exit;
+the event is not a hard execution deadline.
 
 ### Requests and responses
 

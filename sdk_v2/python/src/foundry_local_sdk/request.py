@@ -18,6 +18,21 @@ if TYPE_CHECKING:
 _API_VERSION = 1  # FOUNDRY_LOCAL_API_VERSION
 
 
+@contextmanager
+def _cancellable_lock(lock: threading.RLock, cancel_event: threading.Event) -> Iterator[None]:
+    while True:
+        if cancel_event.is_set():
+            raise FoundryLocalException("Request canceled before native processing.", error_code=5)
+        if lock.acquire(timeout=0.01):
+            break
+    try:
+        if cancel_event.is_set():
+            raise FoundryLocalException("Request canceled before native processing.", error_code=5)
+        yield
+    finally:
+        lock.release()
+
+
 class _CancellationState:
     def __init__(self, request: Request, event: threading.Event) -> None:
         self.request = request
@@ -27,12 +42,20 @@ class _CancellationState:
         self.error: Exception | None = None
 
     def retry(self) -> None:
+        # Unset events cannot touch native state, so they need not contend with request cleanup.
+        try:
+            requested = self.event.is_set()
+        except Exception as exc:
+            with self.lock:
+                self.error = exc
+            return
+        if not requested:
+            return
         with self.lock:
             if self.finished or self.error is not None:
                 return
             try:
-                if self.event.is_set():
-                    self.request.cancel()
+                self.request.cancel()
             except Exception as exc:
                 self.error = exc
 
@@ -71,7 +94,7 @@ class _CancellationDispatcher:
             with self._condition:
                 while not self._pending:
                     self._condition.wait()
-                self._condition.wait(timeout=0.01)
+                self._condition.wait_for(lambda: not self._pending, timeout=0.01)
                 if not self._pending:
                     continue
                 pending = tuple(self._pending)
@@ -114,8 +137,8 @@ class Request:
             )
 
     @contextmanager
-    def _native_lifetime(self) -> Iterator[object]:
-        with self._lifetime_lock:
+    def _native_lifetime(self, cancel_event: threading.Event | None = None) -> Iterator[object]:
+        with self._lifetime_lock if cancel_event is None else _cancellable_lock(self._lifetime_lock, cancel_event):
             self._check_open()
             yield self._ptr
 
