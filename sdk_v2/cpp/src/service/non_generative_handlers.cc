@@ -41,19 +41,23 @@ class ModelNotFoundError : public std::runtime_error {
 };
 
 NonGenerativePackageMetadata CachedPackageMetadata(
+    ModelLoadManager& model_load_manager, Model& model,
     const std::string& path) {
   static std::mutex mutex;
   static std::unordered_map<std::string, NonGenerativePackageMetadata> cache;
   const auto canonical =
       std::filesystem::weakly_canonical(path).string();
   std::lock_guard lock(mutex);
-  if (const auto found = cache.find(canonical); found != cache.end())
-    return found->second;
+  if (model_load_manager.IsModelLoaded(model)) {
+    if (const auto found = cache.find(canonical); found != cache.end())
+      return found->second;
+  }
   const auto package = ReadNonGenerativePackage(canonical);
   if (!package)
     throw std::invalid_argument(
         "selected catalog model is not a multi-component package");
-  return cache.emplace(canonical, *package).first->second;
+  cache.insert_or_assign(canonical, *package);
+  return *package;
 }
 
 ResolvedPackage ResolvePackage(ServiceContext& ctx, const std::string& requested,
@@ -72,7 +76,8 @@ ResolvedPackage ResolvePackage(ServiceContext& ctx, const std::string& requested
   if (!model->IsCached()) {
     throw std::invalid_argument("selected model package is not available locally");
   }
-  const auto package = CachedPackageMetadata(model->GetPath());
+  const auto package = CachedPackageMetadata(
+      ctx.model_load_manager, *model, model->GetPath());
   auto provider = package.execution_provider;
   auto canonical =
       std::filesystem::weakly_canonical(model->GetPath()).string();
