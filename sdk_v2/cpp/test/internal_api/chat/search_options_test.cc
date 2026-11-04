@@ -27,7 +27,7 @@
 
 using namespace fl;
 
-TEST(SearchOptionsParsingTest, AutomaticReasoningRemainsUnguidedAndToolOnlyUsesWholeTurnGuidance) {
+TEST(SearchOptionsParsingTest, AutomaticReasoningUsesWholeTurnGuidanceWithoutDelimitedBodyGuidance) {
   ToolCallContext context;
   context.tools_json = R"([{"type":"function","function":{"name":"read","parameters":{"type":"object"}}}])";
   context.tool_plan = ToolCallPlan::Create(context.tools_json);
@@ -41,13 +41,13 @@ TEST(SearchOptionsParsingTest, AutomaticReasoningRemainsUnguidedAndToolOnlyUsesW
   context.tool_call_end_token_id = 102;
   context.reasoning_start_token_id = 103;
   context.reasoning_end_token_id = 104;
-  EXPECT_FALSE(ResolveTurnGuidanceOptions(context, /*prompt_opens_reasoning=*/true));
-
-  context.text_output = false;
   const auto whole_turn = ResolveTurnGuidanceOptions(context, /*prompt_opens_reasoning=*/true);
   ASSERT_TRUE(whole_turn.has_value());
   EXPECT_EQ(whole_turn->type, "lark_grammar");
   EXPECT_FALSE(whole_turn->user_specified);
+
+  context.text_output = false;
+  EXPECT_TRUE(ResolveTurnGuidanceOptions(context, /*prompt_opens_reasoning=*/true));
 
   context.text_output = true;
   context.supports_reasoning = false;
@@ -67,7 +67,9 @@ TEST(SearchOptionsParsingTest, AutomaticEngineToolsUseDelimitedBodyGuidance) {
   const auto guidance = PlanDelimitedToolBodyGuidance(context, ChatBackendKind::kEngine);
   ASSERT_TRUE(guidance);
   EXPECT_EQ(*guidance, context.tool_plan->Grammar());
+  context.tool_body_grammar = guidance;
   EXPECT_FALSE(ResolveTurnGuidanceOptions(context, false));
+  context.tool_body_grammar.reset();
 
   context.forced_tool = ForcedToolChoice{"read", ToolKind::kFunction};
   EXPECT_FALSE(PlanDelimitedToolBodyGuidance(context, ChatBackendKind::kEngine));

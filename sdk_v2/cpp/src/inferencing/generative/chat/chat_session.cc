@@ -1230,6 +1230,11 @@ ToolCallContext BuildToolCallContextForRequest(const Request& request,
       }
       tool_ctx.tool_body_grammar =
           PlanDelimitedToolBodyGuidance(tool_ctx, model.GetGenAIConfig().GetChatBackendKind());
+      if (tool_ctx.text_output && tool_ctx.supports_reasoning &&
+          !tool_ctx.tool_body_grammar &&
+          !tool_ctx.guidance_disabled && !tool_ctx.HasAnyExplicitGuidance()) {
+        tool_ctx.native_assistant_text_output = false;
+      }
     }
   }
 
