@@ -1,4 +1,4 @@
-// --------------------------------------------------------------------------------------------------------------------
+﻿// --------------------------------------------------------------------------------------------------------------------
 // <copyright company="Microsoft">
 //   Copyright (c) Microsoft. All rights reserved.
 // </copyright>
@@ -127,6 +127,47 @@ internal sealed class ManagerLifetimeTests
 
         operation.Dispose();
         await disposeTask;
+    }
+
+    [Test]
+    public async Task SessionOperationGate_QueuedAdmissionIsAsyncAndCancelable()
+    {
+        var gate = new SessionOperationGate();
+        using var active = gate.Acquire(this, assignCurrentThread: false);
+        using var cts = new CancellationTokenSource();
+        var queued = gate.AcquireAsync(this, cts.Token);
+        await Assert.That(queued.IsCompleted).IsFalse();
+        cts.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => queued);
+
+        active.Dispose();
+        using var reuse = await gate.AcquireAsync(this, CancellationToken.None);
+    }
+
+    [Test]
+    public async Task SessionOperationGate_PreCanceledAdmissionDoesNotWaitOrTakeOwnership()
+    {
+        var gate = new SessionOperationGate();
+        using var active = gate.Acquire(this, assignCurrentThread: false);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => gate.AcquireAsync(this, cts.Token));
+
+        active.Dispose();
+        using var reuse = await gate.AcquireAsync(this, CancellationToken.None);
+    }
+
+    [Test]
+    public async Task SessionOperationGate_CloseWakesQueuedAsyncAdmission()
+    {
+        var gate = new SessionOperationGate();
+        using var active = gate.Acquire(this, assignCurrentThread: false);
+        var queued = gate.AcquireAsync(this, CancellationToken.None);
+        await Assert.That(queued.IsCompleted).IsFalse();
+        gate.BeginClose();
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => queued);
+        active.Dispose();
+        gate.WaitForOperations();
     }
 
     [Test]

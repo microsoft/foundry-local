@@ -148,8 +148,9 @@ public abstract class Session : IDisposable
     public async Task<Response> ProcessRequestAsync(Request request, CancellationToken ct = default)
     {
         Detail.Throw.IfNull(request);
+        ct.ThrowIfCancellationRequested();
         var requestLease = request.AcquireProcessingLease();
-        var operation = AcquireOperation(requestLease);
+        var operation = await AcquireOperationAsync(requestLease, ct).ConfigureAwait(false);
 
         return await Task.Run(() =>
         {
@@ -172,11 +173,12 @@ public abstract class Session : IDisposable
         }, CancellationToken.None).ConfigureAwait(false);
     }
 
-    private SessionOperationGate.Operation AcquireOperation(Request.Lease requestLease)
+    private async Task<SessionOperationGate.Operation> AcquireOperationAsync(Request.Lease requestLease,
+                                                                            CancellationToken ct)
     {
         try
         {
-            return _operationGate.Acquire(this, assignCurrentThread: false);
+            return await _operationGate.AcquireAsync(this, ct).ConfigureAwait(false);
         }
         catch
         {
@@ -278,17 +280,9 @@ public abstract class Session : IDisposable
                         using var managerLease = _managerLifetime.Acquire(this, trackReentrancy: true);
                         var responsePtr = _session.ProcessRequest(requestLease, cts.Token);
 
-                        wasCancelled = cts.IsCancellationRequested;
-                        if (wasCancelled)
-                        {
-                            Api.Inference.ResponseRelease(responsePtr);
-                        }
-                        else
-                        {
 #pragma warning disable IDISP004 // Ownership transferred to FinalResponse consumer (or DisposeAsync).
-                            response = new Response(responsePtr);
+                        response = new Response(responsePtr);
 #pragma warning restore IDISP004
-                        }
                     }
                     catch (OperationCanceledException)
                     {
@@ -333,8 +327,8 @@ public abstract class Session : IDisposable
         }
 
         return new StreamingResponse(this, stream, tcs);
-    #pragma warning restore IDISP016
-    #pragma warning restore IDISP001
+#pragma warning restore IDISP016
+#pragma warning restore IDISP001
     }
 
     internal void ReleaseStreamingOperation(StreamingOperation stream)

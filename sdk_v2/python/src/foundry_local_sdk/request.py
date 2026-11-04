@@ -18,6 +18,71 @@ if TYPE_CHECKING:
 _API_VERSION = 1  # FOUNDRY_LOCAL_API_VERSION
 
 
+class _CancellationState:
+    def __init__(self, request: Request, event: threading.Event) -> None:
+        self.request = request
+        self.event = event
+        self.lock = threading.Lock()
+        self.finished = False
+        self.error: Exception | None = None
+
+    def retry(self) -> None:
+        with self.lock:
+            if self.finished or self.error is not None:
+                return
+            try:
+                if self.event.is_set():
+                    self.request.cancel()
+            except Exception as exc:
+                self.error = exc
+
+
+class _CancellationDispatcher:
+    def __init__(self) -> None:
+        self._condition = threading.Condition()
+        self._pending: set[_CancellationState] = set()
+        self._thread: threading.Thread | None = None
+
+    def register(self, state: _CancellationState) -> None:
+        with self._condition:
+            self._pending.add(state)
+            if self._thread is None:
+                worker = threading.Thread(target=self._run, name="FoundryLocalCancellation", daemon=True)
+                try:
+                    worker.start()
+                except BaseException:
+                    self._pending.remove(state)
+                    raise
+                self._thread = worker
+            self._condition.notify()
+
+    def unregister(self, state: _CancellationState) -> None:
+        # Join an active cancellation attempt before the enclosing native lifetime lease is released.
+        with state.lock:
+            state.finished = True
+        with self._condition:
+            self._pending.remove(state)
+            self._condition.notify()
+        if state.error is not None:
+            raise state.error
+
+    def _run(self) -> None:
+        while True:
+            with self._condition:
+                while not self._pending:
+                    self._condition.wait()
+                self._condition.wait(timeout=0.01)
+                if not self._pending:
+                    continue
+                pending = tuple(self._pending)
+            for state in pending:
+                state.retry()
+            del state, pending
+
+
+_cancellation_dispatcher = _CancellationDispatcher()
+
+
 class Request:
     """Inference request. Owns its native flRequest* handle.
 
@@ -62,29 +127,12 @@ class Request:
         if cancel_event.is_set():
             raise FoundryLocalException("Request canceled before native processing.", error_code=5)
 
-        finished = threading.Event()
-        errors: list[Exception] = []
-
-        def cancel_until_finished() -> None:
-            try:
-                while not finished.is_set():
-                    if cancel_event.is_set():
-                        self.cancel()
-                    if finished.wait(timeout=0.01):
-                        return
-            except Exception as exc:
-                errors.append(exc)
-
-        # Cancel is an idle no-op; retries cover the boundary into native processing.
-        worker = threading.Thread(target=cancel_until_finished, daemon=True)
-        worker.start()
+        state = _CancellationState(self, cancel_event)
+        _cancellation_dispatcher.register(state)
         try:
             yield
         finally:
-            finished.set()
-            worker.join()
-            if errors:
-                raise errors[0]
+            _cancellation_dispatcher.unregister(state)
 
     def add_item(self, item: "Item", transfer_ownership: bool = True) -> "Request":
         """Add item to request.

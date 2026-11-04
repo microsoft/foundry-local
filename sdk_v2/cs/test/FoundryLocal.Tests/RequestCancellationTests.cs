@@ -8,7 +8,9 @@ namespace Microsoft.AI.Foundry.Local.Tests;
 
 using Microsoft.AI.Foundry.Local.Detail;
 using Microsoft.AI.Foundry.Local.Detail.Native;
+using Microsoft.Extensions.Logging.Abstractions;
 
+using Model = Microsoft.AI.Foundry.Local.Model;
 using NativeModel = Detail.Native.Model;
 using NativeSession = Detail.Native.Session;
 
@@ -16,7 +18,9 @@ internal sealed class RequestCancellationTests
 {
     [Test]
     [NotInParallel]
-    public async Task TokenCancellation_AfterNativeSuccess_PreservesResponse()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task TokenCancellation_AfterNativeSuccess_PreservesResponse(bool streaming)
     {
         Api.EnsureInitialized();
         var originalInference = Api.Inference;
@@ -31,6 +35,7 @@ internal sealed class RequestCancellationTests
                 return IntPtr.Zero;
             };
             Api.Inference.SessionRelease = _ => { };
+            Api.Inference.SessionSetStreamingCallback = (_, _, _) => IntPtr.Zero;
             Api.Inference.RequestCreate = (out request) =>
             {
                 request = new IntPtr(4);
@@ -47,13 +52,28 @@ internal sealed class RequestCancellationTests
                 return IntPtr.Zero;
             };
 
-            using var session = new NativeSession(new NativeModel(new IntPtr(2)));
             using var request = new Request();
-            var response = session.ProcessRequest(request, cts.Token);
+            IntPtr response;
+            if (streaming)
+            {
+                using var lifetime = new ManagerLifetime();
+                var model = new Model(new NativeModel(new IntPtr(2)), NullLogger.Instance, lifetime);
+                using var session = new TestSession(model);
+                session.SetStreaming(true);
+                await using var stream = session.ProcessStreamingRequestAsync(request, cts.Token);
+                using var final = await stream.FinalResponse;
+                response = final.Ptr;
+                await Assert.That(responseReleases).IsEqualTo(0);
+            }
+            else
+            {
+                using var session = new NativeSession(new NativeModel(new IntPtr(2)));
+                response = session.ProcessRequest(request, cts.Token);
+            }
 
             await Assert.That(cts.IsCancellationRequested).IsTrue();
             await Assert.That(response).IsEqualTo(responsePtr);
-            await Assert.That(responseReleases).IsEqualTo(0);
+            await Assert.That(responseReleases).IsEqualTo(streaming ? 1 : 0);
         }
         finally
         {
@@ -259,6 +279,137 @@ internal sealed class RequestCancellationTests
     }
 
     [Test]
+    [NotInParallel]
+    public async Task QueuedTokenCancellation_ReleasesRequestWithoutCancelingOwner()
+    {
+        Api.EnsureInitialized();
+        var originalInference = Api.Inference;
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        using var submitted = new ManualResetEventSlim();
+        using var cts = new CancellationTokenSource();
+        var cancelCalls = 0;
+        var processCalls = 0;
+        try
+        {
+            Api.Inference.SessionCreate = (model, out session) =>
+            {
+                session = new IntPtr(1);
+                return IntPtr.Zero;
+            };
+            Api.Inference.SessionRelease = _ => { };
+            Api.Inference.RequestCreate = (out request) =>
+            {
+                request = new IntPtr(4);
+                return IntPtr.Zero;
+            };
+            Api.Inference.RequestRelease = _ => { };
+            Api.Inference.RequestCancel = _ =>
+            {
+                Interlocked.Increment(ref cancelCalls);
+                return IntPtr.Zero;
+            };
+            Api.Inference.ResponseRelease = _ => { };
+            Api.Inference.SessionProcessRequest = (session, request, ref response) =>
+            {
+                if (Interlocked.Increment(ref processCalls) == 1)
+                {
+                    entered.Set();
+                    release.Wait(TimeSpan.FromSeconds(5));
+                }
+
+                response = new IntPtr(3);
+                return IntPtr.Zero;
+            };
+
+            using var lifetime = new ManagerLifetime();
+            var model = new Model(new NativeModel(new IntPtr(2)), NullLogger.Instance, lifetime);
+            using var session = new TestSession(model);
+            using var first = new Request();
+            using var second = new Request();
+            var active = session.ProcessRequestAsync(first);
+            Task<Response>? queued = null;
+            try
+            {
+                await Assert.That(entered.Wait(TimeSpan.FromSeconds(2))).IsTrue();
+                queued = Task.Run(async () =>
+                {
+                    var pending = session.ProcessRequestAsync(second, cts.Token);
+                    submitted.Set();
+                    return await pending.ConfigureAwait(false);
+                });
+                await Assert.That(submitted.Wait(TimeSpan.FromSeconds(2))).IsTrue();
+                cts.Cancel();
+                var completed = await Task.WhenAny(queued, Task.Delay(TimeSpan.FromSeconds(2))).ConfigureAwait(false);
+                await Assert.That(completed == queued).IsTrue();
+                await Assert.ThrowsAsync<OperationCanceledException>(() => queued);
+                await Assert.That(active.IsCompleted).IsFalse();
+                await Assert.That(cancelCalls).IsEqualTo(0);
+                using var reuse = second.AcquireProcessingLease();
+            }
+            finally
+            {
+                release.Set();
+                using var response = await active.ConfigureAwait(false);
+                if (queued != null)
+                {
+                    try { using var unexpected = await queued.ConfigureAwait(false); }
+                    catch (OperationCanceledException) { }
+                }
+            }
+
+            using var recovered = await session.ProcessRequestAsync(second).ConfigureAwait(false);
+            await Assert.That(processCalls).IsEqualTo(2);
+        }
+        finally
+        {
+            Api.Inference = originalInference;
+        }
+    }
+
+    [Test]
+    public async Task ConcurrentCancellation_UsesOneRetryThreadAndStopsBeforeRelease()
+    {
+        using var cts = new CancellationTokenSource();
+        using var retried = new CountdownEvent(16);
+        var cancellationThread = Environment.CurrentManagedThreadId;
+        var retryThreads = new System.Collections.Concurrent.ConcurrentDictionary<int, bool>();
+        var attempts = new int[16];
+        var observed = new int[16];
+        var helpers = Enumerable.Range(0, attempts.Length).Select(index =>
+            new RequestCancellation(() =>
+            {
+                Interlocked.Increment(ref attempts[index]);
+                var thread = Environment.CurrentManagedThreadId;
+                if (thread != cancellationThread)
+                {
+                    retryThreads.TryAdd(thread, true);
+                    if (Interlocked.Exchange(ref observed[index], 1) == 0)
+                    {
+                        retried.Signal();
+                    }
+                }
+            }, cts.Token)).ToArray();
+        try
+        {
+            cts.Cancel();
+            await Assert.That(retried.Wait(TimeSpan.FromSeconds(2))).IsTrue();
+            await Assert.That(retryThreads.Count).IsEqualTo(1);
+        }
+        finally
+        {
+            foreach (var helper in helpers)
+            {
+                helper.Dispose();
+            }
+        }
+
+        var total = attempts.Sum();
+        await Task.Delay(25).ConfigureAwait(false);
+        await Assert.That(attempts.Sum()).IsEqualTo(total);
+    }
+
+    [Test]
     public async Task TokenCancellation_RetriesAcrossNativeAdmission()
     {
         using var cts = new CancellationTokenSource();
@@ -315,5 +466,10 @@ internal sealed class RequestCancellationTests
         {
             release.Set();
         }
+    }
+
+    private sealed class TestSession : Microsoft.AI.Foundry.Local.Session
+    {
+        internal TestSession(IModel model) : base(model) { }
     }
 }

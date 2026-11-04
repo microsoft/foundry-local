@@ -1,4 +1,4 @@
-// --------------------------------------------------------------------------------------------------------------------
+﻿// --------------------------------------------------------------------------------------------------------------------
 // <copyright company="Microsoft">
 //   Copyright (c) Microsoft. All rights reserved.
 // </copyright>
@@ -12,6 +12,7 @@ internal sealed class SessionOperationGate
     private bool _closed;
     private bool _active;
     private int _activeThreadId;
+    private TaskCompletionSource<bool> _changed = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     internal bool IsClosed
     {
@@ -38,6 +39,37 @@ internal sealed class SessionOperationGate
             _active = true;
             _activeThreadId = assignCurrentThread ? Environment.CurrentManagedThreadId : 0;
             return new Operation(this);
+        }
+    }
+
+    internal async Task<Operation> AcquireAsync(object owner, CancellationToken ct)
+    {
+        while (true)
+        {
+            Task changed;
+            lock (_sync)
+            {
+                Throw.IfDisposed(_closed, owner);
+                ct.ThrowIfCancellationRequested();
+                if (!_active)
+                {
+                    _active = true;
+                    _activeThreadId = 0;
+                    return new Operation(this);
+                }
+
+                changed = _changed.Task;
+            }
+
+            if (!ct.CanBeCanceled)
+            {
+                await changed.ConfigureAwait(false);
+                continue;
+            }
+
+            var canceled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var registration = ct.Register(() => canceled.TrySetCanceled(ct));
+            await (await Task.WhenAny(changed, canceled.Task).ConfigureAwait(false)).ConfigureAwait(false);
         }
     }
 
@@ -73,6 +105,7 @@ internal sealed class SessionOperationGate
 
             _closed = true;
             Monitor.PulseAll(_sync);
+            _changed.TrySetResult(true);
             return true;
         }
     }
@@ -114,6 +147,9 @@ internal sealed class SessionOperationGate
             _active = false;
             _activeThreadId = 0;
             Monitor.PulseAll(_sync);
+            var changed = _changed;
+            _changed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            changed.TrySetResult(true);
         }
     }
 

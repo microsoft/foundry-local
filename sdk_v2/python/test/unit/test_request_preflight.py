@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from types import SimpleNamespace
 
 import pytest
@@ -283,3 +284,68 @@ def test_completed_request_wakes_cancellation_cleanup_without_waiting_for_cancel
             completed.result(timeout=1)
         finally:
             release_cancel_wait.set()
+
+
+def test_concurrent_cancellation_uses_one_dispatcher_and_stops_before_reuse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests = [_fake_request() for _ in range(16)]
+    for request in requests:
+        request._closed = True
+    cancel_event = threading.Event()
+    canceled = threading.Event()
+    threads: set[int] = set()
+    seen: set[int] = set()
+    attempts: list[int] = []
+    lock = threading.Lock()
+
+    def cancel(request: Request) -> None:
+        with lock:
+            threads.add(threading.get_ident())
+            seen.add(id(request))
+            attempts.append(id(request))
+            if len(seen) == len(requests):
+                canceled.set()
+
+    monkeypatch.setattr(Request, "cancel", cancel)
+    with ExitStack() as stack:
+        for request in requests:
+            stack.enter_context(request._cancellation(cancel_event))
+        cancel_event.set()
+        assert canceled.wait(timeout=2)
+        assert len(threads) == 1
+
+    attempts_at_release = len(attempts)
+    with requests[0]._cancellation(threading.Event()):
+        assert not threading.Event().wait(timeout=0.03)
+    assert len(attempts) == attempts_at_release
+
+
+def test_cancellation_cleanup_joins_active_dispatcher_attempt(monkeypatch: pytest.MonkeyPatch) -> None:
+    request = _fake_request()
+    request._closed = True
+    cancel_event = threading.Event()
+    entered = threading.Event()
+    release = threading.Event()
+    closing = threading.Event()
+
+    def cancel(_request: Request) -> None:
+        entered.set()
+        assert release.wait(timeout=2)
+
+    monkeypatch.setattr(Request, "cancel", cancel)
+
+    def process() -> None:
+        with request._cancellation(cancel_event):
+            cancel_event.set()
+            assert entered.wait(timeout=2)
+            closing.set()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(process)
+        try:
+            assert closing.wait(timeout=2)
+            assert not pending.done()
+        finally:
+            release.set()
+        pending.result(timeout=2)
