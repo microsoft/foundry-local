@@ -226,11 +226,19 @@ class HostedModel final : public ModelBackend {
   void Unload() override {
     std::lock_guard lock(state_.selection_mutex);
     const auto payload = Json{{"model", EncodeModelSelection(catalog_, source_)}};
+    const auto selection = DecodeModelSelection(payload.at("model"));
     if (state_.Connect(false)) {
       state_.Connect(true)->Call(Operation::Unload, payload);
     }
 
-    source_.PreserveLoadedSelection(false);
+    state_.metadata->ReconcileLoadedSelections([&](const std::string& id, const std::string& path) {
+      if (id != selection.info.model_id || !ModelPathsEqual(path, selection.path)) {
+        return true;
+      }
+
+      const auto context = state_.Connect(false);
+      return context && context->Call(Operation::IsLoaded, payload).get<bool>();
+    });
   }
 
   void RemoveFromCache(std::optional<std::string_view> expected_path) override {

@@ -503,6 +503,7 @@ TEST_F(SdkSessionTest, HostedManagerReconcilesLiveRegistrationsAndRetainsCapture
   catalog.UnregisterModel("hosted-live:1");
   EXPECT_THROW(model->Load(), Exception);
   EXPECT_FALSE(model->IsLoaded());
+  EXPECT_NO_THROW(model->Unload());
   hosted.reset();
   EXPECT_EQ(capture->Info().model_id, "hosted-live:1");
   EXPECT_THROW(capture->CreateSession(), Exception);
@@ -590,6 +591,44 @@ TEST_F(SdkSessionTest, FailedHostedLoadRollsBackItsReservationWithoutClearingAnE
     variant->Unload();
     EXPECT_EQ(catalog.GetModel(alias)->Info().model_id, alias + ":2");
   }
+}
+
+TEST_F(SdkSessionTest, HostedUnloadReleasesOnlyTheCapturedArtifactAfterConcurrentReselection) {
+  auto context = ClientContext();
+  auto hosted = api::CreateHostedBackend(manager_, [&](bool) { return context; });
+  auto& catalog = hosted->GetCatalog(CatalogType::kLocal);
+  const auto path = (std::filesystem::path(FOUNDRY_LOCAL_TEST_DATA_DIR) / "tiny-paged-attention").string();
+  ModelInfo info;
+  info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "coding");
+  auto* original = catalog.RegisterModel(path, "unload-selection:1", info);
+  auto* model = catalog.GetModel("unload-selection");
+  ASSERT_NE(original, nullptr);
+  ASSERT_NE(model, nullptr);
+  model->Load();
+  auto* replacement = catalog.RegisterModel(path, "unload-selection:2", info);
+  ASSERT_NE(replacement, nullptr);
+  replacement->Load();
+  ASSERT_EQ(catalog.GetModel("unload-selection")->Info().model_id, "unload-selection:1");
+
+  bool reselected = false;
+  auto unloader = api::CreateHostedBackend(manager_, [&](bool acquire) {
+    if (acquire) {
+      // Interleave a peer unload and lookup after the unload payload has captured the original selection.
+      context->Call(Operation::Unload, {{"model", EncodeModelSelection(CatalogType::kLocal, *original)}});
+      EXPECT_EQ(catalog.GetModel("unload-selection")->Info().model_id, "unload-selection:2");
+      reselected = true;
+    }
+    return context;
+  });
+  auto* unloading = unloader->GetCatalog(CatalogType::kLocal).GetModel("unload-selection");
+  ASSERT_NE(unloading, nullptr);
+  unloading->Unload();
+  EXPECT_TRUE(reselected);
+  EXPECT_FALSE(original->IsLoaded());
+  EXPECT_TRUE(replacement->IsLoaded());
+  EXPECT_FALSE(original->PreserveLoadedSelection(false));
+  EXPECT_TRUE(replacement->PreserveLoadedSelection(false));
+  replacement->Unload();
 }
 
 TEST_F(SdkSessionTest, HostedDefaultRecoversAfterAnIndependentPeerUnloadsTheArtifact) {
