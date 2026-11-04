@@ -13,6 +13,8 @@ from openai.types import CreateEmbeddingResponse
 from typing_extensions import deprecated
 
 if TYPE_CHECKING:
+    import threading
+
     from foundry_local_sdk.imodel import IModel
 
 
@@ -56,7 +58,7 @@ class EmbeddingClient:
         """Build the JSON payload for an embeddings request."""
         return json.dumps({"model": self.model_id, "input": input_value})
 
-    def _run_native_request(self, request_json: str) -> str:
+    def _run_native_request(self, request_json: str, cancel_event: threading.Event | None = None) -> str:
         """Create a fresh EmbeddingsSession, process the request, return the response JSON string."""
         from foundry_local_sdk.items import TextItem, TextItemType
         from foundry_local_sdk.request import Request
@@ -67,7 +69,7 @@ class EmbeddingClient:
             Request() as request,
         ):
             request.add_item(TextItem(request_json, TextItemType.OPENAI_JSON))
-            with session.process_request(request) as response:
+            with session.process_request(request, cancel_event=cancel_event) as response:
                 # Copy the text out of the (response-owned) item before the response is released.
                 return response.get_item(0).text
 
@@ -86,11 +88,14 @@ class EmbeddingClient:
 
         return CreateEmbeddingResponse.model_validate(data)
 
-    def generate_embedding(self, input_text: str) -> CreateEmbeddingResponse:
+    def generate_embedding(
+        self, input_text: str, *, cancel_event: threading.Event | None = None
+    ) -> CreateEmbeddingResponse:
         """Generate embeddings for a single input text.
 
         Args:
             input_text: The text to generate embeddings for.
+            cancel_event: Set from another thread to cancel native processing.
 
         Returns:
             A ``CreateEmbeddingResponse`` containing the embedding vector.
@@ -102,14 +107,17 @@ class EmbeddingClient:
         self._validate_input(input_text)
 
         request_json = self._build_request_json(input_text)
-        response_json = self._run_native_request(request_json)
+        response_json = self._run_native_request(request_json, cancel_event)
         return self._parse_response(response_json)
 
-    def generate_embeddings(self, inputs: list[str]) -> CreateEmbeddingResponse:
+    def generate_embeddings(
+        self, inputs: list[str], *, cancel_event: threading.Event | None = None
+    ) -> CreateEmbeddingResponse:
         """Generate embeddings for multiple input texts in a single request.
 
         Args:
             inputs: The texts to generate embeddings for.
+            cancel_event: Set from another thread to cancel native processing.
 
         Returns:
             A ``CreateEmbeddingResponse`` containing one embedding vector per input.
@@ -124,5 +132,5 @@ class EmbeddingClient:
             self._validate_input(text)
 
         request_json = self._build_request_json(inputs)
-        response_json = self._run_native_request(request_json)
+        response_json = self._run_native_request(request_json, cancel_event)
         return self._parse_response(response_json)

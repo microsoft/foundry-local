@@ -4,6 +4,7 @@
 use std::os::raw::c_int;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use tokio::sync::{
@@ -21,6 +22,7 @@ use super::manager::NativeManager;
 use super::native::NativeModel;
 use crate::error::{FoundryLocalError, Result};
 use crate::item::Item;
+use crate::session::{cancellation_retry_sender, CancelGuard, CancelState, WorkerCompletion};
 
 /// Per-item transform applied to streamed TEXT payloads before they are emitted.
 pub(crate) type StreamTransform = Box<dyn Fn(String) -> Option<String> + Send>;
@@ -480,17 +482,28 @@ impl NativeSession {
             ptr: resp,
         })
     }
+}
 
-    /// Run a non-streaming OpenAI-JSON request and return the response payload.
-    ///
-    /// The request JSON is sent as a single `OPENAI_JSON` TEXT item; the response
-    /// payload is the text of the first response item. Blocking.
-    pub(crate) fn run_openai_json(&self, request_json: &str) -> Result<String> {
-        let _guard = self.lock_ops();
-        let request = NativeRequest::new(Arc::clone(&self.api))?;
-        let item = make_openai_json_item(&self.api, request_json)?;
-        request.add_item(item, true)?;
-        let response = self.process_request(&request)?;
+pub(crate) async fn run_openai_json(model: NativeModel, request_json: String) -> Result<String> {
+    let session = super::task::spawn_blocking(move || NativeSession::create(&model)).await?;
+    let request = Arc::new(NativeRequest::new(Arc::clone(&session.api))?);
+    let state = Arc::new(CancelState::new(Arc::clone(&request)));
+    let guard = CancelGuard::new(Arc::clone(&state), cancellation_retry_sender()?);
+    let worker = tokio::task::spawn_blocking(move || {
+        let _completion = WorkerCompletion::new(Arc::clone(&state));
+        let _operation = session.lock_ops();
+        let item = make_openai_json_item(&session.api, &request_json)?;
+        if let Err(error) = request.add_item(item, true) {
+            unsafe { (session.api.item_api().Item_Release)(item) };
+            return Err(error);
+        }
+        if state.cancel_requested.load(Ordering::Acquire) {
+            return Err(FoundryLocalError::Native {
+                code: crate::error::NativeErrorCode::OperationCancelled,
+                message: "request canceled before native processing".into(),
+            });
+        }
+        let response = session.process_request(&request)?;
         if response.item_count() == 0 {
             return Err(FoundryLocalError::CommandExecution {
                 reason: "Native response contained no items".into(),
@@ -501,7 +514,12 @@ impl NativeSession {
             .ok_or_else(|| FoundryLocalError::CommandExecution {
                 reason: "Native response item was not readable text".into(),
             })
-    }
+    });
+    let joined = worker.await;
+    guard.disarm();
+    joined.map_err(|error| FoundryLocalError::Internal {
+        reason: format!("blocking task join error: {error}"),
+    })?
 }
 
 impl Drop for NativeSession {
@@ -579,10 +597,14 @@ pub(crate) fn run_openai_json_streaming(
     session: NativeSession,
     request_json: String,
     transform: StreamTransform,
-) -> UnboundedReceiver<Result<String>> {
+) -> Result<(UnboundedReceiver<Result<String>>, CancelGuard)> {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<String>>();
+    let request = Arc::new(NativeRequest::new(Arc::clone(&session.api))?);
+    let state = Arc::new(CancelState::new(Arc::clone(&request)));
+    let cancel_guard = CancelGuard::new(Arc::clone(&state), cancellation_retry_sender()?);
 
     tokio::task::spawn_blocking(move || {
+        let _completion = WorkerCompletion::new(Arc::clone(&state));
         let ctx = Box::new(StreamCtx {
             api: Arc::clone(&session.api),
             tx: tx.clone(),
@@ -601,9 +623,17 @@ pub(crate) fn run_openai_json_streaming(
         }
 
         let run = (|| -> Result<()> {
-            let request = NativeRequest::new(Arc::clone(&session.api))?;
             let item = make_openai_json_item(&session.api, &request_json)?;
-            request.add_item(item, true)?;
+            if let Err(error) = request.add_item(item, true) {
+                unsafe { (session.api.item_api().Item_Release)(item) };
+                return Err(error);
+            }
+            if state.cancel_requested.load(Ordering::Acquire) {
+                return Err(FoundryLocalError::Native {
+                    code: crate::error::NativeErrorCode::OperationCancelled,
+                    message: "request canceled before native processing".into(),
+                });
+            }
             let _response = session.process_request(&request)?;
             Ok(())
         })();
@@ -618,7 +648,7 @@ pub(crate) fn run_openai_json_streaming(
         drop(session);
     });
 
-    rx
+    Ok((rx, cancel_guard))
 }
 
 // ── Generic item streaming bridge ─────────────────────────────────────────────
@@ -732,11 +762,27 @@ pub(crate) fn run_item_streaming(
 ) -> (
     UnboundedReceiver<Result<Item>>,
     oneshot::Receiver<Result<crate::response::Response>>,
+    Option<CancelGuard>,
 ) {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Item>>();
     let (response_tx, response_rx) = oneshot::channel();
+    let cancellation = (|| {
+        let request = Arc::new(NativeRequest::new(Arc::clone(&session.api))?);
+        let state = Arc::new(CancelState::new(Arc::clone(&request)));
+        let guard = CancelGuard::new(Arc::clone(&state), cancellation_retry_sender()?);
+        Ok::<_, FoundryLocalError>((request, state, guard))
+    })();
+    let (request, cancel_state, cancel_guard) = match cancellation {
+        Ok(cancellation) => cancellation,
+        Err(error) => {
+            let _ = tx.send(Err(duplicate_stream_error(&error)));
+            let _ = response_tx.send(Err(error));
+            return (rx, response_rx, None);
+        }
+    };
 
     tokio::task::spawn_blocking(move || {
+        let completion = WorkerCompletion::new(Arc::clone(&cancel_state));
         let ctx = Box::new(ItemStreamCtx {
             api: Arc::clone(&session.api),
             tx: tx.clone(),
@@ -755,7 +801,6 @@ pub(crate) fn run_item_streaming(
         }
 
         let run = (|| -> Result<crate::response::Response> {
-            let request = NativeRequest::new(Arc::clone(&session.api))?;
             for item in &items {
                 request.add_item_value(item)?;
             }
@@ -768,6 +813,12 @@ pub(crate) fn run_item_streaming(
                     option_pairs.iter().map(|(k, v)| (k.as_str(), v.as_str())),
                 )?;
                 request.set_options(kvps.as_ptr())?;
+            }
+            if cancel_state.cancel_requested.load(Ordering::Acquire) {
+                return Err(FoundryLocalError::Native {
+                    code: crate::error::NativeErrorCode::OperationCancelled,
+                    message: "request canceled before native processing".into(),
+                });
             }
             let response = session.process_request(&request)?;
             crate::response::Response::from_native(&response)
@@ -789,9 +840,10 @@ pub(crate) fn run_item_streaming(
         drop(ctx);
         drop(tx);
         drop(session);
+        drop(completion);
 
         let _ = response_tx.send(run);
     });
 
-    (rx, response_rx)
+    (rx, response_rx, Some(cancel_guard))
 }

@@ -52,6 +52,100 @@ fn deterministic_options() -> RequestOptions {
 }
 
 #[tokio::test]
+async fn cancellation_drop_stops_nonstreaming_and_streaming_before_session_reuse() {
+    let manager = common::get_test_manager();
+    let model = manager
+        .catalog()
+        .get_model_variant("qwen2.5-0.5b-instruct-generic-cpu:4")
+        .await
+        .expect("CPU test model should exist");
+    model.load().await.expect("model.load() failed");
+    let session = ChatSession::new(&model).await.expect("create session");
+    let long_request = || {
+        Request::from_items(vec![Item::user_message(vec![Item::text(
+            "Count from 1 to 10000, writing every number on its own line. Do not stop early.",
+        )])])
+        .with_options(RequestOptions {
+            search: SearchOptions {
+                max_output_tokens: Some(8192),
+                temperature: Some(0.0),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+    };
+    let recover = || {
+        Request::from_items(vec![Item::user_message(vec![Item::text("Say hello.")])]).with_options(
+            RequestOptions {
+                search: SearchOptions {
+                    max_output_tokens: Some(1),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+    };
+
+    // Native generator construction is not interruptible; measure cancellation after initialization.
+    session
+        .process_request(recover())
+        .await
+        .expect("warmup request");
+
+    let turns_before = session.turn_count();
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            session.process_request(long_request())
+        )
+        .await
+        .is_err(),
+        "long inference unexpectedly completed before cancellation"
+    );
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        session.process_request(recover()),
+    )
+    .await
+    .expect("canceled worker still owns the session")
+    .expect("session should remain reusable");
+    assert_eq!(session.turn_count(), turns_before + 1);
+
+    let turns_before = session.turn_count();
+    let stream = session.process_streaming_request(long_request());
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    drop(stream);
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        session.process_request(recover()),
+    )
+    .await
+    .expect("dropped stream still owns the session")
+    .expect("session should remain reusable after stream drop");
+    assert_eq!(session.turn_count(), turns_before + 1);
+
+    drop(session);
+    model.unload().await.expect("unload should succeed");
+    drop(model);
+    drop(manager);
+
+    let manager = common::get_test_manager();
+    let model = manager
+        .catalog()
+        .get_model_variant("qwen2.5-0.5b-instruct-generic-cpu:4")
+        .await
+        .expect("CPU test model should remain available");
+    model
+        .load()
+        .await
+        .expect("cancellation cleanup must not shut down the shared manager");
+    model
+        .unload()
+        .await
+        .expect("follow-up unload should succeed");
+}
+
+#[tokio::test]
 async fn should_reject_wrong_task_at_construction() {
     let manager = common::get_test_manager();
     let model = manager

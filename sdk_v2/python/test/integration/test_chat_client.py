@@ -54,6 +54,26 @@ PROMPT = [{"role": "user", "content": "Reply with the single word: hello /no_thi
 
 
 class TestNonStreaming:
+    @pytest.mark.parametrize("cancel_before_start", [False, True])
+    def test_cancellation_event_stops_inference_and_allows_subsequent_call(
+        self, chat_client, cancel_before_start, cancel_on_native_processing
+    ):
+        from foundry_local_sdk.exception import FoundryLocalException
+
+        chat_client.settings.max_tokens = 256
+        event = cancel_on_native_processing
+        if cancel_before_start:
+            event.set()
+        with pytest.raises(FoundryLocalException) as error:
+            chat_client.complete_chat(
+                [{"role": "user", "content": "Count from 1 to 10000, writing every integer on its own line."}],
+                cancel_event=event,
+            )
+        assert error.value.error_code == 5
+
+        chat_client.settings.max_tokens = 8
+        assert chat_client.complete_chat(PROMPT).choices
+
     def test_returns_typed_completion(self, chat_client):
         resp = chat_client.complete_chat(PROMPT)
         assert isinstance(resp, ChatCompletion)

@@ -921,10 +921,24 @@ public sealed class Session : IDisposable
     /// <summary>
     /// Process a request. Returns a new Response pointer. Caller owns it.
     /// </summary>
-    internal IntPtr ProcessRequest(IntPtr requestPtr)
+    internal IntPtr ProcessRequest(Microsoft.AI.Foundry.Local.Request request, CancellationToken ct = default)
     {
+        using var lease = request.AcquireProcessingLease();
+        return ProcessRequest(lease, ct);
+    }
+
+    internal IntPtr ProcessRequest(Microsoft.AI.Foundry.Local.Request.Lease requestLease, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        using var cancellation = ct.CanBeCanceled
+            ? new Microsoft.AI.Foundry.Local.Detail.RequestCancellation(
+                () => Api.CheckStatus(Api.Inference.RequestCancel(requestLease.Ptr)), ct)
+            : null;
+
+        ct.ThrowIfCancellationRequested();
         IntPtr responsePtr = IntPtr.Zero;
-        Api.CheckStatus(Api.Inference.SessionProcessRequest(Ptr, requestPtr, ref responsePtr));
+        Api.CheckStatus(Api.Inference.SessionProcessRequest(Ptr, requestLease.Ptr, ref responsePtr));
+
         return responsePtr;
     }
 

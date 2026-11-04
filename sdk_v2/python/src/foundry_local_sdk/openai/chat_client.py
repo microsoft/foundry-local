@@ -15,6 +15,8 @@ from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 from typing_extensions import deprecated
 
 if TYPE_CHECKING:
+    import threading
+
     from foundry_local_sdk.imodel import IModel
 
 
@@ -200,7 +202,7 @@ class ChatClient:
         }
         return json.dumps(request_dict)
 
-    def _run_native_request(self, request_json: str) -> str:
+    def _run_native_request(self, request_json: str, cancel_event: threading.Event | None = None) -> str:
         """Create a fresh ChatSession, process the request, return the response JSON string."""
         from foundry_local_sdk.items import TextItem, TextItemType
         from foundry_local_sdk.request import Request
@@ -211,7 +213,7 @@ class ChatClient:
             Request() as request,
         ):
             request.add_item(TextItem(request_json, TextItemType.OPENAI_JSON))
-            with session.process_request(request) as response:
+            with session.process_request(request, cancel_event=cancel_event) as response:
                 # Copy the text out of the (response-owned) item before the response is released.
                 return response.get_item(0).text
 
@@ -219,12 +221,15 @@ class ChatClient:
         self,
         messages: list[ChatCompletionMessageParam],
         tools: list[dict[str, Any]] | None = None,
+        *,
+        cancel_event: threading.Event | None = None,
     ) -> ChatCompletion:
         """Perform a non-streaming chat completion.
 
         Args:
             messages: Conversation history as a list of OpenAI message dicts.
             tools: Optional list of tool definitions for function calling.
+            cancel_event: Set from another thread to cancel native processing.
 
         Returns:
             A ``ChatCompletion`` response.
@@ -237,13 +242,15 @@ class ChatClient:
         self._validate_tools(tools)
 
         request_json = self._build_request_json(messages, streaming=False, tools=tools)
-        response_json = self._run_native_request(request_json)
+        response_json = self._run_native_request(request_json, cancel_event)
         return ChatCompletion.model_validate_json(response_json)
 
     def complete_streaming_chat(
         self,
         messages: list[ChatCompletionMessageParam],
         tools: list[dict[str, Any]] | None = None,
+        *,
+        cancel_event: threading.Event | None = None,
     ) -> Generator[ChatCompletionChunk, None, None]:
         """Perform a streaming chat completion, yielding chunks as they arrive.
 
@@ -257,6 +264,7 @@ class ChatClient:
         Args:
             messages: Conversation history as a list of OpenAI message dicts.
             tools: Optional list of tool definitions for function calling.
+            cancel_event: Set from another thread to cancel native processing.
 
         Returns:
             A generator of ``ChatCompletionChunk`` objects.
@@ -280,7 +288,7 @@ class ChatClient:
         ):
             session.set_streaming(True)
             request.add_item(TextItem(request_json, TextItemType.OPENAI_JSON))
-            for item in session.process_streaming_request(request):
+            for item in session.process_streaming_request(request, cancel_event=cancel_event):
                 # Each item is a TextItem(OPENAI_JSON) — parse and normalize.
                 raw = json.loads(item.text)
 

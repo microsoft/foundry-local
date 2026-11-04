@@ -12,6 +12,7 @@ public sealed class Request : IDisposable
     private readonly object _lifetimeSync = new();
     internal IntPtr Ptr { get; private set; }
     private int _activeLeases;
+    private bool _processing;
     private bool _disposed;
 
     public Request()
@@ -129,19 +130,36 @@ public sealed class Request : IDisposable
     }
 
     internal Lease AcquireLease()
+        => AcquireLease(processing: false);
+
+    internal Lease AcquireProcessingLease()
+        => AcquireLease(processing: true);
+
+    private Lease AcquireLease(bool processing)
     {
         lock (_lifetimeSync)
         {
             Detail.Throw.IfDisposed(_disposed || Ptr == IntPtr.Zero, this);
+            if (processing && _processing)
+            {
+                throw new InvalidOperationException("This request is already being processed.");
+            }
+
+            _processing |= processing;
             _activeLeases++;
-            return new Lease(this, Ptr);
+            return new Lease(this, Ptr, processing);
         }
     }
 
-    private void ReleaseLease()
+    private void ReleaseLease(bool processing)
     {
         lock (_lifetimeSync)
         {
+            if (processing)
+            {
+                _processing = false;
+            }
+
             _activeLeases--;
             if (_activeLeases == 0)
             {
@@ -153,18 +171,20 @@ public sealed class Request : IDisposable
     internal sealed class Lease : IDisposable
     {
         private Request? _owner;
+        private readonly bool _processing;
 
-        internal Lease(Request owner, IntPtr ptr)
+        internal Lease(Request owner, IntPtr ptr, bool processing)
         {
             _owner = owner;
             Ptr = ptr;
+            _processing = processing;
         }
 
         internal IntPtr Ptr { get; }
 
         public void Dispose()
         {
-            Interlocked.Exchange(ref _owner, null)?.ReleaseLease();
+            Interlocked.Exchange(ref _owner, null)?.ReleaseLease(_processing);
         }
     }
 }

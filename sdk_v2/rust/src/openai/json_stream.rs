@@ -13,13 +13,18 @@ use crate::error::{FoundryLocalError, Result};
 /// Empty chunks are silently skipped.
 pub struct JsonStream<T> {
     rx: tokio::sync::mpsc::UnboundedReceiver<Result<String>>,
+    _cancel_guard: crate::session::CancelGuard,
     _marker: PhantomData<T>,
 }
 
 impl<T> JsonStream<T> {
-    pub(crate) fn new(rx: tokio::sync::mpsc::UnboundedReceiver<Result<String>>) -> Self {
+    pub(crate) fn new(
+        rx: tokio::sync::mpsc::UnboundedReceiver<Result<String>>,
+        cancel_guard: crate::session::CancelGuard,
+    ) -> Self {
         Self {
             rx,
+            _cancel_guard: cancel_guard,
             _marker: PhantomData,
         }
     }
