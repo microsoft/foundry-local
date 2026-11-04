@@ -25,12 +25,6 @@ stages:
 
     - template: steps-prefetch-vcpkg.yml
 
-    - task: UsePythonVersion@0
-      displayName: 'Use Python 3.12'
-      inputs:
-        versionSpec: '3.12'
-        architecture: x64
-
     - task: PipAuthenticate@1
       displayName: 'Authenticate Lotus for pip'
       inputs:
@@ -48,8 +42,10 @@ stages:
 
     - bash: |
         set -euo pipefail
+        # Match Ubuntu's OpenSSL rather than using a toolcache Python built for another distribution.
+        /usr/bin/python3 -c "import ssl, sys; assert sys.version_info[:2] == (3, 12), sys.version; ssl.create_default_context(); print(sys.executable); print(sys.version); print(ssl.OPENSSL_VERSION)"
         git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
-        python -m venv "$ENGINE_VENV"
+        /usr/bin/python3 -m venv "$ENGINE_VENV"
         python="$ENGINE_VENV/bin/python"
         export PATH="$ENGINE_VENV/bin:$PATH"
         : "${PIP_INDEX_URL:?PipAuthenticate did not set PIP_INDEX_URL}"

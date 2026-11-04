@@ -14,9 +14,12 @@ parameters:
   values: ['all', 'streaming-asr']
 
 steps:
+# Downloads are immutable and can be retried; a stalled transfer must not consume the whole job budget.
 - ${{ if eq(parameters.modelSet, 'all') }}:
   - task: UniversalPackages@0
     displayName: 'Fetch Qwen 2.5 0.5B Instruct test model'
+    timeoutInMinutes: 20
+    retryCountOnTaskFailure: 2
     inputs:
       command: download
       feedsToUse: internal
@@ -28,6 +31,8 @@ steps:
 - ${{ if eq(parameters.modelSet, 'all') }}:
   - task: UniversalPackages@0
     displayName: 'Fetch OpenAI Whisper Tiny test model'
+    timeoutInMinutes: 20
+    retryCountOnTaskFailure: 2
     inputs:
       command: download
       feedsToUse: internal
@@ -38,6 +43,8 @@ steps:
 
 - task: UniversalPackages@0
   displayName: 'Fetch Nemotron Speech Streaming test model'
+  timeoutInMinutes: 20
+  retryCountOnTaskFailure: 2
   inputs:
     command: download
     feedsToUse: internal
@@ -49,6 +56,8 @@ steps:
 - ${{ if eq(parameters.modelSet, 'all') }}:
   - task: UniversalPackages@0
     displayName: 'Fetch Qwen3 Embedding test model'
+    timeoutInMinutes: 20
+    retryCountOnTaskFailure: 2
     inputs:
       command: download
       feedsToUse: internal
@@ -60,6 +69,8 @@ steps:
 - ${{ if eq(parameters.modelSet, 'all') }}:
   - task: UniversalPackages@0
     displayName: 'Fetch Qwen3.5 0.8B test model'
+    timeoutInMinutes: 20
+    retryCountOnTaskFailure: 2
     inputs:
       command: download
       feedsToUse: internal
@@ -71,6 +82,8 @@ steps:
 - ${{ if eq(parameters.modelSet, 'all') }}:
   - task: UniversalPackages@0
     displayName: 'Fetch DeepSeek R1 Distill Qwen 14B test model'
+    timeoutInMinutes: 20
+    retryCountOnTaskFailure: 2
     inputs:
       command: download
       feedsToUse: internal
