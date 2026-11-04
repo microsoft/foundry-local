@@ -17,72 +17,116 @@
 #include <filesystem>
 #include <fmt/format.h>
 #include <thread>
+#include <utility>
 
 namespace fl {
+
+class ManagedModelRuntime {
+ public:
+  virtual ~ManagedModelRuntime() = default;
+  virtual std::string_view ModelId() const noexcept = 0;
+  virtual std::string_view ModelPath() const noexcept = 0;
+  virtual GenAIModelInstance* GenAI() const noexcept { return nullptr; }
+  virtual size_t SessionRefCount() const noexcept = 0;
+  virtual std::shared_ptr<void> Lease() {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "runtime does not support non-generative leases");
+  }
+};
 
 namespace {
 
 /// The expected config filename inside a model directory.
 constexpr const char* kGenAIConfigFileName = "genai_config.json";
 
-/// Maps model_id substrings to their required execution provider registration name.
-/// If a model_id contains one of these keys, the corresponding EP must be registered.
-struct ModelIdEpRequirement {
-  std::string_view model_id_substr;
-  std::string_view required_ep;
-};
-
-constexpr ModelIdEpRequirement kModelIdEpRequirements[] = {
-    {"cuda-gpu", "CUDAExecutionProvider"},
-    {"openvino-npu", "OpenVINOExecutionProvider"},
-    {"openvino-gpu", "OpenVINOExecutionProvider"},
-    {"qnn-npu", "QNNExecutionProvider"},
-    {"trtrtx-gpu", "NvTensorRTRTXExecutionProvider"},
-    {"vitis-npu", "VitisAIExecutionProvider"},
-};
-
-/// Returns the required EP registration name for a model_id, or empty if none required.
-std::string_view RequiredEpForModelId(std::string_view model_id) {
-  for (const auto& req : kModelIdEpRequirements) {
-    if (model_id.find(req.model_id_substr) != std::string_view::npos) {
-      return req.required_ep;
-    }
-  }
-
-  return {};
+std::string GenerativeRuntimeKey(std::string_view model_id) {
+  return "generative|" + std::string(model_id);
 }
 
-/// Returns whether the provider is DirectML, which is supplied by WinML rather than a downloadable EP bootstrapper.
-bool IsDmlProvider(std::string_view provider) {
-  return provider == "dml" || provider == "DML" || provider == "DmlExecutionProvider" ||
-         provider == "DMLExecutionProvider";
-}
+class ManagedGenerativeRuntime final : public ManagedModelRuntime {
+ public:
+  explicit ManagedGenerativeRuntime(
+      std::unique_ptr<GenAIModelInstance> instance)
+      : instance_(std::move(instance)) {}
 
-/// Returns the required EP registration name for a provider declared in genai_config.json.
-std::string RequiredEpForConfigProvider(std::string_view provider) {
-  if (provider.empty() || IsDmlProvider(provider)) {
-    return {};
+  std::string_view ModelId() const noexcept override {
+    return instance_->ModelId();
+  }
+  std::string_view ModelPath() const noexcept override {
+    return instance_->ModelPath();
+  }
+  GenAIModelInstance* GenAI() const noexcept override {
+    return instance_.get();
+  }
+  size_t SessionRefCount() const noexcept override {
+    return instance_->SessionRefCount();
   }
 
-  auto ep = EPUtils::StringtoEP(provider);
-  if (provider == "WebGpuExecutionProvider") {
-    ep = ExecutionProvider::kWebGPU;
+ private:
+  std::unique_ptr<GenAIModelInstance> instance_;
+};
+
+class ManagedTypedRuntime final
+    : public ManagedModelRuntime,
+      public std::enable_shared_from_this<ManagedTypedRuntime> {
+ public:
+  ManagedTypedRuntime(
+      std::string model_id, std::string model_path,
+      std::shared_ptr<NonGenerativeAdmissionReservation> reservation,
+      std::shared_ptr<void> runtime)
+      : model_id_(std::move(model_id)),
+        model_path_(std::move(model_path)),
+        reservation_(std::move(reservation)),
+        runtime_(std::move(runtime)) {}
+
+  ~ManagedTypedRuntime() override {
+    runtime_.reset();
+    reservation_.reset();
   }
 
-  if (ep == ExecutionProvider::kCPU) {
-    return {};
+  std::string_view ModelId() const noexcept override { return model_id_; }
+  std::string_view ModelPath() const noexcept override { return model_path_; }
+  size_t SessionRefCount() const noexcept override {
+    const auto owners = weak_from_this().use_count();
+    return owners > 0 ? owners - 1 : 0;
   }
-  if (ep != ExecutionProvider::kUnknown) {
-    return std::string(EPUtils::EPtoRegistrationName(ep));
+  std::shared_ptr<void> Lease() override {
+    return std::shared_ptr<void>(shared_from_this(), runtime_.get());
   }
 
-  // Configs may name WinML/OGA providers that are intentionally outside the public override enum, such as
-  // RyzenAILightExecutionProvider. Canonical registration names can still be guarded.
-  constexpr std::string_view suffix = "ExecutionProvider";
-  return provider.ends_with(suffix) ? std::string(provider) : std::string{};
+ private:
+  std::string model_id_;
+  std::string model_path_;
+  std::shared_ptr<NonGenerativeAdmissionReservation> reservation_;
+  std::shared_ptr<void> runtime_;
+};
+
+std::pair<std::string, std::string> SelectionIdentity(std::string_view model_id, std::string_view model_path) {
+  auto path = NormalizeModelPath(model_path);
+#ifdef _WIN32
+  path = ToLower(std::move(path));
+#endif
+  return {std::string(model_id), std::move(path)};
 }
 
 }  // namespace
+
+LoadedSelectionReservation::LoadedSelectionReservation(ModelLoadManager& manager,
+                                                       std::pair<std::string, std::string> identity)
+    : manager_(manager), identity_(std::move(identity)) {}
+
+LoadedSelectionReservation::~LoadedSelectionReservation() {
+  if (active_) {
+    manager_.CompleteSelectionReservation(identity_, false);
+  }
+}
+
+void LoadedSelectionReservation::Commit() noexcept {
+  if (active_) {
+    manager_.CompleteSelectionReservation(identity_, true);
+    active_ = false;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Construction / Destruction
@@ -97,15 +141,12 @@ ModelLoadManager::ModelLoadManager(
       non_generative_admission_(
           std::make_shared<NonGenerativeAdmissionCoordinator>(
               non_generative_memory_budget_bytes,
-              non_generative_readiness_concurrency)),
-      non_generative_runtimes_(
-          std::make_shared<NonGenerativeRuntimeState>(
-              non_generative_admission_)) {}
+              non_generative_readiness_concurrency)) {}
 
 ModelLoadManager::~ModelLoadManager() {
   // Destroy all loaded models under the lock.
   std::lock_guard<std::mutex> lock(mutex_);
-  loaded_models_.clear();
+  loaded_runtimes_.clear();
 }
 
 bool ModelLoadManager::HasEP(const std::string& ep_name) const {
@@ -122,8 +163,8 @@ bool ModelLoadManager::HasEP(const std::string& ep_name) const {
 void ModelLoadManager::RunWithUnloadedModelsInDirectory(std::string_view directory,
                                                         const std::function<void()>& operation) {
   std::lock_guard<std::mutex> lock(mutex_);
-  for (const auto& [id, model] : loaded_models_) {
-    if (IsPathWithinDirectory(model->ModelPath(), std::filesystem::path(directory))) {
+  for (const auto& [id, runtime] : loaded_runtimes_) {
+    if (IsPathWithinDirectory(runtime->ModelPath(), std::filesystem::path(directory))) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot remove a loaded model from cache; unload it first: " + id);
     }
   }
@@ -154,10 +195,9 @@ std::shared_ptr<void> ModelLoadManager::AcquireNonGenerativeRuntime(
       std::filesystem::weakly_canonical(model.GetPath()).string();
   const auto provider_name = std::string(provider);
   const auto identity =
-      model.Id() + "|" + canonical + "|" + provider_name + "|" +
-      fmt::format("{}", static_cast<const void*>(model.SelectedLeaf()));
-  return non_generative_runtimes_->Acquire(
-      identity, model.Id(), &model, estimated_resident_bytes,
+      "non-generative|" + model.Id() + "|" + canonical + "|" + provider_name;
+  return AcquireManagedRuntime(
+      identity, model.Id(), canonical, estimated_resident_bytes,
       provider.empty() ? "cpu" : provider_name,
       [&]() -> std::shared_ptr<void> {
         const auto registration =
@@ -166,21 +206,122 @@ std::shared_ptr<void> ModelLoadManager::AcquireNonGenerativeRuntime(
                 : EPUtils::EPtoRegistrationName(
                       EPUtils::StringtoEP(provider));
         PrepareProviderForModelLoad(registration, model.Id());
-        std::shared_ptr<void> runtime;
         if (task == "text-ranking")
-          runtime = std::make_shared<RankingRuntime>(canonical);
-        else if (task == "typed-decision")
-          runtime = std::make_shared<DecisionRuntime>(canonical);
-        else
-          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-                   "unsupported non-generative task: ", task);
-        model.MarkExternalRuntimeLoaded();
-        return runtime;
+          return std::make_shared<RankingRuntime>(canonical);
+        if (task == "typed-decision")
+          return std::make_shared<DecisionRuntime>(canonical);
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                 "unsupported non-generative task: ", task);
       });
 }
 
+std::shared_ptr<void> ModelLoadManager::AcquireManagedRuntime(
+    std::string identity, std::string model_id, std::string model_path,
+    uint64_t estimated_resident_bytes, std::string readiness_group,
+    const std::function<std::shared_ptr<void>()>& factory) {
+  std::shared_future<std::shared_ptr<ManagedModelRuntime>> future;
+  std::shared_ptr<std::promise<std::shared_ptr<ManagedModelRuntime>>> promise;
+  {
+    std::lock_guard lock(mutex_);
+    if (shutdown_.load())
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+               "cannot acquire non-generative runtime during shutdown");
+    if (const auto found = loaded_runtimes_.find(identity);
+        found != loaded_runtimes_.end())
+      return found->second->Lease();
+    if (const auto found = loading_runtimes_.find(identity);
+        found != loading_runtimes_.end()) {
+      future = found->second.runtime;
+    } else {
+      promise = std::make_shared<
+          std::promise<std::shared_ptr<ManagedModelRuntime>>>();
+      future = promise->get_future().share();
+      loading_runtimes_.emplace(
+          identity, LoadingRuntimeEntry{model_id, model_path, future});
+    }
+  }
+
+  if (promise) {
+    try {
+      auto reservation =
+          std::make_shared<NonGenerativeAdmissionReservation>(
+              non_generative_admission_, estimated_resident_bytes, model_id);
+      NonGenerativeReadinessLease readiness(
+          non_generative_admission_, std::move(readiness_group));
+      auto runtime = factory();
+      auto managed = std::make_shared<ManagedTypedRuntime>(
+          std::move(model_id), std::move(model_path), std::move(reservation),
+          std::move(runtime));
+      {
+        std::lock_guard lock(mutex_);
+        if (shutdown_.load())
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                   "cannot acquire non-generative runtime during shutdown");
+        loaded_runtimes_[identity] = managed;
+        loading_runtimes_.erase(identity);
+      }
+      promise->set_value(managed);
+    } catch (...) {
+      {
+        std::lock_guard lock(mutex_);
+        loading_runtimes_.erase(identity);
+      }
+      promise->set_exception(std::current_exception());
+      throw;
+    }
+  }
+
+  return future.get()->Lease();
+}
+
 bool ModelLoadManager::UnloadNonGenerativeRuntime(Model& model) {
-  return non_generative_runtimes_->Remove(model);
+  std::vector<std::shared_ptr<ManagedModelRuntime>> removed;
+  const auto model_path = NormalizeModelPath(model.GetPath());
+  {
+    std::lock_guard lock(mutex_);
+    if (std::any_of(
+            loading_runtimes_.begin(), loading_runtimes_.end(),
+            [&](const auto& entry) {
+              return entry.second.model_id == model.Id() &&
+                     ModelPathsEqual(entry.second.model_path, model_path);
+            }))
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+               "cannot unload model '", model.Id(),
+               "' while it is loading");
+    for (auto it = loaded_runtimes_.begin(); it != loaded_runtimes_.end();) {
+      if (it->second->GenAI() ||
+          it->second->ModelId() != model.Id() ||
+          !ModelPathsEqual(it->second->ModelPath(), model_path)) {
+        ++it;
+        continue;
+      }
+      const auto sessions = it->second->SessionRefCount();
+      if (sessions != 0)
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                 "cannot unload model '", model.Id(), "': ", sessions,
+                 " session(s) still using it");
+      removed.push_back(std::move(it->second));
+      it = loaded_runtimes_.erase(it);
+    }
+  }
+  return !removed.empty();
+}
+
+bool ModelLoadManager::IsModelLoaded(const Model& model) const {
+  const auto model_path = NormalizeModelPath(model.GetPath());
+  std::lock_guard lock(mutex_);
+  return std::any_of(
+             loading_runtimes_.begin(), loading_runtimes_.end(),
+             [&](const auto& entry) {
+               return entry.second.model_id == model.Id() &&
+                      ModelPathsEqual(entry.second.model_path, model_path);
+             }) ||
+         std::any_of(
+             loaded_runtimes_.begin(), loaded_runtimes_.end(),
+             [&](const auto& entry) {
+               return entry.second->ModelId() == model.Id() &&
+                      ModelPathsEqual(entry.second->ModelPath(), model_path);
+             });
 }
 
 // ---------------------------------------------------------------------------
@@ -197,17 +338,18 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
 
   const auto path_str = NormalizeModelPath(model_path);
   std::string id_str(model_id);
+  const auto runtime_key = GenerativeRuntimeKey(id_str);
   std::lock_guard<std::mutex> lock(mutex_);
 
-  auto it = loaded_models_.find(id_str);
-  if (it != loaded_models_.end()) {
+  auto it = loaded_runtimes_.find(runtime_key);
+  if (it != loaded_runtimes_.end()) {
     if (!ModelPathsEqual(path_str, it->second->ModelPath())) {
       FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model '", id_str,
                        "' is already loaded from a different path: ", it->second->ModelPath(),
                        "; requested path: ", path_str);
     }
 
-    return {LoadStatus::kModelAlreadyLoaded, it->second.get()};
+    return {LoadStatus::kModelAlreadyLoaded, it->second->GenAI()};
   }
 
   // Validate model directory exists
@@ -257,8 +399,8 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
     required_ep = EPUtils::EPtoRegistrationName(resolved_ep);
   } else {
     const auto config_provider = genai_config.DefaultProvider();
-    required_ep = config_provider.empty() ? std::string(RequiredEpForModelId(id_str))
-                                          : RequiredEpForConfigProvider(config_provider);
+    required_ep = config_provider.empty() ? std::string(EPUtils::RequiredEpForModelId(id_str))
+                                          : EPUtils::RequiredEpForConfigProvider(config_provider);
   }
 
   // OGA can crash or hang if a model is loaded with an unregistered EP.
@@ -272,7 +414,8 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
                                                                            logger_));
 
   auto* raw_ptr = loaded.get();
-  loaded_models_[id_str] = std::move(loaded);
+  loaded_runtimes_[runtime_key] =
+      std::make_shared<ManagedGenerativeRuntime>(std::move(loaded));
 
   logger_.Log(LogLevel::Information, fmt::format("model loaded successfully: {}", id_str));
   return {LoadStatus::kSuccess, raw_ptr};
@@ -287,7 +430,7 @@ bool ModelLoadManager::UnloadModel(std::string_view model_id) {
 }
 
 ModelLoadManager::SessionModelReference ModelLoadManager::AcquireSessionModel(std::string_view model_id,
-                                                                            std::string_view model_path) {
+                                                                              std::string_view model_path) {
   const auto normalized_path = NormalizeModelPath(model_path);
   std::lock_guard lock(mutex_);
   auto* model = FindLoadedModelLocked(model_id, &normalized_path);
@@ -307,8 +450,8 @@ bool ModelLoadManager::UnloadModel(std::string_view model_id, const std::string*
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::string id_str(model_id);
-  auto it = loaded_models_.find(id_str);
-  if (it == loaded_models_.end()) {
+  auto it = loaded_runtimes_.find(GenerativeRuntimeKey(id_str));
+  if (it == loaded_runtimes_.end()) {
     logger_.Log(LogLevel::Information, fmt::format("model was not loaded: {}", id_str));
     return false;
   }
@@ -332,26 +475,28 @@ bool ModelLoadManager::UnloadModel(std::string_view model_id, const std::string*
   logger_.Log(LogLevel::Information, fmt::format("unloading model: {}", id_str));
 
   // Erasing destroys the GenAIModelInstance, which destroys OGA objects in reverse order.
-  loaded_models_.erase(it);
+  loaded_runtimes_.erase(it);
   return true;
 }
 
 void ModelLoadManager::RejectNewLoads() {
   shutdown_.store(true);
-  non_generative_runtimes_->RejectNewAcquisitions();
 }
 
 void ModelLoadManager::UnloadAll(std::chrono::milliseconds timeout) {
-  non_generative_runtimes_->Clear();
-  // Snapshot ids+pointers under the lock; the GenAIModelInstance pointers stay valid
-  // because (a) only this method or UnloadModel can erase entries, and (b) we serialize
-  // the per-id erase below.
-  std::vector<std::pair<std::string, GenAIModelInstance*>> snapshot;
+  std::vector<std::pair<std::string, std::shared_ptr<ManagedModelRuntime>>>
+      snapshot;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    snapshot.reserve(loaded_models_.size());
-    for (auto& [id, instance] : loaded_models_) {
-      snapshot.emplace_back(id, instance.get());
+    snapshot.reserve(loaded_runtimes_.size());
+    for (auto it = loaded_runtimes_.begin();
+         it != loaded_runtimes_.end();) {
+      if (it->second->GenAI()) {
+        snapshot.emplace_back(std::string(it->second->ModelId()), it->second);
+        ++it;
+      } else {
+        it = loaded_runtimes_.erase(it);
+      }
     }
   }
 
@@ -370,12 +515,12 @@ void ModelLoadManager::UnloadAll(std::chrono::milliseconds timeout) {
   // time linearly with model count.
   auto deadline = clock::now() + timeout;
 
-  for (auto& [id, instance] : snapshot) {
-    while (instance->SessionRefCount() > 0 && clock::now() < deadline) {
+  for (auto& [id, runtime] : snapshot) {
+    while (runtime->SessionRefCount() > 0 && clock::now() < deadline) {
       std::this_thread::sleep_for(kPollInterval);
     }
 
-    auto remaining = instance->SessionRefCount();
+    auto remaining = runtime->SessionRefCount();
     if (remaining > 0) {
       logger_.Log(LogLevel::Warning,
                   fmt::format("Shutdown: model '{}' still has {} session(s) after overall {}ms deadline; "
@@ -409,6 +554,85 @@ GenAIModelInstance* ModelLoadManager::GetLoadedModel(std::string_view model_id, 
   return GetLoadedModel(model_id, &normalized_model_path);
 }
 
+bool ModelLoadManager::PreserveLoadedSelection(std::string_view model_id, std::string_view model_path, bool preserve) {
+  const auto identity = SelectionIdentity(model_id, model_path);
+  std::lock_guard lock(mutex_);
+  if (preserve) {
+    auto& state = preserved_selections_[identity];
+    state.generation = ++selection_generation_;
+    return std::exchange(state.preserved, true);
+  }
+
+  const auto found = preserved_selections_.find(identity);
+  if (found == preserved_selections_.end()) {
+    return false;
+  }
+
+  const bool previous = std::exchange(found->second.preserved, false);
+  if (found->second.reservations == 0) {
+    preserved_selections_.erase(found);
+  }
+  return previous;
+}
+
+bool ModelLoadManager::HasPreservedLoadedSelection(std::string_view model_id, std::string_view model_path) const {
+  const auto identity = SelectionIdentity(model_id, model_path);
+  std::lock_guard lock(mutex_);
+  return preserved_selections_.contains(identity);
+}
+
+std::unique_ptr<LoadedSelectionReservation> ModelLoadManager::ReserveLoadedSelection(std::string_view model_id,
+                                                                                     std::string_view model_path) {
+  auto reservation = std::unique_ptr<LoadedSelectionReservation>(
+      new LoadedSelectionReservation(*this, SelectionIdentity(model_id, model_path)));
+  std::lock_guard lock(mutex_);
+  ++preserved_selections_[reservation->identity_].reservations;
+  reservation->active_ = true;
+  return reservation;
+}
+
+void ModelLoadManager::ReconcileLoadedSelections(
+    const std::function<bool(const std::string&, const std::string&)>& is_loaded) {
+  std::vector<std::pair<std::pair<std::string, std::string>, uint64_t>> selections;
+  {
+    std::lock_guard lock(mutex_);
+    for (const auto& [identity, state] : preserved_selections_) {
+      if (state.preserved && state.reservations == 0) {
+        selections.emplace_back(identity, state.generation);
+      }
+    }
+  }
+
+  for (const auto& [identity, generation] : selections) {
+    if (is_loaded(identity.first, identity.second)) {
+      continue;
+    }
+
+    std::lock_guard lock(mutex_);
+    const auto found = preserved_selections_.find(identity);
+    // A load admitted or committed during the remote observation owns a newer selection.
+    if (found != preserved_selections_.end() && found->second.reservations == 0 &&
+        found->second.generation == generation) {
+      preserved_selections_.erase(found);
+    }
+  }
+}
+
+void ModelLoadManager::CompleteSelectionReservation(const std::pair<std::string, std::string>& identity,
+                                                    bool commit) noexcept {
+  std::lock_guard lock(mutex_);
+  const auto found = preserved_selections_.find(identity);
+  auto& state = found->second;
+  state.preserved = state.preserved || commit;
+  if (commit) {
+    state.generation = ++selection_generation_;
+  }
+  --state.reservations;
+  if (!state.preserved && state.reservations == 0) {
+    preserved_selections_.erase(found);
+  }
+}
+
 GenAIModelInstance* ModelLoadManager::GetLoadedModel(std::string_view model_id,
                                                      const std::string* normalized_model_path) {
   std::lock_guard<std::mutex> lock(mutex_);
@@ -418,10 +642,10 @@ GenAIModelInstance* ModelLoadManager::GetLoadedModel(std::string_view model_id,
 GenAIModelInstance* ModelLoadManager::FindLoadedModelLocked(std::string_view model_id,
                                                             const std::string* normalized_model_path) {
   std::string id_str(model_id);
-  auto it = loaded_models_.find(id_str);
-  if (it != loaded_models_.end() &&
+  auto it = loaded_runtimes_.find(GenerativeRuntimeKey(id_str));
+  if (it != loaded_runtimes_.end() &&
       (!normalized_model_path || ModelPathsEqual(*normalized_model_path, it->second->ModelPath()))) {
-    return it->second.get();
+    return it->second->GenAI();
   }
 
   return nullptr;

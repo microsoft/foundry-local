@@ -2,7 +2,10 @@
 // Licensed under the MIT License.
 
 #include "contracts/non_generative.h"
+#include "inferencing/model_load_manager.h"
 #include "inferencing/predictive/non_generative_runtime.h"
+#include "internal_api/test_helpers.h"
+#include "model.h"
 #include "service/non_generative_handlers.h"
 #include "utils/safe_getenv.h"
 
@@ -18,10 +21,31 @@
 #include <string>
 
 namespace fl {
+
+class ModelLoadManagerTestAccess {
+ public:
+  static std::shared_ptr<void> Acquire(
+      ModelLoadManager& manager, const std::string& identity,
+      uint64_t bytes, const std::string& readiness_group,
+      const std::function<std::shared_ptr<void>()>& factory) {
+    return manager.AcquireManagedRuntime(
+        identity, identity, "/" + identity, bytes, readiness_group, factory);
+  }
+
+  static void Clear(ModelLoadManager& manager) {
+    std::map<std::string, std::shared_ptr<ManagedModelRuntime>> removed;
+    {
+      std::lock_guard lock(manager.mutex_);
+      removed.swap(manager.loaded_runtimes_);
+    }
+  }
+};
+
 namespace {
 
-TEST(NonGenerativeRuntimeStateTest, SameKeyColdLoadsAreCoalesced) {
-  auto state = CreateNonGenerativeRuntimeState();
+TEST(ManagedModelRuntimeTest, SameKeyColdLoadsAreCoalesced) {
+  test::CpuOnlyEpDetector detector;
+  ModelLoadManager manager(detector, test::NullLog());
   std::atomic<int> constructions{0};
   std::promise<void> entered;
   std::promise<void> release;
@@ -34,11 +58,13 @@ TEST(NonGenerativeRuntimeStateTest, SameKeyColdLoadsAreCoalesced) {
   };
 
   auto first = std::async(std::launch::async, [&] {
-    return state->Acquire("same", "model:1", nullptr, factory);
+    return ModelLoadManagerTestAccess::Acquire(
+        manager, "same", 1, "cpu", factory);
   });
   entered.get_future().wait();
   auto second = std::async(std::launch::async, [&] {
-    return state->Acquire("same", "model:1", nullptr, factory);
+    return ModelLoadManagerTestAccess::Acquire(
+        manager, "same", 1, "cpu", factory);
   });
 
   EXPECT_EQ(first.wait_for(std::chrono::milliseconds(20)),
@@ -50,105 +76,102 @@ TEST(NonGenerativeRuntimeStateTest, SameKeyColdLoadsAreCoalesced) {
   EXPECT_EQ(constructions.load(), 1);
 }
 
-TEST(NonGenerativeRuntimeStateTest, FailedColdLoadIsRemovedAndCanBeRetried) {
-  auto state = CreateNonGenerativeRuntimeState();
+TEST(ManagedModelRuntimeTest, FailedColdLoadIsRemovedAndCanBeRetried) {
+  test::CpuOnlyEpDetector detector;
+  ModelLoadManager manager(detector, test::NullLog());
   std::atomic<int> constructions{0};
   auto factory = [&]() -> std::shared_ptr<void> {
     if (++constructions == 1) throw std::runtime_error("synthetic failure");
     return std::make_shared<int>(42);
   };
 
-  EXPECT_THROW(state->Acquire("retry", "model:1", nullptr, factory),
+  EXPECT_THROW(ModelLoadManagerTestAccess::Acquire(
+                   manager, "retry", 1, "cpu", factory),
                std::runtime_error);
-  EXPECT_NE(state->Acquire("retry", "model:1", nullptr, factory), nullptr);
+  EXPECT_NE(ModelLoadManagerTestAccess::Acquire(
+                manager, "retry", 1, "cpu", factory),
+            nullptr);
   EXPECT_EQ(constructions.load(), 2);
 }
 
-TEST(NonGenerativeRuntimeStateTest, RejectsLoadsBeyondMemoryBudget) {
-  auto state = CreateNonGenerativeRuntimeState(100, 1);
+TEST(ManagedModelRuntimeTest, RejectsLoadsBeyondMemoryBudget) {
+  test::CpuOnlyEpDetector detector;
+  ModelLoadManager manager(detector, test::NullLog(), 100, 1);
   auto factory = []() -> std::shared_ptr<void> {
     return std::make_shared<int>(42);
   };
 
-  EXPECT_NE(state->Acquire("first", "first:1", nullptr, 80, "cpu", factory),
+  EXPECT_NE(ModelLoadManagerTestAccess::Acquire(
+                manager, "first", 80, "cpu", factory),
             nullptr);
-  EXPECT_THROW(
-      state->Acquire("second", "second:1", nullptr, 21, "cpu", factory),
-      std::runtime_error);
+  EXPECT_THROW(ModelLoadManagerTestAccess::Acquire(
+                   manager, "second", 21, "cpu", factory),
+               std::runtime_error);
 }
 
-TEST(NonGenerativeRuntimeStateTest, SharesAdmissionAcrossIsolatedRegistries) {
-  auto admission = CreateNonGenerativeAdmissionCoordinator(100, 1);
-  auto public_state = CreateNonGenerativeRuntimeState(admission);
-  auto local_state = CreateNonGenerativeRuntimeState(admission);
+TEST(ManagedModelRuntimeTest, ReleasesAdmissionAfterRuntimeDestruction) {
+  test::CpuOnlyEpDetector detector;
+  ModelLoadManager manager(detector, test::NullLog(), 100, 1);
   auto factory = []() -> std::shared_ptr<void> {
     return std::make_shared<int>(42);
   };
 
-  EXPECT_NE(public_state->Acquire(
-                "public", "public:1", nullptr, 80, "cpu", factory),
+  auto lease = ModelLoadManagerTestAccess::Acquire(
+      manager, "first", 80, "cpu", factory);
+  ModelLoadManagerTestAccess::Clear(manager);
+  EXPECT_THROW(ModelLoadManagerTestAccess::Acquire(
+                   manager, "second", 21, "cpu", factory),
+               std::runtime_error);
+  lease.reset();
+  EXPECT_NE(ModelLoadManagerTestAccess::Acquire(
+                manager, "second", 21, "cpu", factory),
             nullptr);
-  EXPECT_THROW(
-      local_state->Acquire(
-          "local", "local:1", nullptr, 21, "cpu", factory),
-      std::runtime_error);
 }
 
-TEST(NonGenerativeRuntimeStateTest,
-     ReleasesAdmissionAfterRuntimeDestruction) {
-  struct BlockingRuntime {
-    std::promise<void>& entered;
-    std::shared_future<void> release;
-    BlockingRuntime(std::promise<void>& entered_value,
-                    std::shared_future<void> release_value)
-        : entered(entered_value), release(std::move(release_value)) {}
-    ~BlockingRuntime() {
-      entered.set_value();
-      release.wait();
-    }
-  };
+TEST(ManagedModelRuntimeTest, ActiveLeaseBlocksExplicitUnload) {
+  test::FakeServiceBindings service;
+  ModelInfo info;
+  info.model_id = "typed:1";
+  info.name = "typed";
+  info.alias = "typed";
+  info.task = "text-ranking";
+  auto model = Model::FromLocalRegistration(
+      std::move(info), "/typed:1", service.download_manager,
+      service.model_load_manager);
+  auto lease = ModelLoadManagerTestAccess::Acquire(
+      service.model_load_manager, "typed:1", 1, "cpu",
+      []() -> std::shared_ptr<void> { return std::make_shared<int>(42); });
 
-  auto admission = CreateNonGenerativeAdmissionCoordinator(100, 1);
-  auto public_state = CreateNonGenerativeRuntimeState(admission);
-  auto local_state = CreateNonGenerativeRuntimeState(admission);
-  std::promise<void> destructor_entered;
-  std::promise<void> release_destructor;
-  auto release_future = release_destructor.get_future().share();
-  public_state->Acquire(
-      "public", "public:1", nullptr, 80, "cpu",
-      [&]() -> std::shared_ptr<void> {
-        return std::make_shared<BlockingRuntime>(destructor_entered,
-                                                 release_future);
-      });
-
-  auto destroy = std::async(
-      std::launch::async,
-      [state = std::move(public_state)]() mutable { state.reset(); });
-  destructor_entered.get_future().wait();
-
-  auto factory = []() -> std::shared_ptr<void> {
-    return std::make_shared<int>(42);
-  };
-  EXPECT_THROW(
-      local_state->Acquire("local", "local:1", nullptr, 21, "cpu", factory),
-      std::runtime_error);
-
-  release_destructor.set_value();
-  destroy.get();
-  EXPECT_NE(
-      local_state->Acquire("local", "local:1", nullptr, 21, "cpu", factory),
-      nullptr);
+  EXPECT_THROW(service.model_load_manager.UnloadNonGenerativeRuntime(model),
+               std::exception);
+  lease.reset();
+  EXPECT_TRUE(
+      service.model_load_manager.UnloadNonGenerativeRuntime(model));
 }
 
-TEST(NonGenerativeRuntimeStateTest, SerializesReadinessWithinProviderGroup) {
-  auto state = CreateNonGenerativeRuntimeState(1000, 1);
+TEST(ManagedModelRuntimeTest, ShutdownRejectsNewAcquisitions) {
+  test::CpuOnlyEpDetector detector;
+  ModelLoadManager manager(detector, test::NullLog());
+  manager.RejectNewLoads();
+
+  EXPECT_THROW(
+      ModelLoadManagerTestAccess::Acquire(
+          manager, "shutdown", 1, "cpu",
+          []() -> std::shared_ptr<void> {
+            return std::make_shared<int>(42);
+          }),
+      std::exception);
+}
+
+TEST(ManagedModelRuntimeTest, SerializesReadinessWithinProviderGroup) {
+  test::CpuOnlyEpDetector detector;
+  ModelLoadManager manager(detector, test::NullLog(), 1000, 1);
   std::promise<void> first_entered;
   std::promise<void> release_first;
   auto release_future = release_first.get_future().share();
   auto first = std::async(std::launch::async, [&] {
-    return state->Acquire(
-        "first", "first:1", nullptr, 1, "cuda",
-        [&]() -> std::shared_ptr<void> {
+    return ModelLoadManagerTestAccess::Acquire(
+        manager, "first", 1, "cuda", [&]() -> std::shared_ptr<void> {
           first_entered.set_value();
           release_future.wait();
           return std::make_shared<int>(1);
@@ -157,9 +180,8 @@ TEST(NonGenerativeRuntimeStateTest, SerializesReadinessWithinProviderGroup) {
   first_entered.get_future().wait();
   std::atomic<bool> second_entered{false};
   auto second = std::async(std::launch::async, [&] {
-    return state->Acquire(
-        "second", "second:1", nullptr, 1, "cuda",
-        [&]() -> std::shared_ptr<void> {
+    return ModelLoadManagerTestAccess::Acquire(
+        manager, "second", 1, "cuda", [&]() -> std::shared_ptr<void> {
           second_entered = true;
           return std::make_shared<int>(2);
         });
@@ -168,8 +190,8 @@ TEST(NonGenerativeRuntimeStateTest, SerializesReadinessWithinProviderGroup) {
             std::future_status::timeout);
   EXPECT_FALSE(second_entered.load());
 
-  auto cpu = state->Acquire(
-      "cpu", "cpu:1", nullptr, 1, "cpu",
+  auto cpu = ModelLoadManagerTestAccess::Acquire(
+      manager, "cpu", 1, "cpu",
       []() -> std::shared_ptr<void> { return std::make_shared<int>(3); });
   EXPECT_NE(cpu, nullptr);
   release_first.set_value();

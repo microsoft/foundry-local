@@ -300,9 +300,7 @@ struct WebService::Impl {
                            session_manager,
                            public_response_store,
                            telemetry,
-                           thread_tracker,
-                           model_load_manager.NonGenerativeRuntimes()
-            })),
+                           thread_tracker})),
         local_context(std::make_unique<ServiceContext>(
             ServiceContext{local_catalog,
                            logger,
@@ -312,9 +310,7 @@ struct WebService::Impl {
                            session_manager,
                            local_response_store,
                            telemetry,
-                           thread_tracker,
-                           model_load_manager.NonGenerativeRuntimes()
-            })) {
+                           thread_tracker})) {
   }
 };
 

@@ -415,7 +415,7 @@ class WebServiceTest : public ::testing::Test {
                         package->execution_provider);
     local_catalog_->AddModel(Model::FromLocalRegistration(
         std::move(info), path.string(), svc_.download_manager,
-        svc_.model_load_manager));
+        *model_load_manager_));
     return *package;
   }
 
@@ -1230,10 +1230,10 @@ TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCpuPackagesWhenConfi
       "", std::chrono::minutes(3)));
   ASSERT_EQ(ranking.at("ranked").size(), 2u);
   EXPECT_EQ(ranking.at("model"), clm_metadata.model_id);
-  EXPECT_THROW(
+  const auto load = json::parse(
       TestHttpGet(base_url_ + "/catalogs/local/models/load/" +
-                  clm_metadata.model_id),
-      std::exception);
+                  clm_metadata.model_id));
+  EXPECT_EQ(load.at("status"), "already_loaded");
 
   auto decision = json::parse(TestHttpPost(
       base_url_ + "/catalogs/local/v1/systemone",
@@ -1247,7 +1247,20 @@ TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCpuPackagesWhenConfi
       "", std::chrono::minutes(3)));
   ASSERT_TRUE(decision.at("answers").contains("umbrella"));
   EXPECT_EQ(decision.at("model"), kev_metadata.model_id);
-
+  const auto decision_load = json::parse(
+      TestHttpGet(base_url_ + "/catalogs/local/models/load/" +
+                  kev_metadata.model_id));
+  EXPECT_EQ(decision_load.at("status"), "already_loaded");
+  EXPECT_EQ(
+      json::parse(TestHttpGet(base_url_ + "/catalogs/local/models/unload/" +
+                              clm_metadata.model_id))
+          .at("status"),
+      "unloaded");
+  EXPECT_EQ(
+      json::parse(TestHttpGet(base_url_ + "/catalogs/local/models/unload/" +
+                              kev_metadata.model_id))
+          .at("status"),
+      "unloaded");
 }
 
 TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCudaPackagesWhenConfigured) {
