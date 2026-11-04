@@ -1399,10 +1399,16 @@ inline std::vector<std::vector<float>> EmbeddingsSession::Embed(const std::vecto
 
 namespace detail {
 
+inline IModel& RequireTask(IModel& model, std::string_view expected) {
+  if (model.GetInfo().Task() != expected)
+    throw std::invalid_argument("Model is not designed for " +
+                                std::string(expected) + " tasks");
+  return model;
+}
+
 inline std::string ProcessNonGenerativeJson(
     Session& session, const std::string& request_json) {
-  Request request(Item::Text(request_json,
-                             FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+  Request request(Item::Text(request_json));
   auto response = session.ProcessRequest(request);
   if (response.GetItems().size() != 1 ||
       response.GetItems().front().GetType() != FOUNDRY_LOCAL_ITEM_TEXT) {
@@ -1419,24 +1425,16 @@ inline std::string ProcessNonGenerativeJson(
 
 }  // namespace detail
 
-inline RankingSession::RankingSession(IModel& model) : Session(model) {
-  if (model.GetInfo().Task() != "text-ranking") {
-    throw std::invalid_argument(
-        "Model is not designed for text-ranking tasks");
-  }
-}
+inline RankingSession::RankingSession(IModel& model)
+    : Session(detail::RequireTask(model, "text-ranking")) {}
 
 inline std::string RankingSession::RankJson(
     const std::string& request_json) {
   return detail::ProcessNonGenerativeJson(*this, request_json);
 }
 
-inline DecisionSession::DecisionSession(IModel& model) : Session(model) {
-  if (model.GetInfo().Task() != "typed-decision") {
-    throw std::invalid_argument(
-        "Model is not designed for typed-decision tasks");
-  }
-}
+inline DecisionSession::DecisionSession(IModel& model)
+    : Session(detail::RequireTask(model, "typed-decision")) {}
 
 inline std::string DecisionSession::DecideJson(
     const std::string& request_json) {

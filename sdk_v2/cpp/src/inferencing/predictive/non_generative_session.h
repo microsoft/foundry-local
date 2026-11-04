@@ -3,7 +3,6 @@
 #pragma once
 
 #include "inferencing/predictive/non_generative_runtime.h"
-#include "inferencing/predictive/non_generative_admission.h"
 #include "inferencing/session/session.h"
 
 #include <memory>
@@ -26,9 +25,8 @@ class NonGenerativeSession final : public Session {
   Model* model_{};
   std::string model_id_;
   std::string provider_;
-  std::shared_ptr<NonGenerativeAdmissionReservation> admission_;
-  std::unique_ptr<RankingRuntime> ranking_;
-  std::unique_ptr<DecisionRuntime> decision_;
+  std::shared_ptr<RankingRuntime> ranking_;
+  std::shared_ptr<DecisionRuntime> decision_;
 };
 
 }  // namespace fl

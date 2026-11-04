@@ -170,6 +170,7 @@ class Model {
   void PrepareExternalProvider(std::string_view provider);
   std::shared_ptr<NonGenerativeAdmissionCoordinator>
   NonGenerativeAdmission() const;
+  std::shared_ptr<void> AcquireExternalRuntime();
   void MarkExternalRuntimeLoaded();
   void ReleaseExternalRuntime() noexcept;
   void UnloadExternalRuntime();

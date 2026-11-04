@@ -486,6 +486,18 @@ Model::NonGenerativeAdmission() const {
   return model_load_manager_->NonGenerativeAdmission();
 }
 
+std::shared_ptr<void> Model::AcquireExternalRuntime() {
+  if (Model* sv = selected_variant_.load(std::memory_order_acquire))
+    return sv->AcquireExternalRuntime();
+  const auto package = ReadNonGenerativePackage(GetPath());
+  if (!package)
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "model is not a non-generative package");
+  return model_load_manager_->AcquireNonGenerativeRuntime(
+      *this, Info().task, package->execution_provider,
+      package->estimated_resident_bytes);
+}
+
 void Model::MarkExternalRuntimeLoaded() {
   if (Model* sv = selected_variant_.load(std::memory_order_acquire)) {
     sv->MarkExternalRuntimeLoaded();

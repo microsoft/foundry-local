@@ -10,7 +10,49 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cmath>
+#include <string_view>
+
 namespace fl {
+namespace {
+
+float ParseTemperature(const char* value) {
+  try {
+    size_t consumed{};
+    const auto parsed = std::stof(value, &consumed);
+    if (consumed != std::string_view(value).size() ||
+        !std::isfinite(parsed))
+      throw std::invalid_argument("invalid temperature");
+    return parsed;
+  } catch (const std::exception&) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "temperature option must be a finite number");
+  }
+}
+
+void ApplyOptions(const KeyValuePairs& options,
+                  nlohmann::ordered_json& payload) {
+  for (const auto* key : options.Keys()) {
+    if (std::string_view(key) != "temperature")
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+               "unsupported non-generative option: ", key);
+  }
+  if (!payload.contains("temperature")) {
+    if (const auto* temperature = options.Find("temperature"))
+      payload["temperature"] = ParseTemperature(temperature);
+  }
+}
+
+void ValidateBoundModel(const nlohmann::ordered_json& payload,
+                        const Model& model) {
+  if (!payload.contains("model")) return;
+  const auto selected = payload.at("model").get<std::string>();
+  if (selected != model.Id() && selected != model.Info().alias)
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "request model does not match the bound session model");
+}
+
+}  // namespace
 
 NonGenerativeSession::NonGenerativeSession(
     const Model& model, ILogger& logger, ITelemetry& telemetry)
@@ -23,29 +65,18 @@ NonGenerativeSession::NonGenerativeSession(
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
                "model is not a non-generative package");
     provider_ = package->execution_provider;
-    admission_ = std::make_shared<NonGenerativeAdmissionReservation>(
-        model_->NonGenerativeAdmission(), package->estimated_resident_bytes,
-        model_id_);
-    {
-      NonGenerativeReadinessLease readiness(
-          model_->NonGenerativeAdmission(),
-          provider_.empty() ? "cpu" : provider_);
-      model_->PrepareExternalProvider(provider_);
-      if (model_->Info().task == "text-ranking") {
-        ranking_ =
-            std::make_unique<RankingRuntime>(model_->GetPath());
-      } else if (model_->Info().task == "typed-decision") {
-        decision_ =
-            std::make_unique<DecisionRuntime>(model_->GetPath());
-      } else {
-        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-                 "unsupported non-generative model task: ",
-                 model_->Info().task);
-      }
-    }
-    model_->MarkExternalRuntimeLoaded();
+    auto runtime = model_->AcquireExternalRuntime();
+    if (model_->Info().task == "text-ranking")
+      ranking_ = std::static_pointer_cast<RankingRuntime>(runtime);
+    else if (model_->Info().task == "typed-decision")
+      decision_ = std::static_pointer_cast<DecisionRuntime>(runtime);
+    else
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+               "unsupported non-generative model task: ",
+               model_->Info().task);
   } catch (...) {
-    admission_.reset();
+    ranking_.reset();
+    decision_.reset();
     model_->ReleaseExternalSession();
     model_ = nullptr;
     throw;
@@ -55,9 +86,7 @@ NonGenerativeSession::NonGenerativeSession(
 NonGenerativeSession::~NonGenerativeSession() {
   ranking_.reset();
   decision_.reset();
-  admission_.reset();
   if (!model_) return;
-  model_->ReleaseExternalRuntime();
   model_->ReleaseExternalSession();
 }
 
@@ -70,17 +99,26 @@ void NonGenerativeSession::ProcessRequestImpl(
   }
   const auto& item =
       static_cast<const TextItem&>(*request.items.front());
-  if (item.text_type != FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON) {
+  if (item.text_type != FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT &&
+      item.text_type != FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
              "non-generative requests require an OPENAI_JSON text item");
   }
 
   nlohmann::json result;
+  nlohmann::ordered_json payload;
+  try {
+    payload = nlohmann::ordered_json::parse(item.text);
+    ApplyOptions(MergedOptions(request.options), payload);
+    ValidateBoundModel(payload, *model_);
+  } catch (const nlohmann::json::exception& error) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "invalid non-generative request: ", error.what());
+  }
   if (ranking_) {
     RankingRequest parsed;
     try {
-      parsed = nlohmann::ordered_json::parse(item.text)
-                   .get<RankingRequest>();
+      parsed = payload.get<RankingRequest>();
     } catch (const nlohmann::json::exception& error) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
                "invalid ranking request: ", error.what());
@@ -90,8 +128,7 @@ void NonGenerativeSession::ProcessRequestImpl(
   } else {
     NonGenerativeRequest parsed;
     try {
-      parsed = nlohmann::ordered_json::parse(item.text)
-                   .get<NonGenerativeRequest>();
+      parsed = payload.get<NonGenerativeRequest>();
     } catch (const nlohmann::json::exception& error) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
                "invalid decision request: ", error.what());
