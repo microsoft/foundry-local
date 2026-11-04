@@ -100,6 +100,8 @@ class ModelLoadManager {
   bool HasPreservedLoadedSelection(std::string_view model_id, std::string_view model_path) const;
   std::unique_ptr<LoadedSelectionReservation> ReserveLoadedSelection(std::string_view model_id,
                                                                      std::string_view model_path);
+  /// Recheck committed hosted pins without holding the manager lock across remote calls.
+  void ReconcileLoadedSelections(const std::function<bool(const std::string&, const std::string&)>& is_loaded);
 
   struct SessionReferenceDeleter {
     void operator()(GenAIModelInstance* model) const noexcept { model->ReleaseSession(); }
@@ -157,8 +159,10 @@ class ModelLoadManager {
   struct SelectionState {
     bool preserved = false;
     size_t reservations = 0;
+    uint64_t generation = 0;
   };
   std::map<std::pair<std::string, std::string>, SelectionState> preserved_selections_;
+  uint64_t selection_generation_ = 0;
 };
 
 }  // namespace fl

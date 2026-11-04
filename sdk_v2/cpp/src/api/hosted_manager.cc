@@ -83,6 +83,14 @@ class HostedState {
 
   void RefreshCatalog(CatalogType catalog) const {
     RequireOpen();
+    metadata->ReconcileLoadedSelections([this](const std::string& id, const std::string& path) {
+      const auto context = Connect(false);
+      ModelInfo info;
+      info.model_id = id;
+      return context &&
+             context->Call(Operation::IsLoaded, {{"model", EncodeModelSelection({CatalogType::kLocal, info, path})}})
+                 .get<bool>();
+    });
     if (catalog == CatalogType::kPublic) {
       const auto context = Connect(false);
       metadata->SetCatalogRuntimeDevices(
@@ -507,6 +515,12 @@ class HostedManager final : public ManagerBackend {
     return context &&
            context->Call(Operation::IsLoaded, {{"model", EncodeModelSelection({CatalogType::kLocal, info, path})}})
                .get<bool>();
+  }
+
+  void ReconcileLoadedSelections(
+      const std::function<bool(const std::string&, const std::string&)>& is_loaded) override {
+    state_->RequireOpen();
+    state_->metadata->ReconcileLoadedSelections(is_loaded);
   }
 
   void UnloadModelArtifact(const std::string& id, const std::string& path) override {

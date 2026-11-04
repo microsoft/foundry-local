@@ -150,6 +150,7 @@ class RecordingManager final : public fl::api::ManagerBackend {
     FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED, "model capture is not used by this test");
   }
   bool IsModelArtifactLoaded(const std::string&, const std::string&) const override { return false; }
+  void ReconcileLoadedSelections(const std::function<bool(const std::string&, const std::string&)>&) override {}
   void UnloadModelArtifact(const std::string&, const std::string&) override {
     FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED, "model unloading is not used by this test");
   }

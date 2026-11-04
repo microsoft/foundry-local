@@ -778,6 +778,40 @@ TEST_F(AzureModelCatalogTest, HostedLoadPinPreservesMetadataWithoutLoadingWeight
   }
 }
 
+TEST_F(AzureModelCatalogTest, ProviderRefreshDuringDownloadKeepsTheArtifactThatBecomesCached) {
+  auto cpu = MakeModelInfo("model-generic-cpu:1", "model-generic-cpu", 1, "model", "Azure");
+  cpu.execution_provider = "CPU";
+  cpu.string_properties[FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR] = "Microsoft";
+  auto cuda = MakeModelInfo("model-cuda-gpu:1", "model-cuda-gpu", 1, "model", "Azure");
+  cuda.execution_provider = "CUDA";
+  WriteSnapshot({cpu, cuda});
+  services_.download_manager.SetCacheDirectory(cache_directory_.string());
+  auto catalog = CreateCatalog({{"https://catalog.test", std::nullopt}}, true);
+  auto* model = catalog->GetModel("model");
+  ASSERT_NE(model, nullptr);
+  ASSERT_FALSE(model->IsCached());
+  ASSERT_EQ(model->Id(), cpu.model_id);
+
+  const auto path = AddLocalModel(cpu.model_id, "model-generic-cpu-1");
+  fs::copy(test::GetTestDataPath("tiny-paged-attention"), path,
+           fs::copy_options::recursive | fs::copy_options::overwrite_existing);
+  std::ofstream(path / "inference_model.json") << nlohmann::json({{"Name", cpu.model_id}}).dump();
+  ASSERT_EQ(services_.download_manager.GetCompletedModelCachePath(cpu), path.string());
+  bool refreshed = false;
+  model->Download([&](float) {
+    catalog->SetRuntimeDevices({{"CPU", {"CPUExecutionProvider"}}, {"GPU", {"CUDAExecutionProvider"}}});
+    EXPECT_EQ(catalog->GetModel("model"), model);
+    EXPECT_EQ(model->Id(), cpu.model_id);
+    refreshed = true;
+    return 0;
+  });
+  EXPECT_TRUE(refreshed);
+  EXPECT_NO_THROW(model->Load(ExecutionProvider::kCPU));
+  EXPECT_EQ(model->Id(), cpu.model_id);
+  EXPECT_TRUE(model->IsLoaded());
+  model->Unload();
+}
+
 TEST_F(AzureModelCatalogTest, ConfigEligibilityIsReusedUntilRefreshAndThenSeesEdits) {
   auto configured = MakeModelInfo("configured:1", "configured", 1, "configured", "Azure");
   WriteSnapshot({configured});

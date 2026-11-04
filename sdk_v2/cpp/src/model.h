@@ -241,7 +241,6 @@ class Model {
   mutable std::atomic<Model*> selected_variant_{nullptr};                  // non-null = this is a container
   mutable bool selection_is_explicit_ = false;                             // guarded by state_mutex_
   mutable bool has_eligible_default_variant_ = true;                       // guarded by state_mutex_
-  mutable bool default_selection_pending_ = false;                         // guarded by state_mutex_
   mutable Model* loading_variant_ = nullptr;                               // guarded by state_mutex_
   mutable std::function<bool(const Model&)> default_variant_eligibility_;  // guarded by state_mutex_
   std::function<void()> default_variant_refresh_;  // guarded by state_mutex_

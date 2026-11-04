@@ -149,7 +149,6 @@ Model::Model(Model&& other) noexcept
       selected_variant_(other.selected_variant_.load(std::memory_order_relaxed)),
       selection_is_explicit_(other.selection_is_explicit_),
       has_eligible_default_variant_(other.has_eligible_default_variant_),
-      default_selection_pending_(other.default_selection_pending_),
       default_variant_eligibility_(std::move(other.default_variant_eligibility_)),
       default_variant_refresh_(std::move(other.default_variant_refresh_)) {
   // The mutex and unregistering state are intentionally not moved; moving while unregistering is invalid.
@@ -174,7 +173,6 @@ Model& Model::operator=(Model&& other) noexcept {
     selected_variant_.store(other.selected_variant_.load(std::memory_order_relaxed), std::memory_order_relaxed);
     selection_is_explicit_ = other.selection_is_explicit_;
     has_eligible_default_variant_ = other.has_eligible_default_variant_;
-    default_selection_pending_ = other.default_selection_pending_;
     default_variant_eligibility_ = std::move(other.default_variant_eligibility_);
     default_variant_refresh_ = std::move(other.default_variant_refresh_);
     unregistering_ = false;
@@ -367,8 +365,8 @@ bool Model::SelectDefaultVariantLocked(const std::function<bool(const Model&)>& 
   const auto* selected = selected_variant_.load(std::memory_order_acquire);
   const bool preserve_selection =
       preserve_explicit_selection &&
-      (selection_is_explicit_ || selected == loading_variant_ || selected->HasPreservedLoadedSelection() ||
-       selected->IsLoaded());
+      (selection_is_explicit_ || selected == loading_variant_ || selected->active_downloads_.load() != 0 ||
+       selected->HasPreservedLoadedSelection() || selected->IsLoaded());
 
   Model* best_eligible = nullptr;
   Model* best_cached = nullptr;
@@ -388,7 +386,6 @@ bool Model::SelectDefaultVariantLocked(const std::function<bool(const Model&)>& 
   }
 
   has_eligible_default_variant_ = best_eligible != nullptr;
-  default_selection_pending_ = preserve_selection && !selection_is_explicit_;
   if (preserve_selection) {
     return false;
   }
@@ -435,9 +432,7 @@ void Model::RefreshDefaultVariant() const {
   if (refresh) {
     refresh();
     std::lock_guard lock(state_mutex_);
-    if (default_selection_pending_) {
-      SelectDefaultVariantLocked(default_variant_eligibility_, true);
-    }
+    SelectDefaultVariantLocked(default_variant_eligibility_, true);
 
     if (!has_eligible_default_variant_ && !selection_is_explicit_ &&
         selected_variant_.load(std::memory_order_acquire) != loading_variant_ &&
@@ -874,7 +869,6 @@ void Model::SelectVariant(const Model& variant) {
   for (auto& v : variants_) {
     if (v.get() == &variant) {
       selection_is_explicit_ = true;
-      default_selection_pending_ = false;
       selected_variant_.store(v.get(), std::memory_order_release);
       return;
     }

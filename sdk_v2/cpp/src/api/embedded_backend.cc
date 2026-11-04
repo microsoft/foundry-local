@@ -235,6 +235,11 @@ class EmbeddedManager final : public ManagerBackend {
     return owner_.manager.GetModelLoadManager().GetLoadedModel(model_id, path) != nullptr;
   }
 
+  void ReconcileLoadedSelections(
+      const std::function<bool(const std::string&, const std::string&)>& is_loaded) override {
+    owner_.manager.GetModelLoadManager().ReconcileLoadedSelections(is_loaded);
+  }
+
   void UnloadModelArtifact(const std::string& model_id, const std::string& path) override {
     owner_.manager.GetModelLoadManager().UnloadModel(model_id, path);
   }

@@ -324,7 +324,9 @@ bool ModelLoadManager::PreserveLoadedSelection(std::string_view model_id, std::s
   const auto identity = SelectionIdentity(model_id, model_path);
   std::lock_guard lock(mutex_);
   if (preserve) {
-    return std::exchange(preserved_selections_[identity].preserved, true);
+    auto& state = preserved_selections_[identity];
+    state.generation = ++selection_generation_;
+    return std::exchange(state.preserved, true);
   }
 
   const auto found = preserved_selections_.find(identity);
@@ -355,12 +357,42 @@ std::unique_ptr<LoadedSelectionReservation> ModelLoadManager::ReserveLoadedSelec
   return reservation;
 }
 
+void ModelLoadManager::ReconcileLoadedSelections(
+    const std::function<bool(const std::string&, const std::string&)>& is_loaded) {
+  std::vector<std::pair<std::pair<std::string, std::string>, uint64_t>> selections;
+  {
+    std::lock_guard lock(mutex_);
+    for (const auto& [identity, state] : preserved_selections_) {
+      if (state.preserved && state.reservations == 0) {
+        selections.emplace_back(identity, state.generation);
+      }
+    }
+  }
+
+  for (const auto& [identity, generation] : selections) {
+    if (is_loaded(identity.first, identity.second)) {
+      continue;
+    }
+
+    std::lock_guard lock(mutex_);
+    const auto found = preserved_selections_.find(identity);
+    // A load admitted or committed during the remote observation owns a newer selection.
+    if (found != preserved_selections_.end() && found->second.reservations == 0 &&
+        found->second.generation == generation) {
+      preserved_selections_.erase(found);
+    }
+  }
+}
+
 void ModelLoadManager::CompleteSelectionReservation(const std::pair<std::string, std::string>& identity,
                                                     bool commit) noexcept {
   std::lock_guard lock(mutex_);
   const auto found = preserved_selections_.find(identity);
   auto& state = found->second;
   state.preserved = state.preserved || commit;
+  if (commit) {
+    state.generation = ++selection_generation_;
+  }
   --state.reservations;
   if (!state.preserved && state.reservations == 0) {
     preserved_selections_.erase(found);

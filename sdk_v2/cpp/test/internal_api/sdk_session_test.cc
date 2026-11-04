@@ -66,6 +66,7 @@ class ProviderBackend final : public api::ManagerBackend {
     FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED, "provider fixture has no model");
   }
   bool IsModelArtifactLoaded(const std::string&, const std::string&) const override { return false; }
+  void ReconcileLoadedSelections(const std::function<bool(const std::string&, const std::string&)>&) override {}
   void UnloadModelArtifact(const std::string&, const std::string&) override {}
   void StartWebService() override {}
   const std::vector<std::string>& GetWebServiceUrls() const override { return urls_; }
@@ -557,11 +558,12 @@ TEST_F(SdkSessionTest, HostedAliasLoadIsReleasedByVariantAndCapturedHandleUnload
 }
 
 TEST_F(SdkSessionTest, FailedHostedLoadRollsBackItsReservationWithoutClearingAnExistingPin) {
-  auto hosted = api::CreateHostedBackend(manager_, [](bool acquire) -> std::shared_ptr<api::HostedContext> {
+  auto context = ClientContext();
+  auto hosted = api::CreateHostedBackend(manager_, [&](bool acquire) -> std::shared_ptr<api::HostedContext> {
     if (acquire) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK, "configured host acquisition failure");
     }
-    return nullptr;
+    return context;
   });
   auto& source = manager_->GetCatalog(CatalogType::kLocal);
   auto& catalog = hosted->GetCatalog(CatalogType::kLocal);
@@ -576,6 +578,7 @@ TEST_F(SdkSessionTest, FailedHostedLoadRollsBackItsReservationWithoutClearingAnE
     ASSERT_NE(model, nullptr);
     ASSERT_NE(variant, nullptr);
     if (preserved) {
+      variant->Load();
       EXPECT_FALSE(variant->PreserveLoadedSelection(true));
     }
 
@@ -584,8 +587,67 @@ TEST_F(SdkSessionTest, FailedHostedLoadRollsBackItsReservationWithoutClearingAnE
     ASSERT_NE(source.RegisterModel(path, alias + ":2", info), nullptr);
     EXPECT_EQ(catalog.GetModel(alias)->Info().model_id, alias + (preserved ? ":1" : ":2"));
     EXPECT_EQ(variant->PreserveLoadedSelection(false), preserved);
+    variant->Unload();
     EXPECT_EQ(catalog.GetModel(alias)->Info().model_id, alias + ":2");
   }
+}
+
+TEST_F(SdkSessionTest, HostedDefaultRecoversAfterAnIndependentPeerUnloadsTheArtifact) {
+  auto context = ClientContext();
+  auto hosted = api::CreateHostedBackend(manager_, [&](bool) { return context; });
+  auto& catalog = hosted->GetCatalog(CatalogType::kLocal);
+  const auto path = (std::filesystem::path(FOUNDRY_LOCAL_TEST_DATA_DIR) / "tiny-paged-attention").string();
+  ModelInfo info;
+  info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "coding");
+  auto* original = catalog.RegisterModel(path, "peer-unload:1", info);
+  auto* model = catalog.GetModel("peer-unload");
+  ASSERT_NE(original, nullptr);
+  ASSERT_NE(model, nullptr);
+  model->Load();
+  ASSERT_NE(catalog.RegisterModel(path, "peer-unload:2", info), nullptr);
+  EXPECT_EQ(catalog.GetModel("peer-unload")->Info().model_id, "peer-unload:1");
+
+  // The peer talks directly to the host and cannot clear this client's metadata pin.
+  context->Call(Operation::Unload, {{"model", EncodeModelSelection(CatalogType::kLocal, *original)}});
+  EXPECT_FALSE(model->IsLoaded());
+  EXPECT_EQ(catalog.GetModel("peer-unload")->Info().model_id, "peer-unload:2");
+  model->Load();
+  EXPECT_TRUE(model->IsLoaded());
+  model->Unload();
+}
+
+TEST_F(SdkSessionTest, HostedRefreshDoesNotRecheckAnInFlightSelectionAsIfItWereACommittedPin) {
+  auto context = ClientContext();
+  std::promise<void> acquiring;
+  std::promise<void> release;
+  auto released = release.get_future().share();
+  auto hosted = api::CreateHostedBackend(manager_, [&](bool acquire) {
+    if (acquire) {
+      acquiring.set_value();
+      released.wait();
+    }
+    return context;
+  });
+  auto& source = manager_->GetCatalog(CatalogType::kLocal);
+  auto& catalog = hosted->GetCatalog(CatalogType::kLocal);
+  const auto path = (std::filesystem::path(FOUNDRY_LOCAL_TEST_DATA_DIR) / "tiny-paged-attention").string();
+  ModelInfo info;
+  info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "coding");
+  ASSERT_NE(source.RegisterModel(path, "pending-peer:1", info), nullptr);
+  auto* model = catalog.GetModel("pending-peer");
+  ASSERT_NE(model, nullptr);
+  auto loading = std::async(std::launch::async, [&] { model->Load(); });
+  ScopeGuard release_guard([&]() noexcept { release.set_value(); });
+  ASSERT_EQ(acquiring.get_future().wait_for(5s), std::future_status::ready);
+  ASSERT_NE(source.RegisterModel(path, "pending-peer:2", info), nullptr);
+  auto querying = std::async(std::launch::async, [&] { return catalog.GetModel("pending-peer")->Info().model_id; });
+  EXPECT_EQ(querying.wait_for(1s), std::future_status::ready);
+  release.set_value();
+  release_guard.Dismiss();
+  EXPECT_EQ(querying.get(), "pending-peer:1");
+  EXPECT_NO_THROW(loading.get());
+  EXPECT_TRUE(model->IsLoaded());
+  model->Unload();
 }
 
 TEST_F(SdkSessionTest, HostedManagerNeverReconnectsOrFallsBackAfterLosingItsOwner) {

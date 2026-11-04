@@ -246,6 +246,39 @@ TEST(ModelConstructionTest, ConcurrentSelectionReservationsRollbackWithoutReleas
   EXPECT_FALSE(failed_capture.PreserveLoadedSelection(false));
 }
 
+TEST(ModelConstructionTest, PeerReconciliationCannotReleaseAnInFlightOrNewlyCommittedSelection) {
+  test::FakeServiceBindings services;
+  auto model = Model::FromModelInfo(MakeLeaf().Info(), "artifact", services.download_manager, services.model_load_manager);
+  std::unique_ptr<LoadedSelectionReservation> reservation;
+  auto captured = model.CaptureExecutionModel(&reservation);
+  int observations = 0;
+  services.model_load_manager.ReconcileLoadedSelections([&](const auto&, const auto&) {
+    ++observations;
+    return false;
+  });
+  EXPECT_EQ(observations, 0);
+  reservation->Commit();
+  reservation.reset();
+
+  services.model_load_manager.ReconcileLoadedSelections([&](const auto&, const auto&) {
+    captured = model.CaptureExecutionModel(&reservation);
+    return false;
+  });
+  EXPECT_TRUE(model.PreserveLoadedSelection(false));
+  reservation->Commit();
+  reservation.reset();
+
+  services.model_load_manager.ReconcileLoadedSelections([&](const auto&, const auto&) {
+    captured = model.CaptureExecutionModel(&reservation);
+    reservation->Commit();
+    reservation.reset();
+    return false;
+  });
+  EXPECT_TRUE(model.PreserveLoadedSelection(true));
+  services.model_load_manager.ReconcileLoadedSelections([](const auto&, const auto&) { return false; });
+  EXPECT_FALSE(model.PreserveLoadedSelection(false));
+}
+
 class ModelLifecycleDeathTest : public testing::TestWithParam<bool> {};
 
 TEST(ModelLifecycleDeathTest, CaptureReservesTheSelectedArtifactBeforeConcurrentDefaultRefresh) {

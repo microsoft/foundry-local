@@ -126,6 +126,8 @@ class ManagerBackend : public BackendObject {
   // A requested reservation is published atomically with capture and rolls back unless committed after Load.
   virtual std::unique_ptr<ModelBackend> CaptureModel(
       const ModelBackend& model, std::unique_ptr<LoadedSelectionReservation>* reservation = nullptr) = 0;
+  virtual void ReconcileLoadedSelections(
+      const std::function<bool(const std::string&, const std::string&)>& is_loaded) = 0;
   // Loaded artifacts can outlive their catalog registrations. These operations remain exactly path-qualified.
   virtual bool IsModelArtifactLoaded(const std::string& model_id, const std::string& path) const = 0;
   virtual void UnloadModelArtifact(const std::string& model_id, const std::string& path) = 0;
