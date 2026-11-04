@@ -100,7 +100,22 @@ uint64_t MeasureContainedPackage(const fs::path& canonical_root) {
 
 bool DeclaresNonGenerativePackage(const fs::path& package_root) {
   std::error_code ec;
-  return fs::is_regular_file(package_root / "component_manifest.json", ec);
+  const auto manifest_status =
+      fs::symlink_status(package_root / "component_manifest.json", ec);
+  if (!ec && manifest_status.type() != fs::file_type::not_found)
+    return true;
+
+  const auto inference_path = package_root / "inference_model.json";
+  if (!fs::is_regular_file(inference_path, ec)) return false;
+  try {
+    std::ifstream stream(inference_path);
+    const auto inference = nlohmann::json::parse(stream);
+    const auto task = inference.value("Task", std::string{});
+    return inference.contains("ComponentManifest") ||
+           task == "text-ranking" || task == "typed-decision";
+  } catch (const nlohmann::json::exception&) {
+    return false;
+  }
 }
 
 std::optional<NonGenerativePackageMetadata> ReadNonGenerativePackage(

@@ -507,6 +507,22 @@ TEST_F(LocalModelCatalogTest, MalformedDeclaredBundleCannotFallBackToGenAiConfig
             nullptr);
 }
 
+TEST_F(LocalModelCatalogTest, PreservesPackageAliasAcrossRegistrationReload) {
+  const auto bundle_path = root_.path() / "bundle";
+  WriteBundle(bundle_path, "clm-v0.1-8b-generic-cpu:1", "text-ranking");
+  auto* model = catalog_.RegisterModel(
+      bundle_path.string(), "clm-v0.1-8b-generic-cpu:1",
+      MakeMetadata("text-ranking"));
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->Alias(), "clm");
+
+  auto reloaded = MakeCatalog();
+  reloaded.ListModels();
+  auto* alias = reloaded.GetModel("clm");
+  ASSERT_NE(alias, nullptr);
+  EXPECT_EQ(alias->Id(), "clm-v0.1-8b-generic-cpu:1");
+}
+
 TEST_F(LocalModelCatalogTest, NormalizesSupportedPackageProvidersAndRejectsUnknown) {
   const auto cpu_path = root_.path() / "cpu";
   WriteBundle(cpu_path, "clm-generic-cpu:1", "text-ranking",

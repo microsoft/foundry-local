@@ -8,6 +8,7 @@
 #include "model.h"
 #include "service/non_generative_handlers.h"
 #include "utils/safe_getenv.h"
+#include "utils/temp_path.h"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -15,6 +16,7 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <future>
 #include <memory>
 #include <stdexcept>
@@ -30,6 +32,14 @@ class ModelLoadManagerTestAccess {
       const std::function<std::shared_ptr<void>()>& factory) {
     return manager.AcquireManagedRuntime(
         identity, identity, "/" + identity, bytes, readiness_group, factory);
+  }
+
+  static std::shared_ptr<void> AcquireArtifact(
+      ModelLoadManager& manager, const std::string& identity,
+      const std::string& model_id, const std::string& model_path,
+      const std::function<std::shared_ptr<void>()>& factory) {
+    return manager.AcquireManagedRuntime(
+        identity, model_id, model_path, 1, "cpu", factory);
   }
 
   static void Clear(ModelLoadManager& manager) {
@@ -94,6 +104,49 @@ TEST(ManagedModelRuntimeTest, FailedColdLoadIsRemovedAndCanBeRetried) {
   EXPECT_EQ(constructions.load(), 2);
 }
 
+TEST(ManagedModelRuntimeTest,
+     LoadingIsBusyButNotLoadedAndBlocksRetirement) {
+  test::FakeServiceBindings service;
+  const auto root =
+      test::TempPath::CreateTempDir("fl_loading_runtime_");
+  ModelInfo info;
+  info.model_id = "loading:1";
+  info.name = "loading";
+  info.alias = "loading";
+  info.task = "text-ranking";
+  auto model = Model::FromLocalRegistration(
+      std::move(info), root.string(), service.download_manager,
+      service.model_load_manager);
+  std::promise<void> entered;
+  std::promise<void> release;
+  auto release_future = release.get_future().share();
+  auto loading = std::async(std::launch::async, [&] {
+    return ModelLoadManagerTestAccess::AcquireArtifact(
+        service.model_load_manager, "loading-key", model.Id(), root.string(),
+        [&]() -> std::shared_ptr<void> {
+          entered.set_value();
+          release_future.wait();
+          return std::make_shared<int>(42);
+        });
+  });
+  entered.get_future().wait();
+
+  EXPECT_FALSE(model.IsLoaded());
+  EXPECT_TRUE(service.model_load_manager.IsModelLoading(model));
+  EXPECT_THROW(
+      service.model_load_manager.RunWithUnloadedModelsInDirectory(
+          root.string(), [] {}),
+      std::exception);
+  EXPECT_THROW(model.BeginUnregister(), std::exception);
+
+  release.set_value();
+  auto lease = loading.get();
+  EXPECT_TRUE(model.IsLoaded());
+  lease.reset();
+  EXPECT_TRUE(
+      service.model_load_manager.UnloadNonGenerativeRuntime(model));
+}
+
 TEST(ManagedModelRuntimeTest, RejectsLoadsBeyondMemoryBudget) {
   test::CpuOnlyEpDetector detector;
   ModelLoadManager manager(detector, test::NullLog(), 100, 1);
@@ -107,6 +160,59 @@ TEST(ManagedModelRuntimeTest, RejectsLoadsBeyondMemoryBudget) {
   EXPECT_THROW(ModelLoadManagerTestAccess::Acquire(
                    manager, "second", 21, "cpu", factory),
                std::runtime_error);
+}
+
+TEST(ManagedModelRuntimeTest, ArtifactOperationsIncludeTypedRuntimes) {
+  test::FakeServiceBindings service;
+  const auto root =
+      test::TempPath::CreateTempDir("fl_typed_artifact_");
+  std::ofstream(root.path() / "genai_config.json")
+      << R"({"model":{"type":"component","context_length":4096}})";
+  const auto canonical =
+      std::filesystem::weakly_canonical(root.path()).string();
+  auto lease = ModelLoadManagerTestAccess::AcquireArtifact(
+      service.model_load_manager, "artifact-key", "typed:1", canonical,
+      []() -> std::shared_ptr<void> { return std::make_shared<int>(42); });
+  lease.reset();
+
+  EXPECT_TRUE(service.model_load_manager.IsModelArtifactLoaded(
+      "typed:1", canonical));
+  const auto state = service.model_load_manager.GetLoadedModelState(
+      "typed:1", canonical);
+  ASSERT_TRUE(state.has_value());
+  EXPECT_EQ(state->model_path, canonical);
+  EXPECT_EQ(state->context_length, 4096u);
+  EXPECT_TRUE(service.model_load_manager.UnloadModelArtifact(
+      "typed:1", canonical));
+  EXPECT_FALSE(service.model_load_manager.IsModelArtifactLoaded(
+      "typed:1", canonical));
+}
+
+TEST(ManagedModelRuntimeTest, RetiredHandleDoesNotObserveReplacementRuntime) {
+  test::FakeServiceBindings service;
+  const auto root =
+      test::TempPath::CreateTempDir("fl_replaced_artifact_");
+  ModelInfo old_info;
+  old_info.model_id = "typed:1";
+  old_info.name = "typed";
+  old_info.alias = "typed";
+  old_info.task = "text-ranking";
+  auto old_model = Model::FromLocalRegistration(
+      old_info, root.string(), service.download_manager,
+      service.model_load_manager);
+  auto replacement = Model::FromLocalRegistration(
+      std::move(old_info), root.string(), service.download_manager,
+      service.model_load_manager);
+  old_model.Deactivate();
+  const auto canonical =
+      std::filesystem::weakly_canonical(root.path()).string();
+  auto lease = ModelLoadManagerTestAccess::AcquireArtifact(
+      service.model_load_manager, "replacement-key", "typed:1", canonical,
+      []() -> std::shared_ptr<void> { return std::make_shared<int>(42); });
+  lease.reset();
+
+  EXPECT_FALSE(old_model.IsLoaded());
+  EXPECT_TRUE(replacement.IsLoaded());
 }
 
 TEST(ManagedModelRuntimeTest, ReleasesAdmissionAfterRuntimeDestruction) {

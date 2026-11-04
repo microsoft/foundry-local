@@ -317,7 +317,7 @@ TEST_F(LocalModelScannerTest, NonGenerativeTaskWithoutManifestCannotFallBackToGe
   fs::remove(root / "component_manifest.json");
   std::ofstream(root / "inference_model.json") << metadata;
 
-  EXPECT_FALSE(ScanLocalModels(test_dir_, logger_).empty());
+  EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
 }
 
 TEST_F(LocalModelScannerTest, BackendOwnsComponentTopologyValidation) {

@@ -34,6 +34,7 @@ int main(int argc, char* argv[]) {
   const std::string package_path = argv[1];
 
   try {
+    OgaHandle oga;
     fl::NonGenerativeRequest request;
     request.state = {
         {"weather", "heavy rain"},

@@ -163,9 +163,19 @@ bool ModelLoadManager::HasEP(const std::string& ep_name) const {
 void ModelLoadManager::RunWithUnloadedModelsInDirectory(std::string_view directory,
                                                         const std::function<void()>& operation) {
   std::lock_guard<std::mutex> lock(mutex_);
-  for (const auto& [id, runtime] : loaded_runtimes_) {
-    if (IsPathWithinDirectory(runtime->ModelPath(), std::filesystem::path(directory))) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot remove a loaded model from cache; unload it first: " + id);
+  const auto target = std::filesystem::path(directory);
+  for (const auto& [key, runtime] : loaded_runtimes_) {
+    if (IsPathWithinDirectory(runtime->ModelPath(), target)) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+               "cannot remove a loaded model from cache; unload it first: " +
+                   std::string(runtime->ModelId()));
+    }
+  }
+  for (const auto& [key, loading] : loading_runtimes_) {
+    if (IsPathWithinDirectory(loading.model_path, target)) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+               "cannot remove a loading model from cache: " +
+                   loading.model_id);
     }
   }
 
@@ -190,7 +200,8 @@ void ModelLoadManager::PrepareProviderForModelLoad(
 
 std::shared_ptr<void> ModelLoadManager::AcquireNonGenerativeRuntime(
     Model& model, std::string_view task, std::string_view provider,
-    uint64_t estimated_resident_bytes) {
+    uint64_t estimated_resident_bytes,
+    const std::function<void()>& on_admitted) {
   const auto canonical =
       std::filesystem::weakly_canonical(model.GetPath()).string();
   const auto provider_name = std::string(provider);
@@ -212,25 +223,28 @@ std::shared_ptr<void> ModelLoadManager::AcquireNonGenerativeRuntime(
           return std::make_shared<DecisionRuntime>(canonical);
         FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
                  "unsupported non-generative task: ", task);
-      });
+      },
+      on_admitted);
 }
 
 std::shared_ptr<void> ModelLoadManager::AcquireManagedRuntime(
     std::string identity, std::string model_id, std::string model_path,
     uint64_t estimated_resident_bytes, std::string readiness_group,
-    const std::function<std::shared_ptr<void>()>& factory) {
+    const std::function<std::shared_ptr<void>()>& factory,
+    const std::function<void()>& on_admitted) {
   std::shared_future<std::shared_ptr<ManagedModelRuntime>> future;
   std::shared_ptr<std::promise<std::shared_ptr<ManagedModelRuntime>>> promise;
+  std::shared_ptr<ManagedModelRuntime> loaded;
   {
     std::lock_guard lock(mutex_);
     if (shutdown_.load())
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
                "cannot acquire non-generative runtime during shutdown");
     if (const auto found = loaded_runtimes_.find(identity);
-        found != loaded_runtimes_.end())
-      return found->second->Lease();
-    if (const auto found = loading_runtimes_.find(identity);
-        found != loading_runtimes_.end()) {
+        found != loaded_runtimes_.end()) {
+      loaded = found->second;
+    } else if (const auto found = loading_runtimes_.find(identity);
+               found != loading_runtimes_.end()) {
       future = found->second.runtime;
     } else {
       promise = std::make_shared<
@@ -240,6 +254,8 @@ std::shared_ptr<void> ModelLoadManager::AcquireManagedRuntime(
           identity, LoadingRuntimeEntry{model_id, model_path, future});
     }
   }
+  if (on_admitted) on_admitted();
+  if (loaded) return loaded->Lease();
 
   if (promise) {
     try {
@@ -275,53 +291,76 @@ std::shared_ptr<void> ModelLoadManager::AcquireManagedRuntime(
 }
 
 bool ModelLoadManager::UnloadNonGenerativeRuntime(Model& model) {
-  std::vector<std::shared_ptr<ManagedModelRuntime>> removed;
-  const auto model_path = NormalizeModelPath(model.GetPath());
-  {
-    std::lock_guard lock(mutex_);
-    if (std::any_of(
-            loading_runtimes_.begin(), loading_runtimes_.end(),
-            [&](const auto& entry) {
-              return entry.second.model_id == model.Id() &&
-                     ModelPathsEqual(entry.second.model_path, model_path);
-            }))
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
-               "cannot unload model '", model.Id(),
-               "' while it is loading");
-    for (auto it = loaded_runtimes_.begin(); it != loaded_runtimes_.end();) {
-      if (it->second->GenAI() ||
-          it->second->ModelId() != model.Id() ||
-          !ModelPathsEqual(it->second->ModelPath(), model_path)) {
-        ++it;
-        continue;
-      }
-      const auto sessions = it->second->SessionRefCount();
-      if (sessions != 0)
-        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
-                 "cannot unload model '", model.Id(), "': ", sessions,
-                 " session(s) still using it");
-      removed.push_back(std::move(it->second));
-      it = loaded_runtimes_.erase(it);
-    }
-  }
-  return !removed.empty();
+  return UnloadModelArtifact(model.Id(), model.GetPath());
 }
 
 bool ModelLoadManager::IsModelLoaded(const Model& model) const {
   const auto model_path = NormalizeModelPath(model.GetPath());
   std::lock_guard lock(mutex_);
   return std::any_of(
-             loading_runtimes_.begin(), loading_runtimes_.end(),
-             [&](const auto& entry) {
-               return entry.second.model_id == model.Id() &&
-                      ModelPathsEqual(entry.second.model_path, model_path);
-             }) ||
-         std::any_of(
-             loaded_runtimes_.begin(), loaded_runtimes_.end(),
-             [&](const auto& entry) {
-               return entry.second->ModelId() == model.Id() &&
-                      ModelPathsEqual(entry.second->ModelPath(), model_path);
-             });
+      loaded_runtimes_.begin(), loaded_runtimes_.end(),
+      [&](const auto& entry) {
+        return entry.second->ModelId() == model.Id() &&
+               ModelPathsEqual(entry.second->ModelPath(), model_path);
+      });
+}
+
+bool ModelLoadManager::IsModelLoading(const Model& model) const {
+  const auto model_path = NormalizeModelPath(model.GetPath());
+  std::lock_guard lock(mutex_);
+  return std::any_of(
+      loading_runtimes_.begin(), loading_runtimes_.end(),
+      [&](const auto& entry) {
+        return entry.second.model_id == model.Id() &&
+               ModelPathsEqual(entry.second.model_path, model_path);
+      });
+}
+
+bool ModelLoadManager::IsModelArtifactLoaded(
+    std::string_view model_id, std::string_view model_path) const {
+  const auto normalized_path = NormalizeModelPath(model_path);
+  std::lock_guard lock(mutex_);
+  return std::any_of(
+      loaded_runtimes_.begin(), loaded_runtimes_.end(),
+      [&](const auto& entry) {
+        return entry.second->ModelId() == model_id &&
+               ModelPathsEqual(entry.second->ModelPath(), normalized_path);
+      });
+}
+
+bool ModelLoadManager::UnloadModelArtifact(
+    std::string_view model_id, std::string_view model_path) {
+  const auto normalized_path = NormalizeModelPath(model_path);
+  if (GetLoadedModel(model_id, normalized_path))
+    return UnloadModel(model_id, normalized_path);
+
+  std::vector<std::shared_ptr<ManagedModelRuntime>> removed;
+  {
+    std::lock_guard lock(mutex_);
+    if (std::any_of(
+            loading_runtimes_.begin(), loading_runtimes_.end(),
+            [&](const auto& entry) {
+              return entry.second.model_id == model_id &&
+                     ModelPathsEqual(entry.second.model_path, normalized_path);
+            }))
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+               "cannot unload model '", model_id, "' while it is loading");
+    for (auto it = loaded_runtimes_.begin(); it != loaded_runtimes_.end();) {
+      if (it->second->GenAI() || it->second->ModelId() != model_id ||
+          !ModelPathsEqual(it->second->ModelPath(), normalized_path)) {
+        ++it;
+        continue;
+      }
+      const auto sessions = it->second->SessionRefCount();
+      if (sessions != 0)
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                 "cannot unload model '", model_id, "': ", sessions,
+                 " session(s) still using it");
+      removed.push_back(std::move(it->second));
+      it = loaded_runtimes_.erase(it);
+    }
+  }
+  return !removed.empty();
 }
 
 // ---------------------------------------------------------------------------
@@ -656,21 +695,43 @@ std::optional<ModelLoadManager::LoadedModelState> ModelLoadManager::GetLoadedMod
   const auto normalized_model_path = NormalizeModelPath(model_path);
   std::lock_guard<std::mutex> lock(mutex_);
   auto* loaded = FindLoadedModelLocked(model_id, &normalized_model_path);
-  if (!loaded) {
-    return std::nullopt;
+  std::optional<LoadedModelState> state;
+  if (loaded) {
+    state = LoadedModelState{.config = loaded->GetGenAIConfig(),
+                             .model_path = loaded->ModelPath(),
+                             .context_length = std::nullopt};
+  } else {
+    const auto found = std::find_if(
+        loaded_runtimes_.begin(), loaded_runtimes_.end(),
+        [&](const auto& entry) {
+          return !entry.second->GenAI() &&
+                 entry.second->ModelId() == model_id &&
+                 ModelPathsEqual(entry.second->ModelPath(),
+                                 normalized_model_path);
+        });
+    if (found == loaded_runtimes_.end()) return std::nullopt;
+    const auto config_path =
+        std::filesystem::path(found->second->ModelPath()) /
+        kGenAIConfigFileName;
+    state = LoadedModelState{
+        .config = GenAIConfig::LoadFromFile(config_path.string()),
+        .model_path = std::string(found->second->ModelPath()),
+        .context_length = std::nullopt};
   }
 
-  LoadedModelState state{
-      .config = loaded->GetGenAIConfig(), .model_path = loaded->ModelPath(), .context_length = std::nullopt};
-  if (state.config.GetChatBackendKind() == ChatBackendKind::kEngine) {
+  if (loaded &&
+      state->config.GetChatBackendKind() == ChatBackendKind::kEngine) {
     // Model construction waits for Engine capability initialization; this cached limit is immutable afterward.
     const auto* engine = loaded->GetChatEngine();
     if (engine && engine->MaxRequestLength() > 0) {
-      state.context_length = engine->MaxRequestLength();
+      state->context_length = engine->MaxRequestLength();
     }
-  } else if ((state.config.model && state.config.model->context_length > 0) ||
-             (state.config.search && state.config.search->max_length > 0)) {
-    state.context_length = static_cast<uint64_t>(GetModelMaxContextLength(state.config));
+  } else if ((state->config.model &&
+              state->config.model->context_length > 0) ||
+             (state->config.search &&
+              state->config.search->max_length > 0)) {
+    state->context_length =
+        static_cast<uint64_t>(GetModelMaxContextLength(state->config));
   }
 
   return state;

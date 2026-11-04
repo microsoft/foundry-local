@@ -40,6 +40,11 @@ class ModelNotFoundError : public std::runtime_error {
   using std::runtime_error::runtime_error;
 };
 
+class RequestError : public std::runtime_error {
+ public:
+  using std::runtime_error::runtime_error;
+};
+
 NonGenerativePackageMetadata CachedPackageMetadata(
     ModelLoadManager& model_load_manager, Model& model,
     const std::string& path) {
@@ -69,12 +74,13 @@ ResolvedPackage ResolvePackage(ServiceContext& ctx, const std::string& requested
   if (!model)
     throw ModelNotFoundError("model not found: " + requested);
   if (model->Info().task != expected_task) {
-    throw std::invalid_argument(fmt::format(
+    throw RequestError(fmt::format(
         "model '{}' has task '{}'; expected '{}'", requested, model->Info().task,
         expected_task));
   }
   if (!model->IsCached()) {
-    throw std::invalid_argument("selected model package is not available locally");
+    throw RequestError(
+        "selected model package is not available locally");
   }
   const auto package = CachedPackageMetadata(
       ctx.model_load_manager, *model, model->GetPath());
@@ -89,10 +95,10 @@ ResolvedPackage ResolvePackage(ServiceContext& ctx, const std::string& requested
 
 template <typename Runtime>
 std::shared_ptr<Runtime> AcquireRuntime(
-    ServiceContext& ctx, const ResolvedPackage& package) {
+    const ResolvedPackage& package) {
   return std::static_pointer_cast<Runtime>(
-      ctx.model_load_manager.AcquireNonGenerativeRuntime(
-          *package.model, package.model->Info().task, package.provider,
+      package.model->AcquireNonGenerativeRuntime(
+          package.model->Info().task, package.provider,
           package.estimated_resident_bytes));
 }
 
@@ -110,12 +116,12 @@ class NonGenerativeHandler final : public HttpRequestHandler {
     Request input;
     try {
       input = nlohmann::ordered_json::parse(*body).get<Request>();
-    } catch (const nlohmann::json::exception& error) {
+    } catch (const std::exception& error) {
       return ErrorResponse(Status::CODE_400, "Invalid request", error.what());
     }
     try {
       const auto package = ResolvePackage(ctx_, input.model, task_);
-      auto runtime = AcquireRuntime<Runtime>(ctx_, package);
+      auto runtime = AcquireRuntime<Runtime>(package);
       auto output = [&]() {
         if constexpr (IsRank) {
           auto result = runtime->Rank(input);
@@ -132,7 +138,7 @@ class NonGenerativeHandler final : public HttpRequestHandler {
       return JsonResponse(Status::CODE_200, output);
     } catch (const ModelNotFoundError& error) {
       return ErrorResponse(Status::CODE_404, "Model not found", error.what());
-    } catch (const std::invalid_argument& error) {
+    } catch (const RequestError& error) {
       return ErrorResponse(Status::CODE_400, "Invalid request", error.what());
     } catch (const std::exception& error) {
       ctx_.logger.Log(LogLevel::Error,
