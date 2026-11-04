@@ -186,13 +186,14 @@ void from_json(const nlohmann::json& j, ChatCompletionToolCall& tc) {
 
 void from_json(const nlohmann::json& j, ChatCompletionMessage& m) {
   m.role = j.at("role").get<std::string>();
+  m.image_urls.clear();
 
   // content can be null (for assistant messages with tool_calls)
   if (j.contains("content") && !j["content"].is_null()) {
     if (j["content"].is_string()) {
       m.content = j["content"].get<std::string>();
     } else {
-      // Array of content parts — extract text parts
+      // Keep image sources separate from the text; neither their URLs nor their base64 belong in the prompt.
       std::string text;
       if (j["content"].is_array()) {
         for (const auto& part : j["content"]) {
@@ -200,6 +201,14 @@ void from_json(const nlohmann::json& j, ChatCompletionMessage& m) {
             std::string part_type = part.value("type", "");
             if (part_type == "text" || part_type == "input_text") {
               text += part.value("text", "");
+            } else if (part_type == "image_url") {
+              const auto& image = RequiredObject(part, "image_url", "content part");
+              const auto url = image.find("url");
+              if (url == image.end() || !url->is_string() || url->get_ref<const std::string&>().empty()) {
+                FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "image_url.url must be a non-empty string");
+              }
+
+              m.image_urls.push_back(url->get<std::string>());
             }
           }
         }

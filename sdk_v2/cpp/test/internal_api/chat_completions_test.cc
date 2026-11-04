@@ -48,6 +48,7 @@ TEST(ChatCompletionMessageTest, ArrayContentExtractsTextParts) {
 
   ASSERT_TRUE(msg.content.has_value());
   EXPECT_EQ(*msg.content, "Look at this: and this");
+  EXPECT_EQ(msg.image_urls, (std::vector<std::string>{"http://img.png"}));
 }
 
 TEST(ChatCompletionMessageTest, OptionalFieldsPopulated) {

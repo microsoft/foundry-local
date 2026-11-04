@@ -83,6 +83,7 @@ struct ChatCompletionMessage {
   // one representation and a custom call keeps its raw text instead of being read as JSON arguments.
   std::vector<ChatCompletionToolCall> tool_calls;  // for role="assistant": the calls this message issued
   std::optional<std::string> reasoning_content;    // typed history; projected only for qualified templates
+  std::vector<std::string> image_urls;             // image_url content parts, in source order
 };
 
 /// Function definition within a tool. JSON keys: "name", "description", "parameters", "strict"

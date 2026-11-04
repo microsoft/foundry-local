@@ -1689,6 +1689,63 @@ TEST_F(WebServiceTest, CodingResponsesRejectImageInput) {
   EXPECT_EQ(unloaded["status"], "unloaded") << unloaded.dump(2);
 }
 
+TEST_F(WebServiceTest, ChatCompletionsDoesNotSilentlyIgnoreImagesOnATextModel) {
+  const auto loaded = Get(std::string("/models/load/") + kResponseStoreTestModelAlias);
+  ASSERT_EQ(loaded["status"], "loaded") << loaded.dump(2);
+  const json body = {
+      {"model", std::string(kResponseStoreTestModelAlias) + ":1"},
+      {"messages",
+       json::array({{{"role", "user"},
+                     {"content", json::array({
+                                     {{"type", "text"}, {"text", "Describe the image."}},
+                                     {{"type", "image_url"}, {"image_url", {{"url", "data:image/png;base64,AA=="}}}},
+                                 })}}})},
+      {"max_completion_tokens", 4},
+  };
+
+  const auto result = PostJson(base_url_ + "/v1/chat/completions", body);
+  EXPECT_EQ(result.status, 400) << result.body.dump(2);
+  EXPECT_NE(ErrorMessageOf(result.body).find("multimodal model"), std::string::npos) << result.body.dump(2);
+
+  auto text_body = body;
+  text_body["messages"][0]["content"] = "Say hello.";
+  const auto healthy = PostJson(base_url_ + "/v1/chat/completions", text_body);
+  EXPECT_EQ(healthy.status, 200) << healthy.body.dump(2);
+  const auto unloaded = Get(std::string("/models/unload/") + kResponseStoreTestModelAlias);
+  EXPECT_EQ(unloaded["status"], "unloaded") << unloaded.dump(2);
+}
+
+TEST_F(WebServiceTest, ChatCompletionsAppliesMediaPolicyBeforeInference) {
+  const auto loaded = Get(std::string("/models/load/") + kResponseStoreTestModelAlias);
+  ASSERT_EQ(loaded["status"], "loaded") << loaded.dump(2);
+  const json image_message = {
+      {"role", "user"},
+      {"content", json::array({{{"type", "image_url"}, {"image_url", {{"url", "data:image/png;base64,AA=="}}}}})},
+  };
+  for (const bool with_tools : {false, true}) {
+    json body = {
+        {"model", std::string(kResponseStoreTestModelAlias) + ":1"},
+        {"messages", json::array({image_message})},
+        {"max_completion_tokens", 4},
+    };
+    if (with_tools) {
+      body["tools"] = json::array(
+          {{{"type", "function"}, {"function", {{"name", "look_up"}, {"parameters", {{"type", "object"}}}}}}});
+    } else {
+      body["messages"] = json::array(
+          {{{"role", "user"}, {"content", "Hello."}}, {{"role", "assistant"}, {"content", "Hi."}}, image_message});
+    }
+
+    const auto result = PostJson(base_url_ + "/v1/chat/completions", body);
+    EXPECT_EQ(result.status, 400) << result.body.dump(2);
+    EXPECT_NE(ErrorMessageOf(result.body).find(with_tools ? "tool definitions" : "first turn"), std::string::npos)
+        << result.body.dump(2);
+  }
+
+  const auto unloaded = Get(std::string("/models/unload/") + kResponseStoreTestModelAlias);
+  EXPECT_EQ(unloaded["status"], "unloaded") << unloaded.dump(2);
+}
+
 TEST_F(WebServiceTest, CodingChatCompletionsRejectImageAndAudioInput) {
   const auto loaded = Get(std::string("/models/load/") + kCodingTestModelAlias);
   ASSERT_EQ(loaded["status"], "loaded") << loaded.dump(2);

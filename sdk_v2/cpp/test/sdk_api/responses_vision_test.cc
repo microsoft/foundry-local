@@ -96,6 +96,89 @@ TEST_F(ResponsesVisionIntegrationTest, DataUrlImageProducesOutput) {
   EXPECT_GT(response["usage"]["output_tokens"].get<int>(), 0);
 }
 
+TEST_F(ResponsesVisionIntegrationTest, ChatCompletionsDataUrlImageProducesOutput) {
+  auto client = MakeClient(600);
+  const json image = {
+      {"type", "image_url"},
+      {"image_url", {{"url", std::string("data:image/png;base64,") + kTinyPngBase64}, {"detail", "low"}}},
+  };
+  for (const bool image_only : {false, true}) {
+    SCOPED_TRACE(image_only ? "image only" : "text and image");
+    auto content = json::array();
+    if (!image_only) {
+      content.push_back({{"type", "text"}, {"text", "Describe this image in one short sentence."}});
+    }
+
+    content.push_back(image);
+    const json body = {
+        {"model", vision_model_id()},
+        {"messages", json::array({{{"role", "user"}, {"content", content}}})},
+        {"max_completion_tokens", 32},
+        {"temperature", 0},
+    };
+    const auto result = client.Post("/v1/chat/completions", body.dump(), "application/json");
+    ASSERT_TRUE(result) << httplib::to_string(result.error());
+    ASSERT_EQ(result->status, 200) << result->body;
+    const auto response = json::parse(result->body);
+    EXPECT_EQ(response["object"], "chat.completion");
+    EXPECT_FALSE(response["choices"][0]["message"]["content"].get<std::string>().empty()) << response.dump(2);
+    EXPECT_GT(response["usage"]["prompt_tokens"].get<int>(), 0);
+    EXPECT_GT(response["usage"]["completion_tokens"].get<int>(), 0);
+  }
+}
+
+TEST_F(ResponsesVisionIntegrationTest, ChatCompletionsImageOnlyStreamsOutput) {
+  auto client = MakeClient(600);
+  const json body = {
+      {"model", vision_model_id()},
+      {"messages",
+       json::array(
+           {{{"role", "user"},
+             {"content",
+              json::array({{{"type", "image_url"},
+                            {"image_url", {{"url", std::string("data:image/png;base64,") + kTinyPngBase64}}}}})}}})},
+      {"max_completion_tokens", 32},
+      {"temperature", 0},
+      {"stream", true},
+      {"stream_options", {{"include_usage", true}}},
+  };
+  const auto result = client.Post("/v1/chat/completions", body.dump(), "application/json");
+  ASSERT_TRUE(result) << httplib::to_string(result.error());
+  ASSERT_EQ(result->status, 200) << result->body;
+
+  std::string text;
+  bool done = false;
+  bool has_usage = false;
+  std::istringstream stream(result->body);
+  std::string line;
+  while (std::getline(stream, line)) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    if (line.rfind("data: ", 0) != 0) {
+      continue;
+    }
+    if (line.substr(6) == "[DONE]") {
+      done = true;
+      break;
+    }
+
+    const auto chunk = json::parse(line.substr(6));
+    ASSERT_FALSE(chunk.contains("error")) << chunk.dump(2);
+    for (const auto& choice : chunk["choices"]) {
+      text += choice["delta"].value("content", "");
+    }
+    if (chunk.contains("usage")) {
+      has_usage = true;
+      EXPECT_GT(chunk["usage"]["prompt_tokens"].get<int>(), 0);
+    }
+  }
+
+  EXPECT_TRUE(done) << result->body;
+  EXPECT_TRUE(has_usage) << result->body;
+  EXPECT_FALSE(text.empty()) << result->body;
+}
+
 TEST_F(ResponsesVisionIntegrationTest, ImageOnlyMessageProducesOutput) {
   auto client = MakeClient();
   client.set_read_timeout(600, 0);

@@ -6,6 +6,7 @@
 #include "contracts/tool_definitions.h"
 #include "inferencing/generative/chat/search_options.h"
 #include "inferencing/generative/chat/stop_strings.h"
+#include "items/image_item.h"
 #include "items/message_item.h"
 #include "items/text_item.h"
 #include "items/tool_call_item.h"
@@ -155,6 +156,10 @@ void BuildRequestItems(const ChatCompletionRequest& req, Request& session_reques
     auto role = Utils::StringToRole(msg.role);
 
     if (role == FOUNDRY_LOCAL_ROLE_TOOL) {
+      if (!msg.image_urls.empty()) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "image_url content is not supported in tool messages");
+      }
+
       // A tool result may legitimately be an empty string; the call ID is what correlates it with its call.
       session_request.AddOwnedItem(
           std::make_unique<ToolResultItem>(msg.tool_call_id.value_or(""), msg.content.value_or("")));
@@ -163,7 +168,7 @@ void BuildRequestItems(const ChatCompletionRequest& req, Request& session_reques
 
     const std::string content = msg.content.value_or("");
     const std::string reasoning = msg.reasoning_content.value_or("");
-    if (!content.empty() || (role == FOUNDRY_LOCAL_ROLE_ASSISTANT && !reasoning.empty())) {
+    if (!content.empty() || !msg.image_urls.empty() || (role == FOUNDRY_LOCAL_ROLE_ASSISTANT && !reasoning.empty())) {
       auto message = std::make_unique<MessageItem>();
       message->role = role;
       message->name = msg.name.value_or("");
@@ -174,6 +179,20 @@ void BuildRequestItems(const ChatCompletionRequest& req, Request& session_reques
       if (!content.empty()) {
         message->content.push_back(MessagePart::Own(std::make_unique<TextItem>(content)));
       }
+
+      for (const auto& url : msg.image_urls) {
+        if (!url.starts_with("data:")) {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED,
+                   "image_url must be a data: URL; remote http(s) URLs are not supported");
+        }
+
+        message->content.push_back(MessagePart::Own(ImageItem::FromDataUrl(url)));
+      }
+
+      if (content.empty() && !msg.image_urls.empty()) {
+        message->content.push_back(MessagePart::Own(std::make_unique<TextItem>(" ")));
+      }
+
       session_request.AddOwnedItem(std::move(message));
     }
 
