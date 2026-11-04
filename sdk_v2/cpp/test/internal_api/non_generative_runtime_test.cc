@@ -197,6 +197,13 @@ TEST(NonGenerativeRuntimeTest, ExportedPackagesRunWhenConfigured) {
   auto ranked = RankingRuntime(clm.string()).Rank(ranking);
   ASSERT_EQ(ranked.at("ranked").size(), 2u);
   EXPECT_EQ(ranked.at("ranked").at(0).at("rank"), 1);
+  for (size_t index = 0; index < ranked.at("ranked").size(); ++index) {
+    const auto& item = ranked.at("ranked").at(index);
+    EXPECT_TRUE(item.contains("id"));
+    EXPECT_TRUE(item.contains("index"));
+    EXPECT_EQ(item.at("candidate"),
+              ranking.answers.at(item.at("index").get<size_t>()));
+  }
 
   auto decision = nlohmann::ordered_json{
       {"state", {{"weather", "heavy rain"}}},
