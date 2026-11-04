@@ -2639,6 +2639,87 @@ TEST_F(QwenNativeProductionIntegrationTest, CancellationWinsOverInvalidRetryBoun
   }
 }
 
+TEST_F(QwenNativeProductionIntegrationTest, RecoveryFailuresRetainOriginalSchemaErrorAcrossBackendsAndApis) {
+  struct Case {
+    std::string output;
+    std::string error;
+    bool literal_closing = false;
+    bool exhaust_budget = false;
+  };
+  const std::vector<Case> cases{
+      {"<tool_call>\n", "Missing token-owned tool-call boundaries"},
+      {R"(<tool_call>[{"name":"lookup","parameters":{"city":false}}]</tool_call>)", "/type"},
+      {std::string(kCanonicalLookupCall), "literal text", true},
+      {"<tool_call>\n\n\n\n\n\n\n\n\n\n", "exhausted its remaining token budget", false, true},
+  };
+  for (auto* native_model : {engine_model_, model_}) {
+    for (const bool json_request : {false, true}) {
+      for (const auto& test_case : cases) {
+        SCOPED_TRACE(native_model == model_ ? "Generator" : "Engine");
+        SCOPED_TRACE(json_request);
+        SCOPED_TRACE(test_case.error);
+        auto counters = std::make_shared<GeneratorCounters>();
+        size_t attempts = 0;
+        TextChatGeneratorFactory factory = [&](const auto&, const auto&, auto&, const auto&, bool) {
+          const bool retry = attempts++ != 0;
+          auto generator = std::make_unique<FixedOutputGenerator>(
+              retry ? test_case.output : R"(<tool_call>[{"name":"lookup","parameters":{}}]</tool_call>)",
+              BackendTerminationCause::kNaturalEnd, false, counters, 4, 1, std::function<void()>{}, nullptr,
+              retry && test_case.exhaust_budget ? 1 : std::string::npos);
+          const auto offset = native_model == model_ ? kClassicControlOffset : 0;
+          generator->EnableAuthoritativeControls(offset);
+          if (retry && test_case.literal_closing) {
+            generator->ReplaceControlWithLiteral(kEngineToolEnd + offset);
+          }
+
+          return generator;
+        };
+        auto catalog_model = MakeCatalogModel();
+        ChatSession session(catalog_model, *native_model, *logger_, telemetry_, {}, std::move(factory));
+        KeyValuePairs options;
+        options.Add("max_output_tokens", "10");
+        session.SetSessionOptions(options);
+        Response response;
+        std::vector<nlohmann::json> chunks;
+        try {
+          if (json_request) {
+            RunChatCompletions(session, "auto", &chunks, false, std::nullopt, /*closed_schema=*/true);
+          } else {
+            AddFunctionTools(session, /*closed_schema=*/true);
+            auto request = MakeStatefulRequest("route this");
+            session.ProcessRequest(request, response);
+          }
+
+          FAIL() << "Expected guided recovery to reject the invalid call";
+        } catch (const fl::Exception& error) {
+          EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_INTERNAL);
+          const std::string message = error.what();
+          const auto original = message.find("Original tool-call error:");
+          const auto recovery = message.find("Recovery error:");
+          ASSERT_NE(original, std::string::npos) << message;
+          ASSERT_NE(recovery, std::string::npos) << message;
+          ASSERT_LT(original, recovery);
+          const auto original_error = message.substr(original, recovery - original);
+          EXPECT_NE(original_error.find("/required"), std::string::npos) << message;
+          EXPECT_NE(original_error.find("'city'"), std::string::npos) << message;
+          EXPECT_NE(message.substr(recovery).find(test_case.error), std::string::npos) << message;
+          if (test_case.exhaust_budget) {
+            EXPECT_EQ(message.find("Missing token-owned"), std::string::npos) << message;
+          }
+        }
+
+        EXPECT_EQ(attempts, 2u);
+        EXPECT_EQ(counters->canceled, test_case.exhaust_budget ? 1 : 0);
+        EXPECT_TRUE(response.items.empty());
+        EXPECT_TRUE(session.Transcript().Empty());
+        for (const auto& chunk : chunks) {
+          EXPECT_FALSE(chunk.at("choices").at(0).at("delta").contains("tool_calls"));
+        }
+      }
+    }
+  }
+}
+
 TEST_F(QwenNativeProductionIntegrationTest,
        CanonicalRecoverySharesEffectiveBudgetAndBoundsGenerationAcrossBackendsAndApis) {
   for (auto* native_model : {engine_model_, model_}) {
