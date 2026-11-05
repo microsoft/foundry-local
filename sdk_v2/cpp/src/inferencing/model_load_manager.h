@@ -176,7 +176,8 @@ class ModelLoadManager {
       std::string identity, std::string model_id, std::string model_path,
       uint64_t estimated_resident_bytes, std::string readiness_group,
       const std::function<std::shared_ptr<void>()>& factory,
-      const std::function<void()>& on_admitted = {});
+      const std::function<void()>& on_admitted = {},
+      std::shared_ptr<const GenAIConfig> config = {});
 
   bool HasEP(const std::string& ep_name) const;
   NonGenerativePackageMetadata InspectNonGenerativePackage(Model& model);

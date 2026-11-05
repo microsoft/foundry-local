@@ -27,6 +27,7 @@ class ManagedModelRuntime {
   virtual std::string_view ModelId() const noexcept = 0;
   virtual std::string_view ModelPath() const noexcept = 0;
   virtual GenAIModelInstance* GenAI() const noexcept { return nullptr; }
+  virtual const GenAIConfig* Config() const noexcept { return nullptr; }
   virtual size_t SessionRefCount() const noexcept = 0;
   virtual std::shared_ptr<void> Lease() {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
@@ -58,6 +59,9 @@ class ManagedGenerativeRuntime final : public ManagedModelRuntime {
   GenAIModelInstance* GenAI() const noexcept override {
     return instance_.get();
   }
+  const GenAIConfig* Config() const noexcept override {
+    return &instance_->GetGenAIConfig();
+  }
   size_t SessionRefCount() const noexcept override {
     return instance_->SessionRefCount();
   }
@@ -73,11 +77,13 @@ class ManagedTypedRuntime final
   ManagedTypedRuntime(
       std::string model_id, std::string model_path,
       std::shared_ptr<NonGenerativeAdmissionReservation> reservation,
-      std::shared_ptr<void> runtime)
+      std::shared_ptr<void> runtime,
+      std::shared_ptr<const GenAIConfig> config)
       : model_id_(std::move(model_id)),
         model_path_(std::move(model_path)),
         reservation_(std::move(reservation)),
-        runtime_(std::move(runtime)) {}
+        runtime_(std::move(runtime)),
+        config_(std::move(config)) {}
 
   ~ManagedTypedRuntime() override {
     runtime_.reset();
@@ -90,6 +96,9 @@ class ManagedTypedRuntime final
     const auto owners = weak_from_this().use_count();
     return owners > 0 ? owners - 1 : 0;
   }
+  const GenAIConfig* Config() const noexcept override {
+    return config_.get();
+  }
   std::shared_ptr<void> Lease() override {
     return std::shared_ptr<void>(shared_from_this(), runtime_.get());
   }
@@ -99,6 +108,7 @@ class ManagedTypedRuntime final
   std::string model_path_;
   std::shared_ptr<NonGenerativeAdmissionReservation> reservation_;
   std::shared_ptr<void> runtime_;
+  std::shared_ptr<const GenAIConfig> config_;
 };
 
 std::pair<std::string, std::string> SelectionIdentity(std::string_view model_id, std::string_view model_path) {
@@ -236,7 +246,8 @@ std::shared_ptr<void> ModelLoadManager::AcquireNonGenerativeRuntime(
         FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
                  "unsupported non-generative task: ", task);
       },
-      on_admitted);
+      on_admitted,
+      std::make_shared<GenAIConfig>(package.config));
 }
 
 NonGenerativePackageMetadata
@@ -280,7 +291,8 @@ std::shared_ptr<void> ModelLoadManager::AcquireManagedRuntime(
     std::string identity, std::string model_id, std::string model_path,
     uint64_t estimated_resident_bytes, std::string readiness_group,
     const std::function<std::shared_ptr<void>()>& factory,
-    const std::function<void()>& on_admitted) {
+    const std::function<void()>& on_admitted,
+    std::shared_ptr<const GenAIConfig> config) {
   const auto artifact_identity = SelectionIdentity(model_id, model_path);
   std::shared_future<std::shared_ptr<ManagedModelRuntime>> future;
   std::shared_ptr<std::promise<std::shared_ptr<ManagedModelRuntime>>> promise;
@@ -317,7 +329,7 @@ std::shared_ptr<void> ModelLoadManager::AcquireManagedRuntime(
       auto runtime = factory();
       auto managed = std::make_shared<ManagedTypedRuntime>(
           std::move(model_id), std::move(model_path), std::move(reservation),
-          std::move(runtime));
+          std::move(runtime), std::move(config));
       {
         std::lock_guard lock(mutex_);
         if (shutdown_.load())
@@ -765,11 +777,10 @@ std::optional<ModelLoadManager::LoadedModelState> ModelLoadManager::GetLoadedMod
                                  normalized_model_path);
         });
     if (found == loaded_runtimes_.end()) return std::nullopt;
-    const auto config_path =
-        std::filesystem::path(found->second->ModelPath()) /
-        kGenAIConfigFileName;
+    const auto* config = found->second->Config();
+    if (!config) return std::nullopt;
     state = LoadedModelState{
-        .config = GenAIConfig::LoadFromFile(config_path.string()),
+        .config = *config,
         .model_path = std::string(found->second->ModelPath()),
         .context_length = std::nullopt};
   }
