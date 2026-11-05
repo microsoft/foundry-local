@@ -3,6 +3,8 @@
 #include "inferencing/predictive/non_generative_runtime.h"
 
 #include <condition_variable>
+#include <atomic>
+#include <chrono>
 #include <deque>
 #include <functional>
 #include <future>
@@ -100,18 +102,21 @@ class SessionExecutor {
     using Result = std::invoke_result_t<Function, Session&>;
     auto promise = std::make_shared<std::promise<Result>>();
     auto future = promise->get_future();
+    auto state = std::make_shared<std::atomic<int>>(0);
     {
       std::lock_guard lock(mutex_);
       if (stopping_)
         throw std::runtime_error("typed runtime is stopping");
       tasks_.emplace_back(
-          [promise, function = std::forward<Function>(function),
-           is_canceled = std::move(is_canceled)](
+          [promise, state,
+           function = std::forward<Function>(function)](
               Session& session) mutable {
             try {
-              if (is_canceled && is_canceled())
+              int queued = 0;
+              if (!state->compare_exchange_strong(queued, 1)) {
                 throw std::runtime_error(
                     "non-generative request was canceled before execution");
+              }
               if constexpr (std::is_void_v<Result>) {
                 std::invoke(function, session);
                 promise->set_value();
@@ -124,6 +129,15 @@ class SessionExecutor {
           });
     }
     condition_.notify_one();
+    while (future.wait_for(std::chrono::milliseconds(10)) !=
+           std::future_status::ready) {
+      if (is_canceled && is_canceled()) {
+        int queued = 0;
+        if (state->compare_exchange_strong(queued, 2))
+          throw std::runtime_error(
+              "non-generative request was canceled before execution");
+      }
+    }
     return future.get();
   }
 

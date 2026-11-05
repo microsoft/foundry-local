@@ -169,6 +169,7 @@ class Session {
   /// `on_token` is the resolved streaming callback (may be empty).
   /// Requests are serialized if the derived class does not opt into concurrency via allow_concurrent_requests_.
   virtual void ProcessRequestImpl(const Request& request, Response& response) = 0;
+  virtual std::shared_ptr<void> AcquireRequestLifetime() { return {}; }
 
   virtual std::string ExecutionProvider() const { return {}; }
 

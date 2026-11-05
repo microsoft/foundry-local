@@ -238,6 +238,7 @@ void Session::ValidateRequestItems(const Request& request) const {
 
 size_t Session::ProcessRequest(const Request& request, Response& response,
                                std::optional<StreamingCallback> callback) {
+  auto request_lifetime = AcquireRequestLifetime();
   // Serialize requests unless the derived class opted into concurrency.
   std::unique_lock<std::mutex> lock(*request_mutex_, std::defer_lock);
   if (!allow_concurrent_requests_) {

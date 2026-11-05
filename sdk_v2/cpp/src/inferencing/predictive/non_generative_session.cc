@@ -7,6 +7,7 @@
 #include "inferencing/model_load_manager.h"
 #include "items/text_item.h"
 #include "model.h"
+#include "util/path_safety.h"
 
 #include <nlohmann/json.hpp>
 
@@ -59,16 +60,31 @@ NonGenerativeSession::NonGenerativeSession(
     const Model& model, ModelLoadManager& model_load_manager, ILogger& logger,
     ITelemetry& telemetry)
     : Session(model, logger, telemetry),
-      execution_model_(
-          std::make_unique<Model>(model.CaptureExecutionModel())),
-      model_load_manager_(model_load_manager) {
+      lifecycle_(std::make_shared<Lifecycle>()) {
+  lifecycle_->session = this;
+  lifecycle_->manager = &model_load_manager;
+  std::unique_ptr<LoadedSelectionReservation> reservation;
+  execution_model_ = std::make_unique<Model>(
+      model.CaptureExecutionModel(&reservation));
   SetCatalogModel(*execution_model_);
-  auto construction = model_load_manager_.AcquirePredictiveRequest();
+  auto construction = model_load_manager.AcquirePredictiveRequest();
   const auto& selected = *execution_model_;
+  Model* live_model = nullptr;
+  for (auto* variant : model.Variants()) {
+    if (variant->Id() == selected.Id() &&
+        ModelPathsEqual(variant->GetPath(), selected.GetPath())) {
+      live_model = variant;
+      break;
+    }
+  }
+  if (!live_model)
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "selected model artifact is no longer registered");
   model_id_ = selected.Id();
   model_alias_ = selected.Info().alias;
   provider_ = selected.Info().execution_provider;
-  auto runtime = execution_model_->AcquireNonGenerativeRuntime();
+  auto runtime = live_model->AcquireNonGenerativeRuntime();
+  if (reservation) reservation->Commit();
   if (selected.Info().task == "text-ranking")
     ranking_ = std::static_pointer_cast<IRankingRuntime>(runtime);
   else if (selected.Info().task == "typed-decision")
@@ -77,17 +93,35 @@ NonGenerativeSession::NonGenerativeSession(
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
              "unsupported non-generative model task: ",
              selected.Info().task);
-  model_load_manager_.RegisterPredictiveSession(
-      this, [this] { Cancel(); });
+  model_load_manager.RegisterPredictiveSession(
+      this, [lifecycle = lifecycle_] {
+        std::lock_guard lock(lifecycle->mutex);
+        lifecycle->manager = nullptr;
+        if (lifecycle->session) lifecycle->session->Cancel();
+      });
 }
 
 NonGenerativeSession::~NonGenerativeSession() {
-  model_load_manager_.UnregisterPredictiveSession(this);
+  ModelLoadManager* manager;
+  {
+    std::lock_guard lock(lifecycle_->mutex);
+    lifecycle_->session = nullptr;
+    manager = lifecycle_->manager;
+  }
+  if (manager) manager->UnregisterPredictiveSession(this);
+}
+
+std::shared_ptr<void> NonGenerativeSession::AcquireRequestLifetime() {
+  std::lock_guard lock(lifecycle_->mutex);
+  if (!lifecycle_->manager)
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "non-generative session is shut down");
+  return std::make_shared<ModelLoadManager::PredictiveRequestLease>(
+      lifecycle_->manager->AcquirePredictiveRequest());
 }
 
 void NonGenerativeSession::ProcessRequestImpl(
     const Request& request, Response& response) {
-  auto active_request = model_load_manager_.AcquirePredictiveRequest();
   if (request.items.size() != 1 ||
       request.items.front()->type != FOUNDRY_LOCAL_ITEM_TEXT) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,

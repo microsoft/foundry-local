@@ -194,10 +194,8 @@ ModelLoadManager::AcquirePredictiveRequest() {
 }
 
 void ModelLoadManager::ReleasePredictiveRequest() noexcept {
-  {
-    std::lock_guard lock(predictive_mutex_);
-    --active_predictive_requests_;
-  }
+  std::lock_guard lock(predictive_mutex_);
+  --active_predictive_requests_;
   predictive_condition_.notify_all();
 }
 
@@ -613,8 +611,13 @@ bool ModelLoadManager::UnloadModel(std::string_view model_id, const std::string*
 
 void ModelLoadManager::RejectNewLoads() {
   shutdown_.store(true);
-  std::lock_guard lock(predictive_mutex_);
-  for (const auto& entry : predictive_sessions_) entry.second();
+  std::vector<std::function<void()>> cancellations;
+  {
+    std::lock_guard lock(predictive_mutex_);
+    for (const auto& entry : predictive_sessions_)
+      cancellations.push_back(entry.second);
+  }
+  for (const auto& cancel : cancellations) cancel();
 }
 
 void ModelLoadManager::UnloadAll(std::chrono::milliseconds timeout) {

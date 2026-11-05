@@ -22,11 +22,17 @@ class NonGenerativeSession final : public Session {
 
  protected:
   void ProcessRequestImpl(const Request& request, Response& response) override;
+  std::shared_ptr<void> AcquireRequestLifetime() override;
   std::string ExecutionProvider() const override { return provider_; }
 
  private:
+  struct Lifecycle {
+    std::mutex mutex;
+    NonGenerativeSession* session{};
+    ModelLoadManager* manager{};
+  };
   std::unique_ptr<Model> execution_model_;
-  ModelLoadManager& model_load_manager_;
+  std::shared_ptr<Lifecycle> lifecycle_;
   std::string model_id_;
   std::string model_alias_;
   std::string provider_;
