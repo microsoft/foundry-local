@@ -374,19 +374,47 @@ TEST(AzureCatalogClientTest, SkipsModelsWithInvalidVersions) {
   EXPECT_EQ(model_infos.front().model_id, "valid:7");
 }
 
-TEST(AzureCatalogClientTest, PreservesCodingAsFirstInferenceTask) {
+TEST(AzureCatalogClientTest, PreservesCodingRegardlessOfInferenceTaskOrder) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
-  auto response = nlohmann::json::parse(MakeSummaryResponse({{"coding-model", 1}}));
-  response["summaries"][0]["inferenceTasks"] = {"coding", "chat-completion"};
-  AzureCatalogClient client("https://test.com", "", ep, logger,
-                            [&](const std::string&, const std::string&) { return MakeOkResponse(response.dump()); });
+  for (const auto& tasks : std::vector<std::vector<std::string>>{
+           {"coding"}, {"coding", "chat-completion"}, {"chat-completion", "coding"}}) {
+    SCOPED_TRACE(nlohmann::json(tasks).dump());
+    auto response = nlohmann::json::parse(MakeSummaryResponse({{"coding-model", 1}}));
+    response["summaries"][0]["inferenceTasks"] = tasks;
+    AzureCatalogClient client("https://test.com", "", ep, logger,
+                              [&](const std::string&, const std::string&) { return MakeOkResponse(response.dump()); });
 
-  const auto models = client.FetchAllModelInfos();
+    const auto models = client.FetchAllModelInfos();
 
-  ASSERT_EQ(models.size(), 1u);
-  EXPECT_EQ(models.front().task, "coding");
-  EXPECT_EQ(models.front().string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR), "coding");
+    ASSERT_EQ(models.size(), 1u);
+    EXPECT_EQ(models.front().task, "coding");
+    EXPECT_EQ(models.front().string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR), "coding");
+  }
+}
+
+TEST(AzureCatalogClientTest, RetainsFirstInferenceTaskWhenCodingIsNotDeclared) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  for (const auto& tasks : std::vector<std::vector<std::string>>{
+           {}, {"chat-completion"}, {"embeddings", "chat-completion"}}) {
+    SCOPED_TRACE(nlohmann::json(tasks).dump());
+    auto response = nlohmann::json::parse(MakeSummaryResponse({{"other-model", 1}}));
+    response["summaries"][0]["inferenceTasks"] = tasks;
+    response["summaries"][0]["modelCapabilities"] = {"tool-calling"};
+    AzureCatalogClient client("https://test.com", "", ep, logger,
+                              [&](const std::string&, const std::string&) { return MakeOkResponse(response.dump()); });
+
+    const auto models = client.FetchAllModelInfos();
+
+    ASSERT_EQ(models.size(), 1u);
+    EXPECT_EQ(models.front().task, tasks.empty() ? "" : tasks.front());
+    if (tasks.empty()) {
+      EXPECT_FALSE(models.front().string_properties.contains(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR));
+    } else {
+      EXPECT_EQ(models.front().string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR), tasks.front());
+    }
+  }
 }
 
 TEST(AzureCatalogClientTest, ParsesFullServiceMetadataWithoutPromptOrDelimiterFields) {

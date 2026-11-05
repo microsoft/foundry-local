@@ -414,8 +414,9 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
   }
 
   if (!cm.inference_tasks.empty()) {
-    info.task = cm.inference_tasks.front();
-    info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_TASK_STR] = cm.inference_tasks.front();
+    const auto coding = std::find(cm.inference_tasks.begin(), cm.inference_tasks.end(), "coding");
+    info.task = coding != cm.inference_tasks.end() ? *coding : cm.inference_tasks.front();
+    info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_TASK_STR] = info.task;
   }
 
   if (cm.license && !cm.license->empty()) {
