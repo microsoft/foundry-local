@@ -15,25 +15,45 @@ internal sealed class NativeRuntimeCompatibilityTests
 {
     [Test]
     [NotInParallel]
-    public async Task WebServiceActivityDoesNotStartServiceAndRejectsDisposedManager()
+    public async Task WebServiceActivityPreservesManagerOwnershipAndListener()
     {
-        await FoundryLocalManager.CreateAsync(new PublicConfiguration
+        var ownsManager = !FoundryLocalManager.IsInitialized;
+        if (ownsManager)
         {
-            AppName = "http-activity-test",
-            AppDataDir = Path.Combine(AppContext.BaseDirectory, "TestResults", "http-activity-test"),
-            DisableNonessentialTelemetry = true,
-            UseSharedHost = true
-        }, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
-        using var manager = FoundryLocalManager.Instance;
-        await Assert.That(manager.Urls).IsNull();
-        var first = manager.GetWebServiceActivity();
-        await Task.Delay(20);
-        var second = manager.GetWebServiceActivity();
-        await Assert.That(second.ActiveRequests).IsEqualTo(0UL);
-        await Assert.That(second.IdleDuration).IsGreaterThanOrEqualTo(first.IdleDuration);
-        await Assert.That(manager.Urls).IsNull();
-        manager.Dispose();
-        await Assert.That(() => manager.GetWebServiceActivity()).Throws<ObjectDisposedException>();
+            await FoundryLocalManager.CreateAsync(new PublicConfiguration
+            {
+                AppName = "http-activity-test",
+                AppDataDir = Path.Combine(AppContext.BaseDirectory, "TestResults", "http-activity-test"),
+                DisableNonessentialTelemetry = true,
+                UseSharedHost = true
+            }, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+        }
+
+        var manager = FoundryLocalManager.Instance;
+        try
+        {
+            var urls = manager.Urls;
+            var first = manager.GetWebServiceActivity();
+            await Task.Delay(20);
+            var second = manager.GetWebServiceActivity();
+            await Assert.That(second.ActiveRequests).IsEqualTo(0UL);
+            await Assert.That(second.IdleDuration).IsGreaterThanOrEqualTo(first.IdleDuration);
+            await Assert.That(manager.Urls ?? []).IsEquivalentTo(urls ?? []);
+            await Assert.That(FoundryLocalManager.Instance).IsSameReferenceAs(manager);
+            if (ownsManager)
+            {
+                manager.Dispose();
+                await Assert.That(() => manager.GetWebServiceActivity()).Throws<ObjectDisposedException>();
+            }
+        }
+        finally
+        {
+            // Integration runs borrow the assembly fixture's manager.
+            if (ownsManager)
+            {
+                manager.Dispose();
+            }
+        }
     }
 
     [Test]
