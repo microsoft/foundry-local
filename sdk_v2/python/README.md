@@ -445,14 +445,19 @@ model.unload()
 `RankingSession` requires a `text-ranking` model and `DecisionSession` requires a `typed-decision`
 model. Their typed request and response values mirror `POST /v1/rank` and `POST /v1/systemone`;
 the wrappers create and release the underlying OpenAI JSON request and response items.
-Both models must be cached, but callers do not explicitly load or unload them;
-the native session manages their runtime.
+Both models must be registered in the local catalog and cached. Creating a
+session loads the native runtime automatically. Closing the session releases
+its lease, but the model remains resident until `model.unload()` is called
+after all sessions using it have closed.
 
 ```python
-from foundry_local_sdk import DecisionRequest, DecisionSession, RankingRequest, RankingSession
+from foundry_local_sdk import CatalogType, DecisionRequest, DecisionSession, RankingRequest, RankingSession
 
-ranking_model = manager.catalog.get_model("clm")
-decision_model = manager.catalog.get_model("kev")
+local_catalog = manager.get_catalog(CatalogType.LOCAL)
+ranking_model = local_catalog.get_model("clm")
+decision_model = local_catalog.get_model("kev")
+if ranking_model is None or decision_model is None:
+    raise RuntimeError("Register the CLM and KEV packages in the local catalog first")
 if not ranking_model.is_cached or not decision_model.is_cached:
     raise RuntimeError("Download and review the CLM and KEV packages first")
 
@@ -471,6 +476,9 @@ with DecisionSession(decision_model) as session:
         questions={"umbrella": {"type": "noul", "instructions": "Take one?"}},
     ))
     print(decision.answers["umbrella"])
+
+ranking_model.unload()
+decision_model.unload()
 ```
 
 See [`examples/ranking_and_decision.py`](examples/ranking_and_decision.py) for reusable helper functions.

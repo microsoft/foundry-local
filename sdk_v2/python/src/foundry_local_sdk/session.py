@@ -754,17 +754,17 @@ class RankingSession(Session):
         if not isinstance(request.question, str):
             raise TypeError("question must be a string")
         _validate_json_value(request.context, "context")
-        _validate_temperature(request.temperature)
+        if request.temperature is not None:
+            _validate_temperature(request.temperature)
 
-        result = _process_non_generative_json(
-            self,
-            {
-                "context": request.context,
-                "question": request.question,
-                "answers": request.answers,
-                "temperature": request.temperature,
-            },
-        )
+        payload: dict[str, object] = {
+            "context": request.context,
+            "question": request.question,
+            "answers": request.answers,
+        }
+        if request.temperature is not None:
+            payload["temperature"] = request.temperature
+        result = _process_non_generative_json(self, payload)
         model = result.get("model")
         ranked = result.get("ranked")
         if not isinstance(model, str) or not isinstance(ranked, list):
@@ -836,18 +836,18 @@ class DecisionSession(Session):
                 if field in question:
                     _validate_json_value(question[field], f"questions.{question_id}.{field}")
         _validate_json_value(request.state, "state")
-        _validate_temperature(request.temperature)
-        if request.temperature != 1.0:
-            raise ValueError("decision temperature must be exactly 1.0")
+        if request.temperature is not None:
+            _validate_temperature(request.temperature)
+            if request.temperature != 1.0:
+                raise ValueError("decision temperature must be exactly 1.0")
 
-        result = _process_non_generative_json(
-            self,
-            {
-                "state": request.state,
-                "questions": request.questions,
-                "temperature": request.temperature,
-            },
-        )
+        payload = {
+            "state": request.state,
+            "questions": request.questions,
+        }
+        if request.temperature is not None:
+            payload["temperature"] = request.temperature
+        result = _process_non_generative_json(self, payload)
         model, answers, usage = result.get("model"), result.get("answers"), result.get("usage")
         if (
             not isinstance(model, str)

@@ -44,7 +44,7 @@ class RankingRequest:
     answers: list[str]
     context: JSONValue = None
     question: str = ""
-    temperature: float = 1.0
+    temperature: float | None = None
 
 
 @dataclass(frozen=True)
@@ -68,7 +68,7 @@ class DecisionRequest:
 
     questions: dict[str, DecisionQuestion]
     state: JSONValue = None
-    temperature: float = 1.0
+    temperature: float | None = None
 
 
 @dataclass(frozen=True)

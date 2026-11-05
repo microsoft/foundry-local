@@ -112,7 +112,9 @@ def manager():
 # ---------------------------------------------------------------------------
 
 
-def _find_smallest_cached_model_for_task(manager, task: str, *, name_substr: str | None = None):
+def _find_smallest_cached_model_for_task(
+    manager, task: str, *, name_substr: str | None = None, catalog=None, require_size: bool = True
+):
     """Return the smallest cached model variant whose task matches.
 
     Walks each alias and its variants — selecting a CPU variant when the default selection has the wrong task
@@ -132,7 +134,7 @@ def _find_smallest_cached_model_for_task(manager, task: str, *, name_substr: str
 
     best = None
     best_size = None
-    for model in manager.catalog.list_models():
+    for model in (catalog or manager.catalog).list_models():
         info = model.info
         if info.task != task:
             # Try variants for a matching task. Only swallow SDK errors —
@@ -158,7 +160,7 @@ def _find_smallest_cached_model_for_task(manager, task: str, *, name_substr: str
         if not _name_matches(model):
             continue
         size = info.file_size_mb or 0
-        if size <= 0:
+        if require_size and size <= 0:
             continue
         if best_size is None or size < best_size:
             best = model
@@ -221,13 +223,29 @@ def embedding_model(manager):
 @pytest.fixture(scope="session")
 def ranking_model(manager):
     """Smallest cached ranking model; native session owns its runtime."""
-    return _model_fixture_or_skip(manager, "text-ranking", "ranking", load=False)
+    from foundry_local_sdk import CatalogType
+
+    catalog = manager.get_catalog(CatalogType.LOCAL)
+    model = _find_smallest_cached_model_for_task(
+        manager, "text-ranking", catalog=catalog, require_size=False
+    )
+    if model is None:
+        pytest.skip("No cached local ranking model is registered.")
+    return model
 
 
 @pytest.fixture(scope="session")
 def decision_model(manager):
     """Smallest cached typed-decision model; native session owns its runtime."""
-    return _model_fixture_or_skip(manager, "typed-decision", "decision", load=False)
+    from foundry_local_sdk import CatalogType
+
+    catalog = manager.get_catalog(CatalogType.LOCAL)
+    model = _find_smallest_cached_model_for_task(
+        manager, "typed-decision", catalog=catalog, require_size=False
+    )
+    if model is None:
+        pytest.skip("No cached local decision model is registered.")
+    return model
 
 
 @pytest.fixture(scope="session")
