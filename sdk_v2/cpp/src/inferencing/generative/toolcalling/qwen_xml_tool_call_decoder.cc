@@ -357,7 +357,7 @@ bool IsSupportedParameterSchema(const Json& schema, size_t depth = 0) {
                item.key() != "enum" && item.key() != "const" &&
                !(*type == "array" && item.key() == "items") &&
                !(*type == "object" && (item.key() == "properties" || item.key() == "required" ||
-                                        item.key() == "additionalProperties"));
+                                       item.key() == "additionalProperties"));
       })) {
     return false;
   }
@@ -691,8 +691,7 @@ bool IsCompatibleJsonValue(const Json& value, const Json& schema, size_t depth =
                      }
 
                      const auto& additional = schema["additionalProperties"];
-                     return additional.is_boolean() ? additional.get<bool>() :
-                            IsCompatibleParameterValue(item.value(), additional, depth + 1);
+                     return additional.is_boolean() ? additional.get<bool>() : IsCompatibleParameterValue(item.value(), additional, depth + 1);
                    });
     }
   }
@@ -1011,7 +1010,8 @@ RejectedBatch RejectedBlockEnd(std::string_view source, size_t start, bool end_o
   const auto boundary = function_end != std::string_view::npos &&
                                 (end == std::string_view::npos || function_end < end)
                             ? function_end + kFunctionEnd.size()
-                            : end == std::string_view::npos ? source.size() : end;
+                        : end == std::string_view::npos ? source.size()
+                                                        : end;
   for (auto sibling = source.find(kCallStart, position);
        sibling != std::string_view::npos && sibling < boundary;
        sibling = source.find(kCallStart, sibling + kCallStart.size())) {
@@ -1026,11 +1026,12 @@ RejectedBatch RejectedBlockEnd(std::string_view source, size_t start, bool end_o
   }
 
   return {end == std::string_view::npos ? (end_of_stream ? source.size() : 0)
-                                       : end + kQwenXmlToolCallEndMarker.size(), false};
+                                        : end + kQwenXmlToolCallEndMarker.size(),
+          false};
 }
 
 RejectedBatch RejectedBatchEnd(std::string_view source, size_t invalid_position, bool end_of_stream,
-                              const FunctionSchemas& schemas) {
+                               const FunctionSchemas& schemas) {
   size_t position = invalid_position;
   while (true) {
     const auto block = ParseBlock(source, position, schemas);
@@ -1135,6 +1136,104 @@ ToolCallPayloadParseResult ParseBatch(std::string_view source, bool end_of_strea
   for (auto& call : calls) {
     call.id = GenerateToolCallId();
     call.argument_source = call.arguments;
+  }
+
+  return {
+      .disposition = ToolCallPayloadDisposition::kParsed,
+      .consumed_size = batch_end,
+      .calls = std::move(calls),
+      .error = {},
+  };
+}
+
+ToolCallPayloadParseResult ParseTaggedJsonBatch(std::string_view source, bool end_of_stream) {
+  const auto trim = [](std::string_view value) {
+    const auto first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string_view::npos) {
+      return std::string_view{};
+    }
+    const auto last = value.find_last_not_of(" \t\r\n");
+    return value.substr(first, last - first + 1);
+  };
+
+  std::vector<ParsedToolCall> calls;
+  size_t position = 0;
+  size_t batch_end = 0;
+
+  while (true) {
+    const auto remaining = source.substr(position);
+    if (!remaining.starts_with(kQwenXmlToolCallStartMarker)) {
+      if (!end_of_stream && kQwenXmlToolCallStartMarker.starts_with(remaining)) {
+        return {};
+      }
+      return {
+          .disposition = ToolCallPayloadDisposition::kRejected,
+          .consumed_size = source.size(),
+          .calls = {},
+          .error = {},
+      };
+    }
+
+    const auto body_start = position + kQwenXmlToolCallStartMarker.size();
+    const auto body_end = source.find(kQwenXmlToolCallEndMarker, body_start);
+    if (body_end == std::string_view::npos) {
+      if (!end_of_stream) {
+        return {};
+      }
+      return {
+          .disposition = ToolCallPayloadDisposition::kMalformed,
+          .consumed_size = source.size(),
+          .calls = {},
+          .error = "Qwen tagged-JSON tool call is missing its closing marker",
+      };
+    }
+
+    auto body = trim(source.substr(body_start, body_end - body_start));
+    auto call_json = ParseJsonWithoutDuplicateObjectKeys(body);
+    for (size_t repaired_closes = 0;
+         !call_json.has_value() && repaired_closes < 4 && body.ends_with('}');
+         ++repaired_closes) {
+      body.remove_suffix(1);
+      body = trim(body);
+      call_json = ParseJsonWithoutDuplicateObjectKeys(body);
+    }
+
+    if (!call_json.has_value() || !call_json->is_object() || call_json->size() != 2 ||
+        !call_json->contains("name") || !(*call_json)["name"].is_string() ||
+        !call_json->contains("arguments") || !(*call_json)["arguments"].is_object()) {
+      return {
+          .disposition = ToolCallPayloadDisposition::kMalformed,
+          .consumed_size = body_end + kQwenXmlToolCallEndMarker.size(),
+          .calls = {},
+          .error = "Qwen tagged-JSON tool call has an invalid name/arguments envelope",
+      };
+    }
+
+    auto call = ParsedToolCall{
+        GenerateToolCallId(),
+        (*call_json)["name"].get<std::string>(),
+        (*call_json)["arguments"].dump(),
+    };
+    call.argument_source = call.arguments;
+    calls.push_back(std::move(call));
+
+    batch_end = body_end + kQwenXmlToolCallEndMarker.size();
+    position = source.find_first_not_of(" \t\r\n", batch_end);
+    if (position == std::string_view::npos) {
+      if (!end_of_stream) {
+        return {};
+      }
+      break;
+    }
+
+    const auto trailing = source.substr(position);
+    if (trailing.starts_with(kQwenXmlToolCallStartMarker)) {
+      continue;
+    }
+    if (!end_of_stream && kQwenXmlToolCallStartMarker.starts_with(trailing)) {
+      return {};
+    }
+    break;
   }
 
   return {
@@ -1296,6 +1395,15 @@ ToolCallPayloadParser CreateQwenXmlToolCallPayloadParser(
 
     return ParseBatch(source, end_of_stream, schemas, recovery_aware);
   };
+}
+
+ToolCallPayloadParser CreateQwenTaggedJsonToolCallPayloadParser(
+    std::string tools_json, std::unordered_map<std::string, ToolKind> tool_kinds) {
+  if (tools_json.empty() && tool_kinds.empty()) {
+    return {};
+  }
+
+  return ParseTaggedJsonBatch;
 }
 
 std::vector<ParsedToolCall> ParseQwenGuidedToolCalls(

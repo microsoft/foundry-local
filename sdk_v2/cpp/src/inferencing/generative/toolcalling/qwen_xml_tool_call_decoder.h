@@ -27,6 +27,12 @@ ToolCallPayloadParser CreateQwenXmlToolCallPayloadParser(
     std::string tools_json, std::unordered_map<std::string, ToolKind> tool_kinds,
     bool recovery_aware = false);
 
+/// Creates the parser for Qwen templates that emit a JSON object inside <tool_call> markers.
+/// A single unmatched trailing object close is repaired because released Qwen models may emit it;
+/// the repaired call still requires an exact declared tool and complete schema validation.
+ToolCallPayloadParser CreateQwenTaggedJsonToolCallPayloadParser(
+    std::string tools_json, std::unordered_map<std::string, ToolKind> tool_kinds);
+
 /// Body after the opening token and before the closing token. Empty means the entire offered set is ineligible.
 std::optional<std::string> BuildQwenXmlToolBodyGrammar(
     const std::string& tools_json, const std::unordered_map<std::string, ToolKind>& tool_kinds);
