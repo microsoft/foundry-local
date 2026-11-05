@@ -83,39 +83,43 @@ std::string RequiredEpForConfigProvider(std::string_view provider) {
   return provider.ends_with(suffix) ? std::string(provider) : std::string{};
 }
 
-void LogDeviceReleaseWarning(ILogger& logger, std::string_view message) noexcept {
+void LogDeviceReleaseWarning(ILogger& logger, const char* device_type, const char* error) noexcept {
   try {
-    logger.Log(LogLevel::Warning, message);
+    logger.Log(LogLevel::Warning,
+               fmt::format("GenAI device resource release failed for {}: {}", device_type,
+                           error ? error : "unknown error"));
   } catch (...) {
   }
 }
 
-void ReleaseDeviceResourcesIfAvailable(const std::string& device_type, ILogger& logger) noexcept {
+void ReleaseDeviceResourcesIfAvailable(const char* device_type, ILogger& logger,
+                                       ModelLoadManager::SymbolResolver symbol_resolver) noexcept {
 #if defined(_WIN32) || defined(__linux__) || defined(__APPLE__)
   try {
     using ReleaseDeviceResourcesFn = OgaResult*(OGA_API_CALL*)(const char*);
+    if (!symbol_resolver) {
+      symbol_resolver = platform::GetLoadedLibrarySymbol;
+    }
+
     auto release_device_resources = reinterpret_cast<ReleaseDeviceResourcesFn>(
-        platform::GetLoadedLibrarySymbol("onnxruntime-genai.dll", "OgaReleaseDeviceResources"));
+        symbol_resolver("onnxruntime-genai.dll", "OgaReleaseDeviceResources"));
     if (!release_device_resources) {
       return;
     }
 
-    if (OgaResult* result = release_device_resources(device_type.c_str())) {
-      const std::string error = OgaResultGetError(result);
-      OgaDestroyResult(result);
-      LogDeviceReleaseWarning(
-          logger, fmt::format("GenAI device resource release failed for {}: {}", device_type, error));
+    if (OgaResult* result = release_device_resources(device_type)) {
+      const std::unique_ptr<OgaResult, decltype(&OgaDestroyResult)> owned_result(result, OgaDestroyResult);
+      LogDeviceReleaseWarning(logger, device_type, OgaResultGetError(result));
     }
   } catch (const std::exception& ex) {
-    LogDeviceReleaseWarning(
-        logger, fmt::format("GenAI device resource release failed for {}: {}", device_type, ex.what()));
+    LogDeviceReleaseWarning(logger, device_type, ex.what());
   } catch (...) {
-    LogDeviceReleaseWarning(
-        logger, fmt::format("GenAI device resource release failed for {}: unknown error", device_type));
+    LogDeviceReleaseWarning(logger, device_type, nullptr);
   }
 #else
   (void)device_type;
   (void)logger;
+  (void)symbol_resolver;
 #endif
 }
 
@@ -125,8 +129,17 @@ void ReleaseDeviceResourcesIfAvailable(const std::string& device_type, ILogger& 
 // Construction / Destruction
 // ---------------------------------------------------------------------------
 
-ModelLoadManager::ModelLoadManager(IEpDetector& ep_detector, ILogger& logger)
-    : ep_detector_(ep_detector), logger_(logger) {}
+ModelLoadManager::ModelLoadManager(IEpDetector& ep_detector, ILogger& logger, const Configuration& config,
+                                   SymbolResolver symbol_resolver)
+    : ep_detector_(ep_detector),
+      logger_(logger),
+      symbol_resolver_(symbol_resolver) {
+  const auto option = config.additional_options.find("ExclusiveGenAICudaOwnership");
+  if (option != config.additional_options.end()) {
+    const auto value = ToLower(option->second);
+    exclusive_genai_cuda_ownership_ = value == "true" || value == "1" || value == "yes";
+  }
+}
 
 ModelLoadManager::~ModelLoadManager() {
   // Destroy all loaded models under the lock.
@@ -314,16 +327,17 @@ bool ModelLoadManager::UnloadModel(std::string_view model_id, const std::string*
 
   logger_.Log(LogLevel::Information, fmt::format("unloading model: {}", id_str));
 
-  const std::string device_type = it->second->DeviceType();
+  const bool was_cuda = it->second->DeviceType() == "CUDA";
   // Erasing destroys the GenAIModelInstance, which destroys OGA objects in reverse order.
   loaded_models_.erase(it);
 
-  const bool device_still_in_use =
-      std::any_of(loaded_models_.begin(), loaded_models_.end(),
-                  [&device_type](const auto& entry) { return entry.second->DeviceType() == device_type; });
-  if (device_type == "CUDA" && !device_still_in_use) {
-    ReleaseDeviceResourcesIfAvailable(device_type, logger_);
+  // This mutex covers only Foundry models. The opt-in delegates process-wide GenAI quiescence to the application.
+  if (exclusive_genai_cuda_ownership_ && was_cuda &&
+      std::none_of(loaded_models_.begin(), loaded_models_.end(),
+                   [](const auto& entry) { return entry.second->DeviceType() == "CUDA"; })) {
+    ReleaseDeviceResourcesIfAvailable("CUDA", logger_, symbol_resolver_);
   }
+
   return true;
 }
 

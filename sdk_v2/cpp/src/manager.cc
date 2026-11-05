@@ -376,7 +376,7 @@ Manager::Manager(const Configuration& config) : config_(config) {
   download_manager_ =
       std::make_unique<DownloadManager>(*config_.model_cache_dir, config_.catalog_region.value_or("auto"),
                                         download_concurrency, *logger_, *telemetry_, disable_region_fallback);
-  model_load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
+  model_load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_, config_);
   session_manager_ = std::make_unique<SessionManager>(*logger_);
 
   public_catalog_ = std::make_unique<AzureModelCatalog>(
