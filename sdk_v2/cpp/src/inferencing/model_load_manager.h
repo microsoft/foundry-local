@@ -118,10 +118,12 @@ class ModelLoadManager {
   bool UnloadModelArtifact(std::string_view model_id,
                            std::string_view model_path);
   void RegisterPredictiveSession(void* identity,
-                                 std::function<void()> cancel);
+                                 std::function<void()> cancel,
+                                 std::function<void()> release);
   void UnregisterPredictiveSession(void* identity) noexcept;
   PredictiveRequestLease AcquirePredictiveRequest();
   void WaitForPredictiveRequests();
+  void ReleasePredictiveSessions();
 
   /// Unload a previously loaded model.
   /// @returns true if the model was found and unloaded; false if the model was not loaded
@@ -222,7 +224,11 @@ class ModelLoadManager {
   std::map<std::string, LoadingRuntimeEntry> loading_runtimes_;
   std::mutex predictive_mutex_;
   std::condition_variable predictive_condition_;
-  std::map<void*, std::function<void()>> predictive_sessions_;
+  struct PredictiveSessionCallbacks {
+    std::function<void()> cancel;
+    std::function<void()> release;
+  };
+  std::map<void*, PredictiveSessionCallbacks> predictive_sessions_;
   size_t active_predictive_requests_{};
   std::map<std::pair<std::string, std::string>,
            NonGenerativePackageMetadata>

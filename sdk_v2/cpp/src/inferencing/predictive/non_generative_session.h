@@ -31,6 +31,7 @@ class NonGenerativeSession final : public Session {
     NonGenerativeSession* session{};
     ModelLoadManager* manager{};
   };
+  void ReleaseRuntime();
   std::unique_ptr<Model> execution_model_;
   std::shared_ptr<Lifecycle> lifecycle_;
   std::string model_id_;

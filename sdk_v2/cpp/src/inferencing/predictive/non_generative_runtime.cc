@@ -107,6 +107,8 @@ class SessionExecutor {
       std::lock_guard lock(mutex_);
       if (stopping_)
         throw std::runtime_error("typed runtime is stopping");
+      if (tasks_.size() >= 64)
+        throw std::runtime_error("typed runtime request queue is full");
       tasks_.emplace_back(
           [promise, state,
            function = std::forward<Function>(function)](

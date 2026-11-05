@@ -328,7 +328,7 @@ TEST(ManagedModelRuntimeTest, ShutdownCancelsAndDrainsPredictiveRequests) {
   bool canceled = false;
   int session_identity;
   manager.RegisterPredictiveSession(
-      &session_identity, [&] { canceled = true; });
+      &session_identity, [&] { canceled = true; }, [] {});
   std::optional<ModelLoadManager::PredictiveRequestLease> active(
       manager.AcquirePredictiveRequest());
 

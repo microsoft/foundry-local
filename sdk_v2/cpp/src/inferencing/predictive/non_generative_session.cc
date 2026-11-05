@@ -84,7 +84,6 @@ NonGenerativeSession::NonGenerativeSession(
   model_alias_ = selected.Info().alias;
   provider_ = selected.Info().execution_provider;
   auto runtime = live_model->AcquireNonGenerativeRuntime();
-  if (reservation) reservation->Commit();
   if (selected.Info().task == "text-ranking")
     ranking_ = std::static_pointer_cast<IRankingRuntime>(runtime);
   else if (selected.Info().task == "typed-decision")
@@ -97,18 +96,23 @@ NonGenerativeSession::NonGenerativeSession(
       this, [lifecycle = lifecycle_] {
         std::lock_guard lock(lifecycle->mutex);
         lifecycle->manager = nullptr;
-        if (lifecycle->session) lifecycle->session->Cancel();
+        if (lifecycle->session) lifecycle->session->Cancel(); },
+      [lifecycle = lifecycle_] {
+        std::lock_guard lock(lifecycle->mutex);
+        if (lifecycle->session) lifecycle->session->ReleaseRuntime();
       });
 }
 
 NonGenerativeSession::~NonGenerativeSession() {
-  ModelLoadManager* manager;
-  {
-    std::lock_guard lock(lifecycle_->mutex);
-    lifecycle_->session = nullptr;
-    manager = lifecycle_->manager;
-  }
+  std::lock_guard lock(lifecycle_->mutex);
+  lifecycle_->session = nullptr;
+  auto* manager = lifecycle_->manager;
   if (manager) manager->UnregisterPredictiveSession(this);
+}
+
+void NonGenerativeSession::ReleaseRuntime() {
+  ranking_.reset();
+  decision_.reset();
 }
 
 std::shared_ptr<void> NonGenerativeSession::AcquireRequestLifetime() {

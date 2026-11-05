@@ -182,7 +182,7 @@ Json ModelDispatcher::Execute(const SdkConnection::IncomingCall& call, HostObjec
               {"outputs", ItemDescriptors(info.outputs, info.num_outputs)}};
     }
     case Operation::CreateSession: {
-      return EncodeObjectIdentity(objects.AddSession(model.execution->CreateSession()));
+      return EncodeObjectIdentity(objects.AddSession(model.source.CreateSession()));
     }
     default:
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "operation is not an SDK model operation");

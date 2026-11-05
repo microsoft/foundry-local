@@ -466,6 +466,7 @@ Manager::~Manager() {
   session_manager_.reset();
   if (model_load_manager_) {
     model_load_manager_->WaitForPredictiveRequests();
+    model_load_manager_->ReleasePredictiveSessions();
   }
   model_load_manager_.reset();
   download_manager_.reset();

@@ -170,12 +170,15 @@ bool ModelLoadManager::HasEP(const std::string& ep_name) const {
 }
 
 void ModelLoadManager::RegisterPredictiveSession(
-    void* identity, std::function<void()> cancel) {
+    void* identity, std::function<void()> cancel,
+    std::function<void()> release) {
   std::lock_guard lock(predictive_mutex_);
   if (shutdown_.load())
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
              "cannot create non-generative session during shutdown");
-  predictive_sessions_.insert_or_assign(identity, std::move(cancel));
+  predictive_sessions_.insert_or_assign(
+      identity,
+      PredictiveSessionCallbacks{std::move(cancel), std::move(release)});
 }
 
 void ModelLoadManager::UnregisterPredictiveSession(void* identity) noexcept {
@@ -203,6 +206,16 @@ void ModelLoadManager::WaitForPredictiveRequests() {
   std::unique_lock lock(predictive_mutex_);
   predictive_condition_.wait(
       lock, [&] { return active_predictive_requests_ == 0; });
+}
+
+void ModelLoadManager::ReleasePredictiveSessions() {
+  std::vector<std::function<void()>> releases;
+  {
+    std::lock_guard lock(predictive_mutex_);
+    for (const auto& entry : predictive_sessions_)
+      releases.push_back(entry.second.release);
+  }
+  for (const auto& release : releases) release();
 }
 
 void ModelLoadManager::RunWithUnloadedModelsInDirectory(std::string_view directory,
@@ -615,7 +628,7 @@ void ModelLoadManager::RejectNewLoads() {
   {
     std::lock_guard lock(predictive_mutex_);
     for (const auto& entry : predictive_sessions_)
-      cancellations.push_back(entry.second);
+      cancellations.push_back(entry.second.cancel);
   }
   for (const auto& cancel : cancellations) cancel();
 }
