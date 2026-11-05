@@ -812,14 +812,24 @@ std::vector<ParsedToolCall> ParseStrictGuidedToolCalls(const std::string& text, 
   }
 
   const auto trimmed = std::string_view(text).substr(first, last - first + 1);
-  if (trimmed.size() < tool_ctx.tool_call_start.size() + tool_ctx.tool_call_end.size() ||
-      !trimmed.starts_with(tool_ctx.tool_call_start) || !trimmed.ends_with(tool_ctx.tool_call_end)) {
-    return {};
+  const auto& start = tool_ctx.GeneratedToolCallStart();
+  const auto& end = tool_ctx.GeneratedToolCallEnd();
+  if (trimmed.size() >= start.size() + end.size() &&
+      trimmed.starts_with(start) && trimmed.ends_with(end)) {
+    const auto payload = trimmed.substr(start.size(), trimmed.size() - start.size() - end.size());
+    return tool_ctx.tool_plan->ParseCalls(payload);
   }
 
-  const auto payload = trimmed.substr(tool_ctx.tool_call_start.size(),
-                                      trimmed.size() - tool_ctx.tool_call_start.size() - tool_ctx.tool_call_end.size());
-  return tool_ctx.tool_plan->ParseCalls(payload);
+  if (tool_ctx.fenced_tool_call_output) {
+    if (trimmed.starts_with('[') && trimmed.ends_with(']')) {
+      return tool_ctx.tool_plan->ParseCalls(trimmed);
+    }
+    if (trimmed.starts_with('{') && trimmed.ends_with('}')) {
+      return tool_ctx.tool_plan->ParseCalls("[" + std::string(trimmed) + "]");
+    }
+  }
+
+  return {};
 }
 
 GuidedToolRetryResult RunGuidedToolRetry(const chat_internal::PreparedChatMessages& messages,
@@ -948,7 +958,8 @@ GuidedToolRetryResult RunGuidedToolRetry(const chat_internal::PreparedChatMessag
       result.termination_cause);
   result.reasoning_tokens = splitter.ReasoningTokenCount();
 
-  if (tool_ctx.tool_call_start_token_id && tool_ctx.tool_call_end_token_id &&
+  if (!tool_ctx.fenced_tool_call_output &&
+      tool_ctx.tool_call_start_token_id && tool_ctx.tool_call_end_token_id &&
       !boundary_validator.HasCompleteTokenOwnedEnvelope()) {
     ThrowInvalidGuidedToolRetry("Missing token-owned tool-call boundaries");
   }
@@ -1207,7 +1218,8 @@ ToolCallContext BuildToolCallContextForRequest(const Request& request,
       if (!request.raw_envelope_descriptor && !tool_ctx.forced_tool) {
         tool_ctx.raw_envelope.reset();
       }
-      if (!tool_ctx.text_output && model.ModelType().starts_with("qwen2") &&
+      if (!tool_ctx.text_output &&
+          (model.ModelType().starts_with("qwen2") || model.ModelId().starts_with("qwen2")) &&
           !tool_ctx.ActiveRawEnvelope() && !tool_ctx.HasAnyExplicitGuidance()) {
         tool_ctx.fenced_tool_call_output = true;
         tool_ctx.guidance_disabled = true;
