@@ -9,6 +9,8 @@
 #include "embeddings.h"  // fl::EmbeddingCreateResponse — production header from src/contracts/
 
 #include <cmath>
+#include <chrono>
+#include <future>
 
 namespace {
 
@@ -156,6 +158,98 @@ TEST_F(EmbeddingsFixture, BatchedEquivalentToSingleInputs) {
   }
 }
 
+TEST_F(EmbeddingsFixture, BatchTokenUsageEqualsSumOfSingleInputs) {
+  using namespace foundry_local;
+
+  EmbeddingsSession session(embeddings_model());
+  Request batch;
+  const std::vector<std::string> inputs = {"hello", EmbeddingInputs()[0]};
+  std::vector<int64_t> single_prompt_tokens;
+  int64_t prompt_tokens = 0;
+  for (const auto& input : inputs) {
+    Request single;
+    single.AddItem(Item::Text(input));
+    auto response = session.ProcessRequest(single);
+    auto usage = response.GetUsage();
+    EXPECT_GT(usage.prompt_tokens, 0);
+    EXPECT_EQ(usage.completion_tokens, 0);
+    EXPECT_EQ(usage.total_tokens, usage.prompt_tokens);
+    single_prompt_tokens.push_back(usage.prompt_tokens);
+    prompt_tokens += usage.prompt_tokens;
+    batch.AddItem(Item::Text(input));
+  }
+
+  auto response = session.ProcessRequest(batch);
+  EXPECT_GT(single_prompt_tokens[1], single_prompt_tokens[0]);
+  EXPECT_EQ(response.GetUsage().prompt_tokens, prompt_tokens);
+  EXPECT_EQ(response.GetUsage().completion_tokens, 0);
+  EXPECT_EQ(response.GetUsage().total_tokens, prompt_tokens);
+
+  Request empty;
+  auto empty_response = session.ProcessRequest(empty);
+  EXPECT_EQ(empty_response.GetUsage().prompt_tokens, 0);
+  EXPECT_EQ(empty_response.GetUsage().total_tokens, 0);
+}
+
+TEST_F(EmbeddingsFixture, CancelBatchPreservesConcurrentRequestAndAllowsUnload) {
+  using namespace foundry_local;
+
+  {
+    EmbeddingsSession session(embeddings_model());
+    Request reference;
+    reference.AddItem(Item::Text(EmbeddingInputs()[1]));
+    const auto expected_usage = session.ProcessRequest(reference).GetUsage();
+
+    Request batch;
+    for (size_t i = 0; i < 512; ++i) {
+      batch.AddItem(Item::Text(EmbeddingInputs()[0]));
+    }
+
+    auto canceled = std::async(std::launch::async, [&] {
+      try {
+        session.ProcessRequest(batch);
+        return FOUNDRY_LOCAL_OK;
+      } catch (const Error& error) {
+        return error.Code();
+      }
+    });
+
+    EXPECT_EQ(canceled.wait_for(std::chrono::milliseconds(20)), std::future_status::timeout)
+        << "The batch must still be active when cancellation starts";
+
+    auto concurrent = std::async(std::launch::async, [&] {
+      Request request;
+      request.AddItem(Item::Text(EmbeddingInputs()[1]));
+      return session.ProcessRequest(request);
+    });
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    while (canceled.wait_for(std::chrono::milliseconds(1)) != std::future_status::ready &&
+           std::chrono::steady_clock::now() < deadline) {
+      // Cancel can race native admission; retry until this request observes cancellation.
+      batch.Cancel();
+    }
+
+    EXPECT_EQ(canceled.wait_for(std::chrono::milliseconds(0)), std::future_status::ready);
+    EXPECT_EQ(canceled.get(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+
+    auto response = concurrent.get();
+    EXPECT_EQ(response.GetFinishReason(), FOUNDRY_LOCAL_FINISH_STOP);
+    ASSERT_EQ(response.GetItems().size(), 1u);
+    EXPECT_GT(response.GetUsage().prompt_tokens, 0);
+    EXPECT_EQ(response.GetUsage().prompt_tokens, expected_usage.prompt_tokens);
+    EXPECT_EQ(response.GetUsage().total_tokens, expected_usage.total_tokens);
+
+    auto reused = session.Embed(EmbeddingInputs()[2]);
+    ExpectL2Normalized(reused);
+  }
+
+  embeddings_model().Unload();
+  EXPECT_FALSE(embeddings_model().IsLoaded());
+  embeddings_model().Load();
+  EXPECT_TRUE(embeddings_model().IsLoaded());
+}
+
 // ========================================================================
 // EmbeddingsWebServiceFixture — exercises POST /v1/embeddings.
 // ========================================================================
@@ -206,6 +300,8 @@ TEST_F(EmbeddingsWebServiceFixture, PostSingleStringInput) {
 
   auto vec = entry["embedding"].get<std::vector<float>>();
   ExpectL2Normalized(vec);
+  EXPECT_GT(response.at("usage").at("prompt_tokens").get<int64_t>(), 0);
+  EXPECT_EQ(response["usage"]["prompt_tokens"], response["usage"]["total_tokens"]);
 }
 
 // ------------------------------------------------------------------------
@@ -244,6 +340,16 @@ TEST_F(EmbeddingsWebServiceFixture, PostArrayInputMatchesInProcess) {
   foundry_local::EmbeddingsSession session(
       *SharedTestEnv::Get().embeddings_model());
   auto direct = session.Embed(EmbeddingInputs());
+
+  foundry_local::Request typed_request;
+  for (const auto& input : EmbeddingInputs()) {
+    typed_request.AddItem(foundry_local::Item::Text(input));
+  }
+
+  auto typed_response = session.ProcessRequest(typed_request);
+  EXPECT_GT(typed_response.GetUsage().prompt_tokens, 0);
+  EXPECT_EQ(response.at("usage").at("prompt_tokens"), typed_response.GetUsage().prompt_tokens);
+  EXPECT_EQ(response.at("usage").at("total_tokens"), typed_response.GetUsage().total_tokens);
 
   ASSERT_EQ(direct.size(), http_vectors.size());
   for (size_t i = 0; i < direct.size(); ++i) {
@@ -320,8 +426,8 @@ fl::EmbeddingCreateResponse ParseEmbeddingResponse(const std::string& body) {
 
   if (j.contains("usage")) {
     const auto& u = j.at("usage");
-    out.usage.prompt_tokens = u.value("prompt_tokens", 0);
-    out.usage.total_tokens = u.value("total_tokens", 0);
+    out.usage.prompt_tokens = u.value("prompt_tokens", int64_t{0});
+    out.usage.total_tokens = u.value("total_tokens", int64_t{0});
   }
 
   return out;
@@ -354,6 +460,11 @@ std::string RunOpenAIJsonRequest(foundry_local::EmbeddingsSession& session,
   auto tc = items[0].GetText();
   EXPECT_EQ(tc.type, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON)
       << "Expected OPENAI_JSON subtype, got " << static_cast<int>(tc.type);
+
+  auto payload = nlohmann::json::parse(tc.text);
+  EXPECT_EQ(payload.at("usage").at("prompt_tokens"), response.GetUsage().prompt_tokens);
+  EXPECT_EQ(payload.at("usage").at("total_tokens"), response.GetUsage().total_tokens);
+  EXPECT_EQ(response.GetUsage().completion_tokens, 0);
 
   return std::string(tc.text);
 }
@@ -474,6 +585,9 @@ TEST_F(EmbeddingsFixture, OpenAIJsonResponseParityWithTypedPath) {
 
   fl::EmbeddingCreateResponse output = ParseEmbeddingResponse(response_text);
   ASSERT_EQ(output.data.size(), 1u);
+  EXPECT_GT(typed_response.GetUsage().prompt_tokens, 0);
+  EXPECT_EQ(output.usage.prompt_tokens, typed_response.GetUsage().prompt_tokens);
+  EXPECT_EQ(output.usage.total_tokens, typed_response.GetUsage().total_tokens);
 
   const auto& json_vec = output.data[0].embedding;
 
