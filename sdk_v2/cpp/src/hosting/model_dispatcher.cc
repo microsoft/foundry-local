@@ -81,6 +81,7 @@ void ModelDispatcher::Dispatch(const std::shared_ptr<SdkConnection::IncomingCall
   try {
     if (call->Op() == Operation::CreateSession) {
       api::ModelBackend* source;
+      std::string expected_path;
       {
         std::lock_guard lock(mutex_);
         if (call->IsCancelled()) {
@@ -96,7 +97,11 @@ void ModelDispatcher::Dispatch(const std::shared_ptr<SdkConnection::IncomingCall
         RequireAbsolutePath(selection.path);
         auto resolved = Resolve(selection);
         source = &resolved.source;
+        expected_path = selection.path;
       }
+      const auto& task = source->Info().task;
+      if (task == "text-ranking" || task == "typed-decision")
+        source->Load(expected_path);
       result.value = EncodeObjectIdentity(
           objects.AddSession(source->CreateSession()));
       call->Complete(std::move(result));
