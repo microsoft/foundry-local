@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "inferencing/generative/genai_config.h"
+
 #include <filesystem>
 #include <cstdint>
 #include <optional>
@@ -16,6 +18,7 @@ struct NonGenerativePackageMetadata {
   std::string task;
   std::string execution_provider;
   uint64_t estimated_resident_bytes{};
+  GenAIConfig config;
 };
 
 /// Return true when package entries or metadata declare a non-generative

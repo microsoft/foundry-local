@@ -163,7 +163,8 @@ ELF checks inspect external definitions only: local symbols retained in `.dynsym
 by GCC compatibility objects are not public exports.
 ### Native non-generative packages
 
-When the web service is enabled, `POST /v1/rank` and `POST /v1/systemone`
+When the web service is enabled, `POST /catalogs/local/v1/rank` and
+`POST /catalogs/local/v1/systemone`
 resolve the request `model` as a local-catalog ID or alias. Multi-component
 packages use the metadata described in
 [`docs/non-generative-packages.md`](docs/non-generative-packages.md). Runtime
@@ -174,11 +175,11 @@ session ownership stay on the same execution thread. Requests resolve a
 registered local-catalog model ID or alias:
 
 ```bash
-curl -s http://127.0.0.1:5272/v1/rank \
+curl -s http://127.0.0.1:5272/catalogs/local/v1/rank \
   -H 'Content-Type: application/json' \
   -d '{"model":"clm","context":{"text":"sample"},"question":"Select","answers":["first","second"],"temperature":1}'
 
-curl -s http://127.0.0.1:5272/v1/systemone \
+curl -s http://127.0.0.1:5272/catalogs/local/v1/systemone \
   -H 'Content-Type: application/json' \
   -d '{"model":"kev","state":"sample","questions":{"q":{"type":"noul","instructions":"Is this valid?"}}}'
 ```

@@ -45,9 +45,9 @@ NonGenerativeQuestion ParseQuestion(const nlohmann::ordered_json& json) {
         501, "score criteria must be a non-empty ordered array", &json);
   }
   if ((question.type == "choice" || question.type == "score") &&
-      question.criteria.size() > 256) {
+      question.criteria.size() > 255) {
     throw nlohmann::json::other_error::create(
-        501, "criteria must contain at most 256 options", &json);
+        501, "criteria must contain at most 255 options", &json);
   }
   return question;
 }
@@ -66,8 +66,13 @@ void from_json(const nlohmann::ordered_json& json, NonGenerativeRequest& request
         302, "questions must be a non-empty object", &json);
   }
   request.questions.clear();
-  for (auto it = questions.begin(); it != questions.end(); ++it)
+  for (auto it = questions.begin(); it != questions.end(); ++it) {
+    if (it.key().find('\0') != std::string::npos) {
+      throw nlohmann::json::other_error::create(
+          501, "question IDs must not contain embedded NUL bytes", &questions);
+    }
     request.questions.emplace_back(it.key(), ParseQuestion(*it));
+  }
   if (request.questions.empty()) {
     throw nlohmann::json::other_error::create(501, "questions must be a non-empty object", &json);
   }
