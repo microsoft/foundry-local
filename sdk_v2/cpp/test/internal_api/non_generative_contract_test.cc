@@ -47,15 +47,53 @@ TEST(NonGenerativeContractTest, RejectsUnknownQuestionType) {
 
 TEST(NonGenerativeContractTest, RejectsInvalidDecisionCriteria) {
   EXPECT_THROW((nlohmann::ordered_json{
-                    {"questions", {{"q", {{"type", "choice"}}}}}}
+                   {"questions", {{"q", {{"type", "choice"}}}}}}
                     .get<NonGenerativeRequest>()),
                nlohmann::json::exception);
   EXPECT_THROW((nlohmann::ordered_json{
-                    {"questions",
-                     {{"q", {{"type", "score"},
-                              {"criteria", nlohmann::ordered_json::object()}}}}}}
+                   {"questions",
+                    {{"q", {{"type", "score"}, {"criteria", nlohmann::ordered_json::object()}}}}}}
                     .get<NonGenerativeRequest>()),
                nlohmann::json::exception);
+}
+
+TEST(NonGenerativeContractTest, EnforcesDecisionCriteriaOptionLimit) {
+  for (const auto* type : {"choice", "score"}) {
+    nlohmann::ordered_json criteria =
+        std::string_view(type) == "choice"
+            ? nlohmann::ordered_json::object()
+            : nlohmann::ordered_json::array();
+    for (size_t index = 0; index < 255; ++index) {
+      if (criteria.is_object())
+        criteria[std::to_string(index)] = std::to_string(index);
+      else
+        criteria.push_back(std::to_string(index));
+    }
+    const auto request = nlohmann::ordered_json{
+        {"questions",
+         {{"q", {{"type", type}, {"criteria", criteria}}}}}};
+    EXPECT_NO_THROW(request.get<NonGenerativeRequest>());
+    if (criteria.is_object())
+      criteria["255"] = "255";
+    else
+      criteria.push_back("255");
+    EXPECT_THROW(
+        (nlohmann::ordered_json{
+            {"questions",
+             {{"q", {{"type", type}, {"criteria", criteria}}}}}}
+             .get<NonGenerativeRequest>()),
+        nlohmann::json::exception);
+  }
+}
+
+TEST(NonGenerativeContractTest, RejectsEmbeddedNullQuestionId) {
+  const std::string id{"q\0private", 9};
+  nlohmann::ordered_json questions = nlohmann::ordered_json::object();
+  questions[id] = {{"type", "noul"}};
+  EXPECT_THROW(
+      (nlohmann::ordered_json{{"questions", std::move(questions)}}
+           .get<NonGenerativeRequest>()),
+      nlohmann::json::exception);
 }
 
 TEST(NonGenerativeContractTest, ParsesRankingRequest) {

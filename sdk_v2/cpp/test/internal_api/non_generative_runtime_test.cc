@@ -41,8 +41,14 @@ class ModelLoadManagerTestAccess {
       ModelLoadManager& manager, const std::string& identity,
       const std::string& model_id, const std::string& model_path,
       const std::function<std::shared_ptr<void>()>& factory) {
+    std::shared_ptr<const GenAIConfig> config;
+    const auto config_path =
+        std::filesystem::path(model_path) / "genai_config.json";
+    if (std::filesystem::is_regular_file(config_path))
+      config = std::make_shared<GenAIConfig>(
+          GenAIConfig::LoadFromFile(config_path.string()));
     return manager.AcquireManagedRuntime(
-        identity, model_id, model_path, 1, "cpu", factory);
+        identity, model_id, model_path, 1, "cpu", factory, {}, config);
   }
 
   static void Clear(ModelLoadManager& manager) {

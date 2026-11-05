@@ -130,9 +130,9 @@ std::optional<NonGenerativePackageMetadata> ReadNonGenerativePackage(
                            "genai_config.json");
   ContainedRegularFile(canonical_root, "tokenizer.json", "tokenizer.json");
   ContainedRegularFile(canonical_root, "tokenizer_config.json", "tokenizer_config.json");
+  result.config = GenAIConfig::LoadFromFile(config_path.string());
   result.execution_provider =
-      NormalizeProvider(GenAIConfig::LoadFromFile(config_path.string())
-                            .DefaultProvider());
+      NormalizeProvider(result.config.DefaultProvider());
 
   nlohmann::json manifest;
   try {
