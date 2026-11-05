@@ -525,26 +525,25 @@ Model* Model::SelectedLeaf() const {
   return const_cast<Model*>(this);
 }
 
-std::shared_ptr<void> Model::AcquireNonGenerativeRuntime(
-    std::string_view task, std::string_view provider,
-    uint64_t estimated_resident_bytes) {
+std::shared_ptr<void> Model::AcquireNonGenerativeRuntime() {
   if (IsContainer()) {
     Model* selected;
     {
       std::lock_guard lifecycle_lock(lifecycle_mutex_);
       selected = selected_variant_.load(std::memory_order_acquire);
     }
-    return selected->AcquireNonGenerativeRuntime(
-        task, provider, estimated_resident_bytes);
+    return selected->AcquireNonGenerativeRuntime();
   }
 
   std::unique_lock lifecycle_lock(lifecycle_mutex_);
   if (!active_ || unregistering_)
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
              "model is no longer registered");
+  if (!IsCached())
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "model must be cached before loading");
   return model_load_manager_->AcquireNonGenerativeRuntime(
-      *this, task, provider, estimated_resident_bytes,
-      [&] { lifecycle_lock.unlock(); });
+      *this, [&] { lifecycle_lock.unlock(); });
 }
 
 // ---------------------------------------------------------------------------
@@ -753,14 +752,8 @@ void Model::Load(ExecutionProvider ep, std::optional<std::string_view> expected_
   const auto path = LocalPathSnapshot();
   RequireSelectedArtifact(path, expected_path);
   if (info.task == "text-ranking" || info.task == "typed-decision") {
-    const auto package = ReadNonGenerativePackage(path);
-    if (!package)
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-               "model is not a non-generative package");
     model_load_manager_->AcquireNonGenerativeRuntime(
-        *this, info.task, package->execution_provider,
-        package->estimated_resident_bytes,
-        [&] { lifecycle_lock.unlock(); });
+        *this, [&] { lifecycle_lock.unlock(); });
     return;
   }
   auto result = model_load_manager_->LoadModel(path, Info().model_id, ep);

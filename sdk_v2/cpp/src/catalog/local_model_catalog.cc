@@ -501,10 +501,10 @@ std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistration
       model_path = std::filesystem::absolute(model_path).lexically_normal();
 
       RemoveLegacyRegistrationProperties(info);
-      info.alias = DeriveAlias(parsed_id.name);
-      if (const auto package = ReadNonGenerativePackage(model_path);
-          package && !package->alias.empty())
-        info.alias = package->alias;
+      const bool typed_registration =
+          info.task == "text-ranking" || info.task == "typed-decision";
+      if (!typed_registration || info.alias.empty())
+        info.alias = DeriveAlias(parsed_id.name);
       info.name = parsed_id.name;
       info.version = parsed_id.version;
       info.model_id = model_id;

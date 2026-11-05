@@ -523,6 +523,24 @@ TEST_F(LocalModelCatalogTest, PreservesPackageAliasAcrossRegistrationReload) {
   EXPECT_EQ(alias->Id(), "clm-v0.1-8b-generic-cpu:1");
 }
 
+TEST_F(LocalModelCatalogTest,
+       DamagedPackageDoesNotMakeRegistrationIndexUnreadable) {
+  const auto bundle_path = root_.path() / "bundle";
+  WriteBundle(bundle_path, "clm-v0.1-8b-generic-cpu:1", "text-ranking");
+  ASSERT_NE(catalog_.RegisterModel(
+                bundle_path.string(), "clm-v0.1-8b-generic-cpu:1",
+                MakeMetadata("text-ranking")),
+            nullptr);
+  std::filesystem::remove(bundle_path / "tokenizer.json");
+
+  auto reloaded = MakeCatalog();
+  EXPECT_NO_THROW(reloaded.ListModels());
+  auto* alias = reloaded.GetModel("clm");
+  ASSERT_NE(alias, nullptr);
+  EXPECT_EQ(alias->Id(), "clm-v0.1-8b-generic-cpu:1");
+  EXPECT_NO_THROW(reloaded.UnregisterModel("clm"));
+}
+
 TEST_F(LocalModelCatalogTest, NormalizesSupportedPackageProvidersAndRejectsUnknown) {
   const auto cpu_path = root_.path() / "cpu";
   WriteBundle(cpu_path, "clm-generic-cpu:1", "text-ranking",

@@ -147,6 +147,7 @@ ModelLoadManager::~ModelLoadManager() {
   // Destroy all loaded models under the lock.
   std::lock_guard<std::mutex> lock(mutex_);
   loaded_runtimes_.clear();
+  non_generative_packages_.clear();
 }
 
 bool ModelLoadManager::HasEP(const std::string& ep_name) const {
@@ -178,6 +179,13 @@ void ModelLoadManager::RunWithUnloadedModelsInDirectory(std::string_view directo
                    loading.model_id);
     }
   }
+  for (auto it = non_generative_packages_.begin();
+       it != non_generative_packages_.end();) {
+    if (IsPathWithinDirectory(it->first.second, target))
+      it = non_generative_packages_.erase(it);
+    else
+      ++it;
+  }
 
   operation();
 }
@@ -199,23 +207,27 @@ void ModelLoadManager::PrepareProviderForModelLoad(
 }
 
 std::shared_ptr<void> ModelLoadManager::AcquireNonGenerativeRuntime(
-    Model& model, std::string_view task, std::string_view provider,
-    uint64_t estimated_resident_bytes,
+    Model& model,
     const std::function<void()>& on_admitted) {
   const auto canonical =
       std::filesystem::weakly_canonical(model.GetPath()).string();
-  const auto provider_name = std::string(provider);
+  const auto package = InspectNonGenerativePackage(model);
+  const auto task = model.Info().task;
+  if (!package.task.empty() && package.task != task)
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "package task does not match registered model task");
+  const auto provider_name = package.execution_provider;
   const auto identity =
       "non-generative|" + model.Id() + "|" + canonical + "|" + provider_name;
   return AcquireManagedRuntime(
-      identity, model.Id(), canonical, estimated_resident_bytes,
-      provider.empty() ? "cpu" : provider_name,
+      identity, model.Id(), canonical, package.estimated_resident_bytes,
+      provider_name.empty() ? "cpu" : provider_name,
       [&]() -> std::shared_ptr<void> {
         const auto registration =
-            provider.empty()
+            provider_name.empty()
                 ? std::string_view{}
                 : EPUtils::EPtoRegistrationName(
-                      EPUtils::StringtoEP(provider));
+                      EPUtils::StringtoEP(provider_name));
         PrepareProviderForModelLoad(registration, model.Id());
         if (task == "text-ranking")
           return std::make_shared<RankingRuntime>(canonical);
@@ -227,11 +239,49 @@ std::shared_ptr<void> ModelLoadManager::AcquireNonGenerativeRuntime(
       on_admitted);
 }
 
+NonGenerativePackageMetadata
+ModelLoadManager::InspectNonGenerativePackage(Model& model) {
+  const auto path = NormalizeModelPath(model.GetPath());
+  const auto identity = SelectionIdentity(model.Id(), path);
+  {
+    std::lock_guard lock(mutex_);
+    const bool warm =
+        std::any_of(
+            loaded_runtimes_.begin(), loaded_runtimes_.end(),
+            [&](const auto& entry) {
+              return entry.second->ModelId() == model.Id() &&
+                     ModelPathsEqual(entry.second->ModelPath(), path);
+            }) ||
+        std::any_of(
+            loading_runtimes_.begin(), loading_runtimes_.end(),
+            [&](const auto& entry) {
+              return entry.second.model_id == model.Id() &&
+                     ModelPathsEqual(entry.second.model_path, path);
+            });
+    if (warm) {
+      if (const auto cached = non_generative_packages_.find(identity);
+          cached != non_generative_packages_.end())
+        return cached->second;
+    }
+  }
+
+  const auto package = ReadNonGenerativePackage(path);
+  if (!package)
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "model is not a non-generative package");
+  {
+    std::lock_guard lock(mutex_);
+    non_generative_packages_.insert_or_assign(identity, *package);
+  }
+  return *package;
+}
+
 std::shared_ptr<void> ModelLoadManager::AcquireManagedRuntime(
     std::string identity, std::string model_id, std::string model_path,
     uint64_t estimated_resident_bytes, std::string readiness_group,
     const std::function<std::shared_ptr<void>()>& factory,
     const std::function<void()>& on_admitted) {
+  const auto artifact_identity = SelectionIdentity(model_id, model_path);
   std::shared_future<std::shared_ptr<ManagedModelRuntime>> future;
   std::shared_ptr<std::promise<std::shared_ptr<ManagedModelRuntime>>> promise;
   std::shared_ptr<ManagedModelRuntime> loaded;
@@ -240,12 +290,12 @@ std::shared_ptr<void> ModelLoadManager::AcquireManagedRuntime(
     if (shutdown_.load())
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
                "cannot acquire non-generative runtime during shutdown");
-    if (const auto found = loaded_runtimes_.find(identity);
-        found != loaded_runtimes_.end()) {
-      loaded = found->second;
-    } else if (const auto found = loading_runtimes_.find(identity);
-               found != loading_runtimes_.end()) {
-      future = found->second.runtime;
+    if (const auto loaded_found = loaded_runtimes_.find(identity);
+        loaded_found != loaded_runtimes_.end()) {
+      loaded = loaded_found->second;
+    } else if (const auto loading_found = loading_runtimes_.find(identity);
+               loading_found != loading_runtimes_.end()) {
+      future = loading_found->second.runtime;
     } else {
       promise = std::make_shared<
           std::promise<std::shared_ptr<ManagedModelRuntime>>>();
@@ -281,6 +331,7 @@ std::shared_ptr<void> ModelLoadManager::AcquireManagedRuntime(
       {
         std::lock_guard lock(mutex_);
         loading_runtimes_.erase(identity);
+        non_generative_packages_.erase(artifact_identity);
       }
       promise->set_exception(std::current_exception());
       throw;
@@ -359,6 +410,9 @@ bool ModelLoadManager::UnloadModelArtifact(
       removed.push_back(std::move(it->second));
       it = loaded_runtimes_.erase(it);
     }
+    if (!removed.empty())
+      non_generative_packages_.erase(
+          SelectionIdentity(model_id, normalized_path));
   }
   return !removed.empty();
 }
@@ -537,6 +591,7 @@ void ModelLoadManager::UnloadAll(std::chrono::milliseconds timeout) {
         it = loaded_runtimes_.erase(it);
       }
     }
+    non_generative_packages_.clear();
   }
 
   if (snapshot.empty()) {

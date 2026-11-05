@@ -177,9 +177,7 @@ class Model {
   void Load(ExecutionProvider ep = ExecutionProvider::kDefault,
             std::optional<std::string_view> expected_path = std::nullopt);
   void Unload();
-  std::shared_ptr<void> AcquireNonGenerativeRuntime(
-      std::string_view task, std::string_view provider,
-      uint64_t estimated_resident_bytes);
+  std::shared_ptr<void> AcquireNonGenerativeRuntime();
   void RemoveFromCache(std::optional<std::string_view> expected_path = std::nullopt);
 
   /// Mark this model and its variants inactive while retaining pointer validity.

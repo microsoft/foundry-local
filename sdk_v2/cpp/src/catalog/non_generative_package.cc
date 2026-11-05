@@ -2,12 +2,12 @@
 // Licensed under the MIT License.
 #include "catalog/non_generative_package.h"
 #include "inferencing/generative/genai_config.h"
+#include "inferencing/execution_provider.h"
+#include "util/path_safety.h"
 
 #include <nlohmann/json.hpp>
 
 #include <fstream>
-#include <algorithm>
-#include <cctype>
 #include <limits>
 #include <stdexcept>
 
@@ -18,51 +18,32 @@ namespace fs = std::filesystem;
 
 std::string NormalizeProvider(std::string_view provider) {
   if (provider.empty()) return {};
-  std::string name(provider);
-  std::transform(name.begin(), name.end(), name.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  constexpr std::string_view suffix = "executionprovider";
-  if (name.size() > suffix.size() && name.ends_with(suffix))
-    name.resize(name.size() - suffix.size());
-  if (name == "cpu") return {};
-  if (name == "cuda") return "cuda";
+  switch (EPUtils::StringtoEP(provider)) {
+    case ExecutionProvider::kCPU:
+      return {};
+    case ExecutionProvider::kCUDA:
+      return "cuda";
+    default:
+      break;
+  }
   throw std::invalid_argument(
       "non-generative packages support only CPU and CUDA execution providers: " +
       std::string(provider));
 }
 
-fs::path SafeRelativePath(const std::string& relative, const char* field) {
-  const fs::path path(relative);
-  if (path.empty() || path.is_absolute()) {
-    throw std::invalid_argument(std::string(field) + " must be package-relative");
-  }
-  for (const auto& part : path) {
-    if (part == "..") {
-      throw std::invalid_argument(std::string(field) + " must not contain '..'");
-    }
-  }
-  return path;
-}
-
-bool IsWithin(const fs::path& root, const fs::path& candidate) {
-  auto root_it = root.begin();
-  auto candidate_it = candidate.begin();
-  for (; root_it != root.end() && candidate_it != candidate.end();
-       ++root_it, ++candidate_it) {
-    if (*root_it != *candidate_it) return false;
-  }
-  return root_it == root.end();
-}
-
 fs::path ContainedRegularFile(const fs::path& canonical_root,
                               const std::string& relative, const char* field) {
-  const auto candidate = canonical_root / SafeRelativePath(relative, field);
+  const fs::path relative_path(relative);
+  if (relative_path.empty() || relative_path.is_absolute())
+    throw std::invalid_argument(std::string(field) +
+                                " must be package-relative");
+  const auto candidate = canonical_root / relative_path;
   std::error_code ec;
   const auto canonical_candidate = fs::canonical(candidate, ec);
   if (ec || !fs::is_regular_file(canonical_candidate, ec)) {
     throw std::invalid_argument(std::string(field) + " does not name an existing file");
   }
-  if (!IsWithin(canonical_root, canonical_candidate)) {
+  if (!IsPathWithinDirectory(canonical_candidate, canonical_root)) {
     throw std::invalid_argument(std::string(field) + " resolves outside the package root");
   }
   return canonical_candidate;
@@ -78,7 +59,7 @@ uint64_t MeasureContainedPackage(const fs::path& canonical_root) {
   for (; iterator != end; iterator.increment(ec)) {
     if (ec) throw std::invalid_argument("cannot enumerate package");
     const auto canonical_entry = fs::canonical(iterator->path(), ec);
-    if (ec || !IsWithin(canonical_root, canonical_entry)) {
+    if (ec || !IsPathWithinDirectory(canonical_entry, canonical_root)) {
       throw std::invalid_argument(
           "package entry resolves outside the package root");
     }
@@ -137,17 +118,11 @@ std::optional<NonGenerativePackageMetadata> ReadNonGenerativePackage(
       result.model_id = inference.value("Name", std::string{});
       result.alias = inference.value("Alias", std::string{});
       result.task = inference.value("Task", std::string{});
-      if (const auto found = inference.find("Capabilities");
-          found != inference.end() && found->is_array()) {
-        for (const auto& capability : *found)
-          if (capability.is_string())
-            result.capabilities.push_back(capability.get<std::string>());
-      }
     } catch (const nlohmann::json::exception&) {
       // Discovery metadata remains owned by the existing catalog writer.
     }
   }
-  result.component_manifest =
+  const auto component_manifest =
       ContainedRegularFile(canonical_root, "component_manifest.json",
                            "component_manifest.json");
   const auto config_path =
@@ -161,7 +136,7 @@ std::optional<NonGenerativePackageMetadata> ReadNonGenerativePackage(
 
   nlohmann::json manifest;
   try {
-    std::ifstream stream(result.component_manifest);
+    std::ifstream stream(component_manifest);
     stream >> manifest;
   } catch (const nlohmann::json::exception& error) {
     throw std::invalid_argument(std::string("invalid component manifest: ") + error.what());
@@ -185,8 +160,7 @@ std::optional<NonGenerativePackageMetadata> ReadNonGenerativePackage(
     const auto filename = component["filename"].get<std::string>();
     ContainedRegularFile(canonical_root, filename, "component filename");
   }
-  result.package_bytes = MeasureContainedPackage(canonical_root);
-  result.estimated_resident_bytes = result.package_bytes;
+  result.estimated_resident_bytes = MeasureContainedPackage(canonical_root);
   return result;
 }
 
