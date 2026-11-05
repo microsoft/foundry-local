@@ -17,6 +17,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -350,6 +353,122 @@ class TestHostPermissions(unittest.TestCase):
                 self.assertEqual(archive.getinfo(names[2]).create_system, 0)
                 self.assertEqual(archive.getinfo(names[3]).create_system, 0)
             self.assertFalse(package.with_suffix(".tmp").exists())
+
+
+@unittest.skipUnless(shutil.which("dotnet"), "Requires a .NET SDK")
+class TestRuntimeAssetResolution(unittest.TestCase):
+    """Exercise NuGet asset resolution offline with the shipped MSBuild targets."""
+
+    def _run(self, root: Path, *args: str) -> str:
+        result = subprocess.run(
+            ["dotnet", *args], cwd=root, capture_output=True, text=True, timeout=120,
+            env={**os.environ, "NUGET_PACKAGES": str(root / "packages"),
+                 "DOTNET_CLI_TELEMETRY_OPTOUT": "1"},
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result.stdout.strip()
+
+    def _package(self, feed: Path, package_id: str, imports: tuple[str, ...]) -> set[str]:
+        assets = set()
+        with zipfile.ZipFile(feed / f"{package_id}.1.0.0.nupkg", "w") as archive:
+            archive.writestr(
+                f"{package_id}.nuspec",
+                f"<package><metadata><id>{package_id}</id><version>1.0.0</version>"
+                "<authors>Test</authors><description>Offline test fixture</description></metadata></package>",
+            )
+            for directory in imports:
+                target = pack.SCRIPT_DIR / directory / "Microsoft.AI.Foundry.Local.Runtime.targets"
+                archive.writestr(f"{directory}/{package_id}.targets", target.read_bytes())
+            for rid, library in pack.RIDS.values():
+                names = (
+                    (library, "foundry-local-host.exe" if rid.startswith("win-") else "foundry-local-host",
+                     pack.HOST_MANIFEST)
+                    if imports else ("other-native.dll",)
+                )
+                for name in names:
+                    path = f"runtimes/{rid}/native/{name}"
+                    archive.writestr(path, f"{package_id}:{rid}:{name}")
+                    assets.add(path)
+        return assets
+
+    def test_portable_and_explicit_rids_for_direct_and_transitive_consumers(self):
+        build_dir = pack.REPO_ROOT / "build" / "nuget-tests"
+        build_dir.mkdir(parents=True, exist_ok=True)
+        sdk_major = subprocess.check_output(["dotnet", "--version"], text=True).strip().split(".")[0]
+        for imports, transitive in (
+            (("build",), False),
+            (("buildTransitive",), False),
+            (("build", "buildTransitive"), True),
+        ):
+            with self.subTest(imports=imports, transitive=transitive):
+                with tempfile.TemporaryDirectory(dir=build_dir) as temporary:
+                    root = Path(temporary)
+                    feed = root / "feed"
+                    feed.mkdir()
+                    (root / "NuGet.Config").write_text(
+                        '<configuration><packageSources><clear/><add key="local" value="feed"/>'
+                        "</packageSources></configuration>", encoding="utf-8",
+                    )
+                    assets = self._package(feed, "Microsoft.AI.Foundry.Local.Runtime", imports)
+                    assets |= self._package(feed, "Other.Native", ())
+                    references = (
+                        '<PackageReference Include="Microsoft.AI.Foundry.Local.Runtime" Version="1.0.0"/>'
+                        '<PackageReference Include="Other.Native" Version="1.0.0"/>'
+                    )
+                    properties = (
+                        f"<TargetFramework>net{sdk_major}.0</TargetFramework>"
+                        f"<RuntimeIdentifiers>{';'.join(rid for rid, _ in pack.RIDS.values())}</RuntimeIdentifiers>"
+                        "<EnableRuntimePackDownload>false</EnableRuntimePackDownload>"
+                        "<EnableAppHostPackDownload>false</EnableAppHostPackDownload>"
+                        "<SelfContained>false</SelfContained>"
+                        "<AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>"
+                        "<AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>"
+                    )
+                    if transitive:
+                        library = root / "library"
+                        library.mkdir()
+                        (library / "Library.csproj").write_text(
+                            f'<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>{properties}</PropertyGroup>'
+                            f"<ItemGroup>{references}</ItemGroup></Project>", encoding="utf-8",
+                        )
+                        references = '<ProjectReference Include="library/Library.csproj"/>'
+                    (root / "Consumer.csproj").write_text(
+                        f'<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>{properties}'
+                        "<OutputType>Exe</OutputType><UseAppHost>false</UseAppHost></PropertyGroup>"
+                        f'<ItemGroup><Compile Remove="library/**"/>{references}</ItemGroup></Project>',
+                        encoding="utf-8",
+                    )
+                    (root / "Program.cs").write_text("class Program { static void Main() {} }", encoding="utf-8")
+                    self._run(root, "restore", "Consumer.csproj", "--configfile", "NuGet.Config", "-v:q")
+                    for rid in ("", "win-x64", "win-arm64"):
+                        with self.subTest(rid=rid):
+                            selected = (f"-p:RuntimeIdentifier={rid}",) if rid else ()
+                            resolved = json.loads(self._run(
+                                root, "msbuild", "Consumer.csproj", "-t:ResolvePackageAssets", *selected,
+                                "-getProperty:RuntimeIdentifier",
+                                "-getItem:NativeCopyLocalItems,RuntimeTargetsCopyLocalItems",
+                            ))
+                            self.assertEqual(resolved["Properties"]["RuntimeIdentifier"], rid)
+                            items = resolved["Items"]
+                            selected_items = items["NativeCopyLocalItems" if rid else "RuntimeTargetsCopyLocalItems"]
+                            expected = {
+                                path.split("/")[-1] if rid else path
+                                for path in assets if not rid or path.startswith(f"runtimes/{rid}/")
+                            }
+                            self.assertEqual(
+                                {item["DestinationSubPath"].replace("\\", "/") for item in selected_items},
+                                expected,
+                            )
+                            output = root / ("output-" + (rid or "portable"))
+                            self._run(root, "build", "Consumer.csproj", "--no-restore", *selected, "-v:q",
+                                      f"-p:OutputPath={output}{os.sep}")
+                            for path in expected:
+                                self.assertTrue((output / path).is_file(), path)
+                                if os.name != "nt" and path.endswith("foundry-local-host"):
+                                    self.assertTrue(os.access(output / path, os.X_OK), path)
+                            if not rid:
+                                self.assertFalse((output / "foundry_local.dll").exists())
+                                self.assertFalse((output / "other-native.dll").exists())
 
 
 class TestArgParser(unittest.TestCase):

@@ -1,12 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
 
-  <!-- Transitive version: ensures consuming apps (not just the direct reference) also
-       get the foundry_local native binary copied to their output directory. -->
-
-  <PropertyGroup Condition="'$(RuntimeIdentifier)' == ''">
-    <RuntimeIdentifier>$(NETCoreSdkRuntimeIdentifier)</RuntimeIdentifier>
-  </PropertyGroup>
+  <!-- Transitive version: preserves consuming apps' RID selection. Portable projects use
+       NuGet's runtimes/<rid>/native layout; explicit RIDs copy assets to the root. -->
 
   <PropertyGroup>
     <FoundryLocalRuntimePath Condition="'$(FoundryLocalRuntimePath)' == ''">$(MSBuildThisFileDirectory)..\runtimes</FoundryLocalRuntimePath>
@@ -27,8 +23,11 @@
     <ItemGroup>
       <_FoundryLocalHostExecutable Include="$(TargetDir)foundry-local-host"
                                   Condition="Exists('$(TargetDir)foundry-local-host')" />
+      <_FoundryLocalHostExecutable Include="$(TargetDir)runtimes/*/native/foundry-local-host" />
       <_FoundryLocalHostExecutable Include="$(PublishDir)foundry-local-host"
                                   Condition="'$(PublishDir)' != '' and Exists('$(PublishDir)foundry-local-host')" />
+      <_FoundryLocalHostExecutable Include="$(PublishDir)runtimes/*/native/foundry-local-host"
+                                  Condition="'$(PublishDir)' != ''" />
     </ItemGroup>
     <Exec Command="chmod u+x &quot;%(_FoundryLocalHostExecutable.Identity)&quot;"
           Condition="'@(_FoundryLocalHostExecutable)' != ''" />
