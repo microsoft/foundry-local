@@ -6,6 +6,7 @@
 
 #include "catalog.h"
 #include "contracts/non_generative.h"
+#include "exception.h"
 #include "inferencing/predictive/non_generative_runtime.h"
 #include "inferencing/model_load_manager.h"
 #include "model.h"
@@ -102,6 +103,18 @@ class NonGenerativeHandler final : public HttpRequestHandler {
       return ErrorResponse(Status::CODE_404, "Model not found", error.what());
     } catch (const RequestError& error) {
       return ErrorResponse(Status::CODE_400, "Invalid request", error.what());
+    } catch (const Exception& error) {
+      const auto status = StatusForException(error);
+      if (status.code >= Status::CODE_500.code) {
+        ctx_.logger.Log(
+            LogLevel::Error,
+            fmt::format("{} inference failed: {}", route_, error.what()));
+      }
+      return ErrorResponse(
+          status,
+          status.code < Status::CODE_500.code ? "Invalid request"
+                                              : "Inference failed",
+          error.what());
     } catch (const std::exception& error) {
       ctx_.logger.Log(LogLevel::Error,
                       fmt::format("{} inference failed: {}", route_, error.what()));
