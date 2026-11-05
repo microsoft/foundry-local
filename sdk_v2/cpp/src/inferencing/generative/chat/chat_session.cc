@@ -100,26 +100,14 @@ class AssistantTextOutputFilter {
  public:
   AssistantTextOutputFilter(const ToolCallContext& context, const SearchOptions& options)
       : framer_(context),
-        stop_filter_(context.text_output && context.tool_output
-                         ? options.stop_sequences
-                         : std::vector<std::string>{}),
-        text_output_(context.text_output) {}
+        stop_filter_(context.UsesAssistantTextFraming() ? options.stop_sequences : std::vector<std::string>{}) {}
 
   std::string Push(std::string_view text) {
-    auto visible = stop_filter_.Push(framer_.Push(text));
-    if (!text_output_) {
-      return {};
-    }
-    return visible;
+    return stop_filter_.Push(framer_.Push(text));
   }
 
   std::string Flush() {
-    auto visible = stop_filter_.Push(framer_.Flush());
-    visible += stop_filter_.Flush();
-    if (!text_output_) {
-      return {};
-    }
-    return visible;
+    return stop_filter_.Flush();
   }
 
   bool Matched() const {
@@ -137,7 +125,6 @@ class AssistantTextOutputFilter {
  private:
   AssistantTextFramer framer_;
   StopStringFilter stop_filter_;
-  bool text_output_;
 };
 
 /// Value of `key` in `options`, or an empty string when it is absent.
@@ -466,9 +453,7 @@ ToolCallPayloadParser CreateToolCallPayloadParser(const ToolCallContext& context
   if (context.tool_plan && context.tool_output && context.HasToolCallTokens()) {
     return CreateJsonToolCallPayloadParser(context.tool_plan, context.GeneratedToolCallStart(),
                                            context.GeneratedToolCallEnd(),
-                                           context.parallel_tool_calls,
-                                           context.fenced_tool_call_output,
-                                           context.fenced_tool_call_output && context.text_output);
+                                           context.parallel_tool_calls);
   }
 
   return {};
@@ -882,7 +867,8 @@ GuidedToolRetryResult RunGuidedToolRetry(const chat_internal::PreparedChatMessag
   auto process_segments = [&](const std::vector<TextSegment>& segments) {
     for (const auto& segment : segments) {
       if (segment.type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT) {
-        if (tool_ctx.tool_call_start_token_id && tool_ctx.tool_call_end_token_id) {
+        if (!tool_ctx.fenced_tool_call_output &&
+            tool_ctx.tool_call_start_token_id && tool_ctx.tool_call_end_token_id) {
           const auto ownership = boundary_validator.ObserveTokenBoundaries(
               segment.text, segment.token_id == tool_ctx.tool_call_start_token_id,
               segment.token_id == tool_ctx.tool_call_end_token_id);
@@ -1221,19 +1207,10 @@ ToolCallContext BuildToolCallContextForRequest(const Request& request,
       if (!request.raw_envelope_descriptor && !tool_ctx.forced_tool) {
         tool_ctx.raw_envelope.reset();
       }
-      tool_ctx.native_assistant_text_output = tool_ctx.text_output;
-      if (!tool_ctx.text_output && model.ModelId().starts_with("qwen2.5-coder-0.5b") &&
-          !tool_ctx.ActiveRawEnvelope() &&
-          !tool_ctx.HasAnyExplicitGuidance()) {
+      if (!tool_ctx.text_output && model.ModelType().starts_with("qwen2") &&
+          !tool_ctx.ActiveRawEnvelope() && !tool_ctx.HasAnyExplicitGuidance()) {
         tool_ctx.fenced_tool_call_output = true;
         tool_ctx.guidance_disabled = true;
-      }
-      tool_ctx.tool_body_grammar =
-          PlanDelimitedToolBodyGuidance(tool_ctx, model.GetGenAIConfig().GetChatBackendKind());
-      if (tool_ctx.text_output && tool_ctx.supports_reasoning &&
-          !tool_ctx.tool_body_grammar &&
-          !tool_ctx.guidance_disabled && !tool_ctx.HasAnyExplicitGuidance()) {
-        tool_ctx.native_assistant_text_output = false;
       }
     }
   }
@@ -1718,10 +1695,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   int output_tokens = 0;
   StopStringFilter stop_filter(effective_options.stop_sequences);
   auto* active_stop_filter =
-      effective_options.stop_sequences.empty() ||
-              (cached_tool_ctx_.text_output && cached_tool_ctx_.tool_output)
-          ? nullptr
-          : &stop_filter;
+      effective_options.stop_sequences.empty() || cached_tool_ctx_.UsesAssistantTextFraming() ? nullptr : &stop_filter;
   bool stop_sequence_matched = false;
   bool host_output_limit_reached = false;
   std::vector<GeneratedOutputEvent> generated_events;
@@ -1749,8 +1723,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       cached_tool_ctx_.tools_json,
       cached_tool_ctx_.reasoning_end,
       chat_session_internal::CreateToolCallPayloadParser(cached_tool_ctx_),
-      cached_tool_ctx_.tool_plan != nullptr,
-      cached_tool_ctx_.fenced_tool_call_output);
+      cached_tool_ctx_.tool_plan != nullptr);
   std::optional<RawEnvelopeDetector> raw_detector;
   if (const auto* descriptor = cached_tool_ctx_.ActiveRawEnvelope()) {
     raw_detector.emplace(*descriptor);
@@ -1802,10 +1775,6 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       }
 
       emit_visible_text(text_framer.Flush());
-      stop_sequence_matched |= text_framer.Matched();
-      if (text_framer.Matched()) {
-        break;
-      }
       text_framer.ValidateBoundary();
       semantic_output_seen = true;
       if (!turn_guard.RecordToolCall()) {
@@ -1849,10 +1818,6 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
         }
 
         emit_visible_text(text_framer.Flush());
-        stop_sequence_matched |= text_framer.Matched();
-        if (text_framer.Matched()) {
-          break;
-        }
         // REASONING goes straight through — never feed it to the tool-call accumulator.
         semantic_output_seen |= !seg.text.empty();
         AppendGeneratedSegment(generated_events, seg.text, seg.type);
@@ -1936,9 +1901,9 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
                                      host_output_limit_reached, backend_termination);
   flush_accumulator(natural_tool_output_end);
   emit_visible_text(text_framer.Flush());
-  stop_sequence_matched |= text_framer.Matched();
   if (natural_tool_output_end && cached_tool_ctx_.tool_plan && !cached_tool_ctx_.text_output &&
-      !malformed_tool_output_seen && !HasGeneratedToolCalls(generated_events)) {
+      !cached_tool_ctx_.ActiveRawEnvelope() && !malformed_tool_output_seen &&
+      !HasGeneratedToolCalls(generated_events)) {
     malformed_tool_output_seen = true;
     malformed_tool_error = "The model did not emit the required tool call";
   }
@@ -2133,8 +2098,7 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
                                              tool_ctx.tools_json,
                                              tool_ctx.reasoning_end,
                                              chat_session_internal::CreateToolCallPayloadParser(tool_ctx),
-                                             tool_ctx.tool_plan != nullptr,
-                                             tool_ctx.fenced_tool_call_output);
+                                             tool_ctx.tool_plan != nullptr);
   std::optional<RawEnvelopeDetector> raw_detector;
   if (const auto* descriptor = tool_ctx.ActiveRawEnvelope()) {
     raw_detector.emplace(*descriptor);
@@ -2204,10 +2168,6 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
       }
 
       emit_visible_text(text_framer.Flush());
-      stop_sequence_matched |= text_framer.Matched();
-      if (text_framer.Matched()) {
-        break;
-      }
       text_framer.ValidateBoundary();
       semantic_output_seen = true;
       if (!turn_guard.RecordToolCall()) {
@@ -2256,10 +2216,6 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
         }
 
         emit_visible_text(text_framer.Flush());
-        stop_sequence_matched |= text_framer.Matched();
-        if (text_framer.Matched()) {
-          break;
-        }
         semantic_output_seen |= !seg.text.empty();
         AppendGeneratedSegment(generated_events, seg.text, seg.type);
 
@@ -2279,9 +2235,7 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
   // Generate token-by-token.
   StopStringFilter stop_filter(options.stop_sequences);
   auto* active_stop_filter =
-      options.stop_sequences.empty() || (tool_ctx.text_output && tool_ctx.tool_output)
-          ? nullptr
-          : &stop_filter;
+      options.stop_sequences.empty() || tool_ctx.UsesAssistantTextFraming() ? nullptr : &stop_filter;
   while (!generator->IsDone() && !original_request.IsCancellationRequested() && !turn_guard.TurnEnded()) {
     generator->GenerateNextToken();
     const auto token_id = generator->CurrentTokenId();
@@ -2338,8 +2292,7 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
   process_tool_output(chat_session_internal::FlushToolOutput(
       active_raw_detector, tool_accumulator, natural_tool_output_end));
   emit_visible_text(text_framer.Flush());
-  stop_sequence_matched |= text_framer.Matched();
-  if (natural_tool_output_end && tool_ctx.tool_plan && !tool_ctx.text_output &&
+  if (natural_tool_output_end && tool_ctx.tool_plan && !tool_ctx.text_output && !tool_ctx.ActiveRawEnvelope() &&
       !malformed_tool_output_seen && !HasGeneratedToolCalls(generated_events)) {
     malformed_tool_output_seen = true;
     malformed_tool_error = "The model did not emit the required tool call";

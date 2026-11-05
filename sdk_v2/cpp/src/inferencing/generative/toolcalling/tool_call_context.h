@@ -83,7 +83,6 @@ struct ToolCallContext {
   std::shared_ptr<const ToolCallPlan> tool_plan;
   std::optional<std::string> tool_body_grammar;
   bool fenced_tool_call_output = false;
-  bool native_assistant_text_output = false;
 
   const std::string& GeneratedToolCallStart() const {
     static const std::string fence = "```json";
@@ -99,8 +98,6 @@ struct ToolCallContext {
     text_output = false;
     tool_output = true;
     tool_body_grammar.reset();
-    fenced_tool_call_output = false;
-    guidance_disabled = false;
   }
 
   const RawEnvelopeDescriptor* ActiveRawEnvelope() const {
@@ -154,8 +151,7 @@ struct ToolCallContext {
   }
 
   bool UsesAssistantTextFraming() const {
-    return tool_plan && text_output && tool_output && !native_assistant_text_output &&
-           !HasAnyExplicitGuidance() && !ActiveRawEnvelope();
+    return tool_plan && text_output && tool_output && !HasAnyExplicitGuidance() && !ActiveRawEnvelope();
   }
 
   /// Whether any tools were provided in the request.
@@ -171,8 +167,7 @@ struct ToolCallContext {
            custom_lark_grammars == other.custom_lark_grammars && raw_envelope == other.raw_envelope &&
            guidance_disabled == other.guidance_disabled &&
            tool_body_grammar == other.tool_body_grammar &&
-           fenced_tool_call_output == other.fenced_tool_call_output &&
-           native_assistant_text_output == other.native_assistant_text_output;
+           fenced_tool_call_output == other.fenced_tool_call_output;
   }
 
   /// Whether the model has known tool call marker tokens.
