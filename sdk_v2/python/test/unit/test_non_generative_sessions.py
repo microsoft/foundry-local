@@ -241,7 +241,7 @@ def test_decision_rejects_answer_missing_type_specific_value(monkeypatch):
     ("answer", "field", "expected"),
     [
         ({"type": "choice", "choice": "inside", "probabilities": {"inside": 0.8}}, "choice", "inside"),
-        ({"type": "score", "score": 0.75, "confidence": 0.9, "legend": {"high": "High"}}, "score", 0.75),
+        ({"type": "score", "score": 1, "confidence": 0.9, "legend": {"1": "High"}}, "score", 1),
     ],
 )
 def test_decision_accepts_choice_and_score_answers(monkeypatch, answer, field, expected):
@@ -249,8 +249,9 @@ def test_decision_accepts_choice_and_score_answers(monkeypatch, answer, field, e
         monkeypatch,
         {"model": "kev:1", "answers": {"q": answer}, "usage": {"billing_units": 0}},
     )
+    criteria = {"inside": "Inside"} if answer["type"] == "choice" else ["Low", "High"]
     result = _fake_session(DecisionSession).decide(
-        DecisionRequest(questions={"q": {"type": answer["type"]}})
+        DecisionRequest(questions={"q": {"type": answer["type"], "criteria": criteria}})
     )
     assert result.answers["q"][field] == expected
 
@@ -268,9 +269,10 @@ def test_decision_rejects_malformed_optional_metadata(monkeypatch, answer):
         monkeypatch,
         {"model": "kev:1", "answers": {"q": answer}, "usage": {"billing_units": 0}},
     )
+    criteria = {"a": "A"} if answer["type"] == "choice" else ["Low", "High"]
     with pytest.raises(FoundryLocalException, match="invalid response"):
         _fake_session(DecisionSession).decide(
-            DecisionRequest(questions={"q": {"type": answer["type"]}})
+            DecisionRequest(questions={"q": {"type": answer["type"], "criteria": criteria}})
         )
     assert ("request-release", _REQUEST) in calls
     assert ("response-release", _RESPONSE) in calls

@@ -20,7 +20,7 @@ class _DecisionQuestionRequired(TypedDict):
 class DecisionQuestion(_DecisionQuestionRequired, total=False):
     """One named question in a typed-decision request."""
 
-    criteria: NotRequired[JSONValue]
+    criteria: NotRequired[dict[str, JSONValue] | list[JSONValue]]
     instructions: NotRequired[JSONValue]
 
 

@@ -43,11 +43,21 @@ def test_decision_session_round_trips_native_json(decision_model):
                         "umbrella": {
                             "type": "noul",
                             "instructions": "Should I take an umbrella?",
-                        }
+                        },
+                        "activity": {
+                            "type": "choice",
+                            "criteria": {"inside": "Stay inside", "outside": "Go outside"},
+                        },
+                        "urgency": {
+                            "type": "score",
+                            "criteria": ["low", "medium", "high"],
+                        },
                     },
                 )
             )
         assert result.model == decision_model.info.id
         assert result.answers["umbrella"]["type"] == "noul"
+        assert result.answers["activity"]["type"] == "choice"
+        assert result.answers["urgency"]["type"] == "score"
     finally:
         decision_model.unload()

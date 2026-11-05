@@ -12,7 +12,7 @@ import queue
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 if TYPE_CHECKING:
     from foundry_local_sdk.imodel import IModel
@@ -495,7 +495,7 @@ class Session(abc.ABC):
                 self._closed = True
                 self._manager = None
 
-    def __enter__(self) -> "Session":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_) -> None:
@@ -834,6 +834,19 @@ class DecisionSession(Session):
             question_type = question.get("type")
             if question_type not in {"noul", "choice", "score"}:
                 raise ValueError(f"questions.{question_id}.type must be 'noul', 'choice', or 'score'")
+            criteria = question.get("criteria")
+            if question_type == "choice" and (
+                not isinstance(criteria, dict) or not 1 <= len(criteria) <= 256
+            ):
+                raise ValueError(
+                    f"questions.{question_id}.criteria must be an object with 1 to 256 entries"
+                )
+            if question_type == "score" and (
+                not isinstance(criteria, list) or not 1 <= len(criteria) <= 256
+            ):
+                raise ValueError(
+                    f"questions.{question_id}.criteria must be an array with 1 to 256 entries"
+                )
             for field in ("criteria", "instructions"):
                 if field in question:
                     _validate_json_value(question[field], f"questions.{question_id}.{field}")
