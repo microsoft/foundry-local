@@ -28,6 +28,11 @@ def test_ranking_session_round_trips_native_json(ranking_model):
     assert result.model == ranking_model.info.id
     assert len(result.ranked) == 2
     assert result.ranked[0].rank == 1
+    assert result.ranked[0].id == str(result.ranked[0].index)
+    assert result.ranked[0].candidate in {
+        "Have a picnic outdoors",
+        "Visit an indoor museum",
+    }
 
 
 def test_decision_session_round_trips_native_json(decision_model):

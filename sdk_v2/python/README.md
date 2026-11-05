@@ -462,7 +462,8 @@ with RankingSession(ranking_model) as session:
         question="Which activity is better?",
         answers=["picnic", "museum"],
     ))
-    print(ranking.ranked)
+    for candidate in ranking.ranked:
+        print(candidate.rank, candidate.id, candidate.index, candidate.candidate, candidate.prob)
 
 with DecisionSession(decision_model) as session:
     decision = session.decide(DecisionRequest(

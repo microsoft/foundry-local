@@ -25,7 +25,7 @@ def rank_activities(model: IModel) -> None:
             )
         )
         for item in result.ranked:
-            print(item.rank, item.candidate, item.prob)
+            print(item.rank, item.id, item.index, item.candidate, item.prob)
 
 
 def decide_about_umbrella(model: IModel) -> None:
