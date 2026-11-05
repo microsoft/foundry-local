@@ -63,11 +63,12 @@ NonGenerativeSession::NonGenerativeSession(
       lifecycle_(std::make_shared<Lifecycle>()) {
   lifecycle_->session = this;
   lifecycle_->manager = &model_load_manager;
+  construction_lifetime_.emplace(
+      model_load_manager.AcquirePredictiveRequest());
   std::unique_ptr<LoadedSelectionReservation> reservation;
   execution_model_ = std::make_unique<Model>(
       model.CaptureExecutionModel(&reservation));
   SetCatalogModel(*execution_model_);
-  auto construction = model_load_manager.AcquirePredictiveRequest();
   const auto& selected = *execution_model_;
   Model* live_model = nullptr;
   for (auto* variant : model.Variants()) {
@@ -101,10 +102,12 @@ NonGenerativeSession::NonGenerativeSession(
         std::lock_guard lock(lifecycle->mutex);
         if (lifecycle->session) lifecycle->session->ReleaseRuntime();
       });
+  construction_lifetime_.reset();
 }
 
 NonGenerativeSession::~NonGenerativeSession() {
   std::lock_guard lock(lifecycle_->mutex);
+  ReleaseRuntime();
   lifecycle_->session = nullptr;
   auto* manager = lifecycle_->manager;
   if (manager) manager->UnregisterPredictiveSession(this);
@@ -145,37 +148,45 @@ void NonGenerativeSession::ProcessRequestImpl(
     payload = nlohmann::ordered_json::parse(item.text);
     ApplyOptions(MergedOptions(request.options), payload);
     ValidateBoundModel(payload, model_id_, model_alias_);
-  } catch (const nlohmann::json::exception& error) {
+  } catch (const nlohmann::json::exception&) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             "invalid non-generative request: ", error.what());
+             "invalid non-generative request JSON");
   }
   if (ranking_) {
     RankingRequest parsed;
     try {
       parsed = payload.get<RankingRequest>();
-    } catch (const nlohmann::json::exception& error) {
+    } catch (const nlohmann::json::exception&) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-               "invalid ranking request: ", error.what());
+               "invalid ranking request");
     }
-    result = ranking_->Rank(
-        parsed, [&request] { return request.IsCancellationRequested(); });
+    try {
+      result = ranking_->Rank(
+          parsed, [&request] { return request.IsCancellationRequested(); });
+    } catch (const RuntimeCapacityError& error) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, error.what());
+    }
     result["model"] = model_id_;
   } else {
     NonGenerativeRequest parsed;
     try {
       parsed = payload.get<NonGenerativeRequest>();
-    } catch (const nlohmann::json::exception& error) {
+    } catch (const nlohmann::json::exception&) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-               "invalid decision request: ", error.what());
+               "invalid decision request");
     }
-    result = {
-        {"model", model_id_},
-        {"answers",
-         decision_->Decide(
-             parsed,
-             [&request] { return request.IsCancellationRequested(); })},
-        {"usage", {{"billing_units", 0}}},
-    };
+    try {
+      result = {
+          {"model", model_id_},
+          {"answers",
+           decision_->Decide(
+               parsed,
+               [&request] { return request.IsCancellationRequested(); })},
+          {"usage", {{"billing_units", 0}}},
+      };
+    } catch (const RuntimeCapacityError& error) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, error.what());
+    }
   }
   response.items.push_back(std::make_unique<TextItem>(
       result.dump(), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));

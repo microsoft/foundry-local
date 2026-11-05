@@ -411,7 +411,8 @@ TEST(NonGenerativeSessionTest,
             FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON);
   const auto canonical = std::filesystem::weakly_canonical(path).string();
   const auto identity =
-      "non-generative|" + std::string(model_id) + "|" + canonical + "|";
+      "non-generative|" + std::string(model_id) + "|" + canonical +
+      "||text-ranking";
   auto fake = std::make_shared<FakeRankingRuntime>();
   auto seeded = ModelLoadManagerTestAccess::AcquireArtifact(
       service.model_load_manager, identity, std::string(model_id), canonical,

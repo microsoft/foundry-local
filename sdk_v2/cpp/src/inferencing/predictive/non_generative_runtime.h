@@ -9,9 +9,15 @@
 
 #include <memory>
 #include <functional>
+#include <stdexcept>
 #include <string>
 
 namespace fl {
+
+class RuntimeCapacityError : public std::runtime_error {
+ public:
+  using std::runtime_error::runtime_error;
+};
 
 class IRankingRuntime {
  public:
