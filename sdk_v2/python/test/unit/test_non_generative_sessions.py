@@ -134,7 +134,7 @@ def test_ranking_session_uses_endpoint_json_contract_and_releases_handles(monkey
         monkeypatch,
         {
             "model": "clm-package:1",
-            "ranked": [{"rank": 1, "candidate": "inside", "prob": 0.75}],
+            "ranked": [{"rank": 1, "id": "1", "index": 1, "candidate": "inside", "prob": 0.75}],
         },
     )
     session = _fake_session(RankingSession)
@@ -157,7 +157,7 @@ def test_ranking_session_uses_endpoint_json_contract_and_releases_handles(monkey
     }
     assert payload[2] == TextItemType.OPENAI_JSON
     assert result.model == "clm-package:1"
-    assert result.ranked == [RankedCandidate(rank=1, candidate="inside", prob=0.75)]
+    assert result.ranked == [RankedCandidate(rank=1, id="1", index=1, candidate="inside", prob=0.75)]
     assert ("request-release", _REQUEST) in calls
     assert ("response-release", _RESPONSE) in calls
 
@@ -250,6 +250,11 @@ def test_decision_rejects_answer_missing_type_specific_value(monkeypatch):
             DecisionSession,
             DecisionRequest(questions={"q": {"type": "noul"}}, temperature=float("nan")),
             "temperature",
+        ),
+        (
+            DecisionSession,
+            DecisionRequest(questions={"q": {"type": "noul"}}, temperature=2.0),
+            "exactly 1.0",
         ),
     ],
 )

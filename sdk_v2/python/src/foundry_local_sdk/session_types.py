@@ -50,6 +50,8 @@ class RankingRequest:
 @dataclass(frozen=True)
 class RankedCandidate:
     rank: int
+    id: str
+    index: int
     candidate: str
     prob: float
 

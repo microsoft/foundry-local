@@ -773,19 +773,30 @@ class RankingSession(Session):
         for item in ranked:
             if not isinstance(item, dict):
                 raise _invalid_non_generative_response()
-            rank, candidate, probability = (
+            rank, identifier, index, candidate, probability = (
                 item.get("rank"),
+                item.get("id"),
+                item.get("index"),
                 item.get("candidate"),
                 item.get("prob"),
             )
             if (
                 isinstance(rank, bool)
                 or not isinstance(rank, int)
+                or rank < 1
+                or not isinstance(identifier, str)
+                or not identifier
+                or isinstance(index, bool)
+                or not isinstance(index, int)
+                or index < 0
+                or identifier != str(index)
                 or not isinstance(candidate, str)
                 or not _is_finite_number(probability)
+                or probability < 0
+                or probability > 1
             ):
                 raise _invalid_non_generative_response()
-            values.append(RankedCandidate(rank, candidate, float(probability)))
+            values.append(RankedCandidate(rank, identifier, index, candidate, float(probability)))
         return RankingResult(model, values)
 
 
@@ -826,6 +837,8 @@ class DecisionSession(Session):
                     _validate_json_value(question[field], f"questions.{question_id}.{field}")
         _validate_json_value(request.state, "state")
         _validate_temperature(request.temperature)
+        if request.temperature != 1.0:
+            raise ValueError("decision temperature must be exactly 1.0")
 
         result = _process_non_generative_json(
             self,
