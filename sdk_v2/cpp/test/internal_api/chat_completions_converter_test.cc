@@ -81,7 +81,8 @@ TEST(ChatCompletionsConverterTest, ImageUrlPartsReachTheMediaPipeline) {
       {"type": "text", "text": "Describe this: "},
       {"type": "image_url", "image_url": {"url": "data:image/png;base64,AQIDBA==", "detail": "low"}},
       {"type": "text", "text": "and this"},
-      {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,BQYHCA=="}}
+      {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,BQYHCA=="}},
+      {"type": "text", "text": "Compare them"}
     ]}]
   })");
   Request request;
@@ -94,8 +95,16 @@ TEST(ChatCompletionsConverterTest, ImageUrlPartsReachTheMediaPipeline) {
   EXPECT_EQ(media.images[1]->ReadBytes(), (std::vector<std::uint8_t>{5, 6, 7, 8}));
   EXPECT_EQ(media.images[1]->format, "image/jpeg");
   ASSERT_EQ(media.messages.size(), 1u);
-  ASSERT_EQ(media.messages[0].content.size(), 3u);
-  EXPECT_EQ(static_cast<const TextItem&>(*media.messages[0].content[0].view).text, "Describe this: and this");
+  const auto& parts = media.messages[0].content;
+  ASSERT_EQ(parts.size(), 5u);
+  ASSERT_EQ(parts[0].view->type, FOUNDRY_LOCAL_ITEM_TEXT);
+  EXPECT_EQ(static_cast<const TextItem&>(*parts[0].view).text, "Describe this: ");
+  ASSERT_EQ(parts[1].view->type, FOUNDRY_LOCAL_ITEM_IMAGE);
+  ASSERT_EQ(parts[2].view->type, FOUNDRY_LOCAL_ITEM_TEXT);
+  EXPECT_EQ(static_cast<const TextItem&>(*parts[2].view).text, "and this");
+  ASSERT_EQ(parts[3].view->type, FOUNDRY_LOCAL_ITEM_IMAGE);
+  ASSERT_EQ(parts[4].view->type, FOUNDRY_LOCAL_ITEM_TEXT);
+  EXPECT_EQ(static_cast<const TextItem&>(*parts[4].view).text, "Compare them");
 }
 
 TEST(ChatCompletionsConverterTest, ImageOnlyMessageIsNotDiscarded) {
@@ -146,7 +155,7 @@ TEST(ChatCompletionsConverterTest, RemoteImageUrlsAreRejectedInsteadOfIgnored) {
     BuildRequestItems(body.get<ChatCompletionRequest>(), request);
     FAIL() << "Expected unsupported remote image URL to be rejected";
   } catch (const fl::Exception& e) {
-    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED);
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
   }
 }
 

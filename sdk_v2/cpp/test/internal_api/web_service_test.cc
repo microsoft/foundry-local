@@ -1715,6 +1715,50 @@ TEST_F(WebServiceTest, ChatCompletionsDoesNotSilentlyIgnoreImagesOnATextModel) {
   EXPECT_EQ(unloaded["status"], "unloaded") << unloaded.dump(2);
 }
 
+TEST_F(WebServiceTest, ChatCompletionsRemoteImageUrlsAreClientErrorsIncludingStreaming) {
+  const auto loaded = Get(std::string("/models/load/") + kResponseStoreTestModelAlias);
+  ASSERT_EQ(loaded["status"], "loaded") << loaded.dump(2);
+  httplib::Client client(base_url_);
+  client.set_read_timeout(60, 0);
+  for (const bool streaming : {false, true}) {
+    SCOPED_TRACE(streaming ? "streaming" : "nonstreaming");
+    const json body = {
+        {"model", std::string(kResponseStoreTestModelAlias) + ":1"},
+        {"messages", json::array({{{"role", "user"},
+                                   {"content", json::array({{{"type", "image_url"},
+                                                             {"image_url", {{"url", "https://example.com/image.png"}}}}})}}})},
+        {"stream", streaming},
+    };
+    const auto result = client.Post("/v1/chat/completions", body.dump(), "application/json");
+    ASSERT_TRUE(result) << httplib::to_string(result.error());
+    json error;
+    if (streaming) {
+      ASSERT_EQ(result->status, 200) << result->body;
+      std::istringstream stream(result->body);
+      std::string line;
+      while (std::getline(stream, line)) {
+        if (line.rfind("data: ", 0) == 0 && line.find("[DONE]") == std::string::npos) {
+          const auto chunk = json::parse(line.substr(6));
+          if (chunk.contains("error")) {
+            error = chunk["error"];
+          }
+        }
+      }
+    } else {
+      ASSERT_EQ(result->status, 400) << result->body;
+      error = json::parse(result->body)["error"];
+    }
+
+    ASSERT_TRUE(error.is_object()) << result->body;
+    EXPECT_EQ(error.value("type", ""), "invalid_request_error") << error.dump(2);
+    EXPECT_NE(error.value("message", "").find("remote http(s) URLs are not supported"), std::string::npos)
+        << error.dump(2);
+  }
+
+  const auto unloaded = Get(std::string("/models/unload/") + kResponseStoreTestModelAlias);
+  EXPECT_EQ(unloaded["status"], "unloaded") << unloaded.dump(2);
+}
+
 TEST_F(WebServiceTest, ChatCompletionsAppliesMediaPolicyBeforeInference) {
   const auto loaded = Get(std::string("/models/load/") + kResponseStoreTestModelAlias);
   ASSERT_EQ(loaded["status"], "loaded") << loaded.dump(2);
