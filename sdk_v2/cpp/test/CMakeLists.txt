@@ -137,6 +137,7 @@ add_executable(foundry_local_tests
     internal_api/model_io_info_test.cc
     internal_api/model_load_manager_test.cc
     internal_api/model_sorting_test.cc
+    internal_api/non_generative_contract_test.cc
     internal_api/platform_path_test.cc
     internal_api/replay_equivalence_test.cc
     internal_api/response_converter_test.cc
@@ -171,6 +172,12 @@ add_executable(foundry_local_tests
     internal_api/winml_provider_allowlist_test.cc
     internal_api/zip_extract_test.cc
 )
+
+if(FOUNDRY_LOCAL_BUILD_SERVICE)
+    target_sources(foundry_local_tests PRIVATE
+        internal_api/non_generative_runtime_test.cc
+    )
+endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     target_sources(foundry_local_tests PRIVATE internal_api/telemetry_test.rc)

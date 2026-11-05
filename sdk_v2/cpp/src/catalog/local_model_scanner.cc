@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "catalog/local_model_scanner.h"
+#include "catalog/non_generative_package.h"
 
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
@@ -62,6 +63,10 @@ bool IsValidModelDirectory(const fs::path& dir) {
   return true;
 }
 
+bool IsValidBundleDirectory(const fs::path& dir) {
+  return ReadNonGenerativePackage(dir).has_value();
+}
+
 /// Recursively scan a directory for valid model directories.
 void ScanDirectory(const fs::path& dir,
                    std::map<std::string, std::string>& results,
@@ -71,8 +76,11 @@ void ScanDirectory(const fs::path& dir,
       return;
     }
 
-    // Check if this directory itself is a valid model directory.
-    if (IsValidModelDirectory(dir)) {
+    // Package-shaped directories must pass strict bundle validation and may
+    // never fall back to the more permissive generative leaf check.
+    const bool declares_bundle = DeclaresNonGenerativePackage(dir);
+    if ((declares_bundle && IsValidBundleDirectory(dir)) ||
+        (!declares_bundle && IsValidModelDirectory(dir))) {
       auto model_name = ReadModelNameFromInferenceModel(dir);
       if (!model_name.empty()) {
         // If the model name doesn't contain a ':' version separator, append ":0".
@@ -86,6 +94,7 @@ void ScanDirectory(const fs::path& dir,
       // Don't recurse into a valid model directory — it's a leaf.
       return;
     }
+    if (declares_bundle) return;
 
     // Recurse into subdirectories.
     for (const auto& entry : fs::directory_iterator(dir)) {

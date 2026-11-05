@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "model.h"
+#include "catalog/non_generative_package.h"
 
 #include "download/download_manager.h"
 #include "exception.h"
@@ -514,7 +515,8 @@ bool Model::IsCached() const {
   if (external_registration_) {
     std::error_code ec;
     return std::filesystem::is_directory(local_path_, ec) &&
-           std::filesystem::is_regular_file(std::filesystem::path(local_path_) / "genai_config.json", ec);
+           (std::filesystem::is_regular_file(std::filesystem::path(local_path_) / "genai_config.json", ec) ||
+            std::filesystem::is_regular_file(std::filesystem::path(local_path_) / "component_manifest.json", ec));
   }
 
   return active_ && cached_;
@@ -525,14 +527,35 @@ bool Model::IsLoaded() const {
     return sv->IsLoaded();
   }
 
-  if (!active_) {
-    return false;
+  return active_ && model_load_manager_->IsModelLoaded(*this);
+}
+
+Model* Model::SelectedLeaf() const {
+  if (Model* sv = selected_variant_.load(std::memory_order_acquire)) {
+    return sv->SelectedLeaf();
+  }
+  return const_cast<Model*>(this);
+}
+
+std::shared_ptr<void> Model::AcquireNonGenerativeRuntime() {
+  if (IsContainer()) {
+    Model* selected;
+    {
+      std::lock_guard lifecycle_lock(lifecycle_mutex_);
+      selected = selected_variant_.load(std::memory_order_acquire);
+    }
+    return selected->AcquireNonGenerativeRuntime();
   }
 
-  // ModelLoadManager owns the authoritative loaded-instance map. The pointer is set at
-  // construction and never reassigned, so querying it here stays in sync with paths that
-  // bypass Model::Load/Unload (e.g., Manager::Shutdown -> ModelLoadManager::UnloadAll).
-  return model_load_manager_->GetLoadedModel(Info().model_id, LocalPathSnapshot()) != nullptr;
+  std::unique_lock lifecycle_lock(lifecycle_mutex_);
+  if (!active_ || unregistering_)
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "model is no longer registered");
+  if (!IsCached())
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "model must be cached before loading");
+  return model_load_manager_->AcquireNonGenerativeRuntime(
+      *this, [&] { lifecycle_lock.unlock(); });
 }
 
 // ---------------------------------------------------------------------------
@@ -721,7 +744,7 @@ void Model::Load(ExecutionProvider ep, std::optional<std::string_view> expected_
     return;
   }
 
-  std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+  std::unique_lock<std::mutex> lifecycle_lock(lifecycle_mutex_);
 
   if (!active_ || unregistering_) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
@@ -740,6 +763,11 @@ void Model::Load(ExecutionProvider ep, std::optional<std::string_view> expected_
   // in the load manager's map, so no need for a local short-circuit.
   const auto path = LocalPathSnapshot();
   RequireSelectedArtifact(path, expected_path);
+  if (info.task == "text-ranking" || info.task == "typed-decision") {
+    model_load_manager_->AcquireNonGenerativeRuntime(
+        *this, [&] { lifecycle_lock.unlock(); });
+    return;
+  }
   auto result = model_load_manager_->LoadModel(path, Info().model_id, ep);
 
   if (result.status == ModelLoadManager::LoadStatus::kModelNotFound) {
@@ -756,6 +784,10 @@ void Model::Unload() {
   }
 
   std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+  if (Info().task == "text-ranking" || Info().task == "typed-decision") {
+    model_load_manager_->UnloadNonGenerativeRuntime(*this);
+    return;
+  }
 
   // Path qualification lets a retired handle clean up its own instance without unloading a later registration that
   // reused the same model ID at a different path. UnloadModel is idempotent when no matching instance is loaded.
@@ -851,7 +883,11 @@ void Model::BeginUnregister() {
     lifecycle_mutex_.unlock();
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
   }
-
+  if (model_load_manager_->IsModelLoading(*this)) {
+    lifecycle_mutex_.unlock();
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "cannot unregister model while it is loading");
+  }
   unregistering_ = true;
 }
 
