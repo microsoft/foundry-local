@@ -272,6 +272,10 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
         FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
                  "multi-component registration requires text-ranking or typed-decision task");
       }
+      if (!package->task.empty() && package->task != *task) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                 "package task does not match registered model task");
+      }
       resolved_input_metadata.execution_provider = package->execution_provider;
       resolved_input_metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR,
                                              package->execution_provider);

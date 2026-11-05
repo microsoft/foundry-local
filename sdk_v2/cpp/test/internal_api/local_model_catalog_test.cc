@@ -541,6 +541,18 @@ TEST_F(LocalModelCatalogTest,
   EXPECT_NO_THROW(reloaded.UnregisterModel("clm"));
 }
 
+TEST_F(LocalModelCatalogTest, RejectsPackageAndRegistrationTaskMismatch) {
+  const auto bundle_path = root_.path() / "bundle";
+  WriteBundle(bundle_path, "clm-v0.1-8b-generic-cpu:1", "text-ranking");
+
+  EXPECT_THROW(
+      catalog_.RegisterModel(
+          bundle_path.string(), "clm-v0.1-8b-generic-cpu:1",
+          MakeMetadata("typed-decision")),
+      Exception);
+  EXPECT_EQ(catalog_.GetModelVariant("clm-v0.1-8b-generic-cpu:1"), nullptr);
+}
+
 TEST_F(LocalModelCatalogTest, NormalizesSupportedPackageProvidersAndRejectsUnknown) {
   const auto cpu_path = root_.path() / "cpu";
   WriteBundle(cpu_path, "clm-generic-cpu:1", "text-ranking",
