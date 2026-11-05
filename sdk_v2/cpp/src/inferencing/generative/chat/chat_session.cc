@@ -842,6 +842,10 @@ GuidedToolRetryResult RunGuidedToolRetry(const chat_internal::PreparedChatMessag
   }
 
   tool_ctx.ConfigureForGuidedToolRetry();
+  if (tool_ctx.fenced_tool_call_output) {
+    tool_ctx.fenced_tool_call_output = false;
+    tool_ctx.guidance_disabled = false;
+  }
   if (retry_prompt) {
     tool_ctx.supports_reasoning = false;
   }
