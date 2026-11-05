@@ -238,6 +238,45 @@ def test_decision_rejects_answer_missing_type_specific_value(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    ("answer", "field", "expected"),
+    [
+        ({"type": "choice", "choice": "inside", "probabilities": {"inside": 0.8}}, "choice", "inside"),
+        ({"type": "score", "score": 0.75, "confidence": 0.9, "legend": {"high": "High"}}, "score", 0.75),
+    ],
+)
+def test_decision_accepts_choice_and_score_answers(monkeypatch, answer, field, expected):
+    _install_native(
+        monkeypatch,
+        {"model": "kev:1", "answers": {"q": answer}, "usage": {"billing_units": 0}},
+    )
+    result = _fake_session(DecisionSession).decide(
+        DecisionRequest(questions={"q": {"type": answer["type"]}})
+    )
+    assert result.answers["q"][field] == expected
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {"type": "choice", "choice": "a", "probabilities": {"a": float("nan")}},
+        {"type": "score", "score": 0.5, "confidence": "high"},
+        {"type": "score", "score": 0.5, "legend": {"high": 1}},
+    ],
+)
+def test_decision_rejects_malformed_optional_metadata(monkeypatch, answer):
+    calls = _install_native(
+        monkeypatch,
+        {"model": "kev:1", "answers": {"q": answer}, "usage": {"billing_units": 0}},
+    )
+    with pytest.raises(FoundryLocalException, match="invalid response"):
+        _fake_session(DecisionSession).decide(
+            DecisionRequest(questions={"q": {"type": answer["type"]}})
+        )
+    assert ("request-release", _REQUEST) in calls
+    assert ("response-release", _RESPONSE) in calls
+
+
+@pytest.mark.parametrize(
     ("session_type", "request_value", "message"),
     [
         (RankingSession, RankingRequest(answers=[]), "answers"),

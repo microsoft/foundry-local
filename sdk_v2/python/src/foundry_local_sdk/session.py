@@ -714,14 +714,16 @@ def _process_non_generative_json(session: Session, payload: dict[str, object]) -
     from foundry_local_sdk.request import Request
 
     content = json.dumps(payload, separators=(",", ":"), allow_nan=False)
-    with Request().add_item(TextItem(content, TextItemType.OPENAI_JSON)) as request:
-        with session.process_request(request) as response:
-            if response.item_count != 1:
-                raise FoundryLocalException("Non-generative session returned an invalid response item count.")
-            item = response.get_item(0)
-            if not isinstance(item, TextItem) or item.type is not TextItemType.OPENAI_JSON:
-                raise FoundryLocalException("Non-generative session returned a non-JSON text response.")
-            response_text = item.text
+    with TextItem(content, TextItemType.OPENAI_JSON) as input_item:
+        with Request() as request:
+            request.add_item(input_item)
+            with session.process_request(request) as response:
+                if response.item_count != 1:
+                    raise FoundryLocalException("Non-generative session returned an invalid response item count.")
+                item = response.get_item(0)
+                if not isinstance(item, TextItem) or item.type is not TextItemType.OPENAI_JSON:
+                    raise FoundryLocalException("Non-generative session returned a non-JSON text response.")
+                response_text = item.text
 
     try:
         parsed = json.loads(response_text)

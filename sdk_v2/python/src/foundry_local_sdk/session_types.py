@@ -6,25 +6,31 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum
-from typing import Literal, NotRequired, Required, TypeAlias, TypedDict
+from typing import Literal, NotRequired, TypeAlias, TypedDict
 
 
 JSONValue: TypeAlias = None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
 DecisionQuestionType: TypeAlias = Literal["noul", "choice", "score"]
 
 
-class DecisionQuestion(TypedDict, total=False):
+class _DecisionQuestionRequired(TypedDict):
+    type: DecisionQuestionType
+
+
+class DecisionQuestion(_DecisionQuestionRequired, total=False):
     """One named question in a typed-decision request."""
 
-    type: Required[DecisionQuestionType]
     criteria: NotRequired[JSONValue]
     instructions: NotRequired[JSONValue]
 
 
-class DecisionAnswer(TypedDict, total=False):
+class _DecisionAnswerRequired(TypedDict):
+    type: DecisionQuestionType
+
+
+class DecisionAnswer(_DecisionAnswerRequired, total=False):
     """One named answer returned by a typed-decision model."""
 
-    type: Required[DecisionQuestionType]
     noul: NotRequired[float]
     choice: NotRequired[str]
     score: NotRequired[float]
