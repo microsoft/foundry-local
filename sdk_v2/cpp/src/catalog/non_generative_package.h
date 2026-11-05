@@ -7,7 +7,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <vector>
 
 namespace fl {
 
@@ -15,10 +14,7 @@ struct NonGenerativePackageMetadata {
   std::string model_id;
   std::string alias;
   std::string task;
-  std::filesystem::path component_manifest;
   std::string execution_provider;
-  std::vector<std::string> capabilities;
-  uint64_t package_bytes{};
   uint64_t estimated_resident_bytes{};
 };
 

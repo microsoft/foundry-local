@@ -5,6 +5,7 @@
 #include "inferencing/execution_provider.h"
 #include "inferencing/generative/genai_model_instance.h"
 #include "inferencing/predictive/non_generative_admission.h"
+#include "catalog/non_generative_package.h"
 #include "logger.h"
 #include "ep_detection/ep_detector.h"
 
@@ -107,8 +108,7 @@ class ModelLoadManager {
   void PrepareProviderForModelLoad(std::string_view registration_name,
                                    std::string_view model_id);
   std::shared_ptr<void> AcquireNonGenerativeRuntime(
-      Model& model, std::string_view task, std::string_view provider,
-      uint64_t estimated_resident_bytes,
+      Model& model,
       const std::function<void()>& on_admitted = {});
   bool UnloadNonGenerativeRuntime(Model& model);
   bool IsModelLoaded(const Model& model) const;
@@ -202,6 +202,7 @@ class ModelLoadManager {
 
   bool HasEP(const std::string& ep_name) const;
   void ReleasePredictiveRequest() noexcept;
+  NonGenerativePackageMetadata InspectNonGenerativePackage(Model& model);
   bool UnloadModel(std::string_view model_id, const std::string* normalized_model_path);
   GenAIModelInstance* GetLoadedModel(std::string_view model_id, const std::string* normalized_model_path);
   GenAIModelInstance* FindLoadedModelLocked(std::string_view model_id, const std::string* normalized_model_path);
@@ -223,6 +224,9 @@ class ModelLoadManager {
   std::condition_variable predictive_condition_;
   std::map<void*, std::function<void()>> predictive_sessions_;
   size_t active_predictive_requests_{};
+  std::map<std::pair<std::string, std::string>,
+           NonGenerativePackageMetadata>
+      non_generative_packages_;
   struct SelectionState {
     bool preserved = false;
     size_t reservations = 0;

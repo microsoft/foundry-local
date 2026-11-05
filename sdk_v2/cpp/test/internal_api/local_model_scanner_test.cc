@@ -258,8 +258,7 @@ TEST_F(LocalModelScannerTest, UsesContainedPackageSizeForAdmission) {
 
   const auto package = ReadNonGenerativePackage(root);
   ASSERT_TRUE(package.has_value());
-  EXPECT_GT(package->package_bytes, 0u);
-  EXPECT_EQ(package->estimated_resident_bytes, package->package_bytes);
+  EXPECT_GT(package->estimated_resident_bytes, 0u);
 }
 
 TEST_F(LocalModelScannerTest, IgnoresDescriptiveResidentMemoryMetadata) {

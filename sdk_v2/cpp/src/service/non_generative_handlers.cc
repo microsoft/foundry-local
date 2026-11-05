@@ -5,7 +5,6 @@
 #include "service/non_generative_handlers.h"
 
 #include "catalog.h"
-#include "catalog/non_generative_package.h"
 #include "contracts/non_generative.h"
 #include "inferencing/predictive/non_generative_runtime.h"
 #include "inferencing/model_load_manager.h"
@@ -16,22 +15,15 @@
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
-#include <filesystem>
-#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
-#include <unordered_map>
 
 namespace fl {
 
 namespace {
 struct ResolvedPackage {
-  std::string identity;
   std::string model_id;
-  std::string path;
-  std::string provider;
-  uint64_t estimated_resident_bytes{};
   Model* model = nullptr;
 };
 
@@ -44,26 +36,6 @@ class RequestError : public std::runtime_error {
  public:
   using std::runtime_error::runtime_error;
 };
-
-NonGenerativePackageMetadata CachedPackageMetadata(
-    ModelLoadManager& model_load_manager, Model& model,
-    const std::string& path) {
-  static std::mutex mutex;
-  static std::unordered_map<std::string, NonGenerativePackageMetadata> cache;
-  const auto canonical =
-      std::filesystem::weakly_canonical(path).string();
-  std::lock_guard lock(mutex);
-  if (model_load_manager.IsModelLoaded(model)) {
-    if (const auto found = cache.find(canonical); found != cache.end())
-      return found->second;
-  }
-  const auto package = ReadNonGenerativePackage(canonical);
-  if (!package)
-    throw std::invalid_argument(
-        "selected catalog model is not a multi-component package");
-  cache.insert_or_assign(canonical, *package);
-  return *package;
-}
 
 ResolvedPackage ResolvePackage(ServiceContext& ctx, const std::string& requested,
                                const char* expected_task) {
@@ -82,24 +54,14 @@ ResolvedPackage ResolvePackage(ServiceContext& ctx, const std::string& requested
     throw RequestError(
         "selected model package is not available locally");
   }
-  const auto package = CachedPackageMetadata(
-      ctx.model_load_manager, *model, model->GetPath());
-  auto provider = package.execution_provider;
-  auto canonical =
-      std::filesystem::weakly_canonical(model->GetPath()).string();
-  return {ctx.catalog.GetName() + "|" + model->Id() + "|" + canonical + "|" +
-              provider,
-          model->Id(), std::move(canonical), std::move(provider),
-          package.estimated_resident_bytes, model};
+  return {model->Id(), model};
 }
 
 template <typename Runtime>
 std::shared_ptr<Runtime> AcquireRuntime(
     const ResolvedPackage& package) {
   return std::static_pointer_cast<Runtime>(
-      package.model->AcquireNonGenerativeRuntime(
-          package.model->Info().task, package.provider,
-          package.estimated_resident_bytes));
+      package.model->AcquireNonGenerativeRuntime());
 }
 
 template <typename Runtime, typename Request, bool IsRank>

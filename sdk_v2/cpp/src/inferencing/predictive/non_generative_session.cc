@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 #include "inferencing/predictive/non_generative_session.h"
 
-#include "catalog/non_generative_package.h"
 #include "contracts/non_generative.h"
 #include "exception.h"
 #include "inferencing/model_load_manager.h"
@@ -68,17 +67,8 @@ NonGenerativeSession::NonGenerativeSession(
   const auto& selected = *execution_model_;
   model_id_ = selected.Id();
   model_alias_ = selected.Info().alias;
-  const auto package = ReadNonGenerativePackage(selected.GetPath());
-  if (!package)
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             "model is not a non-generative package");
-  if (!package->task.empty() && package->task != selected.Info().task)
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             "package task does not match registered model task");
-  provider_ = package->execution_provider;
-  auto runtime = execution_model_->AcquireNonGenerativeRuntime(
-      selected.Info().task, provider_,
-      package->estimated_resident_bytes);
+  provider_ = selected.Info().execution_provider;
+  auto runtime = execution_model_->AcquireNonGenerativeRuntime();
   if (selected.Info().task == "text-ranking")
     ranking_ = std::static_pointer_cast<IRankingRuntime>(runtime);
   else if (selected.Info().task == "typed-decision")
