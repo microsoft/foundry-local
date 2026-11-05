@@ -48,6 +48,7 @@ class AzureModelCatalog : public BaseModelCatalog {
   virtual std::unique_ptr<ICatalogClient> CreateCatalogClient(const std::string& url,
                                                               const std::string& filter) const;
   VariantEligibility MakeVariantEligibility() const override;
+  VariantEligibility MakeVariantVisibility() const override;
   void RefreshRetainedVariantCache(Model& model) const override;
 
  private:
@@ -65,6 +66,9 @@ class AzureModelCatalog : public BaseModelCatalog {
 
   static constexpr const char* kDefaultCatalogUrl = Configuration::kDefaultCatalogUrl;
   static constexpr const char* kDefaultCatalogFilter = Configuration::kDefaultCatalogFilter;
+
+  VariantEligibility MakeCompatibilityPredicate(bool capacity_only) const;
+  void FilterCapacityIncompatibleModels(std::vector<Model>& models) const;
 
   CatalogResult GetLiveCatalogOrLocalSnapshot(const std::vector<std::string>& cached_model_ids) const;
   std::vector<Model> CreateModelsWithLocalPaths(const std::vector<ModelInfo>& model_infos,

@@ -180,6 +180,14 @@ void from_json(const nlohmann::json& j, VariantMetadata& v) {
   opt_str(j, "device", v.device);
   opt_str(j, "executionProvider", v.execution_provider);
   opt_int64(j, "fileSizeBytes", v.file_size_bytes);
+  const auto footprint = j.find("vRamFootprintBytes");
+  if (footprint != j.end() && footprint->is_number_integer() &&
+      (!footprint->is_number_unsigned() || footprint->get<uint64_t>() <= uint64_t{INT64_MAX})) {
+    const auto bytes = footprint->get<int64_t>();
+    if (bytes >= 0) {
+      v.vram_footprint_bytes = bytes;
+    }
+  }
 }
 
 void from_json(const nlohmann::json& j, VariantParent& v) {
@@ -408,6 +416,9 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
 
     if (vm.file_size_bytes) {
       info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT] = *vm.file_size_bytes / (1024 * 1024);
+    }
+    if (vm.vram_footprint_bytes) {
+      info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_VRAM_BYTES_INT] = *vm.vram_footprint_bytes;
     }
   } else {
     info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR] = "ONNX";

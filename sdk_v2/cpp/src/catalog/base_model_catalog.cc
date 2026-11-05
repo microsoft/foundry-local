@@ -23,6 +23,7 @@ BaseModelCatalog::~BaseModelCatalog() = default;
 
 void BaseModelCatalog::SelectDefaultVariant(Model& model, const VariantEligibility& is_eligible,
                                             bool preserve_explicit_selection) const {
+  model.UpdateVariantVisibility(MakeVariantVisibility());
   if (type_ == CatalogType::kPublic) {
     model.SetDefaultVariantRefresh([this] { EnsurePopulated(); });
   }
@@ -35,7 +36,7 @@ void BaseModelCatalog::SelectDefaultVariant(Model& model, const VariantEligibili
 
         logger_.Log(LogLevel::Information,
                     fmt::format("Catalog '{}': skipping variant '{}' for default selection because "
-                                "execution provider '{}' is unavailable.",
+                                "execution provider '{}' is unavailable or device capacity is incompatible.",
                                 name_, variant.Id(), variant.Info().execution_provider));
         return false;
       },
@@ -122,11 +123,11 @@ void BaseModelCatalog::PopulateModels(std::vector<Model> variants) const {
         }
 
         std::unordered_map<std::string, Model*> existing_variants;
-        for (auto* variant : existing->second->Variants()) {
+        for (auto* variant : existing->second->Variants(/*include_hidden=*/true)) {
           existing_variants.emplace(variant->Id(), variant);
         }
 
-        for (auto* variant : incoming.Variants()) {
+        for (auto* variant : incoming.Variants(/*include_hidden=*/true)) {
           const auto known = existing_variants.find(variant->Id());
           if (known == existing_variants.end()) {
             existing->second->AddVariant(std::move(*variant));
@@ -143,7 +144,7 @@ void BaseModelCatalog::PopulateModels(std::vector<Model> variants) const {
 
       for (const auto& [alias, existing] : existing_aliases) {
         if (!alias_to_model.contains(alias)) {
-          for (auto* variant : existing->Variants()) {
+          for (auto* variant : existing->Variants(/*include_hidden=*/true)) {
             RefreshRetainedVariantCache(*variant);
           }
         }
@@ -215,7 +216,7 @@ void BaseModelCatalog::IntegrateVariants(std::vector<Model> variants) const {
     if (!stored.active) {
       continue;
     }
-    for (auto* v : stored.model->Variants()) {
+    for (auto* v : stored.model->Variants(/*include_hidden=*/true)) {
       existing_ids.insert(v->Info().model_id);
     }
   }
@@ -288,7 +289,7 @@ void BaseModelCatalog::RebuildIndex() const {
     auto& m = stored.model;
     new_index->alias_index[m->Alias()] = m.get();
 
-    for (auto* variant : m->Variants()) {
+    for (auto* variant : m->Variants(/*include_hidden=*/true)) {
       const auto& info = variant->Info();
 
       if (!new_index->id_index.contains(info.model_id)) {
@@ -369,6 +370,7 @@ void BaseModelCatalog::EnsurePopulated(bool allow_refresh) const {
 
 std::vector<Model*> BaseModelCatalog::ListModels() const {
   EnsurePopulated(/*allow_refresh=*/true);
+  const auto is_visible = MakeVariantVisibility();
 
   // PopulateModels appends to models_ under mutex_; iterate under the same lock so a
   // concurrent EnsurePopulated cannot reallocate the vector mid-iteration.
@@ -377,6 +379,11 @@ std::vector<Model*> BaseModelCatalog::ListModels() const {
   result.reserve(models_.size());
   for (auto& stored : models_) {
     if (stored.active) {
+      const auto variants = stored.model->Variants();
+      if (is_visible && !std::any_of(variants.begin(), variants.end(),
+                                     [&](const Model* variant) { return is_visible(*variant); })) {
+        continue;
+      }
       result.push_back(stored.model.get());
     }
   }
@@ -488,7 +495,7 @@ std::vector<Model*> BaseModelCatalog::GetCachedModels() const {
       continue;
     }
 
-    for (auto* variant : stored.model->Variants()) {
+    for (auto* variant : stored.model->Variants(/*include_hidden=*/true)) {
       if (variant->IsCached()) {
         result.push_back(variant);
       }
@@ -508,7 +515,7 @@ std::vector<Model*> BaseModelCatalog::GetLoadedModels() const {
       continue;
     }
 
-    for (auto* variant : stored.model->Variants()) {
+    for (auto* variant : stored.model->Variants(/*include_hidden=*/true)) {
       if (variant->IsLoaded()) {
         result.push_back(variant);
       }
@@ -538,7 +545,7 @@ bool BaseModelCatalog::RetireModel(const std::string& alias_or_model_id) {
     }
 
     bool matches = stored.model->Alias() == alias_or_model_id;
-    for (auto* variant : stored.model->Variants()) {
+    for (auto* variant : stored.model->Variants(/*include_hidden=*/true)) {
       matches = matches || variant->Id() == alias_or_model_id;
     }
 

@@ -100,6 +100,7 @@ class BaseModelCatalog : public ICatalog {
   /// Each selection pass uses one provider snapshot; an empty predicate makes every variant eligible.
   using VariantEligibility = std::function<bool(const Model&)>;
   virtual VariantEligibility MakeVariantEligibility() const { return {}; }
+  virtual VariantEligibility MakeVariantVisibility() const { return {}; }
 
  private:
   /// Lookup indices into the stable models_ storage.
