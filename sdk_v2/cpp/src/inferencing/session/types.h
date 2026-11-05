@@ -14,6 +14,7 @@ enum class SessionType {
   kAudio,
   kPredictive,
   kEmbeddings,
+  kSpeechSynthesis,
 };
 
 /// How a tool's arguments are shaped, and therefore how a generated call is interpreted.

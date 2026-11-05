@@ -103,6 +103,26 @@ TEST(GenAIConfigModelTest, IsMultiModalFalseForOtherTypes) {
   EXPECT_FALSE(model.IsMultiModal());
 }
 
+TEST_F(GenAIConfigTest, ParsesSpeechSynthesisModel) {
+  const auto config = GenAIConfig::LoadFromFile(WriteFile("genai_config.json", R"({"model": {
+    "type": "vibevoice",
+    "sample_rate": 24000
+  }})"));
+  ASSERT_TRUE(config.model.has_value());
+  EXPECT_TRUE(config.model->IsSpeechSynthesis());
+  EXPECT_FALSE(config.model->IsMultiModal());
+  EXPECT_EQ(config.model->sample_rate, 24000);
+
+  // A missing or invalid sample rate stays 0.
+  for (const char* value : {R"("x")", "0", "-1", "1.5", "4294967296"}) {
+    const std::string json = std::string(R"({"model": {"type": "vibevoice", "sample_rate": )") + value + "}}";
+    const auto invalid = GenAIConfig::LoadFromFile(WriteFile("genai_config.json", json));
+    EXPECT_EQ(invalid.model->sample_rate, 0) << value;
+  }
+
+  EXPECT_FALSE(GenAIConfig::OnnxModel{}.IsSpeechSynthesis());
+}
+
 // ========================================================================
 // DefaultProvider
 // ========================================================================

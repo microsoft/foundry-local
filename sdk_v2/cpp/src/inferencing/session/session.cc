@@ -6,6 +6,7 @@
 #include "inferencing/generative/audio/audio_session.h"
 #include "inferencing/generative/chat/chat_session.h"
 #include "inferencing/generative/embeddings/embeddings_session.h"
+#include "inferencing/generative/speech_synthesis/speech_synthesis_session.h"
 #include "inferencing/model_load_manager.h"
 #include "inferencing/session/session_manager.h"
 #include "items/message_item.h"
@@ -120,6 +121,12 @@ std::unique_ptr<Session> Session::Create(const fl::Model& model) {
 
     if (info.task == "embeddings") {
       auto session = std::make_unique<EmbeddingsSession>(model, *loaded, logger, telemetry);
+      tracker.SetStatus(ActionStatus::kSuccess);
+      return session;
+    }
+
+    if (info.task == "text-to-speech") {
+      auto session = std::make_unique<SpeechSynthesisSession>(model, *loaded, logger, telemetry);
       tracker.SetStatus(ActionStatus::kSuccess);
       return session;
     }

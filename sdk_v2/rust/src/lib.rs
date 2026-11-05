@@ -11,6 +11,7 @@ mod item_queue;
 mod request;
 mod response;
 mod session;
+mod speech;
 mod types;
 
 pub(crate) mod detail;
@@ -31,6 +32,10 @@ pub use self::response::{FinishReason, Response, Usage};
 pub use self::session::{
     AudioSession, ChatSession, CustomToolDefinition, EmbeddingsSession, ItemStream,
     RequestPreflightResult, Session, ToolDefinition,
+};
+pub use self::speech::{
+    SpeechAudio, SpeechOptions, SpeechStream, SpeechSynthesisSession, SpeechVoice,
+    TEXT_TO_SPEECH_TASK,
 };
 pub use self::types::{
     CatalogType, ChatResponseFormat, ChatToolChoice, DeviceType, EpDownloadResult, EpInfo,

@@ -13,6 +13,9 @@ namespace fl {
 /// Each pair of bytes becomes one float sample. A trailing odd byte is ignored.
 std::vector<float> ConvertS16LEToFloat(const uint8_t* pcm_bytes, size_t byte_count);
 
+/// Convert float32 samples to 16-bit signed little-endian PCM bytes. Samples are clipped to [-1.0, 1.0]; NaN becomes 0.
+std::vector<uint8_t> ConvertFloatToS16LE(const std::vector<float>& samples);
+
 namespace AudioInternal {
 
 /// Load a mono or multichannel 16 kHz PCM16/float32 WAV file and mix it to mono float32 samples.

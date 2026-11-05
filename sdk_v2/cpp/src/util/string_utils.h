@@ -63,6 +63,13 @@ inline bool IsValidUtf8(std::string_view text) {
   return true;
 }
 
+/// Count the code points of UTF-8 text: every byte that is not a continuation byte (10xxxxxx) starts one. Use
+/// IsValidUtf8 first when the text can be malformed.
+inline size_t CountCodePoints(std::string_view utf8) {
+  return static_cast<size_t>(std::count_if(utf8.begin(), utf8.end(),
+                                           [](char c) { return (static_cast<unsigned char>(c) & 0xC0) != 0x80; }));
+}
+
 template <typename... Args>
 std::string MakeString(Args&&... args) {
   std::ostringstream out;

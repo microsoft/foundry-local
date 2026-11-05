@@ -15,4 +15,5 @@ mod live_audio_test;
 mod manager_test;
 mod model_test;
 mod session_test;
+mod speech_test;
 mod web_service_test;

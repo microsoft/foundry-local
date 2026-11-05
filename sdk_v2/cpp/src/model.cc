@@ -960,6 +960,26 @@ const StaticIOCache& AutomaticSpeechRecognitionIO() {
   return cache;
 }
 
+const StaticIOCache& TextToSpeechIO() {
+  static const StaticIOCache cache = [] {
+    StaticIOCache c;
+    c.input_items.push_back(Item::Create(FOUNDRY_LOCAL_ITEM_TEXT));
+    c.output_items.push_back(Item::Create(FOUNDRY_LOCAL_ITEM_AUDIO));
+
+    for (const auto& item : c.input_items) {
+      c.input_ptrs.push_back(item.get());
+    }
+
+    for (const auto& item : c.output_items) {
+      c.output_ptrs.push_back(item.get());
+    }
+
+    return c;
+  }();
+
+  return cache;
+}
+
 Model::IOInfo IOInfoFromCache(const StaticIOCache& cache) {
   return {cache.input_ptrs.data(), cache.input_ptrs.size(),
           cache.output_ptrs.data(), cache.output_ptrs.size()};
@@ -984,6 +1004,10 @@ Model::IOInfo Model::GetInputOutputInfo() const {
 
   if (task == "automatic-speech-recognition") {
     return IOInfoFromCache(AutomaticSpeechRecognitionIO());
+  }
+
+  if (task == "text-to-speech") {
+    return IOInfoFromCache(TextToSpeechIO());
   }
 
   FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED,
