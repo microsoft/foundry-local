@@ -275,7 +275,8 @@ std::shared_ptr<void> ModelLoadManager::AcquireNonGenerativeRuntime(
              "package task does not match registered model task");
   const auto provider_name = package.execution_provider;
   const auto identity =
-      "non-generative|" + model.Id() + "|" + canonical + "|" + provider_name;
+      "non-generative|" + model.Id() + "|" + canonical + "|" +
+      provider_name + "|" + task;
   return AcquireManagedRuntime(
       identity, model.Id(), canonical, package.estimated_resident_bytes,
       provider_name.empty() ? "cpu" : provider_name,

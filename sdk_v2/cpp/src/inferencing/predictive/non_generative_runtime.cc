@@ -19,6 +19,7 @@ namespace fl {
 namespace {
 
 using json = nlohmann::ordered_json;
+constexpr size_t kMaximumQueuedRequests = 64;
 
 std::unique_ptr<::NonGenerativeSession> CreateSession(const std::string& path) {
   auto config = OgaConfig::Create(path.c_str());
@@ -107,11 +108,12 @@ class SessionExecutor {
       std::lock_guard lock(mutex_);
       if (stopping_)
         throw std::runtime_error("typed runtime is stopping");
-      if (tasks_.size() >= 64)
-        throw std::runtime_error("typed runtime request queue is full");
+      if (tasks_.size() >= kMaximumQueuedRequests)
+        throw RuntimeCapacityError("typed runtime request queue is full");
       tasks_.emplace_back(
           [promise, state,
-           function = std::forward<Function>(function)](
+           function = std::forward<Function>(function),
+           is_canceled](
               Session& session) mutable {
             try {
               int queued = 0;
@@ -119,6 +121,9 @@ class SessionExecutor {
                 throw std::runtime_error(
                     "non-generative request was canceled before execution");
               }
+              if (is_canceled && is_canceled())
+                throw std::runtime_error(
+                    "non-generative request was canceled before execution");
               if constexpr (std::is_void_v<Result>) {
                 std::invoke(function, session);
                 promise->set_value();

@@ -2,15 +2,15 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "inferencing/model_load_manager.h"
 #include "inferencing/predictive/non_generative_runtime.h"
 #include "inferencing/session/session.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace fl {
-
-class ModelLoadManager;
 
 class NonGenerativeSession final : public Session {
  public:
@@ -32,6 +32,8 @@ class NonGenerativeSession final : public Session {
     ModelLoadManager* manager{};
   };
   void ReleaseRuntime();
+  std::optional<ModelLoadManager::PredictiveRequestLease>
+      construction_lifetime_;
   std::unique_ptr<Model> execution_model_;
   std::shared_ptr<Lifecycle> lifecycle_;
   std::string model_id_;
