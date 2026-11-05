@@ -191,30 +191,37 @@ with `--ort_genai_home /path/to/onnxruntime-genai` so the native
 `OgaConfig`-based `NonGenerativeSession` API is available.
 
 Cached catalog models can also be used directly without starting the web
-service or calling the generative `Load` path:
+service. The normal lifecycle uses the same model-owned manager as other
+tasks: load the model, create a task session, process requests, destroy the
+session, and unload the model. Creating the task session without an explicit
+`Load()` is supported as a lazy-loading convenience and uses that same
+model-owned runtime.
 
 ```cpp
-foundry_local::RankingSession ranking(clm_model);
-const auto ranked = ranking.RankJson(R"({
-  "context":{"weather":"heavy rain"},
-  "question":"Which activity is more suitable?",
-  "answers":["Have a picnic outdoors","Visit an indoor museum"]
-})");
-
-foundry_local::DecisionSession decision(kev_model);
-const auto answers = decision.DecideJson(R"({
-  "state":{"weather":"heavy rain"},
-  "questions":{"umbrella":{
-    "type":"noul",
-    "instructions":"Should I take an umbrella?"
-  }}
-})");
+clm_model.Load();
+{
+  foundry_local::RankingSession ranking(clm_model);
+  const auto ranked = ranking.RankJson(R"({
+    "context":{"weather":"heavy rain"},
+    "question":"Which activity is more suitable?",
+    "answers":["Have a picnic outdoors","Visit an indoor museum"]
+  })");
+}
+clm_model.Unload();
 ```
 
-The SDK methods use the same JSON contracts and response shapes as
-`POST /v1/rank` and `POST /v1/systemone`. The C ABI remains unchanged: all
-language bindings use the existing `flSession`, `flRequest`, `flResponse`, and
-OpenAI-JSON text-item contract.
+The session already selects the model. The JSON `model` field may be omitted;
+a matching bound model ID or alias is accepted, while a different model is
+rejected rather than routed elsewhere. Temperature precedence is JSON value,
+then request options, then session defaults. Ordinary text items containing
+JSON are accepted; responses retain the compatibility OpenAI-JSON text tag.
+These are Foundry task payloads, not standard OpenAI request schemas.
+
+The SDK methods use the same payload and response shapes as
+`POST /catalogs/local/v1/rank` and
+`POST /catalogs/local/v1/systemone`. The C ABI remains unchanged: all language
+bindings use the existing `flSession`, `flRequest`, `flResponse`, and JSON
+text-item contract.
 
 ## Build From Source
 

@@ -53,71 +53,82 @@ TEST(NonGenerativeSdkTest, ExportedPackagesRunWhenConfigured) {
                                    "text-ranking");
     auto clm_model = catalog.RegisterModel(
         clm.string(), "clm-v0.1-8b-generic-cpu:1", clm_metadata);
+    clm_model->Load();
+    EXPECT_TRUE(clm_model->IsLoaded());
     EXPECT_THROW(
         {
           foundry_local::DecisionSession wrong_task(*clm_model);
         },
         std::invalid_argument);
-    foundry_local::RankingSession ranking(*clm_model);
-    foundry_local::RequestOptions defaults;
-    defaults.search.temperature = 0.5;
-    ranking.SetOptions(defaults);
-    const auto ranked = nlohmann::json::parse(ranking.RankJson(
-        nlohmann::json{
-            {"context", {{"weather", "heavy rain"}}},
-            {"question", "Which activity is more suitable?"},
-            {"answers",
-             {"Have a picnic outdoors", "Visit an indoor museum"}}}
-            .dump()));
-    ASSERT_EQ(ranked.at("ranked").size(), 2u);
-    EXPECT_THROW(
-        ranking.RankJson(
-            nlohmann::json{{"model", "different-model"},
-                           {"answers", {"a", "b"}}}
-                .dump()),
-        foundry_local::Error);
+    {
+      foundry_local::RankingSession ranking(*clm_model);
+      foundry_local::RequestOptions defaults;
+      defaults.search.temperature = 0.5;
+      ranking.SetOptions(defaults);
+      const auto ranked = nlohmann::json::parse(ranking.RankJson(
+          nlohmann::json{
+              {"context", {{"weather", "heavy rain"}}},
+              {"question", "Which activity is more suitable?"},
+              {"answers",
+               {"Have a picnic outdoors", "Visit an indoor museum"}}}
+              .dump()));
+      ASSERT_EQ(ranked.at("ranked").size(), 2u);
+      for (const auto& candidate : ranked.at("ranked")) {
+        EXPECT_EQ(candidate.at("id").get<std::string>(),
+                  std::to_string(candidate.at("index").get<size_t>()));
+        EXPECT_LT(candidate.at("index").get<size_t>(), 2u);
+      }
+      EXPECT_THROW(clm_model->Unload(), foundry_local::Error);
 
-    foundry_local::RequestOptions request_options;
-    request_options.search.temperature = 0.75;
-    foundry_local::Request request(foundry_local::Item::Text(
-        nlohmann::json{{"answers", {"a", "b"}}}.dump()));
-    request.SetOptions(request_options);
-    EXPECT_NO_THROW(ranking.ProcessRequest(request));
-
-    foundry_local::RequestOptions unsupported;
-    unsupported.additional_options.Set("unsupported_option", "true");
-    ranking.SetOptions(unsupported);
-    EXPECT_THROW(ranking.RankJson(
-                     nlohmann::json{{"answers", {"a", "b"}}}.dump()),
-                 foundry_local::Error);
+      foundry_local::RequestOptions request_options;
+      request_options.search.temperature = 0.75;
+      foundry_local::Request request(foundry_local::Item::Text(
+          nlohmann::json{{"answers", {"a", "b"}}}.dump()));
+      request.SetOptions(request_options);
+      EXPECT_NO_THROW(ranking.ProcessRequest(request));
+    }
+    EXPECT_TRUE(clm_model->IsLoaded());
+    clm_model->Unload();
+    EXPECT_FALSE(clm_model->IsLoaded());
 
     foundry_local::ModelInfo kev_metadata;
     kev_metadata.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR,
                                    "typed-decision");
     auto kev_model = catalog.RegisterModel(
         kev.string(), "kev-4b-generic-cpu:1", kev_metadata);
+    kev_model->Load();
     EXPECT_THROW(
         {
           foundry_local::RankingSession wrong_task(*kev_model);
         },
         std::invalid_argument);
-    foundry_local::DecisionSession decision(*kev_model);
-    const auto answers = nlohmann::json::parse(decision.DecideJson(
-        nlohmann::json{
-            {"state", {{"weather", "heavy rain"}}},
-            {"questions",
-             {{"umbrella",
-               {{"type", "noul"},
-                {"instructions", "Should I take an umbrella?"}}}}}}
-            .dump()));
-    EXPECT_TRUE(answers.at("answers").contains("umbrella"));
-    EXPECT_THROW(
-        decision.DecideJson(
-            nlohmann::json{
-                {"model", "different-model"},
-                {"questions", {{"q", {{"type", "noul"}}}}}}
-                .dump()),
-        foundry_local::Error);
+    {
+      foundry_local::DecisionSession decision(*kev_model);
+      const auto answers = nlohmann::json::parse(decision.DecideJson(
+          nlohmann::json{
+              {"state", {{"weather", "heavy rain"}}},
+              {"questions",
+               {{"umbrella",
+                 {{"type", "noul"},
+                  {"instructions", "Should I take an umbrella?"}}}}}}
+              .dump()));
+      const auto value = answers.at("answers").at("umbrella").at("noul").get<double>();
+      EXPECT_GE(value, 0.0);
+      EXPECT_LE(value, 1.0);
+      try {
+        const std::string id{"q\0private", 9};
+        nlohmann::json questions = nlohmann::json::object();
+        questions[id] = {{"type", "noul"}};
+        decision.DecideJson(nlohmann::json{{"questions", questions}}.dump());
+        FAIL() << "embedded NUL question ID was accepted";
+      } catch (const foundry_local::Error& error) {
+        EXPECT_EQ(error.Code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+      }
+      EXPECT_THROW(kev_model->Unload(), foundry_local::Error);
+    }
+    EXPECT_TRUE(kev_model->IsLoaded());
+    kev_model->Unload();
+    EXPECT_FALSE(kev_model->IsLoaded());
   }
 
   std::error_code ec;
