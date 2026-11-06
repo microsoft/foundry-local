@@ -145,19 +145,13 @@ TEST(NonGenerativeSdkTest, ExportedPackagesRunWhenConfigured) {
 
 TEST(NonGenerativeSdkTest, RequiredKevPackageRunsFromSharedCache) {
   const auto test_data = fl::test::SafeGetEnv("FOUNDRY_TEST_DATA_DIR");
-  if (test_data.empty()) {
-    if (fl::test::SafeGetEnv("TF_BUILD") == "true")
-      FAIL() << "FOUNDRY_TEST_DATA_DIR is required in CI";
-    GTEST_SKIP() << "set FOUNDRY_TEST_DATA_DIR";
-  }
+  ASSERT_FALSE(test_data.empty())
+      << "FOUNDRY_TEST_DATA_DIR is required for this real-model test";
   const auto package =
       std::filesystem::path(test_data) / "Microsoft" /
       "kev-0.8b-mixed-generic-cpu-1";
   if (!std::filesystem::is_directory(package)) {
-    if (fl::test::SafeGetEnv(
-            "FOUNDRY_LOCAL_REQUIRE_NON_GENERATIVE_TESTS") == "1")
-      FAIL() << "required KEV package is missing: " << package;
-    GTEST_SKIP() << "KEV package is not staged in this lane: " << package;
+    FAIL() << "required KEV package is missing: " << package;
   }
 
   const auto app_data =
