@@ -546,6 +546,23 @@ std::shared_ptr<void> Model::AcquireNonGenerativeRuntime() {
       *this, [&] { lifecycle_lock.unlock(); });
 }
 
+std::shared_ptr<void> Model::AcquireLoadedNonGenerativeRuntime() {
+  if (IsContainer()) {
+    Model* selected;
+    {
+      std::lock_guard lifecycle_lock(lifecycle_mutex_);
+      selected = selected_variant_.load(std::memory_order_acquire);
+    }
+    return selected->AcquireLoadedNonGenerativeRuntime();
+  }
+
+  std::lock_guard lifecycle_lock(lifecycle_mutex_);
+  if (!active_ || unregistering_)
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "model is no longer registered");
+  return model_load_manager_->AcquireLoadedNonGenerativeRuntime(*this);
+}
+
 // ---------------------------------------------------------------------------
 // Mutation (delegate to selected_variant_ when container)
 // ---------------------------------------------------------------------------

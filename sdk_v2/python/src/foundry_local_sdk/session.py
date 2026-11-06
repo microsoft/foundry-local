@@ -12,7 +12,9 @@ import queue
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Self, TypeGuard
+
+from foundry_local_sdk.request import _cancellable_lock
 
 if TYPE_CHECKING:
     from foundry_local_sdk.imodel import IModel
@@ -74,7 +76,9 @@ class StreamingResponse:
     The wrapper can be iterated at most once; a second ``iter()`` raises.
     """
 
-    def __init__(self, session: "Session", request: "Request") -> None:
+    def __init__(
+        self, session: "Session", request: "Request", cancel_event: threading.Event | None = None
+    ) -> None:
         from foundry_local_sdk._native import ffi
         from foundry_local_sdk._native.api import api
 
@@ -92,15 +96,24 @@ class StreamingResponse:
         self._lock_released = False
         self._thread: threading.Thread | None = None
 
-        session._stream_queue = self._queue
         worker_started = threading.Event()
 
         def _run() -> None:
             try:
-                with session._native_lifetime() as ptr:
-                    worker_started.set()
-                    out = ffi.new("flResponse**")
-                    api.check_status(api.inference.Session_ProcessRequest(ptr, request._ptr, out))
+                with (
+                    session._native_lifetime(cancel_event) as ptr,
+                    request._native_lifetime(cancel_event) as request_ptr,
+                    request._cancellation(cancel_event),
+                ):
+                    session._stream_queue = self._queue
+                    try:
+                        worker_started.set()
+                        out = ffi.new("flResponse**")
+                        api.check_status(
+                            api.inference.Session_ProcessRequest(ptr, request_ptr, out)
+                        )
+                    finally:
+                        session._stream_queue = None
                 from foundry_local_sdk.response import Response
 
                 # Response takes ownership of out[0]; wrapper releases it.
@@ -110,7 +123,6 @@ class StreamingResponse:
                 self._error = exc
                 self._queue.put(_StreamError(exc))
             finally:
-                session._stream_queue = None
                 self._queue.put(_DONE)
 
         t = threading.Thread(target=_run, daemon=True)
@@ -302,8 +314,8 @@ class Session(abc.ABC):
             raise FoundryLocalException(f"{type(self).__name__} has been closed and can no longer be used.")
 
     @contextmanager
-    def _native_lifetime(self) -> Iterator[object]:
-        with self._operation_lock:
+    def _native_lifetime(self, cancel_event: threading.Event | None = None) -> Iterator[object]:
+        with self._operation_lock if cancel_event is None else _cancellable_lock(self._operation_lock, cancel_event):
             self._check_open()
             state = self._native_call_state
             state.depth = getattr(state, "depth", 0) + 1
@@ -386,6 +398,8 @@ class Session(abc.ABC):
     def process_streaming_request(
         self,
         request: "Request",
+        *,
+        cancel_event: threading.Event | None = None,
     ) -> "StreamingResponse":
         """Run a request and stream the items produced by the model.
 
@@ -410,6 +424,10 @@ class Session(abc.ABC):
         automatically calls ``request.cancel()`` and joins the worker so
         the session is ready for the next request. Use ``with`` on the
         returned wrapper to guarantee cleanup of the terminal Response.
+
+        Setting ``cancel_event`` cancels admission waits or native processing without requiring another output item.
+        An event already set before processing starts rejects without submitting inference. Native completion can win
+        a cancellation race. Native non-interruptible stages can delay cancellation and cleanup.
 
         Requires ``set_streaming(True)`` to have been called first.
 
@@ -436,20 +454,31 @@ class Session(abc.ABC):
             )
 
         try:
-            return StreamingResponse(self, request)
+            return StreamingResponse(self, request, cancel_event)
         except BaseException:
             self._streaming_in_flight.release()
             raise
 
-    def process_request(self, request: "Request") -> "Response":
-        """Run the request synchronously and return the complete response."""
+    def process_request(
+        self, request: "Request", *, cancel_event: threading.Event | None = None
+    ) -> "Response":
+        """Run synchronously; setting ``cancel_event`` from another thread cancels native processing.
+
+        Cancellation also interrupts waits for the session or request to become available. An event already set rejects
+        without submitting inference. Native completion can win a cancellation race, and native non-interruptible
+        stages can delay cancellation and cleanup.
+        """
         from foundry_local_sdk._native import ffi
         from foundry_local_sdk._native.api import api
         from foundry_local_sdk.response import Response
 
-        with self._native_lifetime() as ptr:
+        with (
+            self._native_lifetime(cancel_event) as ptr,
+            request._native_lifetime(cancel_event) as request_ptr,
+            request._cancellation(cancel_event),
+        ):
             out = ffi.new("flResponse**")
-            api.check_status(api.inference.Session_ProcessRequest(ptr, request._ptr, out))
+            api.check_status(api.inference.Session_ProcessRequest(ptr, request_ptr, out))
             return Response(out[0])
 
     def _close(self) -> None:
@@ -468,13 +497,14 @@ class Session(abc.ABC):
         t = getattr(self, "_stream_thread", None)
         if t is not None and t.is_alive():
             req = getattr(self, "_stream_request", None)
-            if req is not None:
-                try:
-                    req.cancel()
-                except Exception:
-                    pass
             # Session_Release and the manager lease must wait until native processing exits.
-            t.join()
+            while t.is_alive():
+                if req is not None:
+                    try:
+                        req.cancel()
+                    except Exception:
+                        pass
+                t.join(timeout=0.01)
 
         with self._operation_lock:
             if self._closed or self._ptr is None:
@@ -699,7 +729,7 @@ def _validate_temperature(value: object) -> None:
         raise ValueError("temperature must be in (0, 100]")
 
 
-def _is_finite_number(value: object) -> bool:
+def _is_finite_number(value: object) -> TypeGuard[int | float]:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return False
     try:
@@ -744,7 +774,14 @@ class RankingSession(Session):
         super().__init__(model)
 
     def rank(self, request: "RankingRequest") -> "RankingResult":
-        """Rank candidates using the same contract as ``POST /v1/rank``."""
+        """Rank candidates using the Foundry ranking contract.
+
+        An explicit request temperature overrides request options and session
+        defaults; ``None`` inherits the native option merge. Other chat decoder
+        options are not generally supported. This typed payload is not a
+        cancellation handle. For cancellation, build a native ``Request`` and
+        call ``process_request(request, cancel_event=...)``.
+        """
         from foundry_local_sdk.session_types import RankedCandidate, RankingRequest, RankingResult
 
         if not isinstance(request, RankingRequest):
@@ -812,7 +849,14 @@ class DecisionSession(Session):
         super().__init__(model)
 
     def decide(self, request: "DecisionRequest") -> "DecisionResult":
-        """Answer typed questions using the same contract as ``POST /v1/systemone``."""
+        """Answer typed questions using the Foundry decision contract.
+
+        An explicit temperature overrides request options and session defaults;
+        leaving it unset inherits native option merging. Decision temperature
+        must resolve to ``1.0`` and other chat decoder options are not generally
+        supported. For cancellation, use a native ``Request`` with
+        ``process_request(request, cancel_event=...)``.
+        """
         from typing import cast
 
         from foundry_local_sdk.session_types import (
@@ -827,36 +871,37 @@ class DecisionSession(Session):
         if not isinstance(request.questions, dict) or not request.questions:
             raise ValueError("questions must be a non-empty dictionary")
         for question_id, question in request.questions.items():
-            if not isinstance(question_id, str) or not question_id:
-                raise ValueError("question names must be non-empty strings")
+            if not isinstance(question_id, str):
+                raise TypeError("question names must be strings")
             if not isinstance(question, dict):
                 raise TypeError(f"questions.{question_id} must be a dictionary")
-            question_type = question.get("type")
+            question_value = cast(dict[str, object], question)
+            question_type = question_value.get("type")
             if question_type not in {"noul", "choice", "score"}:
                 raise ValueError(f"questions.{question_id}.type must be 'noul', 'choice', or 'score'")
-            criteria = question.get("criteria")
+            criteria = question_value.get("criteria")
             if question_type == "choice" and (
-                not isinstance(criteria, dict) or not 1 <= len(criteria) <= 256
+                not isinstance(criteria, dict) or not 1 <= len(criteria) <= 255
             ):
                 raise ValueError(
-                    f"questions.{question_id}.criteria must be an object with 1 to 256 entries"
+                    f"questions.{question_id}.criteria must be an object with 1 to 255 entries"
                 )
             if question_type == "score" and (
-                not isinstance(criteria, list) or not 1 <= len(criteria) <= 256
+                not isinstance(criteria, list) or not 1 <= len(criteria) <= 255
             ):
                 raise ValueError(
-                    f"questions.{question_id}.criteria must be an array with 1 to 256 entries"
+                    f"questions.{question_id}.criteria must be an array with 1 to 255 entries"
                 )
             for field in ("criteria", "instructions"):
-                if field in question:
-                    _validate_json_value(question[field], f"questions.{question_id}.{field}")
+                if field in question_value:
+                    _validate_json_value(question_value[field], f"questions.{question_id}.{field}")
         _validate_json_value(request.state, "state")
         if request.temperature is not None:
             _validate_temperature(request.temperature)
             if request.temperature != 1.0:
                 raise ValueError("decision temperature must be exactly 1.0")
 
-        payload = {
+        payload: dict[str, object] = {
             "state": request.state,
             "questions": request.questions,
         }

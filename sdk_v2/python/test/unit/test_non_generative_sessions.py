@@ -189,6 +189,21 @@ def test_decision_session_parses_typed_response_and_closes_once(monkeypatch):
         session.decide(DecisionRequest(questions={"q": {"type": "noul"}}))
 
 
+def test_decision_preserves_empty_question_id(monkeypatch):
+    _install_native(
+        monkeypatch,
+        {
+            "model": "kev:1",
+            "answers": {"": {"type": "noul", "noul": 0.5}},
+            "usage": {"billing_units": 0},
+        },
+    )
+    result = _fake_session(DecisionSession).decide(
+        DecisionRequest(questions={"": {"type": "noul"}})
+    )
+    assert result.answers[""]["noul"] == 0.5
+
+
 @pytest.mark.parametrize(
     ("session_type", "task", "required_task"),
     [
@@ -276,6 +291,33 @@ def test_decision_rejects_malformed_optional_metadata(monkeypatch, answer):
         )
     assert ("request-release", _REQUEST) in calls
     assert ("response-release", _RESPONSE) in calls
+
+
+@pytest.mark.parametrize("question_type", ["choice", "score"])
+@pytest.mark.parametrize("count", [255, 256])
+def test_decision_criteria_boundary(monkeypatch, question_type, count):
+    criteria = (
+        {str(index): str(index) for index in range(count)}
+        if question_type == "choice"
+        else list(range(count))
+    )
+    answer = (
+        {"type": "choice", "choice": "0"}
+        if question_type == "choice"
+        else {"type": "score", "score": 0.0}
+    )
+    _install_native(
+        monkeypatch,
+        {"model": "kev:1", "answers": {"q": answer}, "usage": {"billing_units": 0}},
+    )
+    request = DecisionRequest(
+        questions={"q": {"type": question_type, "criteria": criteria}}  # type: ignore[typeddict-item]
+    )
+    if count == 255:
+        assert _fake_session(DecisionSession).decide(request).answers["q"]["type"] == question_type
+    else:
+        with pytest.raises(ValueError, match="1 to 255"):
+            _fake_session(DecisionSession).decide(request)
 
 
 @pytest.mark.parametrize(

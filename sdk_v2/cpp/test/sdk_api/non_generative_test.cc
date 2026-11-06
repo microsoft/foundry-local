@@ -63,7 +63,7 @@ TEST(NonGenerativeSdkTest, ExportedPackagesRunWhenConfigured) {
     {
       foundry_local::RankingSession ranking(*clm_model);
       foundry_local::RequestOptions defaults;
-      defaults.search.temperature = 0.5;
+      defaults.search.temperature = 0.5f;
       ranking.SetOptions(defaults);
       const auto ranked = nlohmann::json::parse(ranking.RankJson(
           nlohmann::json{
@@ -79,9 +79,17 @@ TEST(NonGenerativeSdkTest, ExportedPackagesRunWhenConfigured) {
         EXPECT_LT(candidate.at("index").get<size_t>(), 2u);
       }
       EXPECT_THROW(clm_model->Unload(), foundry_local::Error);
+      try {
+        const std::string answer{"a\0private", 9};
+        ranking.RankJson(
+            nlohmann::json{{"answers", {"valid", answer}}}.dump());
+        FAIL() << "embedded NUL ranking answer was accepted";
+      } catch (const foundry_local::Error& error) {
+        EXPECT_EQ(error.Code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+      }
 
       foundry_local::RequestOptions request_options;
-      request_options.search.temperature = 0.75;
+      request_options.search.temperature = 0.75f;
       foundry_local::Request request(foundry_local::Item::Text(
           nlohmann::json{{"answers", {"a", "b"}}}.dump()));
       request.SetOptions(request_options);
@@ -131,6 +139,65 @@ TEST(NonGenerativeSdkTest, ExportedPackagesRunWhenConfigured) {
     EXPECT_FALSE(kev_model->IsLoaded());
   }
 
+  std::error_code ec;
+  std::filesystem::remove_all(app_data, ec);
+}
+
+TEST(NonGenerativeSdkTest, RequiredKevPackageRunsFromSharedCache) {
+  const auto test_data = fl::test::SafeGetEnv("FOUNDRY_TEST_DATA_DIR");
+  if (test_data.empty()) {
+    if (fl::test::SafeGetEnv("TF_BUILD") == "true")
+      FAIL() << "FOUNDRY_TEST_DATA_DIR is required in CI";
+    GTEST_SKIP() << "set FOUNDRY_TEST_DATA_DIR";
+  }
+  const auto package =
+      std::filesystem::path(test_data) / "Microsoft" /
+      "kev-0.8b-mixed-generic-cpu-1";
+  if (!std::filesystem::is_directory(package)) {
+    if (fl::test::SafeGetEnv(
+            "FOUNDRY_LOCAL_REQUIRE_NON_GENERATIVE_TESTS") == "1")
+      FAIL() << "required KEV package is missing: " << package;
+    GTEST_SKIP() << "KEV package is not staged in this lane: " << package;
+  }
+
+  const auto app_data =
+      std::filesystem::temp_directory_path() /
+      ("fl_required_kev_sdk_" +
+       std::to_string(
+           std::chrono::steady_clock::now().time_since_epoch().count()));
+  std::filesystem::create_directories(app_data);
+  {
+    foundry_local::Configuration config("required-kev-sdk-test");
+    config.SetAppDataDir(app_data.string());
+    foundry_local::Manager manager(std::move(config));
+    auto& catalog = manager.GetCatalog(FOUNDRY_LOCAL_CATALOG_LOCAL);
+    foundry_local::ModelInfo metadata;
+    metadata.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR,
+                               "typed-decision");
+    auto model = catalog.RegisterModel(
+        package.string(), "kev-0.8b-mixed-generic-cpu:1", metadata);
+    model->Load();
+    EXPECT_TRUE(model->IsLoaded());
+    {
+      foundry_local::DecisionSession session(*model);
+      const auto result = nlohmann::json::parse(session.DecideJson(
+          nlohmann::json{
+              {"state", {{"weather", "heavy rain"}}},
+              {"questions",
+               {{"umbrella",
+                 {{"type", "noul"},
+                  {"instructions", "Should I take an umbrella?"}}}}}}
+              .dump()));
+      const auto value =
+          result.at("answers").at("umbrella").at("noul").get<double>();
+      EXPECT_GE(value, 0.0);
+      EXPECT_LE(value, 1.0);
+      EXPECT_THROW(model->Unload(), foundry_local::Error);
+    }
+    EXPECT_TRUE(model->IsLoaded());
+    model->Unload();
+    EXPECT_FALSE(model->IsLoaded());
+  }
   std::error_code ec;
   std::filesystem::remove_all(app_data, ec);
 }

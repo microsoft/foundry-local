@@ -70,6 +70,12 @@ manager-owned runtime alive until completion.
 `contextLimitTokens` is the Engine's structural request capacity or the Generator's model context.
 `fits` does not reserve cache or guarantee immediate admission while other requests are active.
 
+Both `session.processRequest(request, { signal })` and `session.processStreamingRequest(request, { signal })`
+accept an `AbortSignal`. Pre-aborted signals prevent submission; aborting removes queued requests or cancels active
+inference. Cancellation rejects with `AbortError`, but a completed native response can win the race. Compatibility
+chat, audio, and embedding methods accept the same options as their last argument; for chat without tools, use
+`client.completeChat(messages, undefined, { signal })`.
+
 ---
 
 ## 2. Prerequisites

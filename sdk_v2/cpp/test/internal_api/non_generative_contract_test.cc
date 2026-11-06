@@ -119,6 +119,11 @@ TEST(NonGenerativeContractTest, RejectsInvalidRankingAnswers) {
   EXPECT_THROW((nlohmann::ordered_json{{"model", ""}, {"answers", {"a", "b"}}}
                     .get<RankingRequest>()),
                nlohmann::json::exception);
+  const std::string embedded_nul{"a\0private", 9};
+  EXPECT_THROW(
+      (nlohmann::ordered_json{{"answers", {"valid", embedded_nul}}}
+           .get<RankingRequest>()),
+      nlohmann::json::exception);
 }
 
 TEST(NonGenerativeContractTest, AcceptsCatalogModelIdsAndAliases) {

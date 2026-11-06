@@ -194,9 +194,8 @@ with `--ort_genai_home /path/to/onnxruntime-genai` so the native
 Cached catalog models can also be used directly without starting the web
 service. The normal lifecycle uses the same model-owned manager as other
 tasks: load the model, create a task session, process requests, destroy the
-session, and unload the model. Creating the task session without an explicit
-`Load()` is supported as a lazy-loading convenience and uses that same
-model-owned runtime.
+session, and unload the model. Session construction requires the selected
+artifact to be loaded and only acquires a lease on that model-owned runtime.
 
 ```cpp
 clm_model.Load();

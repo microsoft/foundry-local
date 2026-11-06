@@ -110,6 +110,7 @@ class ModelLoadManager {
   std::shared_ptr<void> AcquireNonGenerativeRuntime(
       Model& model,
       const std::function<void()>& on_admitted = {});
+  std::shared_ptr<void> AcquireLoadedNonGenerativeRuntime(Model& model);
   bool UnloadNonGenerativeRuntime(Model& model);
   bool IsModelLoaded(const Model& model) const;
   bool IsModelLoading(const Model& model) const;

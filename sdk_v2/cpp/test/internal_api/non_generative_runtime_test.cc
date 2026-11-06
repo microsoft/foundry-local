@@ -5,6 +5,7 @@
 #include "inferencing/model_load_manager.h"
 #include "inferencing/predictive/non_generative_runtime.h"
 #include "inferencing/predictive/non_generative_session.h"
+#include "inferencing/predictive/session_executor.h"
 #include "internal_api/test_helpers.h"
 #include "items/text_item.h"
 #include "model.h"
@@ -61,6 +62,115 @@ class ModelLoadManagerTestAccess {
 };
 
 namespace {
+
+struct FakeExecutorSession {};
+
+TEST(PredictiveSessionExecutorTest, QueuedCancellationSkipsWork) {
+  detail::SessionExecutor<FakeExecutorSession> executor(
+      [] { return std::make_unique<FakeExecutorSession>(); });
+  std::promise<void> entered;
+  std::promise<void> release;
+  auto release_future = release.get_future().share();
+  auto blocking = std::async(std::launch::async, [&] {
+    executor.Invoke([&](FakeExecutorSession&) {
+      entered.set_value();
+      release_future.wait();
+    });
+  });
+  entered.get_future().wait();
+
+  std::atomic<bool> canceled{};
+  std::atomic<bool> invoked{};
+  auto queued = std::async(std::launch::async, [&] {
+    EXPECT_THROW(
+        executor.Invoke(
+            [&](FakeExecutorSession&) { invoked = true; },
+            [&] { return canceled.load(); }),
+        std::runtime_error);
+  });
+  EXPECT_TRUE(
+      executor.WaitForPendingTasks(1, std::chrono::seconds(1)));
+  canceled = true;
+  queued.get();
+  EXPECT_FALSE(invoked.load());
+
+  release.set_value();
+  blocking.get();
+  executor.Invoke([&](FakeExecutorSession&) { EXPECT_FALSE(invoked.load()); });
+}
+
+TEST(PredictiveSessionExecutorTest, CancellationAfterExecutionWaitsForWork) {
+  detail::SessionExecutor<FakeExecutorSession> executor(
+      [] { return std::make_unique<FakeExecutorSession>(); });
+  std::promise<void> entered;
+  std::promise<void> release;
+  auto release_future = release.get_future().share();
+  std::atomic<bool> canceled{};
+  auto running = std::async(std::launch::async, [&] {
+    executor.Invoke(
+        [&](FakeExecutorSession&) {
+          entered.set_value();
+          release_future.wait();
+        },
+        [&] { return canceled.load(); });
+  });
+  entered.get_future().wait();
+  canceled = true;
+  EXPECT_EQ(running.wait_for(std::chrono::milliseconds(20)),
+            std::future_status::timeout);
+  release.set_value();
+  EXPECT_EQ(running.wait_for(std::chrono::seconds(1)),
+            std::future_status::ready);
+}
+
+TEST(PredictiveSessionExecutorTest, RejectsBeyondQueueCapacity) {
+  detail::SessionExecutor<FakeExecutorSession> executor(
+      [] { return std::make_unique<FakeExecutorSession>(); });
+  std::promise<void> entered;
+  std::promise<void> release;
+  auto release_future = release.get_future().share();
+  auto blocking = std::async(std::launch::async, [&] {
+    executor.Invoke([&](FakeExecutorSession&) {
+      entered.set_value();
+      release_future.wait();
+    });
+  });
+  entered.get_future().wait();
+
+  std::vector<std::future<void>> queued;
+  queued.reserve(detail::kMaximumQueuedPredictiveRequests);
+  for (size_t index = 0;
+       index < detail::kMaximumQueuedPredictiveRequests; ++index) {
+    queued.push_back(std::async(std::launch::async, [&, index] {
+      if (index + 1 == detail::kMaximumQueuedPredictiveRequests)
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+      executor.Invoke([](FakeExecutorSession&) {});
+    }));
+  }
+  const bool all_queued = executor.WaitForPendingTasks(
+      detail::kMaximumQueuedPredictiveRequests,
+      std::chrono::seconds(5));
+  std::optional<std::future<bool>> overflow;
+  std::future_status overflow_status = std::future_status::deferred;
+  if (all_queued) {
+    overflow.emplace(std::async(std::launch::async, [&] {
+      try {
+        executor.Invoke([](FakeExecutorSession&) {});
+        return false;
+      } catch (const RuntimeCapacityError&) {
+        return true;
+      }
+    }));
+    overflow_status = overflow->wait_for(std::chrono::seconds(1));
+  }
+
+  release.set_value();
+  blocking.get();
+  for (auto& request : queued) request.get();
+  ASSERT_TRUE(all_queued);
+  ASSERT_EQ(overflow_status, std::future_status::ready);
+  EXPECT_TRUE(overflow->get());
+}
 
 void WriteRankingBundle(const std::filesystem::path& path,
                         const std::string& model_id) {
@@ -415,6 +525,11 @@ TEST(NonGenerativeSessionTest,
   EXPECT_EQ(io.outputs[0]->type, FOUNDRY_LOCAL_ITEM_TEXT);
   EXPECT_EQ(static_cast<const TextItem*>(io.outputs[0])->text_type,
             FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON);
+  EXPECT_THROW(
+      NonGenerativeSession(model, service.model_load_manager, service.logger,
+                           service.telemetry),
+      std::exception);
+  EXPECT_FALSE(model.IsLoaded());
   const auto canonical = std::filesystem::weakly_canonical(path).string();
   const auto identity =
       "non-generative|" + std::string(model_id) + "|" + canonical +
@@ -426,11 +541,13 @@ TEST(NonGenerativeSessionTest,
   seeded.reset();
 
   {
-    NonGenerativeSession session(
+    auto session = std::make_unique<NonGenerativeSession>(
+        model, service.model_load_manager, service.logger, service.telemetry);
+    auto second_session = std::make_unique<NonGenerativeSession>(
         model, service.model_load_manager, service.logger, service.telemetry);
     KeyValuePairs defaults;
     defaults.Add("temperature", "0.5");
-    session.SetSessionOptions(defaults);
+    session->SetSessionOptions(defaults);
 
     Request request;
     request.AddOwnedItem(std::make_unique<TextItem>(
@@ -438,7 +555,7 @@ TEST(NonGenerativeSessionTest,
         FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
     request.options.Add("temperature", "0.75");
     Response response;
-    session.ProcessRequest(request, response);
+    session->ProcessRequest(request, response);
     EXPECT_FLOAT_EQ(fake->last_request.temperature, 0.75f);
     ASSERT_EQ(response.items.size(), 1u);
 
@@ -447,10 +564,15 @@ TEST(NonGenerativeSessionTest,
         nlohmann::json{{"model", "other"}, {"answers", {"a", "b"}}}.dump(),
         FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
     Response ignored;
-    EXPECT_THROW(session.ProcessRequest(mismatched, ignored), std::exception);
+    EXPECT_THROW(session->ProcessRequest(mismatched, ignored), std::exception);
     EXPECT_THROW(
         service.model_load_manager.UnloadNonGenerativeRuntime(model),
         std::exception);
+    session.reset();
+    EXPECT_THROW(
+        service.model_load_manager.UnloadNonGenerativeRuntime(model),
+        std::exception);
+    second_session.reset();
   }
 
   EXPECT_TRUE(service.model_load_manager.UnloadNonGenerativeRuntime(model));

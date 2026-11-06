@@ -68,6 +68,12 @@ steps:
     parameters:
       destinationPath: '$(Agent.BuildDirectory)/test-data-shared'
 
+- ${{ if and(eq(parameters.runTests, true), eq(parameters.arch, 'x64')) }}:
+  - template: fetch-models-from-artifacts-feed.yml
+    parameters:
+      destinationPath: '$(Agent.BuildDirectory)/test-data-shared'
+      modelSet: non-generative
+
 - bash: |
     set -euo pipefail
     version=$(tr -d '[:space:]' < "$(Pipeline.Workspace)/version-info/sdkVersion.txt")
@@ -136,6 +142,26 @@ steps:
           --cmake_path "$(Build.BinariesDirectory)/manylinux-home/venv/bin/cmake" \
           --ctest_path "$(Build.BinariesDirectory)/manylinux-home/venv/bin/ctest"
     displayName: 'Run tests in manylinux'
+
+- ${{ if and(eq(parameters.runTests, true), eq(parameters.arch, 'x64')) }}:
+  - bash: |
+      set -euo pipefail
+      user_id=$(id -u)
+      group_id=$(id -g)
+      docker run --rm \
+        --user "$user_id:$group_id" \
+        --volume "$(Build.SourcesDirectory):$(Build.SourcesDirectory)" \
+        --volume "$(Build.BinariesDirectory):$(Build.BinariesDirectory)" \
+        --volume "$(Agent.BuildDirectory)/test-data-shared:$(Agent.BuildDirectory)/test-data-shared:ro" \
+        --env "HOME=$(Build.BinariesDirectory)/manylinux-home" \
+        --env "FOUNDRY_TEST_DATA_DIR=$(Agent.BuildDirectory)/test-data-shared" \
+        --env "FOUNDRY_LOCAL_REQUIRE_NON_GENERATIVE_TESTS=1" \
+        --env "LD_LIBRARY_PATH=$(Build.SourcesDirectory)/sdk_v2/cpp/build/Linux/${{ parameters.buildConfig }}/bin" \
+        --workdir "$(Build.SourcesDirectory)/sdk_v2/cpp" \
+        "$(manylinuxImage)" \
+        build/Linux/${{ parameters.buildConfig }}/bin/non_generative_sdk_tests \
+          --gtest_filter=NonGenerativeSdkTest.RequiredKevPackageRunsFromSharedCache
+    displayName: 'Run required KEV real-model integration'
 
 - bash: |
     echo "=== vcpkg buildtrees error logs ==="

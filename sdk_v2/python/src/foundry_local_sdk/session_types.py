@@ -13,30 +13,53 @@ JSONValue: TypeAlias = None | bool | int | float | str | list["JSONValue"] | dic
 DecisionQuestionType: TypeAlias = Literal["noul", "choice", "score"]
 
 
-class _DecisionQuestionRequired(TypedDict):
-    type: DecisionQuestionType
-
-
-class DecisionQuestion(_DecisionQuestionRequired, total=False):
-    """One named question in a typed-decision request."""
-
-    criteria: NotRequired[dict[str, JSONValue] | list[JSONValue]]
+class _DecisionQuestionOptions(TypedDict, total=False):
     instructions: NotRequired[JSONValue]
 
 
-class _DecisionAnswerRequired(TypedDict):
-    type: DecisionQuestionType
+class NoulDecisionQuestion(_DecisionQuestionOptions):
+    type: Literal["noul"]
 
 
-class DecisionAnswer(_DecisionAnswerRequired, total=False):
-    """One named answer returned by a typed-decision model."""
+class ChoiceDecisionQuestion(_DecisionQuestionOptions):
+    type: Literal["choice"]
+    criteria: dict[str, JSONValue]
 
-    noul: NotRequired[float]
-    choice: NotRequired[str]
-    score: NotRequired[float]
-    confidence: NotRequired[float]
-    probabilities: NotRequired[dict[str, float]]
-    legend: NotRequired[dict[str, str]]
+
+class ScoreDecisionQuestion(_DecisionQuestionOptions):
+    type: Literal["score"]
+    criteria: list[JSONValue]
+
+
+DecisionQuestion: TypeAlias = (
+    NoulDecisionQuestion | ChoiceDecisionQuestion | ScoreDecisionQuestion
+)
+
+
+class _DecisionAnswerMetadata(TypedDict, total=False):
+    confidence: float
+    probabilities: dict[str, float]
+    legend: dict[str, str]
+
+
+class NoulDecisionAnswer(_DecisionAnswerMetadata):
+    type: Literal["noul"]
+    noul: float
+
+
+class ChoiceDecisionAnswer(_DecisionAnswerMetadata):
+    type: Literal["choice"]
+    choice: str
+
+
+class ScoreDecisionAnswer(_DecisionAnswerMetadata):
+    type: Literal["score"]
+    score: float
+
+
+DecisionAnswer: TypeAlias = (
+    NoulDecisionAnswer | ChoiceDecisionAnswer | ScoreDecisionAnswer
+)
 
 
 class DecisionUsage(TypedDict):

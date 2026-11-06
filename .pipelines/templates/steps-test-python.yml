@@ -18,6 +18,10 @@ parameters:
   type: boolean
   default: false
   displayName: 'Use the agent system Python instead of the Azure Pipelines toolcache.'
+- name: requireNonGenerativeTests
+  type: boolean
+  default: false
+  displayName: 'Require staged non-generative real-model integration tests.'
 
 steps:
 
@@ -161,3 +165,5 @@ steps:
   env:
     TF_BUILD: 'true'
     FOUNDRY_TEST_DATA_DIR: '$(Build.SourcesDirectory)/test-data-shared'
+    ${{ if eq(parameters.requireNonGenerativeTests, true) }}:
+      FOUNDRY_LOCAL_REQUIRE_NON_GENERATIVE_TESTS: '1'
