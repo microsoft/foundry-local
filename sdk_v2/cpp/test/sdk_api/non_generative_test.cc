@@ -63,7 +63,7 @@ TEST(NonGenerativeSdkTest, ExportedPackagesRunWhenConfigured) {
     {
       foundry_local::RankingSession ranking(*clm_model);
       foundry_local::RequestOptions defaults;
-      defaults.search.temperature = 0.5;
+      defaults.search.temperature = 0.5f;
       ranking.SetOptions(defaults);
       const auto ranked = nlohmann::json::parse(ranking.RankJson(
           nlohmann::json{
@@ -89,7 +89,7 @@ TEST(NonGenerativeSdkTest, ExportedPackagesRunWhenConfigured) {
       }
 
       foundry_local::RequestOptions request_options;
-      request_options.search.temperature = 0.75;
+      request_options.search.temperature = 0.75f;
       foundry_local::Request request(foundry_local::Item::Text(
           nlohmann::json{{"answers", {"a", "b"}}}.dump()));
       request.SetOptions(request_options);
