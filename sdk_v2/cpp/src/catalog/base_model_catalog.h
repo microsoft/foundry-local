@@ -137,6 +137,7 @@ class BaseModelCatalog : public ICatalog {
   void PopulateModels(std::vector<Model> variants) const;
 
   void SelectDefaultVariant(Model& model, const VariantEligibility& is_eligible,
+                            const VariantEligibility& is_visible,
                             bool preserve_explicit_selection = false) const;
 
   /// Merge new variants into the catalog's stable storage. For an

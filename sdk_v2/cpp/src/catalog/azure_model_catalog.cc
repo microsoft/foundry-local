@@ -378,8 +378,6 @@ std::vector<Model> AzureModelCatalog::CreateModelsWithLocalPaths(const std::vect
     models.push_back(model_factory_(ModelInfo(info), std::move(local_path)));
   }
 
-  FilterCapacityIncompatibleModels(models);
-
   return models;
 }
 
@@ -505,7 +503,6 @@ std::vector<Model> AzureModelCatalog::FetchModelsByIds(const std::vector<std::st
     }
   }
 
-  FilterCapacityIncompatibleModels(models);
   return models;
 }
 

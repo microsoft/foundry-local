@@ -148,7 +148,11 @@ class CountingCatalogEpDetector final : public IEpDetector {
   }
 
   mutable int calls = 0;
-  std::map<std::string, std::vector<DeviceCapacity>> GetDeviceCapacities() const override { return capacities; }
+  mutable int capacity_calls = 0;
+  std::map<std::string, std::vector<DeviceCapacity>> GetDeviceCapacities() const override {
+    ++capacity_calls;
+    return capacities;
+  }
   std::map<std::string, std::vector<DeviceCapacity>> capacities;
   std::map<std::string, std::vector<std::string>> devices{{"CPU", {"CPUExecutionProvider"}}};
 };
@@ -595,6 +599,65 @@ TEST_F(AzureModelCatalogTest, GpuCapacityFiltersDefaultWithoutHidingCpuFallback)
   EXPECT_EQ(catalog->GetModel("model")->Id(), cpu.model_id);
 }
 
+TEST_F(AzureModelCatalogTest, InitialPopulationRetainsCapacityHiddenCachedVariants) {
+  const std::string url = "https://catalog.test";
+  auto gpu = MakeModelInfo("model-cuda-gpu:1", "model-cuda-gpu", 1, "model", "Azure");
+  gpu.device_type = DeviceType::kGPU;
+  gpu.execution_provider = "CUDAExecutionProvider";
+  gpu.int_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_VRAM_BYTES_INT] = 16;
+  AddBehavior(url)->all_models = {gpu};
+  const auto local_path = AddLocalModel(gpu.model_id, "oversized-cuda");
+  WriteSnapshot({gpu});
+  CountingCatalogEpDetector detector;
+  detector.devices["GPU"] = {"CUDAExecutionProvider"};
+  detector.capacities["CUDAExecutionProvider"] = {{8}};
+
+  for (const bool cache_only : {false, true}) {
+    SCOPED_TRACE(cache_only);
+    auto catalog = CreateCatalog({{url, std::nullopt}}, cache_only, &detector);
+    EXPECT_TRUE(catalog->ListModels().empty());
+    EXPECT_EQ(catalog->GetModel(gpu.alias), nullptr);
+    const auto cached = catalog->GetCachedModels();
+    ASSERT_EQ(cached.size(), 1u);
+    EXPECT_EQ(cached.front()->Id(), gpu.model_id);
+    EXPECT_EQ(cached.front()->LocalPathSnapshot(), local_path.string());
+    EXPECT_EQ(catalog->GetModelVariant(gpu.model_id), cached.front());
+  }
+}
+
+TEST_F(AzureModelCatalogTest, ExplicitFetchRetainsCapacityHiddenVariantWithoutChangingDefault) {
+  const std::string url = "https://catalog.test";
+  auto cpu = MakeModelInfo("model-generic-cpu:1", "model-generic-cpu", 1, "model", "Azure");
+  cpu.device_type = DeviceType::kCPU;
+  cpu.execution_provider = "CPUExecutionProvider";
+  auto gpu = MakeModelInfo("model-cuda-gpu:1", "model-cuda-gpu", 1, "model", "Azure");
+  gpu.device_type = DeviceType::kGPU;
+  gpu.execution_provider = "CUDAExecutionProvider";
+  gpu.int_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_VRAM_BYTES_INT] = 16;
+  auto behavior = AddBehavior(url);
+  behavior->all_models = {cpu};
+  behavior->models_by_id = {gpu};
+  CountingCatalogEpDetector detector;
+  detector.devices["GPU"] = {"CUDAExecutionProvider"};
+  detector.capacities["CUDAExecutionProvider"] = {{8}};
+  auto catalog = CreateCatalog({{url, std::nullopt}}, false, &detector);
+  auto* model = catalog->GetModel(cpu.alias);
+  ASSERT_NE(model, nullptr);
+
+  auto* fetched = catalog->GetModelVariant(gpu.model_id);
+  ASSERT_NE(fetched, nullptr);
+  EXPECT_EQ(fetched->Id(), gpu.model_id);
+  EXPECT_EQ(catalog->GetModelVariant(gpu.model_id), fetched);
+  EXPECT_EQ(behavior->fetch_by_id_calls, 1);
+  EXPECT_EQ(model->Id(), cpu.model_id);
+  EXPECT_EQ(model->Variants().size(), 1u);
+  EXPECT_EQ(FindVariant(catalog->ListModels(), gpu.model_id), nullptr);
+
+  detector.capacities["CUDAExecutionProvider"] = {{16}};
+  catalog->InvalidateCache();
+  EXPECT_EQ(FindVariant(catalog->ListModels(), gpu.model_id), fetched);
+}
+
 TEST_F(AzureModelCatalogTest, RefreshHidesIncompatibleVariantsWithoutInvalidatingHandles) {
   const std::string url = "https://catalog.test";
   auto gpu = MakeModelInfo("model-cuda-gpu:1", "model-cuda-gpu", 1, "model", "Azure");
@@ -1001,6 +1064,38 @@ TEST_F(AzureModelCatalogTest, ProviderRefreshPreservesLoadedArtifactUntilItIsUnl
     }
     EXPECT_EQ(model->Id(), cpu.model_id);
   }
+}
+
+TEST_F(AzureModelCatalogTest, VisibilitySharesDeviceSnapshotsAcrossAliasesPerPass) {
+  const std::string url = "https://catalog.test";
+  auto behavior = AddBehavior(url);
+  for (const auto& alias : {"first", "second", "third"}) {
+    auto gpu = MakeModelInfo(std::string(alias) + "-cuda-gpu:1", alias, 1, alias, "Azure");
+    gpu.device_type = DeviceType::kGPU;
+    gpu.execution_provider = "CUDAExecutionProvider";
+    gpu.int_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_VRAM_BYTES_INT] = 16;
+    behavior->all_models.push_back(std::move(gpu));
+  }
+  CountingCatalogEpDetector detector;
+  detector.devices["GPU"] = {"CUDAExecutionProvider"};
+  detector.capacities["CUDAExecutionProvider"] = {{8}};
+  auto catalog = CreateCatalog({{url, std::nullopt}}, false, &detector);
+
+  EXPECT_TRUE(catalog->ListModels().empty());
+  EXPECT_EQ(detector.calls, 2);
+  EXPECT_EQ(detector.capacity_calls, 2);
+  EXPECT_EQ(catalog->GetModel("first"), nullptr);
+  EXPECT_EQ(detector.calls, 2);
+  EXPECT_EQ(detector.capacity_calls, 2);
+
+  detector.capacities["CUDAExecutionProvider"] = {{16}};
+  catalog->InvalidateCache();
+  EXPECT_NE(catalog->GetModel("first"), nullptr);
+  EXPECT_EQ(detector.calls, 4);
+  EXPECT_EQ(detector.capacity_calls, 4);
+  EXPECT_EQ(catalog->ListModels().size(), 3u);
+  EXPECT_EQ(detector.calls, 5);
+  EXPECT_EQ(detector.capacity_calls, 5);
 }
 
 TEST_F(AzureModelCatalogTest, EligibilityUsesOneProviderSnapshotAndLookupReusesTheResult) {
