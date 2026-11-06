@@ -746,8 +746,7 @@ inline AudioContent Item::GetAudio() const {
 inline MessageContent Item::GetMessage() const {
   flMessageData msg{};
   msg.version = FOUNDRY_LOCAL_DATA_VERSION;
-  // Avoid expansion of the Win32 GetMessageA/GetMessageW macro.
-  Check((detail::item_api()->GetMessage)(handle_.get(), &msg));
+  Check(detail::item_api()->GetMessage(handle_.get(), &msg));
 
   MessageContent out;
   out.role = msg.role;

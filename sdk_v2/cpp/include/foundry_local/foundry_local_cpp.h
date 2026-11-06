@@ -17,6 +17,12 @@
 #error "foundry_local_cpp.h requires C++17 or later."
 #endif
 
+#ifdef GetMessage
+// Win32 maps GetMessage to GetMessageA/GetMessageW. The Foundry C++ API owns
+// this name and must remain independent of the consumer's Windows include order.
+#undef GetMessage
+#endif
+
 #include "foundry_local/foundry_local_c.h"
 
 #include <cassert>
