@@ -1396,6 +1396,22 @@ TEST(QwenXmlToolCallAccumulatorTest, NonNaturalFinalizationPreservesCompletePend
   EXPECT_FALSE(acc.InsideToolCall());
 }
 
+TEST(QwenXmlToolCallAccumulatorTest, DiscardInterruptedSelectedPayloadSuppressesPartialMarkerAndPayload) {
+  for (const auto& pending : {
+           std::string("<to"),
+           std::string("<tool_call>\n<function=typed>\n<parameter=text>\ntruncated"),
+       }) {
+    auto acc = MakeQwenAccumulator();
+
+    EXPECT_TRUE(acc.Push(pending).events.empty());
+    const auto output = acc.DiscardPendingSelectedPayload();
+
+    EXPECT_TRUE(output.events.empty());
+    EXPECT_FALSE(output.malformed);
+    EXPECT_FALSE(acc.InsideToolCall());
+  }
+}
+
 TEST(QwenXmlToolCallAccumulatorTest, InterruptedCompleteSchemaViolationCannotBecomeVisibleText) {
   const std::string invalid =
       "<tool_call>\n<function=typed>\n<parameter=unknown>\nvalue\n</parameter>\n"

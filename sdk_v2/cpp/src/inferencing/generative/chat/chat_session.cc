@@ -799,14 +799,19 @@ ToolCallStreamAccumulator::Output PushToolOutputSegment(
 ToolCallStreamAccumulator::Output FlushToolOutput(
     RawEnvelopeDetector* raw_detector,
     ToolCallStreamAccumulator& structured_accumulator,
-    bool natural_end) {
+    bool natural_end,
+    bool discard_interrupted_selected_payload) {
   if (raw_detector == nullptr) {
     if (!structured_accumulator.HasPayloadParser()) {
       return structured_accumulator.Flush();
     }
 
-    return natural_end ? structured_accumulator.Flush()
-                       : structured_accumulator.RejectPendingSelectedPayload();
+    if (natural_end) {
+      return structured_accumulator.Flush();
+    }
+    return discard_interrupted_selected_payload
+               ? structured_accumulator.DiscardPendingSelectedPayload()
+               : structured_accumulator.RejectPendingSelectedPayload();
   }
 
   auto raw_output = natural_end ? raw_detector->FinalizeNatural() : raw_detector->Abort();
@@ -819,6 +824,8 @@ ToolCallStreamAccumulator::Output FlushToolOutput(
     AppendToolOutput(output, structured_accumulator.Flush());
   } else if (natural_end) {
     AppendToolOutput(output, structured_accumulator.Flush());
+  } else if (discard_interrupted_selected_payload) {
+    AppendToolOutput(output, structured_accumulator.DiscardPendingSelectedPayload());
   } else {
     AppendToolOutput(output, structured_accumulator.RejectPendingSelectedPayload());
   }
@@ -2237,7 +2244,8 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
            FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT}));
     }
     emit_tool_output(chat_session_internal::FlushToolOutput(
-        active_raw_detector, tool_accumulator, natural_end));
+        active_raw_detector, tool_accumulator, natural_end,
+        cached_tool_ctx_.fenced_tool_call_output));
   };
 
   while (!cached_generator_->IsDone() && !request.IsCancellationRequested() && !turn_guard.TurnEnded()) {
@@ -2753,7 +2761,8 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
          FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT}));
   }
   process_tool_output(chat_session_internal::FlushToolOutput(
-      active_raw_detector, tool_accumulator, natural_tool_output_end));
+      active_raw_detector, tool_accumulator, natural_tool_output_end,
+      tool_ctx.fenced_tool_call_output));
   emit_visible_text(text_framer.Flush());
   if (natural_tool_output_end && tool_ctx.tool_plan && !tool_ctx.text_output && !tool_ctx.ActiveRawEnvelope() &&
       !malformed_tool_output_seen && !HasGeneratedToolCalls(generated_events)) {
