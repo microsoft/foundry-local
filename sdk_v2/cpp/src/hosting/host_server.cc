@@ -39,6 +39,7 @@ bool IsObservation(Operation operation) noexcept {
   switch (operation) {
     case Operation::Observe:
     case Operation::WebServiceUrls:
+    case Operation::WebServiceActivity:
     case Operation::DiscoverableEps:
     case Operation::RuntimeDevices:
     case Operation::LoadedModels:

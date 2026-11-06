@@ -81,6 +81,12 @@ class HostedState {
 
   bool IsClosed() const noexcept { return closed_.load(std::memory_order_acquire); }
 
+  std::shared_ptr<HostedContext> ExistingOwner() const {
+    std::lock_guard lock(mutex_);
+    RequireOpen();
+    return owner_;
+  }
+
   void RefreshCatalog(CatalogType catalog) const {
     RequireOpen();
     metadata->ReconcileLoadedSelections([this](const std::string& id, const std::string& path) {
@@ -556,6 +562,38 @@ class HostedManager final : public ManagerBackend {
     }
 
     RetainUrls({});
+  }
+
+  WebServiceActivity GetWebServiceActivity() const override {
+    const auto context = state_->Connect(false);
+    if (!context) {
+      return state_->metadata->GetWebServiceActivity();
+    }
+
+    const auto snapshot = context->Call(Operation::WebServiceActivity, Json::object());
+    return {snapshot.at("active_requests").get<std::uint64_t>(), snapshot.at("idle_milliseconds").get<std::uint64_t>()};
+  }
+
+  bool TryStopWebServiceIfIdle(std::uint64_t minimum_idle_milliseconds) override {
+#ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
+    const auto context = state_->ExistingOwner();
+    if (!context) {
+      return false;
+    }
+
+    const auto stopped =
+        context->Call(Operation::TryStopWebServiceIfIdle,
+                      {{ "minimum_idle_milliseconds",
+                         minimum_idle_milliseconds }})
+            .get<bool>();
+    if (stopped) {
+      RetainUrls({});
+    }
+
+    return stopped;
+#else
+    FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED, "web service support is not built");
+#endif
   }
 
   std::span<const flEpInfo> GetDiscoverableEps() const override {

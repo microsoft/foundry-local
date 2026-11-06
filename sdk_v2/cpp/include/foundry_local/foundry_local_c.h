@@ -60,7 +60,7 @@
  * Incremented with each release.
  * Used to request the API function table via FoundryLocalGetApi.
  * ----------------------------------------------------------------------- */
-#define FOUNDRY_LOCAL_API_VERSION 3
+#define FOUNDRY_LOCAL_API_VERSION 4
 
 // Payload schemas evolve independently of the function-table ABI.
 #define FOUNDRY_LOCAL_DATA_VERSION 2
@@ -778,6 +778,20 @@ typedef struct flApi {
                 _Outptr_ flCatalog** out_catalog);
 
   // End V2
+  // End V3 (root table unchanged)
+  /// Observe HTTP activity without starting the service or acquiring shared-host ownership.
+  /// All requests, including errors and local-catalog routes, count until response and worker cleanup complete.
+  /// Idle time is monotonic milliseconds since last completion or service start; zero while requests are active.
+  /// Before first start (or with no reachable shared host), the baseline is manager creation.
+  /// Queries do not reset idle time. Builds without web service support return NOT_IMPLEMENTED.
+  FL_API_STATUS(Manager_WebServiceActivity, _In_ const flManager* manager, _Out_ uint64_t* active_requests,
+                _Out_ uint64_t* idle_milliseconds);
+  /// Atomically fence HTTP admissions and stop only when no requests are active and the idle threshold has elapsed.
+  /// False leaves the listener and idle baseline unchanged. Shared hosts require the existing sole owner.
+  /// Does not unload models or acquire ownership. Builds without web service support return NOT_IMPLEMENTED.
+  FL_API_STATUS(Manager_TryStopWebServiceIfIdle, _Inout_ flManager* manager, uint64_t minimum_idle_milliseconds,
+                _Out_ bool* stopped);
+  // End V4
   /* Append new function pointers at the end for future versions and add marker for the end of each version */
 } flApi;
 

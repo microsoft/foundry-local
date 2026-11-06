@@ -4,8 +4,15 @@
 #include "c_api_types.h"
 #include "items/tool_call_item.h"
 #include "utils/temp_path.h"
+#include "util/scope_guard.h"
 
 #include <foundry_local/foundry_local_cpp.h>
+#ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
+#include <httplib.h>
+#ifdef GetMessage
+#undef GetMessage
+#endif
+#endif
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -14,6 +21,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <semaphore>
 #include <string>
 #include <thread>
 #include <vector>
@@ -45,6 +53,7 @@ TEST(CApiTest, SupportedVersionsReturnSameExpandedApiTables) {
   const flApi* v1 = FoundryLocalGetApi(1);
   const flApi* v2 = FoundryLocalGetApi(2);
   const flApi* v3 = FoundryLocalGetApi(3);
+  const flApi* v4 = FoundryLocalGetApi(4);
   ASSERT_NE(v0, nullptr);
   ASSERT_NE(v1, nullptr);
   ASSERT_NE(v2, nullptr);
@@ -53,6 +62,7 @@ TEST(CApiTest, SupportedVersionsReturnSameExpandedApiTables) {
   EXPECT_EQ(v0, v2);
   EXPECT_EQ(v1, v2);
   EXPECT_EQ(v2, v3);
+  EXPECT_EQ(v3, v4);
   EXPECT_EQ(v1->GetCatalogApi(), v2->GetCatalogApi());
   EXPECT_EQ(v1->GetModelApi(), v2->GetModelApi());
   EXPECT_NE(v1->GetCatalogApi()->RegisterModel, nullptr);
@@ -272,7 +282,126 @@ TEST(CApiTest, ManagerReleaseNullIsNoOp) {
   api->Manager_Release(nullptr);
 }
 
+TEST(CApiTest, WebServiceActivityIsReadOnlyAndValidatesArguments) {
+  const auto* api = GetApi();
+  foundry_local::Configuration config("http-activity-test");
+  config.SetAppDataDir((std::filesystem::path(FOUNDRY_LOCAL_TEST_SCRATCH_DIR) / "http-activity-c-api").string());
+  flManager* native = nullptr;
+  ASSERT_FL_OK(api, api->Manager_Create(config.native_handle(), &native));
+  const std::unique_ptr<flManager, decltype(api->Manager_Release)> manager(native, api->Manager_Release);
+  uint64_t active = 99;
+  uint64_t idle = 99;
+  for (auto* status : {api->Manager_WebServiceActivity(nullptr, &active, &idle),
+                       api->Manager_WebServiceActivity(native, nullptr, &idle),
+                       api->Manager_WebServiceActivity(native, &active, nullptr)}) {
+    StatusGuard failure{status, api};
+    ASSERT_NE(status, nullptr);
+    EXPECT_EQ(api->Status_GetErrorCode(status), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  }
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
+  ASSERT_FL_OK(api, api->Manager_WebServiceActivity(native, &active, &idle));
+  EXPECT_EQ(active, 0u);
+  const auto previous_idle = idle;
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  ASSERT_FL_OK(api, api->Manager_WebServiceActivity(native, &active, &idle));
+  EXPECT_GT(idle, previous_idle);
+  const char* const* urls = nullptr;
+  size_t count = 99;
+  ASSERT_FL_OK(api, api->Manager_WebServiceUrls(native, &urls, &count));
+  EXPECT_EQ(count, 0u);
+#else
+  StatusGuard unsupported{api->Manager_WebServiceActivity(native, &active, &idle), api};
+  ASSERT_NE(unsupported.s, nullptr);
+  EXPECT_EQ(api->Status_GetErrorCode(unsupported.s), FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED);
+#endif
+}
+
+TEST(CApiTest, IdleStopValidatesArgumentsAndDoesNotStartTheListener) {
+  const auto* api = GetApi();
+  foundry_local::Configuration config("http-idle-stop-test");
+  config.SetAppDataDir((std::filesystem::path(FOUNDRY_LOCAL_TEST_SCRATCH_DIR) / "http-idle-stop-c-api").string());
+  flManager* native = nullptr;
+  ASSERT_FL_OK(api, api->Manager_Create(config.native_handle(), &native));
+  const std::unique_ptr<flManager, decltype(api->Manager_Release)> manager(native, api->Manager_Release);
+  bool stopped = false;
+  for (auto* status : {api->Manager_TryStopWebServiceIfIdle(nullptr, 0, &stopped),
+                       api->Manager_TryStopWebServiceIfIdle(native, 0, nullptr)}) {
+    StatusGuard failure{status, api};
+    ASSERT_NE(status, nullptr);
+    EXPECT_EQ(api->Status_GetErrorCode(status), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  }
+#ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
+  ASSERT_FL_OK(api, api->Manager_TryStopWebServiceIfIdle(native, UINT64_MAX, &stopped));
+  EXPECT_FALSE(stopped);
+  ASSERT_FL_OK(api, api->Manager_TryStopWebServiceIfIdle(native, 0, &stopped));
+  EXPECT_TRUE(stopped);
+  const char* const* urls = nullptr;
+  size_t count = 99;
+  ASSERT_FL_OK(api, api->Manager_WebServiceUrls(native, &urls, &count));
+  EXPECT_EQ(count, 0u);
+#else
+  StatusGuard unsupported{api->Manager_TryStopWebServiceIfIdle(native, 0, &stopped), api};
+  ASSERT_NE(unsupported.s, nullptr);
+  EXPECT_EQ(api->Status_GetErrorCode(unsupported.s), FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED);
+#endif
+}
+
+#ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
+TEST(CApiTest, IdleStopLeavesInflightHttpAloneThenStopsAndCanRestart) {
+  foundry_local::Configuration config("http-idle-stop-inflight");
+  config.SetAppDataDir((std::filesystem::path(FOUNDRY_LOCAL_TEST_SCRATCH_DIR) / "http-idle-stop-inflight").string());
+  config.AddWebServiceEndpoint("http://127.0.0.1:0");
+  foundry_local::Manager manager(std::move(config));
+  manager.StartWebService();
+  const auto url = manager.GetWebServiceEndpoints().front();
+  std::binary_semaphore release(0);
+  std::thread request([&] {
+    httplib::Client client(url);
+    client.set_read_timeout(10, 0);
+    const auto response = client.Post(
+        "/v1/chat/completions", 2,
+        [&](size_t, size_t, httplib::DataSink& sink) {
+          release.acquire();
+          return sink.write("{}", 2);
+        },
+        "application/json");
+    EXPECT_TRUE(response);
+    if (response) {
+      EXPECT_EQ(response->status, 400);
+    }
+  });
+  fl::ScopeGuard cleanup([&]() noexcept {
+    release.release();
+    request.join();
+  });
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (manager.GetWebServiceActivity().active_requests == 0 && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  ASSERT_EQ(manager.GetWebServiceActivity().active_requests, 1u);
+  EXPECT_FALSE(manager.TryStopWebServiceIfIdle(std::chrono::milliseconds(0)));
+  EXPECT_EQ(manager.GetWebServiceEndpoints(), std::vector<std::string>{url});
+  release.release();
+  request.join();
+  cleanup.Dismiss();
+  const auto completion_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (manager.GetWebServiceActivity().active_requests && std::chrono::steady_clock::now() < completion_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  EXPECT_FALSE(manager.TryStopWebServiceIfIdle(std::chrono::milliseconds::max()));
+  EXPECT_THROW(manager.TryStopWebServiceIfIdle(std::chrono::milliseconds(-1)), foundry_local::Error);
+  EXPECT_TRUE(manager.TryStopWebServiceIfIdle(std::chrono::milliseconds(0)));
+  EXPECT_TRUE(manager.GetWebServiceEndpoints().empty());
+  manager.StartWebService();
+  httplib::Client restarted(manager.GetWebServiceEndpoints().front());
+  const auto response = restarted.Get("/status");
+  ASSERT_TRUE(response);
+  EXPECT_EQ(response->status, 200);
+  manager.StopWebService();
+}
+
 TEST(CApiTest, ServiceUrlSnapshotsSurviveQueriesAndListenerChanges) {
   const auto* api = GetApi();
   foundry_local::Configuration config("url-snapshot-test");

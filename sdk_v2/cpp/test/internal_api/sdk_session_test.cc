@@ -70,6 +70,8 @@ class ProviderBackend final : public api::ManagerBackend {
   void UnloadModelArtifact(const std::string&, const std::string&) override {}
   void StartWebService() override {}
   const std::vector<std::string>& GetWebServiceUrls() const override { return urls_; }
+  WebServiceActivity GetWebServiceActivity() const override { return {3, 0}; }
+  bool TryStopWebServiceIfIdle(std::uint64_t) override { return true; }
   void StopWebService() override {}
   std::span<const flEpInfo> GetDiscoverableEps() const override { return eps_; }
   api::DeviceProviders GetRuntimeDevices() const override {
@@ -727,6 +729,8 @@ TEST_F(SdkSessionTest, HostedManagerUsesHostWebServiceStateAndPreservesBusyStop)
   });
   EXPECT_TRUE(hosted->GetWebServiceUrls().empty());
   EXPECT_EQ(acquired, 0);
+  EXPECT_FALSE(hosted->TryStopWebServiceIfIdle(0));
+  EXPECT_EQ(acquired, 0);
   hosted->StartWebService();
   ASSERT_EQ(acquired, 1);
   ASSERT_FALSE(hosted->GetWebServiceUrls().empty());
@@ -736,14 +740,18 @@ TEST_F(SdkSessionTest, HostedManagerUsesHostWebServiceStateAndPreservesBusyStop)
   EXPECT_EQ(hosted->GetWebServiceUrls().data(), original_storage);
   EXPECT_EQ(hosted->GetWebServiceUrls().front().c_str(), original_text);
   ASSERT_TRUE(lifetime_->AddOwner(2, std::chrono::steady_clock::now()));
+  EXPECT_FALSE(hosted->TryStopWebServiceIfIdle(0));
   EXPECT_THROW(hosted->StopWebService(), Exception);
   EXPECT_FALSE(hosted->GetWebServiceUrls().empty());
   ASSERT_TRUE(lifetime_->RemoveOwner(2, std::chrono::steady_clock::now()));
   auto http = lifetime_->TryAdmitHttpWork(std::chrono::steady_clock::now());
   ASSERT_TRUE(http);
+  EXPECT_FALSE(hosted->TryStopWebServiceIfIdle(0));
   EXPECT_THROW(hosted->StopWebService(), Exception);
   http.Complete(std::chrono::steady_clock::now());
-  hosted->StopWebService();
+  EXPECT_FALSE(hosted->TryStopWebServiceIfIdle(UINT64_MAX));
+  EXPECT_FALSE(hosted->GetWebServiceUrls().empty());
+  EXPECT_TRUE(hosted->TryStopWebServiceIfIdle(0));
   EXPECT_TRUE(hosted->GetWebServiceUrls().empty());
   EXPECT_EQ(original_urls.data(), original_storage);
   EXPECT_EQ(original_urls.front().c_str(), original_text);
@@ -841,6 +849,9 @@ TEST_F(SdkSessionTest, HostedRuntimeDeviceObservationDoesNotAcquireOrRegisterPro
   });
   const auto local_devices = manager_->GetRuntimeDevices();
   const auto remote_devices = hosted->GetRuntimeDevices();
+  const auto activity = hosted->GetWebServiceActivity();
+  EXPECT_EQ(activity.active_requests, 3u);
+  EXPECT_EQ(activity.idle_milliseconds, 0u);
   EXPECT_EQ(remote_devices.at("GPU"), (std::vector<std::string>{"wire-ep"}));
   hosted->SetCatalogRuntimeDevices(remote_devices);
   EXPECT_EQ(manager_->GetRuntimeDevices(), local_devices);

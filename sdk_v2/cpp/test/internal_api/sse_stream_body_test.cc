@@ -463,6 +463,127 @@ TEST_P(HttpAdmissionTest, ResponseAndWorkerRetainOneAdmissionUntilBothReleaseThe
 
 INSTANTIATE_TEST_SUITE_P(SharedHost, HttpAdmissionTest, testing::Bool());
 
+TEST(HttpActivityTest, OverlappingRequestsResetIdleOnlyAfterTheLastCompletion) {
+  auto activity = std::make_shared<HttpActivityTracker>();
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  const auto baseline = activity->Snapshot();
+  EXPECT_GE(baseline.idle_milliseconds, 10u);
+  EXPECT_GE(activity->Snapshot().idle_milliseconds, baseline.idle_milliseconds);
+  auto first = activity->Begin();
+  auto second = activity->Begin();
+  EXPECT_EQ(activity->Snapshot().active_requests, 2u);
+  EXPECT_EQ(activity->Snapshot().idle_milliseconds, 0u);
+  first.reset();
+  EXPECT_EQ(activity->Snapshot().active_requests, 1u);
+  second.reset();
+  EXPECT_EQ(activity->Snapshot().active_requests, 0u);
+  EXPECT_LT(activity->Snapshot().idle_milliseconds, baseline.idle_milliseconds);
+}
+
+TEST(HttpActivityTest, IdleStopFencesAdmissionsWithoutResettingFailedChecksAndStartReopens) {
+  HttpActivityTracker activity;
+  auto work = activity.Begin();
+  EXPECT_FALSE(activity.TryBeginStop(0));
+  work.reset();
+  EXPECT_FALSE(activity.TryBeginStop(UINT64_MAX));
+  EXPECT_TRUE(activity.Begin());
+  const auto baseline = activity.Snapshot().idle_milliseconds;
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  EXPECT_FALSE(activity.TryBeginStop(UINT64_MAX));
+  EXPECT_GE(activity.Snapshot().idle_milliseconds, baseline + 10);
+  EXPECT_TRUE(activity.TryBeginStop(10));
+  EXPECT_FALSE(activity.Begin());
+  EXPECT_EQ(activity.Snapshot().active_requests, 0u);
+  const auto idle = activity.Snapshot().idle_milliseconds;
+  activity.CancelStop();
+  EXPECT_GE(activity.Snapshot().idle_milliseconds, idle);
+  EXPECT_TRUE(activity.Begin());
+  EXPECT_TRUE(activity.TryBeginStop(0));
+  activity.StartBaseline();
+  EXPECT_TRUE(activity.Begin());
+}
+
+TEST(HttpActivityTest, RacingStopAndAdmissionCannotBothSucceed) {
+  for (int i = 0; i < 100; ++i) {
+    HttpActivityTracker activity;
+    std::atomic<bool> ready{false};
+    std::shared_ptr<void> work;
+    std::thread request([&] {
+      while (!ready.load()) {
+        std::this_thread::yield();
+      }
+      work = activity.Begin();
+    });
+    ready.store(true);
+    const auto stopped = activity.TryBeginStop(0);
+    request.join();
+    EXPECT_NE(stopped, bool(work));
+  }
+}
+
+TEST(HttpActivityTest, WorkEntirelyBetweenSnapshotsResetsIdleAndExceptionsReleaseWork) {
+  auto activity = std::make_shared<HttpActivityTracker>();
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  const auto before = activity->Snapshot();
+  try {
+    auto work = activity->Begin();
+    throw std::runtime_error("handler failed");
+  } catch (const std::runtime_error&) {
+  }
+  const auto after = activity->Snapshot();
+  EXPECT_EQ(after.active_requests, 0u);
+  EXPECT_LT(after.idle_milliseconds, before.idle_milliseconds);
+}
+
+TEST(HttpActivityTest, WorkerRetainsActivityWithoutATransferGap) {
+  auto activity = std::make_shared<HttpActivityTracker>();
+  StreamingThreadTracker tracker;
+  std::promise<void> release;
+  auto ready = release.get_future().share();
+  {
+    HttpRequestLifetime scope(activity->Begin());
+    tracker.Start([activity, ready] {
+      EXPECT_EQ(activity->Snapshot().active_requests, 1u);
+      EXPECT_EQ(activity->Snapshot().idle_milliseconds, 0u);
+      ready.wait();
+    });
+  }
+  EXPECT_EQ(activity->Snapshot().active_requests, 1u);
+  release.set_value();
+  tracker.JoinAll();
+  EXPECT_EQ(activity->Snapshot().active_requests, 0u);
+}
+
+TEST(HttpActivityTest, ConcurrentSnapshotsAreCoherentDuringAdmissionAndCompletion) {
+  auto activity = std::make_shared<HttpActivityTracker>();
+  std::atomic<bool> stop{false};
+  std::thread observer([&] {
+    while (!stop.load()) {
+      const auto snapshot = activity->Snapshot();
+      if (snapshot.active_requests) {
+        EXPECT_EQ(snapshot.idle_milliseconds, 0u);
+      }
+    }
+  });
+  std::vector<std::thread> workers;
+  for (int i = 0; i < 4; ++i) {
+    workers.emplace_back([activity] {
+      for (int j = 0; j < 1000; ++j) {
+        auto work = activity->Begin();
+        const auto snapshot = activity->Snapshot();
+        EXPECT_GE(snapshot.active_requests, 1u);
+        EXPECT_EQ(snapshot.idle_milliseconds, 0u);
+      }
+    });
+  }
+  for (auto& worker : workers) {
+    worker.join();
+  }
+  stop.store(true);
+  observer.join();
+  EXPECT_EQ(activity->Snapshot().active_requests, 0u);
+}
+
 }  // namespace
 
 // ========================================================================

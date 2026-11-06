@@ -69,7 +69,7 @@ void from_json(const Json& json, Message& message) {
   message = {json.at("value"), status.get<std::int32_t>(), json.at("error").get<std::string>()};
 }
 
-bool ValidOperation(Operation op) { return op >= Operation::Handshake && op <= Operation::RuntimeDevices; }
+bool ValidOperation(Operation op) { return op >= Operation::Handshake && op <= Operation::TryStopWebServiceIfIdle; }
 
 void Encode(std::span<std::byte> bytes, std::uint64_t value) {
   for (auto& byte : bytes) {

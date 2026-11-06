@@ -589,6 +589,7 @@ ICatalog& Manager::GetCatalog(CatalogType type) {
 }
 
 void Manager::StartWebService() {
+  std::lock_guard service_lock(web_service_mutex_);
   if (web_service_running_) {
     FL_LOG_AND_THROW(*logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "web service is already running");
   }
@@ -601,10 +602,9 @@ void Manager::StartWebService() {
   ActionTracker tracker(Action::kCoreServiceStart, *telemetry_);
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
-  web_service_ = std::make_unique<WebService>(*public_catalog_, *local_catalog_, *logger_, *config_.model_cache_dir,
-                                              *model_load_manager_,
-                                              *session_manager_, *telemetry_,
-                                              [this]() { RequestShutdown(); }, shared_host_lifetime_);
+  web_service_ = std::make_unique<WebService>(
+      *public_catalog_, *local_catalog_, *logger_, *config_.model_cache_dir, *model_load_manager_, *session_manager_,
+      *telemetry_, [this]() { RequestShutdown(); }, shared_host_lifetime_, http_activity_);
 
   auto endpoints = config_.web_service_endpoints;
   if (endpoints.empty()) {
@@ -634,6 +634,7 @@ void Manager::StartWebService() {
 }
 
 void Manager::SetSharedHostLifetime(std::shared_ptr<hosting::HostLifetime> lifetime) {
+  std::lock_guard service_lock(web_service_mutex_);
   if (!lifetime || web_service_running_ ||
       (shared_host_lifetime_ && shared_host_lifetime_ != lifetime)) {
     FL_LOG_AND_THROW(*logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
@@ -648,7 +649,36 @@ const std::vector<std::string>& Manager::GetWebServiceUrls() const {
   return *url_snapshots_.insert(bound_urls_).first;
 }
 
+WebServiceActivity Manager::GetWebServiceActivity() const {
+#ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
+  return http_activity_->Snapshot();
+#else
+  FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED, "web service support is not built");
+#endif
+}
+
+bool Manager::TryStopWebServiceIfIdle(std::uint64_t minimum_idle_milliseconds) {
+#ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
+  std::lock_guard service_lock(web_service_mutex_);
+  if (!http_activity_->TryBeginStop(minimum_idle_milliseconds)) {
+    return false;
+  }
+
+  try {
+    StopWebService();
+  } catch (...) {
+    http_activity_->CancelStop();
+    throw;
+  }
+
+  return true;
+#else
+  FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED, "web service support is not built");
+#endif
+}
+
 void Manager::StopWebService() {
+  std::lock_guard service_lock(web_service_mutex_);
   if (!web_service_running_) {
     // No-op rather than throw: the public-API contract treats StopWebService() as idempotent so
     // callers can shut down unconditionally without first probing service state.

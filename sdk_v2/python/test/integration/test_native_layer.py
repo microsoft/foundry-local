@@ -9,6 +9,8 @@ were built, can be loaded, and expose the expected vtable surface.
 """
 from __future__ import annotations
 
+import pytest
+
 
 def test_native_module_loads(native_api):
     api, ffi = native_api
@@ -28,6 +30,17 @@ def test_root_vtable_populated(native_api):
         "KeyValuePairs_Release",
     ):
         assert hasattr(api.root, name), f"api.root missing {name}"
+
+
+@pytest.mark.parametrize("version", (2, 3, 4))
+def test_root_vtable_reads_legacy_fields_across_api_versions(native_api, version):
+    from foundry_local_sdk._native import _cffi_bindings
+
+    _, ffi = native_api
+    root = _cffi_bindings.lib.FoundryLocalGetApi(version)
+    assert root != ffi.NULL
+    assert root.GetItemApi() != ffi.NULL
+    assert root.GetConfigurationApi() != ffi.NULL
 
 
 def test_subsystem_vtables_populated(native_api):
@@ -51,8 +64,6 @@ def test_check_status_failure_raises_with_native_error(native_api):
     configuration which the native layer rejects with an error status —
     a stable, side-effect-free way to obtain a real ``flStatus*``.
     """
-    import pytest
-
     from foundry_local_sdk.exception import FoundryLocalException
 
     api, ffi = native_api

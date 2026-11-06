@@ -261,6 +261,7 @@ struct WebService::Impl {
   StreamingThreadTracker thread_tracker;
   std::function<void()> shutdown_callback;
   std::shared_ptr<hosting::HostLifetime> shared_host_lifetime;
+  std::shared_ptr<HttpActivityTracker> activity;
   std::unique_ptr<ServiceContext> public_context;
   std::unique_ptr<ServiceContext> local_context;
   std::atomic<bool> running{false};
@@ -315,12 +316,17 @@ struct WebService::Impl {
 };
 
 WebService::WebService(ICatalog& public_catalog, ICatalog& local_catalog, ILogger& logger, std::string model_cache_dir,
-                       ModelLoadManager& model_load_manager, SessionManager& session_manager,
-                       ITelemetry& telemetry, std::function<void()> shutdown_callback,
-                       std::shared_ptr<hosting::HostLifetime> shared_host_lifetime)
+                       ModelLoadManager& model_load_manager, SessionManager& session_manager, ITelemetry& telemetry,
+                       std::function<void()> shutdown_callback,
+                       std::shared_ptr<hosting::HostLifetime> shared_host_lifetime,
+                       std::shared_ptr<HttpActivityTracker> activity)
     : impl_(std::make_unique<Impl>(public_catalog, local_catalog, logger, std::move(model_cache_dir),
-                                   model_load_manager, session_manager, telemetry,
-                                   std::move(shutdown_callback), std::move(shared_host_lifetime))) {}
+                                   model_load_manager, session_manager, telemetry, std::move(shutdown_callback),
+                                   std::move(shared_host_lifetime))) {
+  impl_->activity = std::move(activity);
+}
+
+WebServiceActivity WebService::GetActivity() const { return impl_->activity->Snapshot(); }
 
 WebService::~WebService() {
   if (impl_->running.load()) {
@@ -353,6 +359,8 @@ std::vector<std::string> WebService::Start(const std::vector<std::string>& endpo
   RegisterOpenAIRoutes(impl_->router, "/catalogs/local", local_ctx, impl_->shared_host_lifetime);
 
   impl_->connection_handler = oatpp::web::server::HttpConnectionHandler::createShared(impl_->router);
+  impl_->activity->StartBaseline();
+  TrackHttpActivity(*impl_->connection_handler, impl_->activity);
 
   std::vector<std::string> bound_urls;
 

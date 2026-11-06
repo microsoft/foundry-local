@@ -31,6 +31,8 @@ internal static class Api
     internal static FlInferenceApi Inference;
     internal static FlConfigurationApi Config;
     internal static FlConfig_SetUseSharedHostDelegate? SetUseSharedHost;
+    internal static FlApi_ManagerWebServiceActivityDelegate? WebServiceActivity;
+    internal static FlApi_ManagerTryStopWebServiceIfIdleDelegate? TryStopWebServiceIfIdle;
     internal static FlCatalogApi Catalog;
     internal static FlModelApi Model;
     private static volatile bool _initialized;
@@ -54,6 +56,12 @@ internal static class Api
             var apiPtr = NativeMethods.FoundryLocalGetApi(version);
             if (apiPtr == IntPtr.Zero)
             {
+                version = 3;
+                apiPtr = NativeMethods.FoundryLocalGetApi(version);
+            }
+
+            if (apiPtr == IntPtr.Zero)
+            {
                 version = NativeMethods.ApiVersion;
                 apiPtr = NativeMethods.FoundryLocalGetApi(version);
             }
@@ -65,6 +73,8 @@ internal static class Api
             }
 
             Root = Marshal.PtrToStructure<FlApi>(apiPtr);
+            WebServiceActivity = ReadWebServiceActivity(apiPtr, version);
+            TryStopWebServiceIfIdle = ReadTryStopWebServiceIfIdle(apiPtr, version);
 
             var p = Root.GetItemApi();
             if (p != IntPtr.Zero)
@@ -99,6 +109,38 @@ internal static class Api
 
             _initialized = true;
         }
+    }
+
+    internal static FlApi_ManagerWebServiceActivityDelegate? ReadWebServiceActivity(IntPtr api, uint version)
+    {
+        if (version < 4)
+        {
+            return null;
+        }
+
+        var method = Marshal.ReadIntPtr(api, Marshal.SizeOf<FlApi>());
+        if (method == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("The native runtime returned an incomplete v4 manager API.");
+        }
+
+        return Marshal.GetDelegateForFunctionPointer<FlApi_ManagerWebServiceActivityDelegate>(method);
+    }
+
+    internal static FlApi_ManagerTryStopWebServiceIfIdleDelegate? ReadTryStopWebServiceIfIdle(IntPtr api, uint version)
+    {
+        if (version < 4)
+        {
+            return null;
+        }
+
+        var method = Marshal.ReadIntPtr(api, Marshal.SizeOf<FlApi>() + IntPtr.Size);
+        if (method == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("The native runtime returned an incomplete v4 manager API.");
+        }
+
+        return Marshal.GetDelegateForFunctionPointer<FlApi_ManagerTryStopWebServiceIfIdleDelegate>(method);
     }
 
     internal static FlConfig_SetUseSharedHostDelegate? ReadSharedHostSetting(IntPtr configApi, uint version)
@@ -319,6 +361,32 @@ public sealed class Manager : IDisposable
     public void StopService()
     {
         Api.CheckStatus(Api.Root.ManagerWebServiceStop(Ptr));
+    }
+
+    public WebServiceActivity GetWebServiceActivity()
+    {
+        var query = Api.WebServiceActivity
+            ?? throw new NotSupportedException("HTTP activity requires a native runtime with C API table version 4.");
+        Api.CheckStatus(query(Ptr, out var activeRequests, out var idleMilliseconds));
+        var milliseconds = Math.Min(idleMilliseconds, (ulong)(TimeSpan.MaxValue.Ticks / TimeSpan.TicksPerMillisecond));
+        return new WebServiceActivity(activeRequests, TimeSpan.FromTicks((long)milliseconds * TimeSpan.TicksPerMillisecond));
+    }
+
+    internal static ulong ValidateMinimumIdleDuration(TimeSpan minimumIdleDuration)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(minimumIdleDuration, TimeSpan.Zero);
+        var ticks = (ulong)minimumIdleDuration.Ticks;
+        // Round up without overflowing TimeSpan.MaxValue or stopping before a fractional millisecond expires.
+        return ticks / TimeSpan.TicksPerMillisecond + (ticks % TimeSpan.TicksPerMillisecond == 0 ? 0UL : 1UL);
+    }
+
+    public bool TryStopWebServiceIfIdle(TimeSpan minimumIdleDuration)
+    {
+        var milliseconds = ValidateMinimumIdleDuration(minimumIdleDuration);
+        var stop = Api.TryStopWebServiceIfIdle
+            ?? throw new NotSupportedException("HTTP idle stop requires a native runtime with C API table version 4.");
+        Api.CheckStatus(stop(Ptr, milliseconds, out var stopped));
+        return stopped;
     }
 
     public string[] GetServiceUrls()

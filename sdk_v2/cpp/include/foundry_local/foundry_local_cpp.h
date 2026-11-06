@@ -20,6 +20,7 @@
 #include "foundry_local/foundry_local_c.h"
 
 #include <cassert>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -59,7 +60,8 @@ inline const char* Version() noexcept;
 namespace detail {
 
 inline uint32_t api_version() {
-  static const uint32_t version = FoundryLocalGetApi(FOUNDRY_LOCAL_API_VERSION) ? FOUNDRY_LOCAL_API_VERSION : 2;
+  static const uint32_t version =
+      FoundryLocalGetApi(FOUNDRY_LOCAL_API_VERSION) ? FOUNDRY_LOCAL_API_VERSION : (FoundryLocalGetApi(3) ? 3 : 2);
   return version;
 }
 
@@ -869,6 +871,12 @@ class Catalog final : public ICatalog {
 // Manager
 // ===========================================================================
 
+/// Coherent HTTP work and monotonic idle-time observation.
+struct WebServiceActivity {
+  uint64_t active_requests{};
+  std::chrono::milliseconds idle_duration{};
+};
+
 /// @brief Main entry point for the Foundry Local SDK. Manages configuration, catalogs, and the embedded web service.
 ///
 /// Construct a single Manager at application startup, then use it to access catalogs and manage the web service.
@@ -900,6 +908,10 @@ class Manager {
   /// running (i.e. before StartWebService() or after StopWebService()); callers can use that as an
   /// "is running" check without a separate API.
   std::vector<std::string> GetWebServiceEndpoints() const;
+  /// Observe HTTP work without starting the service, acquiring ownership, or resetting its monotonic idle clock.
+  WebServiceActivity GetWebServiceActivity() const;
+  /// Atomically fence HTTP admissions and stop an idle listener. Does not unload models or acquire host ownership.
+  bool TryStopWebServiceIfIdle(std::chrono::milliseconds minimum_idle_duration);
 
   /// Get discoverable execution providers and their registration status.
   std::vector<EpInfo> GetDiscoverableEps() const;

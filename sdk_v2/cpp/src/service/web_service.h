@@ -105,9 +105,9 @@ struct ServiceContext {
 class WebService {
  public:
   WebService(ICatalog& public_catalog, ICatalog& local_catalog, ILogger& logger, std::string model_cache_dir,
-             ModelLoadManager& model_load_manager, SessionManager& session_manager,
-             ITelemetry& telemetry, std::function<void()> shutdown_callback,
-             std::shared_ptr<hosting::HostLifetime> shared_host_lifetime = {});
+             ModelLoadManager& model_load_manager, SessionManager& session_manager, ITelemetry& telemetry,
+             std::function<void()> shutdown_callback, std::shared_ptr<hosting::HostLifetime> shared_host_lifetime = {},
+             std::shared_ptr<HttpActivityTracker> activity = std::make_shared<HttpActivityTracker>());
   ~WebService();
 
   WebService(const WebService&) = delete;
@@ -120,6 +120,7 @@ class WebService {
 
   /// Stop the HTTP service and join listener threads.
   void Stop();
+  WebServiceActivity GetActivity() const;
 
  private:
   struct Impl;

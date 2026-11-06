@@ -35,7 +35,7 @@ public static partial class NativeMethods
 {
     // Baseline table and payload layouts. New table-only features negotiate separately.
     public const uint ApiVersion = 2;
-    public const uint LatestApiVersion = 3;
+    public const uint LatestApiVersion = 4;
     public const string LibraryName = "foundry_local";
 
     // The first P/Invoke through this class can come from any of several entry
@@ -475,6 +475,14 @@ public delegate IntPtr FlApi_ManagerWebServiceStartDelegate(IntPtr manager);
 
 [UnmanagedFunctionPointer(CallingConvention.Winapi)]
 public delegate IntPtr FlApi_ManagerWebServiceUrlsDelegate(IntPtr manager, out IntPtr outUrls, out UIntPtr outNumUrls);
+
+[UnmanagedFunctionPointer(CallingConvention.Winapi)]
+public delegate IntPtr FlApi_ManagerWebServiceActivityDelegate(
+    IntPtr manager, out ulong activeRequests, out ulong idleMilliseconds);
+
+[UnmanagedFunctionPointer(CallingConvention.Winapi)]
+public delegate IntPtr FlApi_ManagerTryStopWebServiceIfIdleDelegate(
+    IntPtr manager, ulong minimumIdleMilliseconds, [MarshalAs(UnmanagedType.I1)] out bool stopped);
 
 [UnmanagedFunctionPointer(CallingConvention.Winapi)]
 public delegate IntPtr FlApi_ManagerWebServiceStopDelegate(IntPtr manager);
