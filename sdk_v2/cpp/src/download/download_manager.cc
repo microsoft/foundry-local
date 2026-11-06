@@ -481,7 +481,7 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
     }
 
     DownloadBlobsToDirectory(*blob_downloader_, container.blob_sas_uri,
-                             model_path, download_opts, stats);
+                             model_path, download_opts, stats, logger_);
 
     record_stats(stats);
     tracker.SetDownloadWaitResult("Completed");

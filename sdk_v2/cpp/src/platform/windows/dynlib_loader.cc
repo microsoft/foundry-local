@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -36,8 +37,15 @@ std::shared_ptr<void> LoadSharedLibraryImpl(const std::filesystem::path& path, I
 
   if (handle == nullptr) {
     const DWORD error = ::GetLastError();
+    const std::string_view hint =
+        path_fallback && error == ERROR_MOD_NOT_FOUND
+            ? " The library or one of its dependencies could not be found. Install the CUDA runtime major version "
+              "required by the provider and expose its DLL directory via PATH or AddDllDirectory, or place the "
+              "dependencies beside the provider DLLs. Windows/Linux x64 require CUDA 12 and compatible cuDNN 9 "
+              "runtimes, while Windows/Linux ARM require CUDA 13 and compatible cuDNN 9 runtimes."
+            : "";
     logger.Log(LogLevel::Warning,
-               fmt::format("EP: failed to load '{}' ({})", PathForLog(absolute_path), error));
+               fmt::format("EP: failed to load '{}' ({}){}", PathForLog(absolute_path), error, hint));
     return {};
   }
 

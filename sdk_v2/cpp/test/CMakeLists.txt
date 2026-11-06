@@ -136,6 +136,7 @@ add_executable(foundry_local_tests
     internal_api/model_io_info_test.cc
     internal_api/model_load_manager_test.cc
     internal_api/model_sorting_test.cc
+    internal_api/non_generative_contract_test.cc
     internal_api/platform_path_test.cc
     internal_api/replay_equivalence_test.cc
     internal_api/response_converter_test.cc
@@ -170,6 +171,17 @@ add_executable(foundry_local_tests
     internal_api/winml_provider_allowlist_test.cc
     internal_api/zip_extract_test.cc
 )
+
+if(FOUNDRY_LOCAL_BUILD_SERVICE)
+    target_sources(foundry_local_tests PRIVATE
+        internal_api/non_generative_runtime_test.cc
+    )
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    target_sources(foundry_local_tests PRIVATE internal_api/telemetry_test.rc)
+    target_compile_definitions(foundry_local_tests PRIVATE FOUNDRY_LOCAL_TEST_HOST_VERSION_RESOURCE=1)
+endif()
 
 if(FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS)
     target_sources(foundry_local_tests PRIVATE
@@ -249,6 +261,14 @@ target_include_directories(foundry_local_tests
         ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
+if(NOT CMAKE_CROSSCOMPILING)
+    add_executable(benchmark-download ../tools/benchmark-download.cc)
+    target_include_directories(benchmark-download PRIVATE ../src)
+    target_compile_options(benchmark-download PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+    target_link_libraries(benchmark-download PRIVATE foundry_local_static)
+    add_dependencies(benchmark-download foundry_local)
+endif()
+
 add_custom_command(TARGET foundry_local_tests POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_CURRENT_SOURCE_DIR}/testdata
@@ -292,18 +312,54 @@ if(WIN32)
         FOUNDRY_TEST_LOADER_LIBRARY="$<TARGET_FILE:loader-test-library>"
         FOUNDRY_TEST_LOADER_DEPENDENCY="$<TARGET_FILE:loader-test-dependency>")
     add_dependencies(windows-dynlib-loader-tests loader-test-library)
-    gtest_discover_tests(windows-dynlib-loader-tests DISCOVERY_MODE PRE_TEST)
+    gtest_discover_tests(windows-dynlib-loader-tests
+        DISCOVERY_MODE PRE_TEST
+        PROPERTIES RUN_SERIAL TRUE)
 endif()
+
+# Only these in-memory suites may overlap. Model, host, filesystem, and newly
+# added suites remain serial even when CI sets CTEST_PARALLEL_LEVEL.
+set(foundry_parallel_suites
+    RawEnvelopeDetectorTest
+    QwenXmlToolCallAccumulatorTest
+    ToolCallStreamAccumulatorTest
+    ReasoningStreamSplitterTest
+    PromptOpensReasoningTest
+    ResolveMarkerTokenIdsTest
+)
+list(TRANSFORM foundry_parallel_suites APPEND ".*")
+list(JOIN foundry_parallel_suites ":" foundry_parallel_filter)
 
 # DISCOVERY_TIMEOUT defaults to 5s, which is not enough for the Windows build:
 # foundry_local.dll links against Microsoft.Windows.AI.MachineLearning.dll
 # (delay-loaded) plus standalone ORT, and process startup + gtest enumeration
 # can exceed 5s on cold caches or slow CI agents. Bump to 60s for headroom.
-gtest_discover_tests(foundry_local_tests
-    WORKING_DIRECTORY $<TARGET_FILE_DIR:foundry_local_tests>
-    DISCOVERY_MODE PRE_TEST
-    DISCOVERY_TIMEOUT 60
-)
+if(CMAKE_VERSION VERSION_LESS 3.22)
+    # TEST_FILTER was added in 3.22. Keep one unfiltered, serial discovery on older CMake.
+    set(foundry_parallel_filter "")
+    gtest_discover_tests(foundry_local_tests
+        WORKING_DIRECTORY $<TARGET_FILE_DIR:foundry_local_tests>
+        DISCOVERY_MODE PRE_TEST
+        DISCOVERY_TIMEOUT 60
+        PROPERTIES RUN_SERIAL TRUE
+    )
+else()
+    gtest_discover_tests(foundry_local_tests
+        WORKING_DIRECTORY $<TARGET_FILE_DIR:foundry_local_tests>
+        DISCOVERY_MODE PRE_TEST
+        DISCOVERY_TIMEOUT 60
+        TEST_FILTER "${foundry_parallel_filter}"
+        TEST_LIST foundry_parallel_tests
+    )
+    gtest_discover_tests(foundry_local_tests
+        WORKING_DIRECTORY $<TARGET_FILE_DIR:foundry_local_tests>
+        DISCOVERY_MODE PRE_TEST
+        DISCOVERY_TIMEOUT 60
+        TEST_FILTER "-${foundry_parallel_filter}"
+        TEST_LIST foundry_serial_tests
+        PROPERTIES RUN_SERIAL TRUE
+    )
+endif()
 
 add_test(
     NAME FoundryLocalVersionConfigureTwice
@@ -465,4 +521,20 @@ gtest_discover_tests(cache_only_tests
     WORKING_DIRECTORY $<TARGET_FILE_DIR:cache_only_tests>
     DISCOVERY_MODE PRE_TEST
     DISCOVERY_TIMEOUT 60
+    PROPERTIES RUN_SERIAL TRUE
 )
+
+if(NOT CMAKE_CROSSCOMPILING AND NOT ANDROID AND NOT IOS)
+    add_test(NAME CTestSchedulingPolicy
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ctest-scheduling-test.py
+            --ctest ${CMAKE_CTEST_COMMAND}
+            --build-dir ${PROJECT_BINARY_DIR}
+            --config $<CONFIG>
+            --unit-binary $<TARGET_FILE:foundry_local_tests>
+            "--parallel-filter=${foundry_parallel_filter}")
+endif()
+
+# Discovered Google Tests are registered at test time; the tests available
+# here are explicit add_test entries, including the single integration process.
+get_property(foundry_explicit_tests DIRECTORY PROPERTY TESTS)
+set_tests_properties(${foundry_explicit_tests} PROPERTIES RUN_SERIAL TRUE)

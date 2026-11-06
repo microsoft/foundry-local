@@ -441,7 +441,9 @@ model.unload()
 
 ### Audio transcription
 
-`AudioSession` accepts `AudioItem` input (PCM bytes + sample rate / channels) and produces `TextItem` output. See [`samples/python/audio-transcription/`](https://github.com/microsoft/Foundry-Local/tree/main/samples/python/audio-transcription) and [`live-audio-transcription/`](https://github.com/microsoft/Foundry-Local/tree/main/samples/python/live-audio-transcription) for runnable end-to-end examples covering offline files and live PCM streaming through an `ItemQueue`.
+`AudioSession` accepts `AudioItem` input (PCM bytes + sample rate / channels) and produces `TextItem` output. See
+[`samples/python/realtime-transcription/`](https://github.com/microsoft/Foundry-Local/tree/main/samples/python/realtime-transcription)
+for a runnable live PCM streaming example.
 
 ### Web service (optional)
 
@@ -486,10 +488,19 @@ All sessions wrap a native `flSession*` and are context managers. Closing a sess
 
 Common session methods:
 
-- `process_request(request) -> Response` — run synchronously, return the full response.
-- `process_streaming_request(request) -> Iterator[Item]` — yield items as the model produces them. Requires `set_streaming(True)` first. Abandoning the iterator (`break`, exception, `gen.close()`) automatically cancels the request and joins the worker thread.
+- `process_request(request, *, cancel_event=None) -> Response` — run synchronously, return the full response.
+- `process_streaming_request(request, *, cancel_event=None) -> StreamingResponse` — yield items as the model produces them. Requires `set_streaming(True)` first. Abandoning the iterator (`break`, exception, `gen.close()`) automatically cancels the request and joins the worker thread.
 - `set_options(RequestOptions)` — apply session-level inference parameters (typed `SearchOptions` for sampling, optional `tool_choice`, and `additional_options` for passthrough).
 - `set_streaming(enabled)` — install or remove the native streaming callback.
+
+Pass a `threading.Event` as `cancel_event` and set it from another thread to cancel inference. A pre-set event
+prevents submission. Cancellation also interrupts waits for a busy session or request without canceling its current
+owner. Cancellation raises `FoundryLocalException` with `error_code == 5`; native completion may win the race and
+return normally. The compatibility chat, audio, and embedding methods accept the same keyword argument.
+Cancellation helpers stop before the call returns, so the request can be reused without a late cancellation.
+Cancellation is cooperative: native generator construction and an individual embedding forward pass may not be
+interruptible. Cancellation and cleanup (including closing a stream or session) wait for native processing to exit;
+the event is not a hard execution deadline.
 
 ### Requests and responses
 

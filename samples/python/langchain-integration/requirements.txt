@@ -1,4 +1,0 @@
-foundry-local-sdk
-openai
-langchain-openai
-langchain-core

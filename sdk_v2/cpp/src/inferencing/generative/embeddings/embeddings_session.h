@@ -2,12 +2,37 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "exception.h"
 #include "inferencing/session/session.h"
 #include "logger.h"
 
 namespace fl {
 
 class GenAIModelInstance;
+
+namespace embeddings_internal {
+
+template <typename Generate>
+std::vector<std::vector<float>> GenerateBatch(const std::vector<std::string>& inputs,
+                                              const Request& request, Generate&& generate) {
+  std::vector<std::vector<float>> results;
+  results.reserve(inputs.size());
+  for (const auto& input : inputs) {
+    if (request.IsCancellationRequested()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "embedding request canceled");
+    }
+
+    results.push_back(generate(input));
+  }
+
+  if (request.IsCancellationRequested()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "embedding request canceled");
+  }
+
+  return results;
+}
+
+}  // namespace embeddings_internal
 
 /// Embedding session — stateless, concurrent-safe.
 /// Each ProcessRequestImpl call creates a fresh generator, runs one forward pass,
@@ -37,7 +62,8 @@ class EmbeddingsSession : public Session {
   /// Generate L2-normalized embedding vectors for a list of inputs.
   /// Each input is processed independently (batch_size=1) to avoid
   /// padding artifacts with bidirectional-attention embedding models.
-  std::vector<std::vector<float>> GenerateEmbeddingsBatch(const std::vector<std::string>& inputs);
+  std::vector<std::vector<float>> GenerateEmbeddingsBatch(const std::vector<std::string>& inputs,
+                                                          const Request& request);
 
   /// Generate a single L2-normalized embedding vector for one input string.
   std::vector<float> GenerateSingleEmbedding(const std::string& input);

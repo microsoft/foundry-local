@@ -5,6 +5,7 @@
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
 
 #include "catalog.h"
+#include "catalog/non_generative_package.h"
 #include "contracts/tool_definitions.h"
 #include "ep_detection/ep_detector.h"
 #include "http/http_client.h"
@@ -16,6 +17,7 @@
 #include "internal_api/test_model_cache.h"
 #include "internal_api/toolcalling/coding_agent_tools_fixture.h"
 #include "internal_api/web_service_test_helpers.h"
+#include "utils/safe_getenv.h"
 #include "logger.h"
 #include "manager.h"
 #include "model.h"
@@ -28,16 +30,20 @@
 #include "utils/temp_path.h"
 
 #include <foundry_local/foundry_local_c.h>
+#include <ort_genai_c.h>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <mutex>
 #include <optional>
+#include <semaphore>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -60,6 +66,22 @@ namespace {
 
 constexpr const char* kResponseStoreTestModelAlias = "response-store-test-model";
 constexpr const char* kCodingTestModelAlias = "coding-test-model";
+
+class CpuCudaEpDetector : public IEpDetector {
+ public:
+  std::map<std::string, std::vector<std::string>>
+  GetAvailableDevicesToEPs() const override {
+    return {{"CPU", {"CPUExecutionProvider"}},
+            {"GPU", {"CUDAExecutionProvider"}}};
+  }
+
+  bool PrepareForModelLoad(std::string_view ep_name) override {
+    prepared = std::string(ep_name);
+    return true;
+  }
+
+  std::string prepared;
+};
 
 TEST(HttpUserAgentTest, KeepsOnlyKnownProductAndNumericReleaseVersion) {
   EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/1.2.3"), "foundry-local-cpp/1.2.3");
@@ -146,10 +168,12 @@ std::string TestHttpGet(const std::string& url, const std::string& user_agent = 
 }
 
 std::string TestHttpPost(const std::string& url, const std::string& json_body,
-                         const std::string& user_agent = "") {
+                         const std::string& user_agent = "",
+                         std::chrono::milliseconds timeout = std::chrono::seconds(30)) {
   http::HttpRequestOptions options;
   options.user_agent = user_agent;
   options.close_connection = true;
+  options.timeout = timeout;
   return http::HttpPost(url, json_body, options);
 }
 
@@ -294,7 +318,7 @@ class WebServiceTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
     logger_ = std::make_unique<StderrLogger>();
-    ep_detector_ = std::make_unique<test::CpuOnlyEpDetector>();
+    ep_detector_ = std::make_unique<CpuCudaEpDetector>();
     model_load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
     session_manager_ = std::make_unique<WebTestSessionManager>(*logger_);
     telemetry_ = std::make_unique<WebUsageTelemetry>();
@@ -374,9 +398,30 @@ class WebServiceTest : public ::testing::Test {
     return json::parse(body);
   }
 
+  static NonGenerativePackageMetadata AddLocalPackage(
+      const std::filesystem::path& path) {
+    auto package = ReadNonGenerativePackage(path);
+    if (!package) throw std::runtime_error("test package metadata is missing");
+    const auto separator = package->model_id.rfind(':');
+    ModelInfo info;
+    info.model_id = package->model_id;
+    info.name = package->model_id.substr(0, separator);
+    info.version = std::stoi(package->model_id.substr(separator + 1));
+    info.alias = package->alias;
+    info.task = package->task;
+    info.execution_provider = package->execution_provider;
+    info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, package->task);
+    info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR,
+                        package->execution_provider);
+    local_catalog_->AddModel(Model::FromLocalRegistration(
+        std::move(info), path.string(), svc_.download_manager,
+        *model_load_manager_));
+    return *package;
+  }
+
   static std::unique_ptr<test::MockCatalog> public_catalog_;
   static std::unique_ptr<test::MockCatalog> local_catalog_;
-  static std::unique_ptr<test::CpuOnlyEpDetector> ep_detector_;
+  static std::unique_ptr<CpuCudaEpDetector> ep_detector_;
   static std::unique_ptr<StderrLogger> logger_;
   static std::unique_ptr<ModelLoadManager> model_load_manager_;
   static std::unique_ptr<WebTestSessionManager> session_manager_;
@@ -389,7 +434,7 @@ class WebServiceTest : public ::testing::Test {
 // Static member definitions
 std::unique_ptr<test::MockCatalog> WebServiceTest::public_catalog_;
 std::unique_ptr<test::MockCatalog> WebServiceTest::local_catalog_;
-std::unique_ptr<test::CpuOnlyEpDetector> WebServiceTest::ep_detector_;
+std::unique_ptr<CpuCudaEpDetector> WebServiceTest::ep_detector_;
 std::unique_ptr<StderrLogger> WebServiceTest::logger_;
 std::unique_ptr<ModelLoadManager> WebServiceTest::model_load_manager_;
 std::unique_ptr<WebTestSessionManager> WebServiceTest::session_manager_;
@@ -1139,6 +1184,122 @@ TEST_F(WebServiceTest, ChatCompletionsRejectsMissingMessages) {
                std::exception);
 }
 
+TEST_F(WebServiceTest, NonGenerativeRoutesRejectInvalidContracts) {
+  EXPECT_THROW(TestHttpPost(base_url_ + "/v1/rank", ""),
+               std::exception);
+  EXPECT_THROW(TestHttpPost(base_url_ + "/v1/systemone",
+                            R"({"questions":{}})"),
+               std::exception);
+}
+
+TEST_F(WebServiceTest, NonGenerativeRoutesResolveRequestedCatalogModelAndValidateTask) {
+  EXPECT_THROW(
+      TestHttpPost(
+          base_url_ + "/v1/rank",
+          R"({"model":"alpha-model","context":{},"question":"select","answers":["a","b"]})"),
+      std::exception);
+  EXPECT_THROW(
+      TestHttpPost(
+          base_url_ + "/v1/systemone",
+          R"({"model":"alpha-model","state":{},"questions":{"q":{"type":"noul"}}})"),
+      std::exception);
+  EXPECT_THROW(
+      TestHttpPost(
+          base_url_ + "/v1/rank",
+          R"({"model":"unknown-explicit-model","context":{},"question":"select","answers":["a","b"]})"),
+      std::exception);
+}
+
+TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCpuPackagesWhenConfigured) {
+  const auto root_value = test::SafeGetEnv("FOUNDRY_LOCAL_NON_GENERATIVE_TEST_ROOT");
+  if (root_value.empty()) {
+    GTEST_SKIP() << "set FOUNDRY_LOCAL_NON_GENERATIVE_TEST_ROOT to run exported packages";
+  }
+  const auto root = std::filesystem::path(root_value);
+  const auto clm = root / "clm-v0.1-8b-fp32";
+  const auto kev = root / "kev-4b-fp32";
+  const auto clm_metadata = AddLocalPackage(clm);
+  const auto kev_metadata = AddLocalPackage(kev);
+  auto ranking = json::parse(TestHttpPost(
+      base_url_ + "/catalogs/local/v1/rank",
+      json{{"model", clm_metadata.model_id},
+           {"context", {{"weather", "heavy rain"}}},
+           {"question", "Which activity is more suitable?"},
+           {"answers", {"Have a picnic outdoors", "Visit an indoor museum"}}}
+          .dump(),
+      "", std::chrono::minutes(3)));
+  ASSERT_EQ(ranking.at("ranked").size(), 2u);
+  EXPECT_EQ(ranking.at("model"), clm_metadata.model_id);
+  const auto load = json::parse(
+      TestHttpGet(base_url_ + "/catalogs/local/models/load/" +
+                  clm_metadata.model_id));
+  EXPECT_EQ(load.at("status"), "already_loaded");
+
+  auto decision = json::parse(TestHttpPost(
+      base_url_ + "/catalogs/local/v1/systemone",
+      json{{"model", kev_metadata.alias},
+           {"state", {{"weather", "heavy rain"}}},
+           {"questions",
+            {{"umbrella",
+              {{"type", "noul"},
+               {"instructions", "Should I take an umbrella?"}}}}}}
+          .dump(),
+      "", std::chrono::minutes(3)));
+  ASSERT_TRUE(decision.at("answers").contains("umbrella"));
+  EXPECT_EQ(decision.at("model"), kev_metadata.model_id);
+  const auto decision_load = json::parse(
+      TestHttpGet(base_url_ + "/catalogs/local/models/load/" +
+                  kev_metadata.model_id));
+  EXPECT_EQ(decision_load.at("status"), "already_loaded");
+  EXPECT_EQ(
+      json::parse(TestHttpGet(base_url_ + "/catalogs/local/models/unload/" +
+                              clm_metadata.model_id))
+          .at("status"),
+      "unloaded");
+  EXPECT_EQ(
+      json::parse(TestHttpGet(base_url_ + "/catalogs/local/models/unload/" +
+                              kev_metadata.model_id))
+          .at("status"),
+      "unloaded");
+}
+
+TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCudaPackagesWhenConfigured) {
+  const auto enabled = test::SafeGetEnv("FOUNDRY_LOCAL_RUN_CUDA_TESTS");
+  const auto root_value = test::SafeGetEnv("FOUNDRY_LOCAL_NON_GENERATIVE_TEST_ROOT");
+  if (enabled != "1" || root_value.empty()) {
+    GTEST_SKIP() << "set FOUNDRY_LOCAL_RUN_CUDA_TESTS=1 and "
+                    "FOUNDRY_LOCAL_NON_GENERATIVE_TEST_ROOT to run CUDA packages";
+  }
+  const auto root = std::filesystem::path(root_value);
+  const auto clm = root / "clm-v0.1-8b-int4-cuda";
+  const auto kev = root / "kev-4b-int4-cuda";
+  const auto clm_metadata = AddLocalPackage(clm);
+  const auto kev_metadata = AddLocalPackage(kev);
+
+  EXPECT_NO_THROW(TestHttpGet(
+      base_url_ + "/catalogs/local/models/load/" + clm_metadata.model_id));
+  EXPECT_NO_THROW(TestHttpGet(
+      base_url_ + "/catalogs/local/models/load/" + kev_metadata.model_id));
+
+  auto ranking = json::parse(TestHttpPost(
+      base_url_ + "/catalogs/local/v1/rank",
+      json{{"model", clm_metadata.model_id},
+           {"context", {{"weather", "heavy rain"}}},
+           {"question", "select"},
+           {"answers", {"outside", "inside"}}}
+          .dump(),
+      "", std::chrono::minutes(3)));
+  EXPECT_EQ(ranking.at("model"), clm_metadata.model_id);
+
+  auto decision = json::parse(TestHttpPost(
+      base_url_ + "/catalogs/local/v1/systemone",
+      json{{"model", kev_metadata.model_id},
+           {"state", {{"weather", "heavy rain"}}},
+           {"questions", {{"umbrella", {{"type", "noul"}}}}}}
+          .dump(),
+      "", std::chrono::minutes(3)));
+  EXPECT_EQ(decision.at("model"), kev_metadata.model_id);
+}
 TEST_F(WebServiceTest, ChatCompletionsRejectsUnknownModel) {
   json body = {
       {"model", "nonexistent-model"},
@@ -1687,6 +1848,107 @@ TEST_F(WebServiceTest, CodingResponsesRejectImageInput) {
   EXPECT_EQ(unloaded["status"], "unloaded") << unloaded.dump(2);
 }
 
+TEST_F(WebServiceTest, ChatCompletionsDoesNotSilentlyIgnoreImagesOnATextModel) {
+  const auto loaded = Get(std::string("/models/load/") + kResponseStoreTestModelAlias);
+  ASSERT_EQ(loaded["status"], "loaded") << loaded.dump(2);
+  const json body = {
+      {"model", std::string(kResponseStoreTestModelAlias) + ":1"},
+      {"messages",
+       json::array({{{"role", "user"},
+                     {"content", json::array({
+                                     {{"type", "text"}, {"text", "Describe the image."}},
+                                     {{"type", "image_url"}, {"image_url", {{"url", "data:image/png;base64,AA=="}}}},
+                                 })}}})},
+      {"max_completion_tokens", 4},
+  };
+
+  const auto result = PostJson(base_url_ + "/v1/chat/completions", body);
+  EXPECT_EQ(result.status, 400) << result.body.dump(2);
+  EXPECT_NE(ErrorMessageOf(result.body).find("multimodal model"), std::string::npos) << result.body.dump(2);
+
+  auto text_body = body;
+  text_body["messages"][0]["content"] = "Say hello.";
+  const auto healthy = PostJson(base_url_ + "/v1/chat/completions", text_body);
+  EXPECT_EQ(healthy.status, 200) << healthy.body.dump(2);
+  const auto unloaded = Get(std::string("/models/unload/") + kResponseStoreTestModelAlias);
+  EXPECT_EQ(unloaded["status"], "unloaded") << unloaded.dump(2);
+}
+
+TEST_F(WebServiceTest, ChatCompletionsRemoteImageUrlsAreClientErrorsIncludingStreaming) {
+  const auto loaded = Get(std::string("/models/load/") + kResponseStoreTestModelAlias);
+  ASSERT_EQ(loaded["status"], "loaded") << loaded.dump(2);
+  httplib::Client client(base_url_);
+  client.set_read_timeout(60, 0);
+  for (const bool streaming : {false, true}) {
+    SCOPED_TRACE(streaming ? "streaming" : "nonstreaming");
+    const json body = {
+        {"model", std::string(kResponseStoreTestModelAlias) + ":1"},
+        {"messages", json::array({{{"role", "user"},
+                                   {"content", json::array({{{"type", "image_url"},
+                                                             {"image_url", {{"url", "https://example.com/image.png"}}}}})}}})},
+        {"stream", streaming},
+    };
+    const auto result = client.Post("/v1/chat/completions", body.dump(), "application/json");
+    ASSERT_TRUE(result) << httplib::to_string(result.error());
+    json error;
+    if (streaming) {
+      ASSERT_EQ(result->status, 200) << result->body;
+      std::istringstream stream(result->body);
+      std::string line;
+      while (std::getline(stream, line)) {
+        if (line.rfind("data: ", 0) == 0 && line.find("[DONE]") == std::string::npos) {
+          const auto chunk = json::parse(line.substr(6));
+          if (chunk.contains("error")) {
+            error = chunk["error"];
+          }
+        }
+      }
+    } else {
+      ASSERT_EQ(result->status, 400) << result->body;
+      error = json::parse(result->body)["error"];
+    }
+
+    ASSERT_TRUE(error.is_object()) << result->body;
+    EXPECT_EQ(error.value("type", ""), "invalid_request_error") << error.dump(2);
+    EXPECT_NE(error.value("message", "").find("remote http(s) URLs are not supported"), std::string::npos)
+        << error.dump(2);
+  }
+
+  const auto unloaded = Get(std::string("/models/unload/") + kResponseStoreTestModelAlias);
+  EXPECT_EQ(unloaded["status"], "unloaded") << unloaded.dump(2);
+}
+
+TEST_F(WebServiceTest, ChatCompletionsAppliesMediaPolicyBeforeInference) {
+  const auto loaded = Get(std::string("/models/load/") + kResponseStoreTestModelAlias);
+  ASSERT_EQ(loaded["status"], "loaded") << loaded.dump(2);
+  const json image_message = {
+      {"role", "user"},
+      {"content", json::array({{{"type", "image_url"}, {"image_url", {{"url", "data:image/png;base64,AA=="}}}}})},
+  };
+  for (const bool with_tools : {false, true}) {
+    json body = {
+        {"model", std::string(kResponseStoreTestModelAlias) + ":1"},
+        {"messages", json::array({image_message})},
+        {"max_completion_tokens", 4},
+    };
+    if (with_tools) {
+      body["tools"] = json::array(
+          {{{"type", "function"}, {"function", {{"name", "look_up"}, {"parameters", {{"type", "object"}}}}}}});
+    } else {
+      body["messages"] = json::array(
+          {{{"role", "user"}, {"content", "Hello."}}, {{"role", "assistant"}, {"content", "Hi."}}, image_message});
+    }
+
+    const auto result = PostJson(base_url_ + "/v1/chat/completions", body);
+    EXPECT_EQ(result.status, 400) << result.body.dump(2);
+    EXPECT_NE(ErrorMessageOf(result.body).find(with_tools ? "tool definitions" : "first turn"), std::string::npos)
+        << result.body.dump(2);
+  }
+
+  const auto unloaded = Get(std::string("/models/unload/") + kResponseStoreTestModelAlias);
+  EXPECT_EQ(unloaded["status"], "unloaded") << unloaded.dump(2);
+}
+
 TEST_F(WebServiceTest, CodingChatCompletionsRejectImageAndAudioInput) {
   const auto loaded = Get(std::string("/models/load/") + kCodingTestModelAlias);
   ASSERT_EQ(loaded["status"], "loaded") << loaded.dump(2);
@@ -1872,14 +2134,16 @@ TEST_F(WebServiceTest, HalfClosedNonStreamingChatConnectionReceivesCompletion) {
   const auto unload_result = Get(std::string("/models/unload/") + kResponseStoreTestModelAlias);
   EXPECT_EQ(unload_result["status"], "unloaded") << unload_result.dump(2);
 }
+#endif
 
 TEST_F(WebServiceTest, ClosingNonStreamingChatConnectionCancelsInferenceAndReleasesSession) {
   const auto load_result = Get(std::string("/models/load/") + kResponseStoreTestModelAlias);
   ASSERT_EQ(load_result["status"], "loaded") << load_result.dump(2);
   const auto prior_action_count = telemetry_->Events().actions.size();
 
-  const int client = ::socket(AF_INET, SOCK_STREAM, 0);
-  ASSERT_GE(client, 0);
+  using Socket = decltype(::socket(AF_INET, SOCK_STREAM, 0));
+  const Socket client = ::socket(AF_INET, SOCK_STREAM, 0);
+  ASSERT_NE(client, static_cast<Socket>(-1));
   auto connection = std::make_shared<oatpp::network::tcp::Connection>(client);
   sockaddr_in address{};
   address.sin_family = AF_INET;
@@ -1898,11 +2162,13 @@ TEST_F(WebServiceTest, ClosingNonStreamingChatConnectionCancelsInferenceAndRelea
       "Content-Type: application/json\r\nContent-Length: " +
       std::to_string(payload.size()) + "\r\nConnection: close\r\n\r\n" + payload;
   linger abortive_close{1, 0};
-  ASSERT_EQ(::setsockopt(client, SOL_SOCKET, SO_LINGER, &abortive_close, sizeof(abortive_close)), 0);
+  ASSERT_EQ(::setsockopt(client, SOL_SOCKET, SO_LINGER, reinterpret_cast<const char*>(&abortive_close),
+                         sizeof(abortive_close)),
+            0);
   // Reset after HTTP parsing but before inference can finish, independently of the tiny model's generation speed.
   session_manager_->ResetClientOnNextRegistration(std::move(connection));
   ScopeGuard clear_disconnect([&]() noexcept { session_manager_->ResetClientOnNextRegistration(nullptr); });
-  ASSERT_EQ(::send(client, message.data(), message.size(), 0), static_cast<ssize_t>(message.size()));
+  ASSERT_EQ(::send(client, message.data(), static_cast<int>(message.size()), 0), static_cast<int>(message.size()));
 
   bool canceled = false;
   const auto telemetry_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -1931,7 +2197,6 @@ TEST_F(WebServiceTest, ClosingNonStreamingChatConnectionCancelsInferenceAndRelea
   const auto unload_result = Get(std::string("/models/unload/") + kResponseStoreTestModelAlias);
   EXPECT_EQ(unload_result["status"], "unloaded") << unload_result.dump(2);
 }
-#endif
 
 TEST_F(WebServiceTest, ClosingResponsesStreamCancelsInferenceAndPreservesConversation) {
   const auto load_result = Get(std::string("/models/load/") + kResponseStoreTestModelAlias);

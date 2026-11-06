@@ -43,8 +43,7 @@ Foundry Local may collect usage data and send it to Microsoft to help improve ou
 ## 🚀 Quickstart
 
 > [!TIP]
-> The following shows a quickstart for Python and JavaScript. C, C++, C#, and Rust are also supported. For C/C++, install the published [Runtime NuGet package](https://www.nuget.org/packages/Microsoft.AI.Foundry.Local.Runtime) and follow the [native SDK package integration guide](sdk_v2/cpp/README.md#install-from-nuget) and [C++ quickstart](sdk_v2/cpp/README.md#quick-start) — no source build is required. Take a look at the [samples](/samples/) for more details.
-
+> The following shows a quickstart for Python and JavaScript. C, C++, C#, and Rust are also supported. Take a look at the [samples](/samples/) for more details.
 
 <details open>
 <summary><strong>JavaScript</strong></summary>
@@ -52,33 +51,36 @@ Foundry Local may collect usage data and send it to Microsoft to help improve ou
 1. Install the SDK:
 
     ```bash
-    npm install foundry-local-sdk
+    npm install --save-exact foundry-local-sdk@2.2.1
     ```
-
 2. Run your first chat completion:
 
     ```javascript
-    import { FoundryLocalManager } from 'foundry-local-sdk';
+    import { ChatSession, FoundryLocalManager, Item, Request } from 'foundry-local-sdk';
 
-    const manager = FoundryLocalManager.create({ appName: 'my-app' });
-
-    // Download and load a model (auto-selects best variant for user's hardware)
+    const manager = FoundryLocalManager.create({ appName: 'foundry_local_samples' });
     const model = await manager.catalog.getModel('qwen2.5-0.5b');
-    await model.download((progress) => {
-        process.stdout.write(`\rDownloading... ${progress.toFixed(2)}%`);
-    });
-    await model.load();
-
-    // Create a chat client and get a completion
-    const chatClient = model.createChatClient();
-    const response = await chatClient.completeChat([
-        { role: 'user', content: 'What is the golden ratio?' }
-    ]);
-
-    console.log(response.choices[0]?.message?.content);
-
-    // Unload the model when done
-    await model.unload();
+    try {
+        if (!model.isCached) await model.download();
+        await model.load();
+        try {
+            const session = new ChatSession(model);
+            try {
+                const request = new Request().addItem(
+                    Item.userMessage('What is the golden ratio?')
+                );
+                for await (const item of session.processStreamingRequest(request)) {
+                    if (item.type === 'text') process.stdout.write(item.text);
+                }
+            } finally {
+                session.dispose();
+            }
+        } finally {
+            await model.unload();
+        }
+    } finally {
+        manager.dispose();
+    }
     ```
 
 </details>
@@ -90,34 +92,35 @@ Foundry Local may collect usage data and send it to Microsoft to help improve ou
 1. Install the SDK:
 
     ```bash
-    pip install foundry-local-sdk
+    pip install foundry-local-sdk==2.2.1
     ```
-
 2. Run your first chat completion:
 
     ```python
-    from foundry_local_sdk import Configuration, FoundryLocalManager
+    from foundry_local_sdk import (
+        ChatSession, Configuration, FoundryLocalManager,
+        MessageItem, Request,
+    )
 
-    config = Configuration(app_name="foundry_local_samples")
-    FoundryLocalManager.initialize(config)
-    manager = FoundryLocalManager.instance
-
-    # Select and load a model from the catalog
-    model = manager.catalog.get_model("qwen2.5-0.5b")
-    model.download()
-    model.load()
-
-    # Get a chat client
-    client = model.get_chat_client()
-
-    # Create and send message
-    messages = [
-        {"role": "user", "content": "What is the golden ratio?"}
-    ]
-    response = client.complete_chat(messages)
-    print(f"Response: {response.choices[0].message.content}")
-   
-    model.unload()
+    with FoundryLocalManager(Configuration(app_name="foundry_local_samples")) as manager:
+        ep_result = manager.download_and_register_eps()
+        if not ep_result.success:
+            raise RuntimeError(f"EP registration failed: {ep_result.failed_eps}")
+        model = manager.catalog.get_model("qwen2.5-0.5b")
+        if model is None:
+            raise RuntimeError("Model not found")
+        if not model.is_cached:
+            model.download()
+        model.load()
+        try:
+            with ChatSession(model) as session:
+                with Request().add_item(MessageItem.user("What is the golden ratio?")) as request:
+                    with session.process_request(request) as response:
+                        for item in response:
+                            if isinstance(item, MessageItem):
+                                print(item.get_simple_text())
+        finally:
+            model.unload()
     ```
 
 </details>
@@ -125,46 +128,21 @@ Foundry Local may collect usage data and send it to Microsoft to help improve ou
 
 ### 💬 Audio Transcription (Speech-to-Text)
 
-The SDK also supports audio transcription via Whisper models (available in C, C++, JavaScript, C#, Python, and Rust):
-
-```javascript
-import { FoundryLocalManager } from 'foundry-local-sdk';
-
-const manager = FoundryLocalManager.create({ appName: 'my-app' });
-
-const whisperModel = await manager.catalog.getModel('whisper-tiny');
-await whisperModel.download();
-await whisperModel.load();
-
-const audioClient = whisperModel.createAudioClient();
-audioClient.settings.language = 'en';
-
-// Transcribe an audio file
-const result = await audioClient.transcribe('recording.wav');
-console.log('Transcription:', result.text);
-
-// Or stream in real-time
-for await (const chunk of audioClient.transcribeStreaming('recording.wav')) {
-    process.stdout.write(chunk.text);
-}
-
-await whisperModel.unload();
-```
-
-> [!TIP]
-> A single `FoundryLocalManager` can manage both chat and audio models simultaneously. See the [chat-and-audio sample](samples/js/chat-and-audio-foundry-local/) for a complete example.
+The SDK also supports native audio transcription in C, C++, C#, JavaScript, Python, and Rust. See the
+[`realtime-transcription` samples](samples/) and the
+[Foundry Local get-started documentation](https://learn.microsoft.com/en-us/azure/foundry-local/get-started).
 
 ## 📦 Samples
 
 Explore complete working examples in the [`samples/`](samples/) folder:
 
 | Language | Samples | Highlights |
-|----------|---------|------------|
-| [**C++**](samples/cpp/) | 1 | Live audio transcription; additional chat, tool calling, embeddings, and audio examples in the [native SDK](sdk_v2/cpp/examples/) |
-| [**C#**](samples/cs/) | 12 | Native chat, audio transcription, tool calling, model management, web server, tutorials |
-| [**JavaScript**](samples/js/) | 12 | Native chat, audio, Electron app, Copilot SDK, LangChain, tool calling, tutorials |
-| [**Python**](samples/python/) | 9 | Chat completions, audio transcription, LangChain, tool calling, tutorials |
-| [**Rust**](samples/rust/) | 8 | Native chat, audio transcription, tool calling, web server, tutorials |
+| --- | --- | --- |
+| [**C++**](samples/cpp/) | 7 | Hello world, real-time transcription, embeddings, tool calling, web server, vision, and BYOM |
+| [**C#**](samples/cs/) | 7 | Hello world, real-time transcription, embeddings, tool calling, web server, vision, and BYOM |
+| [**JavaScript**](samples/js/) | 7 | Hello world, real-time transcription, embeddings, tool calling, web server, vision, and BYOM |
+| [**Python**](samples/python/) | 7 | Hello world, real-time transcription, embeddings, tool calling, web server, vision, and BYOM |
+| [**Rust**](samples/rust/) | 7 | Hello world, real-time transcription, embeddings, tool calling, web server, vision, and BYOM |
 
 C developers can use the [C API guide](sdk_v2/cpp/README.md#c-api) and [public C header](sdk_v2/cpp/include/foundry_local/foundry_local_c.h) to integrate the same runtime directly.
 

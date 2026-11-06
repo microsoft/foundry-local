@@ -43,6 +43,61 @@ class LocalModelCatalogTest : public ::testing::Test {
     std::ofstream(path / "genai_config.json") << R"({"model":{"type":"phi3","context_length":4096}})";
   }
 
+  static void WriteBundle(const std::filesystem::path& path,
+                          const std::string& model_id,
+                          const std::string& task,
+                          const std::string& provider = "cpu") {
+    std::filesystem::create_directories(path / "components");
+    nlohmann::json genai_config = {
+        {"model",
+         {{"type", "component"},
+          {"context_length", 4096},
+          {"decoder",
+           {{"session_options",
+             {{"provider_options",
+               provider == "cpu"
+                   ? nlohmann::json::array()
+                   : nlohmann::json::array(
+                         {{{provider, nlohmann::json::object()}}})}}}}}}}};
+    std::ofstream(path / "genai_config.json") << genai_config;
+    std::ofstream(path / "tokenizer.json") << "{}";
+    std::ofstream(path / "tokenizer_config.json") << "{}";
+    nlohmann::json components = nlohmann::json::object();
+    const auto add_component = [&](const std::string& name, const std::string& role) {
+      const auto relative = "components/" + name + ".onnx";
+      std::ofstream(path / relative) << "synthetic";
+      components[name] = {{"role", role}, {"filename", relative}};
+    };
+    if (task == "text-ranking") {
+      add_component("encoder", "backbone");
+      add_component("state_head", "head");
+      add_component("action_head", "head");
+      add_component("scorer", "scorer");
+    } else {
+      add_component("backbone", "backbone");
+      add_component("pointer_head", "head");
+    }
+    std::ofstream(path / "component_manifest.json")
+        << nlohmann::json{{"schema_version", 1},
+                          {"model_type", "synthetic"},
+                          {"components", components}};
+    nlohmann::json metadata = {
+        {"Name", model_id},
+        {"Alias", task == "text-ranking" ? "clm" : "kev"},
+        {"Task", task},
+        {"ComponentManifest", "component_manifest.json"},
+        {"License", "MIT"},
+        {"Provenance",
+         {{"source", "synthetic"},
+          {"artifact_revision", "artifact-revision"},
+          {"base_model", "synthetic/base"},
+          {"base_revision", "base-revision"}}},
+        {"Provider", {{"execution_provider", provider}, {"variant", "fp32"}}},
+        {"Capabilities", nlohmann::json::array({"structured-input"})},
+    };
+    std::ofstream(path / "inference_model.json") << metadata;
+  }
+
   ModelInfo MakeMetadata(std::string task = "chat-completion") const {
     ModelInfo info;
     info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, std::move(task));
@@ -250,6 +305,68 @@ TEST_F(LocalModelCatalogTest, RegistrationDerivesModalitiesForEveryTask) {
   EXPECT_EQ(coding_model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, std::string{}), "coding");
 }
 
+TEST_F(LocalModelCatalogTest, AmdGpuRuntimeSelectionSurvivesRegistrationAndRestoreAndGuardsLoad) {
+  for (const auto provider : {"AMDGPU", "amdgpu", "AMDGPUExecutionProvider"}) {
+    SCOPED_TRACE(provider);
+    auto metadata = MakeMetadata();
+    metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR, provider);
+    metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_DEVICE_TYPE_STR, "GPU");
+    const auto id = std::string("caller-") + provider + ":1";
+    auto* model = catalog_.RegisterModel(model_dir_.string(), id, metadata);
+    ASSERT_NE(model, nullptr);
+    EXPECT_EQ(model->Info().execution_provider, provider);
+    EXPECT_EQ(model->Info().device_type, DeviceType::kGPU);
+
+    auto restored = MakeCatalog();
+    auto* restored_model = restored.GetModelVariant(id);
+    ASSERT_NE(restored_model, nullptr);
+    EXPECT_EQ(restored_model->Info().execution_provider, provider);
+    for (auto* selected : {model, restored_model}) {
+      try {
+        selected->Load();
+        FAIL() << "Expected unavailable AMDGPU guard";
+      } catch (const Exception& ex) {
+        EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+        EXPECT_NE(std::string(ex.what()).find("AMDGPUExecutionProvider"), std::string::npos);
+      }
+    }
+  }
+}
+
+TEST_F(LocalModelCatalogTest, LegacyMigraphxRuntimeSelectionIsRejectedOnLoad) {
+  auto metadata = MakeMetadata();
+  metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR, "MIGraphXExecutionProvider");
+  auto* model = catalog_.RegisterModel(model_dir_.string(), "legacy-provider:1", metadata);
+  ASSERT_NE(model, nullptr);
+  try {
+    model->Load();
+    FAIL() << "Expected unsupported provider";
+  } catch (const Exception& ex) {
+    EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  }
+}
+
+TEST_F(LocalModelCatalogTest, AmdGpuArtifactProviderGuardsLoadWithoutCallerRuntimeMetadata) {
+  std::ofstream(model_dir_ / "genai_config.json")
+      << R"({"model":{"decoder":{"session_options":{"provider_options":[{"AMDGPUExecutionProvider":{}}]}}}})";
+  auto* model = catalog_.RegisterModel(model_dir_.string(), "artifact-amdgpu:1", MakeMetadata());
+  ASSERT_NE(model, nullptr);
+  EXPECT_TRUE(model->Info().execution_provider.empty());
+
+  auto restored = MakeCatalog();
+  auto* restored_model = restored.GetModelVariant("artifact-amdgpu:1");
+  ASSERT_NE(restored_model, nullptr);
+  for (auto* selected : {model, restored_model}) {
+    try {
+      selected->Load();
+      FAIL() << "Expected unavailable AMDGPU guard";
+    } catch (const Exception& ex) {
+      EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+      EXPECT_NE(std::string(ex.what()).find("AMDGPUExecutionProvider"), std::string::npos);
+    }
+  }
+}
+
 TEST_F(LocalModelCatalogTest, CodingModalityOverridesDoNotChangeInputCapabilities) {
   auto metadata = MakeMetadata("coding");
   metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, "text,image,audio");
@@ -336,6 +453,134 @@ TEST_F(LocalModelCatalogTest, RegistrationRequiresSupportedTask) {
   ModelInfo missing_task;
   EXPECT_THROW(catalog_.RegisterModel(model_dir_.string(), "missing-task:1", missing_task), Exception);
   EXPECT_THROW(catalog_.RegisterModel(model_dir_.string(), "invalid-task:1", MakeMetadata("text-generation")),
+               Exception);
+}
+
+TEST_F(LocalModelCatalogTest, RegistersMultiComponentTasksAndResolvesAlias) {
+  const auto clm_path = root_.path() / "clm";
+  WriteBundle(clm_path, "clm-generic-cpu:1", "text-ranking");
+
+  auto* registered = catalog_.RegisterModel(
+      clm_path.string(), "clm-generic-cpu:1", MakeMetadata("text-ranking"));
+
+  ASSERT_NE(registered, nullptr);
+  EXPECT_EQ(registered->Info().task, "text-ranking");
+  EXPECT_TRUE(registered->IsCached());
+  ASSERT_NE(catalog_.GetModel("clm"), nullptr);
+  EXPECT_EQ(catalog_.GetModel("clm")->Id(), "clm-generic-cpu:1");
+}
+
+TEST_F(LocalModelCatalogTest, BundleRegistrationUsesExplicitIdentityAndTask) {
+  const auto bundle_path = root_.path() / "bundle";
+  WriteBundle(bundle_path, "clm-generic-cpu:1", "text-ranking");
+
+  EXPECT_NE(catalog_.RegisterModel(bundle_path.string(), "other:1",
+                                   MakeMetadata("text-ranking")),
+            nullptr);
+  catalog_.UnregisterModel("other:1");
+  EXPECT_THROW(catalog_.RegisterModel(bundle_path.string(), "clm-generic-cpu:1",
+                                      MakeMetadata("chat-completion")),
+               Exception);
+
+  auto inference_path = bundle_path / "inference_model.json";
+  nlohmann::json inference;
+  {
+    std::ifstream input(inference_path);
+    input >> inference;
+  }
+  inference.erase("ComponentManifest");
+  std::ofstream(inference_path) << inference;
+  EXPECT_NE(catalog_.RegisterModel(bundle_path.string(), "clm-generic-cpu:1",
+                                   MakeMetadata("text-ranking")),
+            nullptr);
+}
+
+TEST_F(LocalModelCatalogTest, MalformedDeclaredBundleCannotFallBackToGenAiConfig) {
+  const auto bundle_path = root_.path() / "bundle";
+  WriteBundle(bundle_path, "clm-generic-cpu:1", "text-ranking");
+  std::filesystem::remove(bundle_path / "inference_model.json");
+  std::ofstream(bundle_path / "genai_config.json")
+      << R"({"model":{"type":"phi3"}})";
+
+  EXPECT_NE(catalog_.RegisterModel(bundle_path.string(), "clm-generic-cpu:1",
+                                   MakeMetadata("text-ranking")),
+            nullptr);
+}
+
+TEST_F(LocalModelCatalogTest, PreservesPackageAliasAcrossRegistrationReload) {
+  const auto bundle_path = root_.path() / "bundle";
+  WriteBundle(bundle_path, "clm-v0.1-8b-generic-cpu:1", "text-ranking");
+  auto* model = catalog_.RegisterModel(
+      bundle_path.string(), "clm-v0.1-8b-generic-cpu:1",
+      MakeMetadata("text-ranking"));
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->Alias(), "clm");
+
+  auto reloaded = MakeCatalog();
+  reloaded.ListModels();
+  auto* alias = reloaded.GetModel("clm");
+  ASSERT_NE(alias, nullptr);
+  EXPECT_EQ(alias->Id(), "clm-v0.1-8b-generic-cpu:1");
+}
+
+TEST_F(LocalModelCatalogTest,
+       DamagedPackageDoesNotMakeRegistrationIndexUnreadable) {
+  const auto bundle_path = root_.path() / "bundle";
+  WriteBundle(bundle_path, "clm-v0.1-8b-generic-cpu:1", "text-ranking");
+  ASSERT_NE(catalog_.RegisterModel(
+                bundle_path.string(), "clm-v0.1-8b-generic-cpu:1",
+                MakeMetadata("text-ranking")),
+            nullptr);
+  std::filesystem::remove(bundle_path / "tokenizer.json");
+
+  auto reloaded = MakeCatalog();
+  EXPECT_NO_THROW(reloaded.ListModels());
+  auto* alias = reloaded.GetModel("clm");
+  ASSERT_NE(alias, nullptr);
+  EXPECT_EQ(alias->Id(), "clm-v0.1-8b-generic-cpu:1");
+  EXPECT_NO_THROW(reloaded.UnregisterModel("clm"));
+}
+
+TEST_F(LocalModelCatalogTest, RejectsPackageAndRegistrationTaskMismatch) {
+  const auto bundle_path = root_.path() / "bundle";
+  WriteBundle(bundle_path, "clm-v0.1-8b-generic-cpu:1", "text-ranking");
+
+  EXPECT_THROW(
+      catalog_.RegisterModel(
+          bundle_path.string(), "clm-v0.1-8b-generic-cpu:1",
+          MakeMetadata("typed-decision")),
+      Exception);
+  EXPECT_EQ(catalog_.GetModelVariant("clm-v0.1-8b-generic-cpu:1"), nullptr);
+}
+
+TEST_F(LocalModelCatalogTest, NormalizesSupportedPackageProvidersAndRejectsUnknown) {
+  const auto cpu_path = root_.path() / "cpu";
+  WriteBundle(cpu_path, "clm-generic-cpu:1", "text-ranking",
+              "CPUExecutionProvider");
+  auto* cpu = catalog_.RegisterModel(cpu_path.string(), "clm-generic-cpu:1",
+                                     MakeMetadata("text-ranking"));
+  EXPECT_TRUE(cpu->Info().execution_provider.empty());
+
+  const auto cuda_path = root_.path() / "cuda";
+  WriteBundle(cuda_path, "clm-cuda-gpu:1", "text-ranking",
+              "CUDAExecutionProvider");
+  auto* cuda = catalog_.RegisterModel(cuda_path.string(), "clm-cuda-gpu:1",
+                                      MakeMetadata("text-ranking"));
+  EXPECT_EQ(cuda->Info().execution_provider, "cuda");
+
+  for (const auto provider : {"DmlExecutionProvider", "AMDGPUExecutionProvider"}) {
+    const auto path = root_.path() / provider;
+    WriteBundle(path, "clm-unsupported:1", "text-ranking", provider);
+    EXPECT_THROW(
+        catalog_.RegisterModel(path.string(), "clm-unsupported:1",
+                               MakeMetadata("text-ranking")),
+        Exception);
+  }
+
+  const auto unknown_path = root_.path() / "unknown";
+  WriteBundle(unknown_path, "clm-unknown:1", "text-ranking", "mystery");
+  EXPECT_THROW(catalog_.RegisterModel(unknown_path.string(), "clm-unknown:1",
+                                      MakeMetadata("text-ranking")),
                Exception);
 }
 

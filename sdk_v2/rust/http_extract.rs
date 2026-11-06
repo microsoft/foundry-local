@@ -34,7 +34,10 @@ fn extract_package_inner<R: Read + Seek>(
         let mut file = archive
             .by_index(index)
             .map_err(|error| format!("read zip entry: {error}"))?;
-        let entry = file.name().to_string();
+        let entry = file
+            .name()
+            .map_err(|error| format!("read zip entry name: {error}"))?
+            .into_owned();
         if !crate::build_support::is_native_payload(Path::new(&entry), extension) {
             continue;
         }

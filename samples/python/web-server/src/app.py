@@ -1,73 +1,68 @@
-# <complete_code>
-# <imports>
-import openai
+#!/usr/bin/env python3
+"""Call the built-in Foundry Local OpenAI-compatible web service."""
+
+from __future__ import annotations
+
+from openai import OpenAI
+
 from foundry_local_sdk import Configuration, FoundryLocalManager
-# </imports>
 
-# <init>
-# Initialize the Foundry Local SDK
-config = Configuration(app_name="foundry_local_samples")
-FoundryLocalManager.initialize(config)
-manager = FoundryLocalManager.instance
+APP_NAME = "foundry_local_samples"
+MODEL_ALIAS = "qwen2.5-0.5b"
 
-# Download and register all execution providers.
-current_ep = ""
-def _ep_progress(ep_name: str, percent: float):
-    global current_ep
-    if ep_name != current_ep:
-        if current_ep:
+
+def main() -> None:
+    manager = FoundryLocalManager(Configuration(app_name=APP_NAME))
+    ep_result = manager.download_and_register_eps()
+    if not ep_result.success:
+        manager.close()
+        raise RuntimeError(
+            f"Execution provider registration failed: {ep_result.failed_eps}"
+        )
+
+    model = manager.catalog.get_model(MODEL_ALIAS)
+    if model is None:
+        manager.close()
+        raise RuntimeError(f"Model {MODEL_ALIAS!r} was not found in the catalog.")
+
+    server_started = False
+    try:
+        if not model.is_cached:
+            model.download(
+                progress_callback=lambda percent: print(
+                    f"\rDownloading model: {percent:5.1f}%",
+                    end="",
+                    flush=True,
+                )
+            )
             print()
-        current_ep = ep_name
-    print(f"\r  {ep_name:<30}  {percent:5.1f}%", end="", flush=True)
+        model.load()
 
-manager.download_and_register_eps(progress_callback=_ep_progress)
-if current_ep:
-    print()
+        manager.start_web_service()
+        server_started = True
+        if not manager.urls:
+            raise RuntimeError("The web server started without reporting a URL.")
 
-# Load a model
-model = manager.catalog.get_model("qwen2.5-0.5b")
-model.download(
-    lambda progress: print(
-        f"\rDownloading model: {progress:.2f}%",
-        end="",
-        flush=True,
-    )
-)
-print()
-model.load()
-print("Model loaded.")
+        server_url = manager.urls[0].rstrip("/")
+        print(f"Foundry Local server: {server_url}")
+        client = OpenAI(base_url=f"{server_url}/v1", api_key="not-needed")
+        response = client.chat.completions.create(
+            model=model.id,
+            messages=[
+                {"role": "system", "content": "Answer clearly and briefly."},
+                {"role": "user", "content": "What is the golden ratio?"},
+            ],
+        )
+        print(response.choices[0].message.content)
+    finally:
+        if server_started:
+            manager.stop_web_service()
+            print("Web server stopped.")
+        if model.is_loaded:
+            model.unload()
+            print("Model unloaded.")
+        manager.close()
 
-# Start the web service to expose an OpenAI-compatible REST endpoint
-manager.start_web_service()
-base_url = f"{manager.urls[0]}/v1"
-# </init>
 
-# <rest_client>
-# Use the OpenAI SDK to connect to the local REST endpoint
-client = openai.OpenAI(
-    base_url=base_url,
-    api_key="none",
-)
-# </rest_client>
-
-# <chat_completion>
-# Make a chat completion request via the REST API
-response = client.chat.completions.create(
-    model=model.id,
-    messages=[
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "What is the golden ratio?"}
-    ],
-    stream=True,
-)
-
-for chunk in response:
-    if chunk.choices[0].delta.content is not None:
-        print(chunk.choices[0].delta.content, end="", flush=True)
-print()
-# </chat_completion>
-
-# Clean up
-model.unload()
-manager.stop_web_service()
-# </complete_code>
+if __name__ == "__main__":
+    main()

@@ -191,19 +191,6 @@
 		return withoutVersion.replace(DEVICE_SUFFIX_PATTERN, '');
 	}
 
-	// Check if model is a speech-to-text model
-	function isSpeechToTextModel(model: GroupedFoundryModel | null): boolean {
-		if (!model) return false;
-		
-		const taskType = model.taskType?.toLowerCase() || '';
-		const alias = model.alias?.toLowerCase() || '';
-		const displayName = model.displayName?.toLowerCase() || '';
-		
-		return taskType.includes('automatic-speech-recognition') || 
-			taskType.includes('speech-to-text') ||
-			alias.includes('whisper') || 
-			displayName.includes('whisper');
-	}
 </script>
 
 <Dialog.Root bind:open={isOpen}>
@@ -363,125 +350,7 @@
 				<div>
 					<h3 class="mb-3 text-lg font-semibold">Available Model Variants</h3>
 
-					{#if isSpeechToTextModel(model)}
-						<!-- SDK Only Notice for Speech-to-Text Models -->
-						<div class="bg-gradient-to-r from-violet-500/10 to-purple-500/10 mb-4 rounded-lg border-2 border-violet-500/20 p-4">
-							<div class="flex items-start gap-3">
-								<div class="rounded-full bg-violet-500/20 p-2">
-									<svg class="size-5 text-violet-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-									</svg>
-								</div>
-								<div class="flex-1">
-									<div class="text-sm font-semibold text-violet-600 dark:text-violet-400">SDK Only - Audio Transcription Model</div>
-									<div class="text-muted-foreground mt-1 text-sm">
-										This model transcribes audio to text and must be used via the Foundry Local SDK.
-									</div>
-								</div>
-							</div>
-							<div class="bg-background/50 mt-3 rounded-md p-3">
-								<div class="flex items-center justify-between">
-									<div>
-										<div class="text-muted-foreground text-xs font-medium">Model ID for SDK</div>
-										<div id={`model-id-${genericModelName}`} class="font-mono text-sm font-medium">
-											{genericModelName}
-										</div>
-									</div>
-									<Button
-										variant="outline"
-										size="sm"
-										aria-describedby={`model-id-${genericModelName}`}
-										onclick={(e) => {
-											e.stopPropagation();
-											onCopyModelId(genericModelName);
-										}}
-										class="shrink-0 gap-2"
-									>
-										{#if copiedModelId === genericModelName}
-											<Check class="size-4 text-green-500" />
-											Copied
-										{:else}
-											<Copy class="size-4" />
-											Copy ID
-										{/if}
-									</Button>
-								</div>
-							</div>
-							<div class="mt-3 pt-3 border-t border-violet-500/20">
-								<a
-									href="https://learn.microsoft.com/en-us/azure/ai-foundry/foundry-local/how-to/how-to-transcribe-audio?view=foundry-classic&tabs=windows"
-									target="_blank"
-									rel="noopener noreferrer"
-									class="inline-flex items-center gap-2 text-sm font-medium text-violet-600 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300 transition-colors"
-									aria-label="View Audio Transcription Documentation (opens in new tab)"
-								>
-									<svg class="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
-									</svg>
-									View Audio Transcription Documentation
-									<ExternalLink class="size-3.5" />
-								</a>
-							</div>
-						</div>
-
-						<!-- Show variants info without run commands -->
-						<div class="space-y-3">
-							{#each getUniqueVariants(model) as variant}
-								<div class="bg-card hover:border-primary/50 rounded-lg border p-4 transition-all">
-									<div class="flex items-start justify-between">
-										<div class="flex-1">
-											<div id={`model-id-${variant.name}`} class="font-mono text-sm font-medium">
-												{variant.name}
-											</div>
-											<div class="text-muted-foreground mt-1 flex flex-wrap items-center gap-2 text-xs">
-												<span>Device:</span>
-												{#each variant.deviceSupport as device}
-													{@const acceleratorLogo = getAcceleratorLogo(variant.name)}
-													{@const acceleratorColor = getAcceleratorColor(variant.name)}
-													<Badge variant="secondary" class="text-xs">
-														{#if acceleratorLogo}
-															<span
-																class="accelerator-logo-mask mr-1 inline-block size-3.5"
-																style="--logo-color: {acceleratorColor}; --logo-url: url({acceleratorLogo});"
-																role="img"
-																aria-label="Accelerator logo"
-															></span>
-														{:else}
-															{getDeviceIcon(device)}
-														{/if}
-														{getVariantLabel(variant)}
-													</Badge>
-												{/each}
-												{#if variant.fileSizeBytes}
-													<Badge variant="outline" class="text-xs">
-														{foundryModelService.formatFileSize(variant.fileSizeBytes)}
-													</Badge>
-												{/if}
-											</div>
-										</div>
-										<Button
-											variant="outline"
-											size="sm"
-											aria-describedby={`model-id-${variant.name}`}
-											onclick={(e) => {
-												e.stopPropagation();
-												onCopyModelId(variant.name);
-											}}
-											class="gap-2"
-										>
-											{#if copiedModelId === variant.name}
-												<Check class="size-4 text-green-500" />
-												Copied
-											{:else}
-												<Copy class="size-4" />
-												Copy ID
-											{/if}
-										</Button>
-									</div>
-								</div>
-							{/each}
-						</div>
-					{:else}
+					{#if model}
 						<!-- Default/Generic Run Command -->
 						<div class="border-primary/20 bg-primary/5 mb-3 rounded-lg border-2 p-4">
 						<div class="mb-3 flex items-center justify-between gap-3">

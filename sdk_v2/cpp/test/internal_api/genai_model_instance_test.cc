@@ -158,8 +158,8 @@ TEST(ModelCapabilitiesTest, GenericTaggedJsonProtocolIsOnboarded) {
   const auto capabilities = fl::model_capabilities_internal::ResolveRenderedProbes(
       "custom", kToolCallProjection, kToolResultProjection,
       "<|tool_start|>", "<|tool_end|>");
-
   EXPECT_TRUE(capabilities.supports_tool_calling);
+  EXPECT_FALSE(capabilities.native_qwen_xml_tool_calls);
   EXPECT_FALSE(capabilities.native_qwen_xml_tool_calls);
   EXPECT_TRUE(capabilities.native_tagged_json_tool_calls);
   EXPECT_TRUE(capabilities.positional_tool_results);

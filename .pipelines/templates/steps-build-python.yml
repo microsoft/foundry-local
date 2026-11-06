@@ -48,12 +48,14 @@ steps:
       targetType: inline
       pwsh: true
       script: |
-        python3 --version
-        python3 -c "import sys; assert sys.version_info[:2] == (3, 12), sys.version"
+        $ErrorActionPreference = 'Stop'
+        $python = if ('${{ parameters.rid }}' -eq 'linux-x64') { '/usr/bin/python3' } else { 'python3' }
+        & $python -c "import ssl, sys; assert sys.version_info[:2] == (3, 12), sys.version; ssl.create_default_context(); print(sys.executable); print(sys.version); print(ssl.OPENSSL_VERSION)"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
         $venvDir = "$(Agent.TempDirectory)/fl-py-build-$(System.JobId)"
         if (Test-Path $venvDir) { Remove-Item -Recurse -Force $venvDir }
-        python3 -m venv $venvDir
+        & $python -m venv $venvDir
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
         $venvBin = Join-Path $venvDir 'bin'
@@ -217,9 +219,16 @@ steps:
                   '--includeRecommended'
               )
 
-              $process = Start-Process -FilePath $bootstrapper -ArgumentList $arguments -Wait -PassThru
-              if ($process.ExitCode -ne 0) {
-                  throw "Visual Studio Build Tools install failed with exit code $($process.ExitCode)."
+              for ($attempt = 1; $attempt -le 10; ++$attempt) {
+                  $process = Start-Process -FilePath $bootstrapper -ArgumentList $arguments -Wait -PassThru
+                  if ($process.ExitCode -in @(0, 3010)) {
+                      break
+                  }
+                  if ($process.ExitCode -ne 1618 -or $attempt -eq 10) {
+                      throw "Visual Studio Build Tools install failed with exit code $($process.ExitCode)."
+                  }
+                  Write-Host "Another installation is in progress; retrying in 30 seconds (attempt $attempt/10)."
+                  Start-Sleep -Seconds 30
               }
           }
 

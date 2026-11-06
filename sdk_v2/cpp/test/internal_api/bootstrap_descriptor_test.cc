@@ -861,10 +861,18 @@ TEST_F(BootstrapDescriptorTest, StoppedLauncherHonorsStartupDeadlineAndIsReaped)
   const auto lock = store.Lock(Clock::now() + 1s);
   const auto file = root_ / "stopped-launcher";
   Write(file, "stop");
-  const auto start = Clock::now();
-  EXPECT_THROW(SpawnNativeHost(std::filesystem::path(FOUNDRY_PROCESS_FIXTURE_PATH), file, *lock, start + 1s),
-               Exception);
-  EXPECT_LT(Clock::now() - start, 3s);
+  // Allow cold executable startup before the fixture can stop itself.
+  const auto deadline = Clock::now() + 10s;
+  try {
+    SpawnNativeHost(std::filesystem::path(FOUNDRY_PROCESS_FIXTURE_PATH), file, *lock, deadline);
+    FAIL() << "A stopped launcher must exceed its startup deadline";
+  } catch (const Exception& error) {
+    EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+    EXPECT_NE(std::string(error.what()).find("startup deadline"), std::string::npos);
+  }
+
+  EXPECT_GE(Clock::now(), deadline);
+  EXPECT_LT(Clock::now(), deadline + 3s);
   std::ifstream input(file.string() + ".pid");
   pid_t pid{};
   ASSERT_TRUE(input >> pid);

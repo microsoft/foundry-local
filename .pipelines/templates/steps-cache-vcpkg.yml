@@ -1,0 +1,32 @@
+# Cache compiled dependencies, never build outputs or test results. vcpkg still
+# checks each package's compiler, triplet, features, and source ABI before reuse.
+parameters:
+- name: platform
+  type: string
+
+steps:
+- task: PowerShell@2
+  displayName: 'Configure vcpkg binary cache'
+  inputs:
+    targetType: inline
+    pwsh: true
+    script: |
+      $cache = "$(Build.BinariesDirectory)/vcpkg-binary-cache"
+      New-Item -ItemType Directory -Force -Path $cache | Out-Null
+      Write-Host "##vso[task.setvariable variable=VCPKG_BINARY_SOURCES]clear;files,$cache,readwrite"
+
+# Cache@2 entries are immutable. The commit suffix lets a restored cache grow
+# after toolchain changes; vcpkg rejects any old packages with incompatible ABIs.
+# Include the manylinux image recipe and pinned base digests for libc isolation.
+# Azure scopes PR writes to their merge ref, not the target branch's cache.
+- task: Cache@2
+  displayName: 'Restore vcpkg binary cache'
+  inputs:
+    key: >-
+      "vcpkg-binaries-v1" | "${{ parameters.platform }}" |
+      sdk_v2/cpp/vcpkg.json,sdk_v2/cpp/ports/**,sdk_v2/cpp/triplets/** |
+      .pipelines/templates/steps-build-linux.yml,.pipelines/docker/manylinux/Dockerfile |
+      "$(Build.SourceVersion)"
+    restoreKeys: |
+      "vcpkg-binaries-v1" | "${{ parameters.platform }}" | sdk_v2/cpp/vcpkg.json,sdk_v2/cpp/ports/**,sdk_v2/cpp/triplets/** | .pipelines/templates/steps-build-linux.yml,.pipelines/docker/manylinux/Dockerfile
+    path: '$(Build.BinariesDirectory)/vcpkg-binary-cache'
