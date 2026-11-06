@@ -1,5 +1,5 @@
-# Mirror the baseline's Automake source into vcpkg's download cache.
-# GNU mirrors are unreachable from the CI agents.
+# Mirror dependencies whose upstream hosts are unreachable from CI agents
+# into vcpkg's download cache.
 parameters:
 - name: destinationPath
   type: string
@@ -16,16 +16,45 @@ steps:
     vstsPackageVersion: '1.17.0'
     downloadDirectory: '${{ parameters.destinationPath }}'
 
+- task: UniversalPackages@0
+  displayName: 'Fetch nanoarrow 0.9.0 source for vcpkg'
+  inputs:
+    command: download
+    feedsToUse: internal
+    vstsFeed: 'AIFoundryLocal/AIFoundryLocal_PublicPackages'
+    vstsFeedPackage: 'apache-arrow-nanoarrow'
+    vstsPackageVersion: '0.9.0'
+    downloadDirectory: '${{ parameters.destinationPath }}'
+
+- task: UniversalPackages@0
+  displayName: 'Fetch JOM 1.1.7 for vcpkg'
+  condition: and(succeeded(), eq(variables['Agent.OS'], 'Windows_NT'))
+  inputs:
+    command: download
+    feedsToUse: internal
+    vstsFeed: 'AIFoundryLocal/AIFoundryLocal_PublicPackages'
+    vstsFeedPackage: 'qt-jom'
+    vstsPackageVersion: '1.1.7'
+    downloadDirectory: '${{ parameters.destinationPath }}'
+
 - task: PowerShell@2
-  displayName: 'Verify Automake source against vcpkg SHA512'
+  displayName: 'Verify mirrored dependencies against vcpkg SHA512'
   inputs:
     targetType: inline
     pwsh: true
     script: |
       $ErrorActionPreference = 'Stop'
-      $archive = Join-Path '${{ parameters.destinationPath }}' 'automake-1.17.tar.gz'
-      $expected = '11357dfab8cbf4b5d94d9d06e475732ca01df82bef1284888a34bd558afc37b1a239bed1b5eb18a9dbcc326344fb7b1b301f77bb8385131eb8e1e118b677883a'
-      if ((Get-FileHash -LiteralPath $archive -Algorithm SHA512).Hash -ne $expected) {
-        throw 'Mirrored Automake source does not match the vcpkg-make SHA512'
+      $archives = @{
+        'automake-1.17.tar.gz' = '11357dfab8cbf4b5d94d9d06e475732ca01df82bef1284888a34bd558afc37b1a239bed1b5eb18a9dbcc326344fb7b1b301f77bb8385131eb8e1e118b677883a'
+        'apache-arrow-nanoarrow-0.9.0.tar.gz' = '2fbdfe3274da9dcba5e3215ba0a7ff66da9f65395d1800841f0dc9a6bbc00b8cc224f900bcb946c91969b3c6e79d132ad5077c9a537f861502c4763dbffb33b8'
       }
-      Write-Host 'Automake 1.17 source matches the vcpkg-make SHA512.'
+      if ($env:AGENT_OS -eq 'Windows_NT') {
+        $archives['jom_1_1_7.zip'] = 'f48ffee06d10012100adf7bf89059a5fee17d97a7f7cb25d0e216be939c366f26014688107d9ed4ce43845a2bea2601d22813df462358c87449723e297f14677'
+      }
+      foreach ($name in $archives.Keys) {
+        $archive = Join-Path '${{ parameters.destinationPath }}' $name
+        if ((Get-FileHash -LiteralPath $archive -Algorithm SHA512).Hash -ne $archives[$name]) {
+          throw "Mirrored $name does not match the vcpkg SHA512"
+        }
+        Write-Host "$name matches the vcpkg SHA512."
+      }
