@@ -10,6 +10,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -64,8 +65,8 @@ class RecordingSession final : public fl::api::SessionBackend {
     calls_.option = value ? value : "";
   }
 
-  void ProcessRequest(const fl::Request& request, fl::Response& response,
-                      std::optional<fl::StreamingCallback> = std::nullopt) override {
+  size_t ProcessRequest(const fl::Request& request, fl::Response& response,
+                        std::optional<fl::StreamingCallback> = std::nullopt) override {
     if (request.items.size() != 1 || request.items.front()->type != FOUNDRY_LOCAL_ITEM_TEXT) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "expected one local text item");
     }
@@ -74,6 +75,7 @@ class RecordingSession final : public fl::api::SessionBackend {
         std::make_unique<fl::TextItem>(static_cast<const fl::TextItem&>(*request.items.front()).text + ":hosted"));
     response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
     response.usage = {7, 3, 10};
+    return 2;
   }
 
   void AddToolDefinition(fl::ToolDefinition definition) override { calls_.tool = std::move(definition.name); }
@@ -87,7 +89,7 @@ class RecordingSession final : public fl::api::SessionBackend {
   }
 
   size_t TurnCount() const override { return 2; }
-  void UndoTurns(size_t) override { FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "remote session is busy"); }
+  size_t UndoTurns(size_t) override { FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "remote session is busy"); }
   std::unique_ptr<fl::api::PreflightBackend> CreateRequestPreflight(const fl::Request&) const override {
     return std::make_unique<RecordingPreflight>(calls_);
   }
@@ -110,6 +112,7 @@ class RecordingModel final : public fl::api::ModelBackend {
   const std::string& GetPath() const override { return path_; }
   void Download(std::function<int(float)>) override {}
   bool IsLoaded() const override { return calls_.loads > calls_.unloads; }
+  bool PreserveLoadedSelection(bool preserve) override { return std::exchange(preserve_selection_, preserve); }
   void Load(std::optional<std::string_view> = std::nullopt) override {
     if (calls_.reject_load) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK, "host connection was lost");
@@ -132,6 +135,7 @@ class RecordingModel final : public fl::api::ModelBackend {
   Calls& calls_;
   fl::ModelInfo info_;
   std::string path_ = "hosted-model";
+  bool preserve_selection_ = false;
 };
 
 class RecordingManager final : public fl::api::ManagerBackend {
@@ -141,10 +145,12 @@ class RecordingManager final : public fl::api::ManagerBackend {
   fl::api::CatalogBackend& GetCatalog(fl::CatalogType) override {
     FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED, "catalog is not used by this test");
   }
-  std::unique_ptr<fl::api::ModelBackend> CaptureModel(const fl::api::ModelBackend&) override {
+  std::unique_ptr<fl::api::ModelBackend> CaptureModel(
+      const fl::api::ModelBackend&, std::unique_ptr<fl::LoadedSelectionReservation>*) override {
     FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED, "model capture is not used by this test");
   }
   bool IsModelArtifactLoaded(const std::string&, const std::string&) const override { return false; }
+  void ReconcileLoadedSelections(const std::function<bool(const std::string&, const std::string&)>&) override {}
   void UnloadModelArtifact(const std::string&, const std::string&) override {
     FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED, "model unloading is not used by this test");
   }

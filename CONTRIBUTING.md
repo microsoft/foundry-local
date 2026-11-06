@@ -12,6 +12,32 @@ This project has adopted the [Microsoft Open Source Code of Conduct](https://ope
 For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/) or
 contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
 
+## GitHub Actions pinning
+
+Pin GitHub Actions and reusable workflows to full-length commit SHAs with version comments, for example:
+
+```yaml
+uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+```
+
+The Lint workflow uses [pinact](https://github.com/suzuki-shunsuke/pinact) to enforce this on pull requests,
+pushes to `main`, and manual runs without validation API calls or file modifications.
+After installing pinact v4.0.0, run the same read-only check locally:
+
+```sh
+pinact run --fix=false --no-api
+```
+
+The workflow also runs nightly at 06:23 UTC, using authenticated GitHub API calls to verify that version
+comments match their commits. To reproduce this read-only verification locally, provide a GitHub token
+via `GITHUB_TOKEN` and run:
+
+```sh
+pinact run --fix=false --verify
+```
+
+Dependabot checks for GitHub Actions updates weekly and maintains the SHA pins and version comments.
+
 ## Trademarks
 
 This project may contain trademarks or logos for projects, products, or services. Authorized use of Microsoft 

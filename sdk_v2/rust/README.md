@@ -697,16 +697,17 @@ Sample applications are available in [`samples/rust/`](../../samples/rust/):
 
 | Sample | Description |
 |--------|-------------|
-| `native-chat-completions` | Non-streaming and streaming chat completions |
-| `tool-calling-foundry-local` | Function/tool calling with multi-turn conversations |
-| `audio-transcription-example` | Audio transcription (non-streaming and streaming) |
-| `foundry-local-webserver` | Embedded OpenAI-compatible REST API server |
+| `hello-world` | Complete manager, catalog, model, inference, and cleanup lifecycle |
+| `realtime-transcription` | Native live PCM transcription |
+| `embeddings` | Native embedding generation and comparison |
+| `tool-calling` | Function/tool calling with multi-turn conversations |
+| `web-server` | Embedded OpenAI-compatible REST API server |
 
 Run a sample with:
 
 ```sh
 cd samples/rust
-cargo run -p native-chat-completions
+cargo run -p hello-world
 ```
 
 ## License

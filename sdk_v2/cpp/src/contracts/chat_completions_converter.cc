@@ -6,6 +6,7 @@
 #include "contracts/tool_definitions.h"
 #include "inferencing/generative/chat/search_options.h"
 #include "inferencing/generative/chat/stop_strings.h"
+#include "items/image_item.h"
 #include "items/message_item.h"
 #include "items/text_item.h"
 #include "items/tool_call_item.h"
@@ -43,6 +44,24 @@ ToolKind ForcedChoiceKind(const ChatCompletionToolChoice& choice) {
   return choice.kind == ChatCompletionToolChoice::Kind::kCustom ? ToolKind::kCustom : ToolKind::kFunction;
 }
 
+void ValidateCatalogDefault(const char* key, const char* value, const char* option) {
+  try {
+    KeyValuePairs params;
+    params.Add(option, value);
+    auto parsed = SearchOptions::FromParameters(params);
+    ResolveSamplingPlan(parsed);
+    if (parsed.max_output_tokens.has_value()) {
+      ResolveMaxOutputTokens(parsed, 1);
+    }
+  } catch (const fl::Exception& ex) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "invalid catalog model setting '", key, "': ", ex.what());
+  } catch (const std::invalid_argument& ex) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "invalid catalog model setting '", key, "': ", ex.what());
+  } catch (const std::out_of_range& ex) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "invalid catalog model setting '", key, "': ", ex.what());
+  }
+}
+
 }  // namespace
 
 std::string GenerateCompletionId() {
@@ -59,29 +78,11 @@ void ApplyCatalogDefaults(ChatCompletionRequest& req, const KeyValuePairs& model
     return;
   }
 
-  auto validate_default = [](const char* key, const char* value, const char* option) {
-    try {
-      KeyValuePairs params;
-      params.Add(option, value);
-      auto parsed = SearchOptions::FromParameters(params);
-      ResolveSamplingPlan(parsed);
-      if (parsed.max_output_tokens.has_value()) {
-        ResolveMaxOutputTokens(parsed, 1);
-      }
-    } catch (const fl::Exception& ex) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "invalid catalog model setting '", key, "': ", ex.what());
-    } catch (const std::invalid_argument& ex) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "invalid catalog model setting '", key, "': ", ex.what());
-    } catch (const std::out_of_range& ex) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "invalid catalog model setting '", key, "': ", ex.what());
-    }
-  };
-
   auto apply_default_float = [&](const char* key, std::optional<float>& field) {
     if (!field.has_value()) {
       const char* val = model_settings.Find(key);
       if (val) {
-        validate_default(key, val, key);
+        ValidateCatalogDefault(key, val, key);
         field = std::stof(val);
       }
     }
@@ -91,7 +92,7 @@ void ApplyCatalogDefaults(ChatCompletionRequest& req, const KeyValuePairs& model
     if (!field.has_value()) {
       const char* val = model_settings.Find(key);
       if (val) {
-        validate_default(key, val, option);
+        ValidateCatalogDefault(key, val, option);
         field = std::stoi(val);
       }
     }
@@ -111,7 +112,7 @@ void ApplyCatalogDefaults(ChatCompletionRequest& req, const KeyValuePairs& model
   auto apply_metadata = [&](const char* key, const char* option) {
     const char* val = model_settings.Find(key);
     if (val && req.metadata->find(key) == req.metadata->end()) {
-      validate_default(key, val, option);
+      ValidateCatalogDefault(key, val, option);
       (*req.metadata)[key] = val;
     }
   };
@@ -119,6 +120,21 @@ void ApplyCatalogDefaults(ChatCompletionRequest& req, const KeyValuePairs& model
   apply_metadata("top_k", "top_k");
   if (!req.seed.has_value()) {
     apply_metadata("random_seed", "seed");
+  }
+}
+
+void ApplyCatalogDefaults(KeyValuePairs& options, const KeyValuePairs& model_settings) {
+  for (const auto& [key, option] : {std::pair{"temperature", "temperature"}, std::pair{"top_p", "top_p"},
+                                    std::pair{"top_k", "top_k"}, std::pair{"random_seed", "seed"},
+                                    std::pair{"max_tokens", "max_output_tokens"}}) {
+    if (options.Find(option)) {
+      continue;
+    }
+
+    if (const auto* value = model_settings.Find(key)) {
+      ValidateCatalogDefault(key, value, option);
+      options.Add(option, value);
+    }
   }
 }
 
@@ -138,8 +154,15 @@ std::string MapFinishReason(flFinishReason reason) {
 void BuildRequestItems(const ChatCompletionRequest& req, Request& session_request) {
   for (const auto& msg : req.messages) {
     auto role = Utils::StringToRole(msg.role);
+    const bool has_images = std::any_of(msg.content_parts.begin(), msg.content_parts.end(), [](const auto& part) {
+      return part.kind == ChatCompletionContentPart::Kind::kImageUrl;
+    });
 
     if (role == FOUNDRY_LOCAL_ROLE_TOOL) {
+      if (has_images) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "image_url content is not supported in tool messages");
+      }
+
       // A tool result may legitimately be an empty string; the call ID is what correlates it with its call.
       session_request.AddOwnedItem(
           std::make_unique<ToolResultItem>(msg.tool_call_id.value_or(""), msg.content.value_or("")));
@@ -148,7 +171,7 @@ void BuildRequestItems(const ChatCompletionRequest& req, Request& session_reques
 
     const std::string content = msg.content.value_or("");
     const std::string reasoning = msg.reasoning_content.value_or("");
-    if (!content.empty() || (role == FOUNDRY_LOCAL_ROLE_ASSISTANT && !reasoning.empty())) {
+    if (!content.empty() || has_images || (role == FOUNDRY_LOCAL_ROLE_ASSISTANT && !reasoning.empty())) {
       auto message = std::make_unique<MessageItem>();
       message->role = role;
       message->name = msg.name.value_or("");
@@ -156,9 +179,31 @@ void BuildRequestItems(const ChatCompletionRequest& req, Request& session_reques
         message->content.push_back(
             MessagePart::Own(std::make_unique<TextItem>(reasoning, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING)));
       }
-      if (!content.empty()) {
+      if (!has_images && !content.empty()) {
         message->content.push_back(MessagePart::Own(std::make_unique<TextItem>(content)));
       }
+
+      if (has_images) {
+        for (const auto& part : msg.content_parts) {
+          if (part.kind == ChatCompletionContentPart::Kind::kText) {
+            if (!part.value.empty()) {
+              message->content.push_back(MessagePart::Own(std::make_unique<TextItem>(part.value)));
+            }
+          } else {
+            if (!part.value.starts_with("data:")) {
+              FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                       "image_url must be a data: URL; remote http(s) URLs are not supported");
+            }
+
+            message->content.push_back(MessagePart::Own(ImageItem::FromDataUrl(part.value)));
+          }
+        }
+      }
+
+      if (content.empty() && has_images) {
+        message->content.push_back(MessagePart::Own(std::make_unique<TextItem>(" ")));
+      }
+
       session_request.AddOwnedItem(std::move(message));
     }
 

@@ -5,6 +5,8 @@
 #include "catalog/catalog_cache.h"
 #include "catalog/catalog_client.h"
 #include "catalog/local_model_scanner.h"
+#include "inferencing/execution_provider.h"
+#include "inferencing/generative/genai_config.h"
 #include "model.h"
 #include "model_info.h"
 #include "telemetry/telemetry.h"
@@ -15,6 +17,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <filesystem>
 #include <iterator>
 #include <mutex>
 #include <unordered_map>
@@ -203,6 +206,56 @@ void AzureModelCatalog::SetRuntimeDevices(std::map<std::string, std::vector<std:
   }
 }
 
+BaseModelCatalog::VariantEligibility AzureModelCatalog::MakeVariantEligibility() const {
+  std::unordered_set<std::string> providers;
+  for (const auto& [device, eps] : catalog_devices_->GetAvailableDevicesToEPs()) {
+    for (const auto& ep : eps) {
+      providers.insert(ToLower(EPUtils::NormalizeRegistrationName(ep)));
+    }
+  }
+
+  // Cache config requirements only within this pass so artifact edits and provider changes are seen on refresh.
+  return [this, providers = std::move(providers),
+          configured_providers = std::unordered_map<std::string, std::optional<std::string>>{}](
+             const Model& variant) mutable {
+    const auto& info = variant.Info();
+    if (info.model_id.find("generic-gpu") != std::string::npos &&
+        (providers.contains("cudaexecutionprovider") || providers.contains("webgpuexecutionprovider"))) {
+      return true;
+    }
+
+    auto provider = info.execution_provider;
+    if (provider.empty()) {
+      const auto local_path = variant.LocalPathSnapshot();
+      if (!local_path.empty()) {
+        auto [entry, inserted] = configured_providers.try_emplace(local_path);
+        if (inserted) {
+          try {
+            const auto config_path = std::filesystem::path(local_path) / "genai_config.json";
+            entry->second = GenAIConfig::LoadFromFile(config_path.string()).DefaultProvider();
+          } catch (const std::exception& ex) {
+            logger_.Log(LogLevel::Warning,
+                        fmt::format("Cannot determine execution provider for model '{}': {}", info.model_id, ex.what()));
+          }
+        }
+
+        if (!entry->second) {
+          return false;
+        }
+
+        provider = *entry->second;
+      }
+    }
+
+    if (provider.empty()) {
+      provider = EPUtils::RequiredEpForModelId(info.model_id);
+    }
+
+    provider = ToLower(EPUtils::NormalizeRegistrationName(provider));
+    return provider.empty() || provider == "cpuexecutionprovider" || providers.contains(provider);
+  };
+}
+
 std::unique_ptr<ICatalogClient> AzureModelCatalog::CreateCatalogClient(const std::string& url,
                                                                        const std::string& filter) const {
   return MakeCatalogClient(url, filter, *catalog_devices_, logger_, cache_dir_);
@@ -266,18 +319,6 @@ std::vector<Model> AzureModelCatalog::CreateModelsWithLocalPaths(const std::vect
   return models;
 }
 
-std::vector<Model*> AzureModelCatalog::GetCachedModels() const {
-  const auto models = ListModels();
-  const auto local_models = ScanLocalModels(cache_dir_, logger_);
-  for (auto* model : models) {
-    for (auto* variant : model->Variants()) {
-      const auto cached = local_models.find(variant->Info().model_id);
-      variant->RefreshCachedState(cached == local_models.end() ? std::string{} : cached->second);
-    }
-  }
-  return BaseModelCatalog::GetCachedModels();
-}
-
 std::vector<Model> AzureModelCatalog::FetchModels() const {
   logger_.Log(LogLevel::Information, "Getting catalog metadata and locally cached models.");
 
@@ -292,16 +333,22 @@ std::vector<Model> AzureModelCatalog::FetchModels() const {
 
   auto catalog_result = GetLiveCatalogOrLocalSnapshot(cached_model_ids);
   RemoveIncompatibleModels(catalog_result.model_infos);
-  auto models = CreateModelsWithLocalPaths(catalog_result.model_infos, local_models);
-
-  logger_.Log(LogLevel::Information, fmt::format("Populated model info for {} models.", models.size()));
 
   if (catalog_result.source == CatalogSource::kLive && !catalog_result.model_infos.empty()) {
     CatalogCache cache(cache_dir_, logger_);
     cache.Save(catalog_result.model_infos);
   }
 
+  auto models = CreateModelsWithLocalPaths(catalog_result.model_infos, local_models);
+  scanned_local_models_ = std::move(local_models);
+  logger_.Log(LogLevel::Information, fmt::format("Populated model info for {} models.", models.size()));
+
   return models;
+}
+
+void AzureModelCatalog::RefreshRetainedVariantCache(Model& model) const {
+  const auto found = scanned_local_models_.find(model.Id());
+  model.UpdateCachedState(found == scanned_local_models_.end() ? std::string{} : found->second);
 }
 
 std::vector<Model> AzureModelCatalog::FetchModelVersions(

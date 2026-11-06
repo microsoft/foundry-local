@@ -315,7 +315,7 @@ TEST_F(HostServerTest, LastOwnerLossCancelsAnUnacknowledgedNativeStreamBeforeShu
   EXPECT_EQ(server_->Lifetime().Poll(Now()).ipc_work_count, 1u);
   connection->Close();
   ASSERT_EQ(running.wait_for(5s), std::future_status::ready);
-  EXPECT_THROW(static_cast<void>(running.get()), std::exception);
+  EXPECT_THROW(running.get(), std::exception);
   ASSERT_TRUE(WaitFor(State::kGrace));
   EXPECT_EQ(server_->Lifetime().Poll(Now()).ipc_work_count, 0u);
   Advance(5s);

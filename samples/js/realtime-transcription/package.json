@@ -1,0 +1,17 @@
+{
+  "name": "foundry-local-sample-realtime-transcription",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node app.js",
+    "check": "node --check app.js"
+  },
+  "dependencies": {
+    "foundry-local-sdk": "2.2.1",
+    "naudiodon2": "^2.5.0"
+  }
+}

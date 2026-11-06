@@ -2,11 +2,9 @@
 
   <!-- Fix a RuntimeIdentifier at evaluation time on every platform.
 
-       The Microsoft.AI.Foundry.Local[.Core] package's build/*.targets default
-       RuntimeIdentifier to $(NETCoreSdkRuntimeIdentifier) when it is empty. Those
-       targets run during build (after restore), so if we leave the RID unset here,
-       restore produces a RID-less assets file while build asks for a RID-specific
-       target -> NETSDK1047. Setting the RID early keeps restore and build in sync.
+       The Foundry Local v2 package includes RID-specific native runtime assets.
+       Fixing the RID before restore keeps NuGet's assets file and the subsequent
+       build aligned and avoids NETSDK1047.
 
        $(NETCoreSdkRuntimeIdentifier) is intentionally NOT used here because
        Directory.Build.props is evaluated before Sdk.props initializes that property.

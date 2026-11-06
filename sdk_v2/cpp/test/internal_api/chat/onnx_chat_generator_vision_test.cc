@@ -114,6 +114,29 @@ TEST(OnnxChatGeneratorVision, TransformIncludesOneMarkerPerImage) {
   EXPECT_EQ(json[0]["content"][2]["text"], "identify each image");
 }
 
+TEST(OnnxChatGeneratorVision, TransformPreservesTextBetweenImagesAndHidesReasoning) {
+  static const std::uint8_t kFakeImage[] = {0x89};
+  std::vector<std::unique_ptr<Item>> parts;
+  parts.emplace_back(std::make_unique<TextItem>("hidden", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING));
+  parts.emplace_back(std::make_unique<TextItem>("Reference:"));
+  parts.emplace_back(std::make_unique<ImageItem>(kFakeImage, sizeof(kFakeImage), "image/png"));
+  parts.emplace_back(std::make_unique<TextItem>("Candidate:"));
+  parts.emplace_back(std::make_unique<ImageItem>(kFakeImage, sizeof(kFakeImage), "image/png"));
+  parts.emplace_back(std::make_unique<TextItem>("Compare them"));
+  std::vector<MessageItem> messages;
+  messages.emplace_back(FOUNDRY_LOCAL_ROLE_USER, std::move(parts));
+
+  const auto rendered = nlohmann::json::parse(OnnxChatGenerator::TransformMessagesForMedia(messages));
+  const auto expected = nlohmann::json::array({
+      {{"type", "text"}, {"text", "Reference:"}},
+      {{"type", "image"}},
+      {{"type", "text"}, {"text", "Candidate:"}},
+      {{"type", "image"}},
+      {{"type", "text"}, {"text", "Compare them"}},
+  });
+  EXPECT_EQ(rendered[0]["content"], expected);
+}
+
 TEST(OnnxChatGeneratorVision, TransformPreservesPriorTextOnlyMessages) {
   std::vector<MessageItem> messages;
   messages.push_back(MakeTextMessage(FOUNDRY_LOCAL_ROLE_USER, "hi"));

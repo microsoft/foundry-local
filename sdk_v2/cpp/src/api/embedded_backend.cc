@@ -43,13 +43,13 @@ class EmbeddedSession final : public SessionBackend {
   }
 
   void SetSessionOptions(const KeyValuePairs& options) override { session_.SetSessionOptions(options); }
-  void ProcessRequest(const Request& request, Response& response, std::optional<StreamingCallback> callback) override {
-    session_.ProcessRequest(request, response, std::move(callback));
+  size_t ProcessRequest(const Request& request, Response& response, std::optional<StreamingCallback> callback) override {
+    return session_.ProcessRequest(request, response, std::move(callback));
   }
   void AddToolDefinition(ToolDefinition definition) override { session_.AddToolDefinition(std::move(definition)); }
   bool RemoveToolDefinition(const std::string& name) override { return session_.RemoveToolDefinition(name); }
   size_t TurnCount() const override { return session_.TurnCount(); }
-  void UndoTurns(size_t count) override { session_.UndoTurns(count); }
+  size_t UndoTurns(size_t count) override { return session_.UndoTurns(count); }
 
   std::unique_ptr<PreflightBackend> CreateRequestPreflight(const Request& request) const override {
     return std::make_unique<EmbeddedPreflight>(session_.CreateRequestPreflight(request), model_);
@@ -92,6 +92,7 @@ class EmbeddedModel final : public ModelBackend {
   const std::string& GetPath() const override { return model_.GetPath(); }
   void Download(std::function<int(float)> progress) override { model_.Download(std::move(progress)); }
   bool IsLoaded() const override { return model_.IsLoaded(); }
+  bool PreserveLoadedSelection(bool preserve) override { return model_.PreserveLoadedSelection(preserve); }
   void Load(std::optional<std::string_view> expected_path) override {
     model_.Load(ExecutionProvider::kDefault, expected_path);
   }
@@ -223,17 +224,24 @@ class EmbeddedManager final : public ManagerBackend {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
   }
 
-  std::unique_ptr<ModelBackend> CaptureModel(const ModelBackend& model) override {
-    auto captured = std::make_shared<Model>(EmbeddedModel::Unwrap(model, models_).CaptureExecutionModel());
+  std::unique_ptr<ModelBackend> CaptureModel(
+      const ModelBackend& model, std::unique_ptr<LoadedSelectionReservation>* reservation) override {
+    auto captured =
+        std::make_shared<Model>(EmbeddedModel::Unwrap(model, models_).CaptureExecutionModel(reservation));
     return std::make_unique<EmbeddedModel>(std::move(captured), models_);
   }
 
   bool IsModelArtifactLoaded(const std::string& model_id, const std::string& path) const override {
-    return owner_.manager.GetModelLoadManager().GetLoadedModel(model_id, path) != nullptr;
+    return owner_.manager.GetModelLoadManager().IsModelArtifactLoaded(model_id, path);
+  }
+
+  void ReconcileLoadedSelections(
+      const std::function<bool(const std::string&, const std::string&)>& is_loaded) override {
+    owner_.manager.GetModelLoadManager().ReconcileLoadedSelections(is_loaded);
   }
 
   void UnloadModelArtifact(const std::string& model_id, const std::string& path) override {
-    owner_.manager.GetModelLoadManager().UnloadModel(model_id, path);
+    owner_.manager.GetModelLoadManager().UnloadModelArtifact(model_id, path);
   }
 
   void StartWebService() override { owner_.manager.StartWebService(); }

@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Generator
 from typing_extensions import deprecated
 
 if TYPE_CHECKING:
+    import threading
+
     from foundry_local_sdk.imodel import IModel
     from foundry_local_sdk.openai.live_audio_session import LiveAudioTranscriptionSession
 
@@ -124,7 +126,7 @@ class AudioClient:
 
         return json.dumps(request)
 
-    def _run_native_request(self, request_json: str) -> str:
+    def _run_native_request(self, request_json: str, cancel_event: threading.Event | None = None) -> str:
         """Create a fresh AudioSession, process the request, return the response JSON string."""
         from foundry_local_sdk.items import TextItem, TextItemType
         from foundry_local_sdk.request import Request
@@ -135,15 +137,18 @@ class AudioClient:
             Request() as request,
         ):
             request.add_item(TextItem(request_json, TextItemType.OPENAI_JSON))
-            with session.process_request(request) as response:
+            with session.process_request(request, cancel_event=cancel_event) as response:
                 # Copy the text out of the (response-owned) item before the response is released.
                 return response.get_item(0).text
 
-    def transcribe(self, audio_file_path: str) -> AudioTranscriptionResponse:
+    def transcribe(
+        self, audio_file_path: str, *, cancel_event: threading.Event | None = None
+    ) -> AudioTranscriptionResponse:
         """Transcribe an audio file (non-streaming).
 
         Args:
             audio_file_path: Path to the audio file to transcribe.
+            cancel_event: Set from another thread to cancel native processing.
 
         Returns:
             An ``AudioTranscriptionResponse`` containing the transcribed text.
@@ -155,11 +160,13 @@ class AudioClient:
         self._validate_audio_file_path(audio_file_path)
 
         request_json = self._build_request_json(audio_file_path)
-        response_json = self._run_native_request(request_json)
+        response_json = self._run_native_request(request_json, cancel_event)
         data = json.loads(response_json)
         return AudioTranscriptionResponse(text=data.get("text", ""))
 
-    def transcribe_streaming(self, audio_file_path: str) -> Generator[AudioTranscriptionResponse, None, None]:
+    def transcribe_streaming(
+        self, audio_file_path: str, *, cancel_event: threading.Event | None = None
+    ) -> Generator[AudioTranscriptionResponse, None, None]:
         """Transcribe an audio file with streaming chunks.
 
         Consume with a standard ``for`` loop::
@@ -169,6 +176,7 @@ class AudioClient:
 
         Args:
             audio_file_path: Path to the audio file to transcribe.
+            cancel_event: Set from another thread to cancel native processing.
 
         Returns:
             A generator of ``AudioTranscriptionResponse`` objects.
@@ -179,9 +187,11 @@ class AudioClient:
         """
         self._validate_audio_file_path(audio_file_path)
         request_json = self._build_request_json(audio_file_path)
-        return self._transcribe_streaming_impl(request_json)
+        return self._transcribe_streaming_impl(request_json, cancel_event)
 
-    def _transcribe_streaming_impl(self, request_json: str) -> Generator[AudioTranscriptionResponse, None, None]:
+    def _transcribe_streaming_impl(
+        self, request_json: str, cancel_event: threading.Event | None = None
+    ) -> Generator[AudioTranscriptionResponse, None, None]:
         from foundry_local_sdk.items import TextItem, TextItemType
         from foundry_local_sdk.request import Request
         from foundry_local_sdk.session import AudioSession
@@ -192,6 +202,6 @@ class AudioClient:
         ):
             session.set_streaming(True)
             request.add_item(TextItem(request_json, TextItemType.OPENAI_JSON))
-            for item in session.process_streaming_request(request):
+            for item in session.process_streaming_request(request, cancel_event=cancel_event):
                 data = json.loads(item.text)
                 yield AudioTranscriptionResponse(text=data.get("text", ""))

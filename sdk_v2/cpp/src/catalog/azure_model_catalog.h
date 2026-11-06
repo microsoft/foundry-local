@@ -36,8 +36,6 @@ class AzureModelCatalog : public BaseModelCatalog {
                     ITelemetry& telemetry);
   ~AzureModelCatalog() override;
 
-  std::vector<Model*> GetCachedModels() const override;
-
   // Metadata-only override for hosted clients; never changes the native runtime's registered providers.
   void SetRuntimeDevices(std::map<std::string, std::vector<std::string>> devices);
 
@@ -49,6 +47,8 @@ class AzureModelCatalog : public BaseModelCatalog {
   std::vector<Model> FetchModelsByIds(const std::vector<std::string>& model_ids) const override;
   virtual std::unique_ptr<ICatalogClient> CreateCatalogClient(const std::string& url,
                                                               const std::string& filter) const;
+  VariantEligibility MakeVariantEligibility() const override;
+  void RefreshRetainedVariantCache(Model& model) const override;
 
  private:
   using LocalModels = std::map<std::string, std::string>;
@@ -72,6 +72,7 @@ class AzureModelCatalog : public BaseModelCatalog {
 
   std::vector<std::pair<std::string, std::optional<std::string>>> catalog_urls_;
   std::string cache_dir_;
+  mutable LocalModels scanned_local_models_;  // guarded by the base catalog mutex
   ModelFactory model_factory_;
   class CatalogDevices;
   std::unique_ptr<CatalogDevices> catalog_devices_;

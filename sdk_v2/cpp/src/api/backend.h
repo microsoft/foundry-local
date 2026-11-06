@@ -21,6 +21,7 @@ struct Configuration;
 struct EpDownloadResult;
 struct Item;
 class KeyValuePairs;
+class LoadedSelectionReservation;
 struct ModelInfo;
 struct Request;
 struct RequestBudget;
@@ -70,12 +71,13 @@ class SessionBackend : public BackendObject {
   using BackendObject::BackendObject;
   virtual void SetStreamingCallback(flStreamingCallback callback, void* user_data) = 0;
   virtual void SetSessionOptions(const KeyValuePairs& options) = 0;
-  virtual void ProcessRequest(const Request& request, Response& response,
-                              std::optional<StreamingCallback> callback = std::nullopt) = 0;
+  // Return the completed turn count captured within the operation's native serialization boundary.
+  virtual size_t ProcessRequest(const Request& request, Response& response,
+                                std::optional<StreamingCallback> callback = std::nullopt) = 0;
   virtual void AddToolDefinition(ToolDefinition definition) = 0;
   virtual bool RemoveToolDefinition(const std::string& name) = 0;
   virtual size_t TurnCount() const = 0;
-  virtual void UndoTurns(size_t count) = 0;
+  virtual size_t UndoTurns(size_t count) = 0;
   virtual std::unique_ptr<PreflightBackend> CreateRequestPreflight(const Request& request) const = 0;
 };
 
@@ -90,6 +92,7 @@ class ModelBackend : public BackendObject {
   virtual const std::string& GetPath() const = 0;
   virtual void Download(std::function<int(float)> progress) = 0;
   virtual bool IsLoaded() const = 0;
+  virtual bool PreserveLoadedSelection(bool preserve) = 0;
   virtual void Load(std::optional<std::string_view> expected_path = std::nullopt) = 0;
   virtual void Unload() = 0;
   virtual void RemoveFromCache(std::optional<std::string_view> expected_path = std::nullopt) = 0;
@@ -120,7 +123,11 @@ class ManagerBackend : public BackendObject {
   using BackendObject::BackendObject;
   virtual CatalogBackend& GetCatalog(CatalogType type) = 0;
   // Capture an active selection for admitted execution, not for retaining catalog/discovery handles.
-  virtual std::unique_ptr<ModelBackend> CaptureModel(const ModelBackend& model) = 0;
+  // A requested reservation is published atomically with capture and rolls back unless committed after Load.
+  virtual std::unique_ptr<ModelBackend> CaptureModel(
+      const ModelBackend& model, std::unique_ptr<LoadedSelectionReservation>* reservation = nullptr) = 0;
+  virtual void ReconcileLoadedSelections(
+      const std::function<bool(const std::string&, const std::string&)>& is_loaded) = 0;
   // Loaded artifacts can outlive their catalog registrations. These operations remain exactly path-qualified.
   virtual bool IsModelArtifactLoaded(const std::string& model_id, const std::string& path) const = 0;
   virtual void UnloadModelArtifact(const std::string& model_id, const std::string& path) = 0;

@@ -278,8 +278,8 @@ TEST(AzureCatalogClientTest, LegacyTagOverridesBypassDefaultAllowlistAcrossCatal
       }
       std::sort(actual_ids.begin(), actual_ids.end());
       const std::vector<std::string> expected_ids = query == "list"
-                                                        ? std::vector<std::string>{"matching:3"}
-                                                        : std::vector<std::string>{"legacy:1", "matching:3"};
+                                                       ? std::vector<std::string>{"matching:3"}
+                                                       : std::vector<std::string>{"legacy:1", "matching:3"};
       EXPECT_EQ(actual_ids, expected_ids);
     }
   }

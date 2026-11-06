@@ -189,6 +189,7 @@ struct HardwareInfo {
 /// Payload for the ProcessInfo event — emitted once during process startup when telemetry is not CI-suppressed.
 struct ProcessInfo {
   std::string app_version;
+  std::string publisher;
   std::string os_name;
   std::string os_version;
   std::string cpu_arch;

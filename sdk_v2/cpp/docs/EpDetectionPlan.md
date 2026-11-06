@@ -45,7 +45,7 @@ C ABI (foundry_local_c.h)
 
 ### Microsoft.Windows.AI.MachineLearning NuGet (WinML 2.x)
 
-**Package:** `Microsoft.Windows.AI.MachineLearning` 2.4.89 (or newer GA)
+**Package:** `Microsoft.Windows.AI.MachineLearning` 2.5.96 (or newer GA)
 
 WinML 2.x is reg-free: the package ships a single self-contained native DLL
 that loads directly on Windows 10 19H1 (build 18362) and later. There is no
@@ -77,7 +77,7 @@ because ORT's C API is ABI-stable.
 
 ### WinML EP Catalog C API Summary
 
-The `Microsoft.Windows.AI.MachineLearning` 2.4.89 package provides a pure C API (no WinRT/C++/WinRT projection needed):
+The `Microsoft.Windows.AI.MachineLearning` 2.5.96 package provides a pure C API (no WinRT/C++/WinRT projection needed):
 
 ```c
 // Catalog lifecycle
@@ -254,8 +254,9 @@ static std::vector<std::unique_ptr<WinMLEpBootstrapper>>
 4. Create one `WinMLEpBootstrapper` per EP.
 5. Catalog handle released when bootstrappers are done (shared via `shared_ptr`).
 
-**MIGraphX special case:** Same as C# — treat failure as non-fatal. MIGraphX isn't
-available in retail builds yet.
+**AMDGPU:** WinML discovery trusts `AMDGPUExecutionProvider`, not the legacy
+`MIGraphXExecutionProvider`. Explicit and local-model runtime selections map to
+GenAI's `AMDGPU` provider. Generic-GPU auto-selection remains CUDA, then WebGPU only.
 
 ---
 

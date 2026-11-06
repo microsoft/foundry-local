@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "catalog/local_model_catalog.h"
+#include "catalog/non_generative_package.h"
 
 #include "exception.h"
 #include "inferencing/generative/genai_config.h"
@@ -39,6 +40,8 @@ const std::unordered_set<std::string> kSupportedTasks = {
     "chat-completion",
     "coding",
     "embeddings",
+    "text-ranking",
+    "typed-decision",
     "vision-language-chat",
 };
 
@@ -257,12 +260,47 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
 
   const auto model_path = std::filesystem::absolute(supplied_path).lexically_normal();
   const auto config_path = model_path / "genai_config.json";
-  if (!std::filesystem::is_regular_file(config_path, ec)) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_path must contain a regular genai_config.json file");
+  auto resolved_input_metadata = metadata;
+  std::string package_alias;
+  GenAIConfig genai_config;
+  try {
+    const auto package = ReadNonGenerativePackage(model_path);
+    if (package) {
+      const auto* task = metadata.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR);
+      if (!task ||
+          (*task != "text-ranking" && *task != "typed-decision")) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                 "multi-component registration requires text-ranking or typed-decision task");
+      }
+      if (!package->task.empty() && package->task != *task) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                 "package task does not match registered model task");
+      }
+      resolved_input_metadata.execution_provider = package->execution_provider;
+      resolved_input_metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR,
+                                             package->execution_provider);
+      package_alias = package->alias;
+      genai_config = GenAIConfig::LoadFromFile(config_path.string());
+    } else if (!DeclaresNonGenerativePackage(model_path) &&
+               std::filesystem::is_regular_file(config_path, ec)) {
+      const auto* task =
+          metadata.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR);
+      if (task &&
+          (*task == "text-ranking" || *task == "typed-decision")) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                 "non-generative registration requires component_manifest.json");
+      }
+      genai_config = GenAIConfig::LoadFromFile(config_path.string());
+    } else {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+               "model_path must contain genai_config.json or multi-component package metadata");
+    }
+  } catch (const Exception&) {
+    throw;
+  } catch (const std::exception& error) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "invalid multi-component package: " + std::string(error.what()));
   }
-
-  const auto genai_config = GenAIConfig::LoadFromFile(config_path.string());
-
   ListModels();
   Registration registration;
   {
@@ -277,7 +315,9 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
     }
 
     registration = {
-        ResolveMetadata(metadata, model_id, parsed_id.name, parsed_id.version, genai_config), model_path.string()};
+        ResolveMetadata(resolved_input_metadata, model_id, parsed_id.name, parsed_id.version, genai_config,
+                        package_alias),
+        model_path.string()};
 
     registrations.push_back(registration);
     SaveRegistrations(registrations);
@@ -362,12 +402,13 @@ void LocalModelCatalog::UnregisterModel(const std::string& alias_or_model_id) {
 
 ModelInfo LocalModelCatalog::ResolveMetadata(const ModelInfo& metadata, const std::string& model_id,
                                              const std::string& name, int version,
-                                             const GenAIConfig& genai_config) const {
+                                             const GenAIConfig& genai_config,
+                                             std::string_view alias_override) const {
   auto resolved = metadata;
   RemoveLegacyRegistrationProperties(resolved);
   RemoveCallerContextLength(resolved);
 
-  resolved.alias = DeriveAlias(name);
+  resolved.alias = alias_override.empty() ? DeriveAlias(name) : std::string(alias_override);
   resolved.name = name;
   resolved.version = version;
   resolved.model_id = model_id;
@@ -464,7 +505,10 @@ std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistration
       model_path = std::filesystem::absolute(model_path).lexically_normal();
 
       RemoveLegacyRegistrationProperties(info);
-      info.alias = DeriveAlias(parsed_id.name);
+      const bool typed_registration =
+          info.task == "text-ranking" || info.task == "typed-decision";
+      if (!typed_registration || info.alias.empty())
+        info.alias = DeriveAlias(parsed_id.name);
       info.name = parsed_id.name;
       info.version = parsed_id.version;
       info.model_id = model_id;

@@ -34,6 +34,15 @@
 
 using namespace fl;
 
+TEST(SessionTelemetryProviderTest, AmdGpuUsesCanonicalTelemetryNameForDefaultAndExplicitSelection) {
+  for (const auto configured : {"AMDGPU", "amdgpu", "AMDGPUExecutionProvider", "AmDgPuExecutionProvider"}) {
+    EXPECT_EQ(EPUtils::EPtoTelemetryName(ExecutionProvider::kDefault, configured), "AMDGPUExecutionProvider");
+  }
+  EXPECT_EQ(EPUtils::EPtoTelemetryName(ExecutionProvider::kAMDGPU, "cuda"), "AMDGPUExecutionProvider");
+  EXPECT_EQ(EPUtils::EPtoTelemetryName(ExecutionProvider::kCPU, "AMDGPU"), "CPUExecutionProvider");
+  EXPECT_TRUE(EPUtils::EPtoTelemetryName(ExecutionProvider::kDefault, "MIGraphXExecutionProvider").empty());
+}
+
 namespace {
 
 class ToggleThrowLogger final : public ILogger {
