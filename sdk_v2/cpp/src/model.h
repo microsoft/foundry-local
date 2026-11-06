@@ -3,6 +3,7 @@
 #pragma once
 
 #include <atomic>
+#include <forward_list>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -16,9 +17,12 @@
 
 namespace fl {
 
+class NonGenerativeAdmissionCoordinator;
+
 class DownloadManager;
 struct Item;
 class ModelLoadManager;
+class LoadedSelectionReservation;
 
 // -----------------------------------------------------------------------
 // Model — a single model entry or a multi-variant container.
@@ -91,9 +95,18 @@ class Model {
   bool RetireVariant(const std::string& model_id);
 
   /// Choose the default selected variant from the current sorted variant list:
-  /// first cached variant if any, else the best variant.
+  /// first eligible cached variant if any, else the best eligible variant.
+  /// If none are eligible, retain the best variant for catalog display and explicit access.
+  /// Refreshes preserve explicit selections and the artifact currently loaded through an implicit selection.
   /// Requires IsContainer() to be true.
-  void SelectDefaultVariant();
+  /// Returns false when an existing explicit or loaded selection is preserved.
+  bool SelectDefaultVariant(const std::function<bool(const Model&)>& is_eligible = {},
+                            bool preserve_explicit_selection = false) const;
+  bool HasEligibleDefaultVariant() const;
+  void SetDefaultVariantRefresh(std::function<void()> refresh);
+  /// Hosted loads pin the selected artifact without loading weights into the metadata manager.
+  /// Matching ID/path handles share the pin so any of them can release it.
+  bool PreserveLoadedSelection(bool preserve);
 
   /// Best-first comparator: device priority asc, version desc, created-at desc, model_id asc.
   /// Exposed so callers that return Model* lists can produce consistent ordering with Variants().
@@ -125,6 +138,7 @@ class Model {
 
   bool IsCached() const;
   bool IsLoaded() const;
+  Model* SelectedLeaf() const;
 
   /// Get the supported input and output item types for this model, based on its task.
   /// Returns arrays of Item pointers (type-tag-only descriptors) from static storage.
@@ -151,15 +165,19 @@ class Model {
   void Download(std::function<int(float)> progress_cb = nullptr);
   const std::string& GetPath() const;
   /// Own the selected active leaf's execution metadata/path while admitted work uses it.
-  Model CaptureExecutionModel() const;
+  /// An optional reservation pins exactly that artifact before default selection can move.
+  Model CaptureExecutionModel(std::unique_ptr<LoadedSelectionReservation>* reservation = nullptr) const;
   /// Observe a completed shared-cache download without downloading or changing an already selected artifact.
   void RefreshCachedState();
+  /// Publish an authoritative catalog cache path without replacing this handle or changing a loaded artifact.
+  void UpdateCachedState(std::string local_path);
 
   /// Forget this client's cache publication after an authoritative remote removal; never delete files.
   void ForgetCachedState();
   void Load(ExecutionProvider ep = ExecutionProvider::kDefault,
             std::optional<std::string_view> expected_path = std::nullopt);
   void Unload();
+  std::shared_ptr<void> AcquireNonGenerativeRuntime();
   void RemoveFromCache(std::optional<std::string_view> expected_path = std::nullopt);
 
   /// Mark this model and its variants inactive while retaining pointer validity.
@@ -181,11 +199,9 @@ class Model {
 
   /// Get the local path if cached, or empty string if not.
   ///
-  /// The returned reference is valid until either Download() or RemoveFromCache()
-  /// is invoked on this Model. In practice these mutations are user-initiated
-  /// one-shot operations, so callers reading the path concurrently with download
-  /// or removal of the same Model are out of contract.
-  const std::string& LocalPath() const { return local_path_; }
+  /// Published paths are immutable and retained for this model's lifetime, including across catalog refresh.
+  const std::string& LocalPath() const;
+  std::string LocalPathSnapshot() const;
 
  private:
   struct ContainerTag {};
@@ -197,23 +213,24 @@ class Model {
         bool external_registration);
   Model(ContainerTag, Model first_variant);
 
-  std::string LocalPathSnapshot() const;
+  void RefreshDefaultVariant() const;
+  bool HasPreservedLoadedSelection() const;
+  bool SelectDefaultVariantLocked(const std::function<bool(const Model&)>& is_eligible,
+                                  bool preserve_explicit_selection) const;
 
   // Leaf data (empty for containers). Construction guarantees this is non-null for every leaf.
   // cached_ is atomic — flipped concurrently by the download path.
   // Loaded state is NOT stored here; it is queried from ModelLoadManager so the load
   // manager remains the single source of truth (Manager::Shutdown clears its map without
   // having to walk every Model and reset a local flag).
-  // local_path_ is set during Download() (or at construction for already-cached models) and
-  // cleared by RemoveFromCache(). Its mutation is guarded by state_mutex_; the reader-safety
-  // contract is that the path is published before cached_ flips true (and cleared after cached_
-  // flips false), so any reader that gates on IsCached() observes a complete path.
+  // Mutable paths and immutable borrowed-path publications are accessed under state_mutex_.
   std::unique_ptr<const ModelInfo> info_;
   std::atomic<bool> cached_{false};
   // Logical tombstone state. Retired models remain allocated so outstanding catalog-owned handles stay address-valid,
   // but operations that would use the registration reject them.
   std::atomic<bool> active_{true};
   std::string local_path_;
+  mutable std::forward_list<std::string> published_paths_;
   bool external_registration_ = false;
 
   // Non-owning service bindings for leaf operations. Set once at construction and never
@@ -225,14 +242,19 @@ class Model {
   // stable across vector growth/reordering.
   std::vector<std::unique_ptr<Model>> variants_;
   std::vector<std::unique_ptr<Model>> retired_variants_;
-  std::atomic<Model*> selected_variant_{nullptr};  // non-null = this is a container
-  bool selection_is_explicit_ = false;             // guarded by state_mutex_
+  mutable std::atomic<Model*> selected_variant_{nullptr};                  // non-null = this is a container
+  mutable bool selection_is_explicit_ = false;                             // guarded by state_mutex_
+  mutable bool has_eligible_default_variant_ = true;                       // guarded by state_mutex_
+  mutable Model* loading_variant_ = nullptr;                               // guarded by state_mutex_
+  mutable std::function<bool(const Model&)> default_variant_eligibility_;  // guarded by state_mutex_
+  std::function<void()> default_variant_refresh_;                          // guarded by state_mutex_
 
   // Guards variants_ across reader/writer threads (catalog refresh adding variants
   // while another thread enumerates via Variants()).
   mutable std::mutex state_mutex_;
 
-  // Leaf lifecycle state. A Model must not be moved while a download or unregister operation is active.
+  // Lifecycle state. Containers acquire this before a leaf's lifecycle lock, never while holding state_mutex_.
+  // A Model must not be moved while a download, load, unload, or unregister operation is active.
   mutable std::mutex lifecycle_mutex_;
   std::atomic<size_t> active_downloads_{0};
   bool unregistering_ = false;

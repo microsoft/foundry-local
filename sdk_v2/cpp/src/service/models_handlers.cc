@@ -3,6 +3,7 @@
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
 #include "service/models_handlers.h"
+#include "service/non_generative_handlers.h"
 
 #include "catalog.h"
 #include "inferencing/model_load_manager.h"

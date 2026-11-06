@@ -29,11 +29,11 @@ import { Model, unwrapNativeModel } from "./model.js";
 import { type Request, type RequestOptions, unwrapNativeRequest } from "./request.js";
 import type { Response } from "./response.js";
 
-/** Options accepted by streaming Session APIs. */
+/** Cancellation options accepted by Session request APIs. */
 export interface StreamOptions {
   /**
    * Optional cancellation signal. Aborting removes work that is still waiting in the native session FIFO or cancels
-   * active native processing, and the iterator rejects with an `Error` whose `name === "AbortError"`. A signal already
+   * active native processing, and the call rejects with an `Error` whose `name === "AbortError"`. A signal already
    * aborted when this method is called rejects before native work is submitted.
    */
   readonly signal?: AbortSignal;
@@ -64,6 +64,19 @@ export interface RequestPreflightResult {
   /** Structural fit only; does not reserve cache or guarantee live admission. */
   readonly fits: boolean;
   readonly deficitTokens: number;
+}
+
+const processingRequests = new WeakSet<Request>();
+
+function acquireRequestProcessing(request: Request): () => void {
+  if (processingRequests.has(request)) {
+    throw Object.assign(new Error("This request is already being processed."), {
+      name: "FoundryLocalError",
+      code: FlErrorCode.InvalidUsage,
+    });
+  }
+  processingRequests.add(request);
+  return () => processingRequests.delete(request);
 }
 
 function rejectEmbeddedNul(value: unknown, argumentName: string): void {
@@ -131,6 +144,7 @@ function modelToNativeAudioSession(model: IModel): NativeAudioSession {
  * consumer drains the JS iterator.
  */
 function streamItems(native: NativeSession, request: Request, signal: AbortSignal | undefined): StreamingResponse {
+  const releaseRequest = signal?.aborted ? () => {} : acquireRequestProcessing(request);
   const queue: Item[] = [];
   let waiter: (() => void) | null = null;
   let done = false;
@@ -175,12 +189,16 @@ function streamItems(native: NativeSession, request: Request, signal: AbortSigna
       cancelUntilSettled();
     }
   };
-  if (signal !== undefined) {
-    signal.addEventListener("abort", onAbort, { once: true });
-  }
+
+  const cleanup = (): void => {
+    done = true;
+    stopCancellationRetry();
+    signal?.removeEventListener("abort", onAbort);
+    releaseRequest();
+  };
 
   const mapError = (err: unknown): unknown => {
-    if (signal?.aborted === true && isFoundryLocalError(err) && err.code === FlErrorCode.OperationCancelled) {
+    if (signal?.aborted && isFoundryLocalError(err) && err.code === FlErrorCode.OperationCancelled) {
       (err as { name: string }).name = "AbortError";
     }
     return err;
@@ -197,39 +215,43 @@ function streamItems(native: NativeSession, request: Request, signal: AbortSigna
   // awaited.
   responsePromise.catch(() => {});
 
-  if (signal?.aborted === true) {
-    const err = makeAbortError("Stream aborted before start");
-    nativeError = err;
-    done = true;
-    responseReject(err);
-  } else {
-    const nativeReq = unwrapNativeRequest(request);
-    const onItem = (item: unknown): void => {
-      // Native may deliver items synchronously during startup before the
-      // iterator reaches its first await. That's safe: iterate() always
-      // drains queued items before installing a waiter, so no wake is needed
-      // when the consumer is not yet parked.
-      queue.push(item as Item);
-      wake();
-    };
-    const nativePromise = native.processStreamingRequest(nativeReq, onItem);
-    cancelQueued = nativePromise.cancelQueued;
-    nativePromise.then(
-      (resp: unknown) => {
-        done = true;
-        stopCancellationRetry();
-        responseResolve(resp as Response);
+  try {
+    if (signal?.aborted === true) {
+      const err = makeAbortError("Stream aborted before start");
+      nativeError = err;
+      cleanup();
+      responseReject(err);
+    } else {
+      const nativeReq = unwrapNativeRequest(request);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      const onItem = (item: unknown): void => {
+        // Native may deliver items synchronously during startup before the
+        // iterator reaches its first await. That's safe: iterate() always
+        // drains queued items before installing a waiter, so no wake is needed
+        // when the consumer is not yet parked.
+        queue.push(item as Item);
         wake();
-      },
-      (err: unknown) => {
-        const mapped = mapError(err);
-        nativeError = mapped;
-        done = true;
-        stopCancellationRetry();
-        responseReject(mapped);
-        wake();
-      },
-    );
+      };
+      const nativePromise = native.processStreamingRequest(nativeReq, onItem);
+      cancelQueued = nativePromise.cancelQueued;
+      nativePromise.then(
+        (resp: unknown) => {
+          cleanup();
+          responseResolve(resp as Response);
+          wake();
+        },
+        (err: unknown) => {
+          const mapped = mapError(err);
+          nativeError = mapped;
+          cleanup();
+          responseReject(mapped);
+          wake();
+        },
+      );
+    }
+  } catch (err) {
+    cleanup();
+    throw err;
   }
 
   async function* iterate(): AsyncGenerator<Item> {
@@ -297,11 +319,50 @@ export abstract class Session {
    *
    * Rejects with a `FoundryLocalError` on native failure. Calling
    * `request.cancel()` from another async context causes this promise to
-   * reject with `code === FlErrorCode.OperationCancelled`.
+   * reject with `code === FlErrorCode.OperationCancelled`. Passing `{ signal }` also cancels requests waiting in the
+   * native session FIFO and maps cancellation to `AbortError`. Native completion can win a cancellation race.
    */
-  async processRequest(request: Request): Promise<Response> {
-    const nativeReq = unwrapNativeRequest(request);
-    return (await this.native.processRequest(nativeReq)) as Response;
+  async processRequest(request: Request, options?: StreamOptions): Promise<Response> {
+    const signal = options?.signal;
+    if (signal?.aborted === true) {
+      throw makeAbortError("Request aborted before start");
+    }
+
+    const releaseRequest = acquireRequestProcessing(request);
+    let done = false;
+    let cancellationRetry: ReturnType<typeof setTimeout> | undefined;
+    let cancelQueued = (): boolean => false;
+    const cancelUntilSettled = (): void => {
+      if (done || cancellationRetry !== undefined) return;
+      try {
+        request.cancel();
+      } catch {
+        // Native completion may have already released the request.
+      }
+      cancellationRetry = setTimeout(() => {
+        cancellationRetry = undefined;
+        cancelUntilSettled();
+      }, 10);
+    };
+    const onAbort = (): void => {
+      if (!cancelQueued()) cancelUntilSettled();
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      const pending = this.native.processRequest(unwrapNativeRequest(request));
+      cancelQueued = pending.cancelQueued;
+      return (await pending) as Response;
+    } catch (err) {
+      if (signal?.aborted && isFoundryLocalError(err) && err.code === FlErrorCode.OperationCancelled) {
+        (err as { name: string }).name = "AbortError";
+      }
+      throw err;
+    } finally {
+      done = true;
+      signal?.removeEventListener("abort", onAbort);
+      if (cancellationRetry !== undefined) clearTimeout(cancellationRetry);
+      releaseRequest();
+    }
   }
 
   /**
