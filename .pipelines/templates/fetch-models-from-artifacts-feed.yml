@@ -94,6 +94,18 @@ steps:
 
 - ${{ if eq(parameters.modelSet, 'non-generative') }}:
   - task: UniversalPackages@0
+    displayName: 'Fetch CLM 8B mixed CPU integration model'
+    timeoutInMinutes: 20
+    retryCountOnTaskFailure: 2
+    inputs:
+      command: download
+      feedsToUse: internal
+      vstsFeed: 'AIFoundryLocal/AIFoundryLocal_PublicPackages'
+      vstsFeedPackage: 'foundry-local-clm-v0-1-8b-mixed-generic-cpu'
+      vstsPackageVersion: '1.0.0'
+      downloadDirectory: '${{ parameters.destinationPath }}/Microsoft/clm-v0.1-8b-mixed-generic-cpu-1'
+
+  - task: UniversalPackages@0
     displayName: 'Fetch KEV 0.8B mixed CPU integration model'
     timeoutInMinutes: 20
     retryCountOnTaskFailure: 2
