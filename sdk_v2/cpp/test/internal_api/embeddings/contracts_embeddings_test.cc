@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "contracts/embeddings.h"
+#include "inferencing/generative/embeddings/embeddings_session.h"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -10,6 +11,57 @@
 #include <vector>
 
 using namespace fl;
+
+TEST(EmbeddingBatchCancellationTest, CancellationStopsBeforeNextInputAndAllowsReuse) {
+  Request request;
+  ASSERT_TRUE(request.TryBegin());
+  int calls = 0;
+  const auto generate = [&](const std::string&) {
+    ++calls;
+    request.Cancel();
+    return std::vector<float>{1.0f};
+  };
+
+  try {
+    embeddings_internal::GenerateBatch({"first", "second", "third"}, request, generate);
+    FAIL() << "Canceled batch unexpectedly completed";
+  } catch (const Exception& error) {
+    EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+  }
+
+  EXPECT_EQ(calls, 1);
+  request.PublishCompletion();
+  ASSERT_TRUE(request.TryBegin());
+  const auto results = embeddings_internal::GenerateBatch(
+      {"first", "second"}, request, [](const std::string&) { return std::vector<float>{1.0f}; });
+  EXPECT_EQ(results.size(), 2u);
+  request.PublishCompletion();
+}
+
+TEST(EmbeddingBatchCancellationTest, CancellationDuringLastInputDoesNotPublishResults) {
+  Request request;
+  ASSERT_TRUE(request.TryBegin());
+  EXPECT_THROW(embeddings_internal::GenerateBatch({"only"}, request, [&](const std::string&) {
+                 request.Cancel();
+                 return std::vector<float>{1.0f};
+               }),
+               Exception);
+  request.PublishCompletion();
+}
+
+TEST(EmbeddingBatchCancellationTest, CanceledRequestDoesNotStartForwardPass) {
+  Request request;
+  ASSERT_TRUE(request.TryBegin());
+  request.Cancel();
+  int calls = 0;
+  EXPECT_THROW(embeddings_internal::GenerateBatch({"first"}, request, [&](const std::string&) {
+                 ++calls;
+                 return std::vector<float>{1.0f};
+               }),
+               Exception);
+  EXPECT_EQ(calls, 0);
+  request.PublishCompletion();
+}
 
 // ===========================================================================
 // Request parse tests

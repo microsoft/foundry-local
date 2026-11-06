@@ -308,6 +308,23 @@ std::shared_ptr<void> ModelLoadManager::AcquireNonGenerativeRuntime(
       std::make_shared<GenAIConfig>(package.config));
 }
 
+std::shared_ptr<void>
+ModelLoadManager::AcquireLoadedNonGenerativeRuntime(Model& model) {
+  const auto model_path = NormalizeModelPath(model.GetPath());
+  std::lock_guard lock(mutex_);
+  const auto found = std::find_if(
+      loaded_runtimes_.begin(), loaded_runtimes_.end(),
+      [&](const auto& entry) {
+        return !entry.second->GenAI() &&
+               entry.second->ModelId() == model.Id() &&
+               ModelPathsEqual(entry.second->ModelPath(), model_path);
+      });
+  if (found == loaded_runtimes_.end())
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "model must be loaded before creating a session");
+  return found->second->Lease();
+}
+
 NonGenerativePackageMetadata
 ModelLoadManager::InspectNonGenerativePackage(Model& model) {
   const auto path = NormalizeModelPath(model.GetPath());

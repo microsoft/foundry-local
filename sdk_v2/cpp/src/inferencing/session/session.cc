@@ -98,11 +98,7 @@ std::unique_ptr<Session> Session::Create(const fl::Model& model) {
     const auto& info = model.Info();
     const bool non_generative =
         info.task == "text-ranking" || info.task == "typed-decision";
-    if (non_generative && !model.IsCached()) {
-      FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
-                       "model must be cached before creating a session");
-    }
-    if (!non_generative && !model.IsLoaded()) {
+    if (!model.IsLoaded()) {
       FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model must be loaded before creating a session");
     }
 

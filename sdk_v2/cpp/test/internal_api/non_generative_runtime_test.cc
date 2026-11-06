@@ -415,6 +415,11 @@ TEST(NonGenerativeSessionTest,
   EXPECT_EQ(io.outputs[0]->type, FOUNDRY_LOCAL_ITEM_TEXT);
   EXPECT_EQ(static_cast<const TextItem*>(io.outputs[0])->text_type,
             FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON);
+  EXPECT_THROW(
+      NonGenerativeSession(model, service.model_load_manager, service.logger,
+                           service.telemetry),
+      std::exception);
+  EXPECT_FALSE(model.IsLoaded());
   const auto canonical = std::filesystem::weakly_canonical(path).string();
   const auto identity =
       "non-generative|" + std::string(model_id) + "|" + canonical +
@@ -426,11 +431,13 @@ TEST(NonGenerativeSessionTest,
   seeded.reset();
 
   {
-    NonGenerativeSession session(
+    auto session = std::make_unique<NonGenerativeSession>(
+        model, service.model_load_manager, service.logger, service.telemetry);
+    auto second_session = std::make_unique<NonGenerativeSession>(
         model, service.model_load_manager, service.logger, service.telemetry);
     KeyValuePairs defaults;
     defaults.Add("temperature", "0.5");
-    session.SetSessionOptions(defaults);
+    session->SetSessionOptions(defaults);
 
     Request request;
     request.AddOwnedItem(std::make_unique<TextItem>(
@@ -438,7 +445,7 @@ TEST(NonGenerativeSessionTest,
         FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
     request.options.Add("temperature", "0.75");
     Response response;
-    session.ProcessRequest(request, response);
+    session->ProcessRequest(request, response);
     EXPECT_FLOAT_EQ(fake->last_request.temperature, 0.75f);
     ASSERT_EQ(response.items.size(), 1u);
 
@@ -447,10 +454,15 @@ TEST(NonGenerativeSessionTest,
         nlohmann::json{{"model", "other"}, {"answers", {"a", "b"}}}.dump(),
         FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
     Response ignored;
-    EXPECT_THROW(session.ProcessRequest(mismatched, ignored), std::exception);
+    EXPECT_THROW(session->ProcessRequest(mismatched, ignored), std::exception);
     EXPECT_THROW(
         service.model_load_manager.UnloadNonGenerativeRuntime(model),
         std::exception);
+    session.reset();
+    EXPECT_THROW(
+        service.model_load_manager.UnloadNonGenerativeRuntime(model),
+        std::exception);
+    second_session.reset();
   }
 
   EXPECT_TRUE(service.model_load_manager.UnloadNonGenerativeRuntime(model));

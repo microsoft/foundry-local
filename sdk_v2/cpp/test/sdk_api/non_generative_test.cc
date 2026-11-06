@@ -79,6 +79,14 @@ TEST(NonGenerativeSdkTest, ExportedPackagesRunWhenConfigured) {
         EXPECT_LT(candidate.at("index").get<size_t>(), 2u);
       }
       EXPECT_THROW(clm_model->Unload(), foundry_local::Error);
+      try {
+        const std::string answer{"a\0private", 9};
+        ranking.RankJson(
+            nlohmann::json{{"answers", {"valid", answer}}}.dump());
+        FAIL() << "embedded NUL ranking answer was accepted";
+      } catch (const foundry_local::Error& error) {
+        EXPECT_EQ(error.Code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+      }
 
       foundry_local::RequestOptions request_options;
       request_options.search.temperature = 0.75;

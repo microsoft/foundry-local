@@ -18,6 +18,94 @@ if TYPE_CHECKING:
 _API_VERSION = 1  # FOUNDRY_LOCAL_API_VERSION
 
 
+@contextmanager
+def _cancellable_lock(lock: threading.RLock, cancel_event: threading.Event) -> Iterator[None]:
+    while True:
+        if cancel_event.is_set():
+            raise FoundryLocalException("Request canceled before native processing.", error_code=5)
+        if lock.acquire(timeout=0.01):
+            break
+    try:
+        if cancel_event.is_set():
+            raise FoundryLocalException("Request canceled before native processing.", error_code=5)
+        yield
+    finally:
+        lock.release()
+
+
+class _CancellationState:
+    def __init__(self, request: Request, event: threading.Event) -> None:
+        self.request = request
+        self.event = event
+        self.lock = threading.Lock()
+        self.finished = False
+        self.error: Exception | None = None
+
+    def retry(self) -> None:
+        # Unset events cannot touch native state, so they need not contend with request cleanup.
+        try:
+            requested = self.event.is_set()
+        except Exception as exc:
+            with self.lock:
+                self.error = exc
+            return
+        if not requested:
+            return
+        with self.lock:
+            if self.finished or self.error is not None:
+                return
+            try:
+                self.request.cancel()
+            except Exception as exc:
+                self.error = exc
+
+
+class _CancellationDispatcher:
+    def __init__(self) -> None:
+        self._condition = threading.Condition()
+        self._pending: set[_CancellationState] = set()
+        self._thread: threading.Thread | None = None
+
+    def register(self, state: _CancellationState) -> None:
+        with self._condition:
+            self._pending.add(state)
+            if self._thread is None:
+                worker = threading.Thread(target=self._run, name="FoundryLocalCancellation", daemon=True)
+                try:
+                    worker.start()
+                except BaseException:
+                    self._pending.remove(state)
+                    raise
+                self._thread = worker
+            self._condition.notify()
+
+    def unregister(self, state: _CancellationState) -> None:
+        # Join an active cancellation attempt before the enclosing native lifetime lease is released.
+        with state.lock:
+            state.finished = True
+        with self._condition:
+            self._pending.remove(state)
+            self._condition.notify()
+        if state.error is not None:
+            raise state.error
+
+    def _run(self) -> None:
+        while True:
+            with self._condition:
+                while not self._pending:
+                    self._condition.wait()
+                self._condition.wait_for(lambda: not self._pending, timeout=0.01)
+                if not self._pending:
+                    continue
+                pending = tuple(self._pending)
+            for state in pending:
+                state.retry()
+            del state, pending
+
+
+_cancellation_dispatcher = _CancellationDispatcher()
+
+
 class Request:
     """Inference request. Owns its native flRequest* handle.
 
@@ -49,10 +137,25 @@ class Request:
             )
 
     @contextmanager
-    def _native_lifetime(self) -> Iterator[object]:
-        with self._lifetime_lock:
+    def _native_lifetime(self, cancel_event: threading.Event | None = None) -> Iterator[object]:
+        with self._lifetime_lock if cancel_event is None else _cancellable_lock(self._lifetime_lock, cancel_event):
             self._check_open()
             yield self._ptr
+
+    @contextmanager
+    def _cancellation(self, cancel_event: threading.Event | None) -> Iterator[None]:
+        if cancel_event is None:
+            yield
+            return
+        if cancel_event.is_set():
+            raise FoundryLocalException("Request canceled before native processing.", error_code=5)
+
+        state = _CancellationState(self, cancel_event)
+        _cancellation_dispatcher.register(state)
+        try:
+            yield
+        finally:
+            _cancellation_dispatcher.unregister(state)
 
     def add_item(self, item: "Item", transfer_ownership: bool = True) -> "Request":
         """Add item to request.
