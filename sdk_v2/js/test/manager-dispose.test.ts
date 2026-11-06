@@ -44,6 +44,44 @@ function withByomAssets<T>(run: (modelCacheDir: string, modelPath: string) => Pr
 }
 
 describeIfBuilt("FoundryLocalManager.dispose", () => {
+  it("initializes and disposes hosted metadata through the normal manager API", () => {
+    using manager = FoundryLocalManager.create({
+      appName: "shared-host-metadata-lifetime",
+      useSharedHost: true,
+    });
+    expect(manager.urls).toEqual([]);
+    expect(manager.isWebServiceRunning).toBe(false);
+    expect(manager.getCatalog(CatalogType.Local).name).not.toBe("");
+    manager.shutdown();
+    expect(manager.isShutdownRequested).toBe(true);
+  });
+
+  it("forwards shared hosting to native configuration", () => {
+    expect(() =>
+      FoundryLocalManager.create({
+        appName: "shared-host-external-service-conflict",
+        useSharedHost: true,
+        serviceEndpoint: "http://127.0.0.1:1",
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        name: "FoundryLocalError",
+        code: 3,
+        message: expect.stringContaining("shared hosting cannot use an external service"),
+      }),
+    );
+  });
+
+  it("rejects a non-boolean shared-host setting before native construction", () => {
+    expect(() =>
+      FoundryLocalManager.create({
+        appName: "shared-host-invalid-setting",
+        // @ts-expect-error - exercising native option validation.
+        useSharedHost: "true",
+      }),
+    ).toThrowError("options.useSharedHost must be a boolean");
+  });
+
   it("disposed is false on a fresh manager", () => {
     const mgr = freshManager("fresh");
     try {

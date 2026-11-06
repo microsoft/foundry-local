@@ -27,10 +27,15 @@ in the package — pass as many or as few as you like.
 from __future__ import annotations
 
 import argparse
+import copy
+import hashlib
+import json
 import logging
 import shutil
 import subprocess
 import sys
+import tempfile
+import zipfile
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent
@@ -67,6 +72,34 @@ OPTIONAL_SIBLINGS: tuple[str, ...] = (
 )
 
 log = logging.getLogger("pack")
+
+HOST_MANIFEST = "foundry-local-runtime.json"
+
+
+def _host_bundle_files(src_dir: Path, rid: str, lib_name: str) -> tuple[Path, Path]:
+    host_name = "foundry-local-host.exe" if rid.startswith("win-") else "foundry-local-host"
+    host = src_dir / host_name
+    manifest_path = src_dir / HOST_MANIFEST
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if (
+        not isinstance(manifest, dict)
+        or type(manifest.get("version")) is not int
+        or manifest["version"] != 1
+        or type(manifest.get("protocol")) is not int
+        or manifest["protocol"] != 1
+        or manifest.get("rid") != rid
+        or not isinstance(manifest.get("native_build"), str)
+        or not manifest["native_build"].strip()
+    ):
+        raise ValueError(f"invalid native host manifest for {rid}")
+    for role, name in (("native", lib_name), ("host", host_name)):
+        entry = manifest.get(role)
+        if not isinstance(entry, dict) or entry.get("file_name") != name:
+            raise ValueError(f"invalid {role} file name in {HOST_MANIFEST}")
+        digest = entry.get("sha256")
+        if not isinstance(digest, str) or digest.lower() != hashlib.sha256((src_dir / name).read_bytes()).hexdigest():
+            raise ValueError(f"{role} file hash does not match {HOST_MANIFEST}; regenerate after final signing")
+    return host, manifest_path
 
 
 def _parse_args() -> argparse.Namespace:
@@ -159,6 +192,12 @@ def stage(args: argparse.Namespace, staging: Path) -> int:
             log.error("Expected %s at %s but file not found.", lib_name, src_dir)
             sys.exit(1)
 
+        try:
+            host_files = _host_bundle_files(src_dir, rid, lib_name)
+        except (OSError, ValueError) as error:
+            log.error("Invalid native host bundle for %s: %s", rid, error)
+            sys.exit(1)
+
         native_dir = staging / "runtimes" / rid / "native"
         native_dir.mkdir(parents=True, exist_ok=True)
 
@@ -167,6 +206,10 @@ def stage(args: argparse.Namespace, staging: Path) -> int:
         shutil.copy2(lib_path, native_dir)
         log.info("  %s → runtimes/%s/native/%s", lib_path, rid, lib_path.name)
         staged = 1
+
+        for required in host_files:
+            _copy_file(required, native_dir)
+            staged += 1
 
         for sibling in OPTIONAL_SIBLINGS:
             sibling_path = src_dir / sibling
@@ -193,19 +236,38 @@ def pack(args: argparse.Namespace, staging: Path) -> None:
         f"package_id={args.package_id}"
     )
 
-    cmd = [
-        str(args.nuget_path), "pack", str(nuspec),
-        "-Properties", properties,
-        "-OutputDirectory", str(args.output_dir),
-        "-NoPackageAnalysis",
-    ]
+    with tempfile.TemporaryDirectory(prefix="native-pack-", dir=args.output_dir) as temporary:
+        cmd = [
+            str(args.nuget_path), "pack", str(nuspec),
+            "-Properties", properties,
+            "-OutputDirectory", temporary,
+            "-NoPackageAnalysis",
+        ]
+        log.info("Running: %s", " ".join(cmd))
+        subprocess.run(cmd, check=True)
+        for nupkg in Path(temporary).glob("*.nupkg"):
+            _set_host_permissions(nupkg)
+            output = args.output_dir / nupkg.name
+            shutil.move(str(nupkg), output)
+            log.info("Created: %s", output)
 
-    log.info("Running: %s", " ".join(cmd))
-    subprocess.run(cmd, check=True)
 
-    # Report result
-    for nupkg in args.output_dir.glob("*.nupkg"):
-        log.info("Created: %s", nupkg)
+def _set_host_permissions(package: Path) -> None:
+    """Preserve executable metadata when packing Unix RIDs on Windows, before NuGet signing."""
+    updated = package.with_suffix(".tmp")
+    try:
+        with zipfile.ZipFile(package) as source, zipfile.ZipFile(updated, "w") as target:
+            target.comment = source.comment
+            for entry in source.infolist():
+                info = copy.copy(entry)
+                if entry.filename.startswith("runtimes/") and entry.filename.endswith("/native/foundry-local-host"):
+                    info.create_system = 3
+                    info.external_attr = (0o100755 << 16) | (info.external_attr & 0xFFFF)
+                with source.open(entry) as reader, target.open(info, "w") as writer:
+                    shutil.copyfileobj(reader, writer)
+        updated.replace(package)
+    finally:
+        updated.unlink(missing_ok=True)
 
 
 def main() -> None:

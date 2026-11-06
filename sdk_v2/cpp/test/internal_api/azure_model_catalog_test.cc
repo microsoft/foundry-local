@@ -7,6 +7,7 @@
 #include "internal_api/test_helpers.h"
 #include "model.h"
 #include "model_info.h"
+#include "util/scope_guard.h"
 #include "utils/temp_path.h"
 
 #include <foundry_local/foundry_local_c.h>
@@ -14,6 +15,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -247,6 +249,51 @@ class AzureModelCatalogTest : public ::testing::Test {
   int factory_calls_ = 0;
   int model_handle_factory_calls_ = 0;
 };
+
+TEST(AzureModelCatalogRuntimeTest, HostedDeviceChangesInvalidateMetadataWithoutChangingLocalProviderAvailability) {
+  static std::atomic<uint64_t> sequence{0};
+  const auto scratch = fs::path(FOUNDRY_LOCAL_TEST_SCRATCH_DIR);
+  ASSERT_TRUE(scratch.is_absolute());
+  fs::create_directories(scratch);
+  ASSERT_FALSE(fs::is_symlink(scratch));
+  fs::path root;
+  do {
+    root = scratch / ("catalog-devices-" + std::to_string(test::CurrentPid()) + "-" + std::to_string(sequence++));
+  } while (!fs::create_directory(root));
+
+  ScopeGuard cleanup([&]() noexcept {
+    std::error_code error;
+    fs::remove_all(root, error);
+  });
+  test::FakeServiceBindings services;
+  RecordingCatalogTelemetry telemetry;
+  auto behavior = std::make_shared<CatalogBehavior>();
+  behavior->all_models = {MakeModelInfo("cpu:1", "cpu", 1, "cpu", "test")};
+  TestAzureModelCatalog catalog(
+      {{"https://catalog.example", std::nullopt}}, root.string(),
+      [&](ModelInfo info, std::string path) {
+        return Model::FromModelInfo(std::move(info), std::move(path), services.download_manager,
+                                    services.model_load_manager);
+      },
+      services.ep_detector, services.logger, false, telemetry,
+      [&](const auto&, const auto&) { return std::make_unique<FakeCatalogClient>(behavior); });
+  EXPECT_NE(FindVariant(catalog.ListModels(), "cpu:1"), nullptr);
+  EXPECT_EQ(behavior->fetch_all_calls, 1);
+  const auto local_devices = services.ep_detector.GetAvailableDevicesToEPs();
+  const std::map<std::string, std::vector<std::string>> hosted_devices{
+      {"CPU", {"CPUExecutionProvider"}}, {"GPU", {"host-only-provider"}}};
+  catalog.SetRuntimeDevices(hosted_devices);
+  behavior->all_models = {MakeModelInfo("gpu:1", "gpu", 1, "gpu", "test")};
+  EXPECT_NE(FindVariant(catalog.ListModels(), "gpu:1"), nullptr);
+  EXPECT_EQ(behavior->fetch_all_calls, 2);
+  catalog.SetRuntimeDevices(hosted_devices);
+  static_cast<void>(catalog.ListModels());
+  EXPECT_EQ(behavior->fetch_all_calls, 2);
+  catalog.SetRuntimeDevices(local_devices);
+  static_cast<void>(catalog.ListModels());
+  EXPECT_EQ(behavior->fetch_all_calls, 3);
+  EXPECT_EQ(services.ep_detector.GetAvailableDevicesToEPs(), local_devices);
+}
 
 TEST_F(AzureModelCatalogTest, LiveFetchBucketsConfiguredCatalogsAsCustom) {
   const std::string azure_url = "https://ai.azure.com/api/eastus/ux/v1.0?token=private";

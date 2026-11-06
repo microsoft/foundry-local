@@ -65,6 +65,10 @@ void Configuration::Validate() {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Configuration: app_name must not be empty");
   }
 
+  if (use_shared_host && external_service_url) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "shared hosting cannot use an external service");
+  }
+
   for (const auto& [url, filter] : catalog_urls) {
     ValidateCatalogUrl(url);
   }

@@ -1,10 +1,19 @@
-# Install pinned Maven and configure the authenticated Maven Central upstream mirror.
+# Install pinned Maven and configure the authenticated Lotus upstream mirror.
 
 steps:
+# TODO: Add this into the image
+- task: UniversalPackages@0
+  displayName: 'Download Maven'
+  inputs:
+    command: download
+    feedsToUse: internal
+    vstsFeed: 'Lotus'
+    vstsFeedPackage: 'maven-zip'
+    vstsPackageVersion: '3.9.9'
+    downloadDirectory: '$(Agent.TempDirectory)/foundry-java-tools'
+
 - task: PowerShell@2
   displayName: 'Bootstrap Maven 3.9.9'
-  env:
-    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
   inputs:
     targetType: inline
     pwsh: true
@@ -13,30 +22,21 @@ steps:
 
       $version = '3.9.9'
       $tools = Join-Path '$(Agent.TempDirectory)' 'foundry-java-tools'
-      $archive = Join-Path $tools "apache-maven-$version.zip"
+      $archive = Join-Path $tools "apache-maven-$version-bin.zip"
       $mavenHome = Join-Path $tools "apache-maven-$version"
       $mavenCommand = if ($IsWindows) { 'bin/mvn.cmd' } else { 'bin/mvn' }
       $maven = Join-Path $mavenHome $mavenCommand
 
-      if (-not (Test-Path -LiteralPath $maven -PathType Leaf)) {
-        if ([string]::IsNullOrWhiteSpace($env:SYSTEM_ACCESSTOKEN)) {
-          throw 'System.AccessToken is required to download Maven from the Azure Artifacts feed.'
-        }
-
-        New-Item -ItemType Directory -Force -Path $tools | Out-Null
-        $uri = 'https://pkgs.dev.azure.com/aiinfra/AIFoundryLocal/_packaging/' +
-          "AIFoundryLocal_PublicPackages/maven/v1/org/apache/maven/apache-maven/$version/" +
-          "apache-maven-$version-bin.zip"
-        $headers = @{ Authorization = "Bearer $env:SYSTEM_ACCESSTOKEN" }
-        Invoke-WebRequest -Uri $uri -Headers $headers -OutFile $archive
-
-        $expected = '8beac8d11ef208f1e2a8df0682b9448a9a363d2ad13ca74af43705549e72e74' +
-          'c9378823bf689287801cbbfc2f6ea9596201d19ccacfdfb682ee8a2ff4c4418ba'
-        if ((Get-FileHash -LiteralPath $archive -Algorithm SHA512).Hash -ne $expected) {
-          throw 'Maven archive checksum mismatch.'
-        }
-        Expand-Archive -LiteralPath $archive -DestinationPath $tools -Force
+      if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) {
+        throw "Unable to find Maven archive: $archive"
       }
+
+      $expected = '8beac8d11ef208f1e2a8df0682b9448a9a363d2ad13ca74af43705549e72e74' +
+        'c9378823bf689287801cbbfc2f6ea9596201d19ccacfdfb682ee8a2ff4c4418ba'
+      if ((Get-FileHash -LiteralPath $archive -Algorithm SHA512).Hash -ne $expected) {
+        throw 'Maven archive checksum mismatch.'
+      }
+      Expand-Archive -LiteralPath $archive -DestinationPath $tools -Force
 
       if (-not $IsWindows) {
         & chmod u+x $maven
@@ -50,15 +50,15 @@ steps:
       <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">
         <servers>
           <server>
-            <id>AIFoundryLocal_PublicPackages</id>
+            <id>Lotus</id>
             <username>AzureDevOps</username>
             <password>${env.SYSTEM_ACCESSTOKEN}</password>
           </server>
         </servers>
         <mirrors>
           <mirror>
-            <id>AIFoundryLocal_PublicPackages</id>
-            <url>https://pkgs.dev.azure.com/aiinfra/AIFoundryLocal/_packaging/AIFoundryLocal_PublicPackages/maven/v1</url>
+            <id>Lotus</id>
+            <url>https://pkgs.dev.azure.com/aiinfra/_packaging/Lotus/maven/v1</url>
             <mirrorOf>*</mirrorOf>
           </mirror>
         </mirrors>
@@ -68,3 +68,10 @@ steps:
       Write-Host "##vso[task.setvariable variable=foundryMavenHome]$mavenHome"
       Write-Host "##vso[task.setvariable variable=foundryMavenSettings]$settings"
       Write-Host "##vso[task.prependpath]$(Join-Path $mavenHome 'bin')"
+
+- script: |
+    echo "Verifying Maven installation..."
+    mvn --version
+  displayName: 'Verify Maven Version'
+  env:
+    JAVA_HOME: $(foundryJavaHome)

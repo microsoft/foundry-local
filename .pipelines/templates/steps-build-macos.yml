@@ -127,6 +127,15 @@ steps:
     cp -P "$primary" "$dst/"
     echo "  staged libfoundry_local.dylib"
 
+    for required in foundry-local-host foundry-local-runtime.json; do
+      if [ ! -f "$src/$required" ]; then
+        echo "ERROR: $required not found at $src/$required" >&2
+        exit 1
+      fi
+      cp -P "$src/$required" "$dst/"
+    done
+    chmod u+x "$dst/foundry-local-host"
+
     for required in libonnxruntime.dylib libonnxruntime-genai.dylib; do
       if [ ! -e "$src/$required" ]; then
         echo "ERROR: $required not found at $src/$required" >&2
@@ -145,8 +154,8 @@ steps:
 - bash: |
     set -euo pipefail
     rm -f libfoundry_local_dylib.zip
-    zip libfoundry_local_dylib.zip libfoundry_local.dylib
-  displayName: 'Zip libfoundry_local.dylib for signing'
+    zip libfoundry_local_dylib.zip libfoundry_local.dylib foundry-local-host
+  displayName: 'Zip native runtime and shared host for signing'
   condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
   workingDirectory: '$(Build.ArtifactStagingDirectory)/native'
 
@@ -154,7 +163,7 @@ steps:
 # runtime NuGet/C# SDK, Python wheel, and JS prebuild all consume the signed
 # staged dylib restored from this archive.
 - task: SFP.build-tasks.custom-build-task-1.EsrpCodeSigning@5
-  displayName: 'Sign libfoundry_local.dylib ZIP'
+  displayName: 'Sign native runtime and shared host ZIP'
   condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
   inputs:
     ConnectedServiceName: 'OnnxrunTimeCodeSign_20240611'
@@ -183,15 +192,23 @@ steps:
 
 - bash: |
     set -euo pipefail
-    dylib='$(Build.ArtifactStagingDirectory)/native/libfoundry_local.dylib'
-    codesign --verify --strict --verbose=2 "$dylib"
-    signature=$(codesign --display --verbose=4 "$dylib" 2>&1)
-    echo "$signature"
-    grep -q '^Authority=Developer ID Application:' <<<"$signature"
-    grep -Eq '^CodeDirectory .*flags=.*\(.*runtime.*\)' <<<"$signature"
-    grep -q '^Timestamp=' <<<"$signature"
-  displayName: 'Verify libfoundry_local.dylib signature'
+    for file in libfoundry_local.dylib foundry-local-host; do
+      path='$(Build.ArtifactStagingDirectory)/native/'"$file"
+      codesign --verify --strict --verbose=2 "$path"
+      signature=$(codesign --display --verbose=4 "$path" 2>&1)
+      echo "$signature"
+      grep -q '^Authority=Developer ID Application:' <<<"$signature"
+      grep -Eq '^CodeDirectory .*flags=.*\(.*runtime.*\)' <<<"$signature"
+      grep -q '^Timestamp=' <<<"$signature"
+    done
+  displayName: 'Verify native runtime and shared host signatures'
   condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+
+- bash: |
+    set -euo pipefail
+    cmake "-DOUTPUT_FILE=$(Build.ArtifactStagingDirectory)/native/foundry-local-runtime.json" \
+      -P "$(Build.SourcesDirectory)/sdk_v2/cpp/cmake/WriteHostManifest.cmake"
+  displayName: 'Refresh final native runtime manifest'
 
 - bash: |
     set -euo pipefail

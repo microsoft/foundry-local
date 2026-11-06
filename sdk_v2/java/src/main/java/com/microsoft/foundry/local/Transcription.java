@@ -13,6 +13,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -35,7 +36,7 @@ public final class Transcription implements AutoCloseable {
     private final long originNanos = System.nanoTime();
     private long firstInputNanos, firstNonemptyNanos, inputClosedNanos, submittedBytes;
 
-    Transcription(AudioSession session, byte[] wav, PcmFormat format, Consumer<SpeechEvent> listener) {
+    Transcription(AudioSession session, byte[] wav, PcmFormat format, String language, Consumer<SpeechEvent> listener) {
         this.session = session;
         this.api = session.api;
         this.format = format;
@@ -44,8 +45,20 @@ public final class Transcription implements AutoCloseable {
         feeder = wav == null ? null : new Thread(() -> feedWav(wav), "foundry-java-asr-input");
         worker.setDaemon(true);
         if (feeder != null) feeder.setDaemon(true);
-        request = api.create(api.inference, NativeApi.InferenceApi.REQUEST_CREATE);
+        Pointer createdRequest = api.create(api.inference, NativeApi.InferenceApi.REQUEST_CREATE);
+        request = createdRequest;
         try {
+            applyLanguage(language, (key, value) -> {
+                PointerByReference options = new PointerByReference();
+                api.root.call(NativeApi.Root.KEY_VALUE_PAIRS_CREATE, options);
+                try {
+                    api.root.call(NativeApi.Root.KEY_VALUE_PAIRS_ADD, options.getValue(), key, value);
+                    api.check(api.inference.pointer(
+                            NativeApi.InferenceApi.REQUEST_SET_OPTIONS, createdRequest, options.getValue()));
+                } finally {
+                    api.root.call(NativeApi.Root.KEY_VALUE_PAIRS_RELEASE, options.getValue());
+                }
+            });
             Pointer audio = api.create(api.item, NativeApi.ItemApi.CREATE, 30);
             boolean transferred = false;
             try (Memory text = NativeApi.utf8("pcm")) {
@@ -88,6 +101,10 @@ public final class Transcription implements AutoCloseable {
             throw e;
         }
         startThreads(worker, feeder, this::rollbackStartup);
+    }
+
+    static void applyLanguage(String language, BiConsumer<String, String> setOption) {
+        if (language != null) setOption.accept("language", language);
     }
 
     static void startThreads(Thread worker, Thread feeder, Runnable rollback) {

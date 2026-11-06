@@ -95,8 +95,25 @@ async fn byom_registration_round_trips_and_runs_coding() {
         .expect("create cache-only manager")
     };
     let manager = create_manager();
+    let conflicting_mode = || {
+        FoundryLocalManager::create(
+            FoundryLocalConfig::new("conflicting-hosting-mode").use_shared_host(true),
+        )
+    };
+    assert!(matches!(
+        conflicting_mode(),
+        Err(FoundryLocalError::InvalidConfiguration { reason })
+            if reason.contains("cannot change hosting mode")
+    ));
     let catalog = manager.local_catalog().expect("get local catalog");
     assert_eq!(catalog.catalog_type(), CatalogType::Local);
+    drop(manager);
+    assert!(matches!(
+        conflicting_mode(),
+        Err(FoundryLocalError::InvalidConfiguration { reason })
+            if reason.contains("cannot change hosting mode")
+    ));
+    let manager = create_manager();
 
     let mut metadata = catalog.create_model_info().expect("create metadata");
     metadata

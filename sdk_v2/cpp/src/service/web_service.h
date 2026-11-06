@@ -3,6 +3,7 @@
 #pragma once
 
 #include "logger.h"
+#include "service/request_lifetime.h"
 
 #include <cstddef>
 #include <functional>
@@ -30,9 +31,14 @@ class StreamingThreadTracker {
   template <typename Work>
   void Start(Work&& work) {
     std::lock_guard<std::mutex> lock(mutex_);
-    threads_.emplace_back([this, task = std::optional<std::decay_t<Work>>(std::forward<Work>(work))]() mutable {
-      (*task)();
-      task.reset();
+    threads_.emplace_back([this, admission = HttpRequestLifetime::CurrentWork(),
+                           task = std::optional<std::decay_t<Work>>(std::forward<Work>(work))]() mutable {
+      {
+        HttpRequestLifetime scope(std::move(admission));
+        (*task)();
+        task.reset();
+      }
+
       Remove(std::this_thread::get_id());
     });
   }
@@ -99,7 +105,8 @@ class WebService {
  public:
   WebService(ICatalog& public_catalog, ICatalog& local_catalog, ILogger& logger, std::string model_cache_dir,
              ModelLoadManager& model_load_manager, SessionManager& session_manager,
-             ITelemetry& telemetry, std::function<void()> shutdown_callback);
+             ITelemetry& telemetry, std::function<void()> shutdown_callback,
+             std::shared_ptr<hosting::HostLifetime> shared_host_lifetime = {});
   ~WebService();
 
   WebService(const WebService&) = delete;

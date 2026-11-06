@@ -8,12 +8,30 @@
     <RuntimeIdentifier>$(NETCoreSdkRuntimeIdentifier)</RuntimeIdentifier>
   </PropertyGroup>
 
+  <PropertyGroup>
+    <FoundryLocalRuntimePath Condition="'$(FoundryLocalRuntimePath)' == ''">$(MSBuildThisFileDirectory)..\runtimes</FoundryLocalRuntimePath>
+  </PropertyGroup>
+
   <ItemGroup Condition="Exists('$(FoundryLocalRuntimePath)\$(RuntimeIdentifier)\native')">
-    <Content Include="$(FoundryLocalRuntimePath)\$(RuntimeIdentifier)\native\*.*">
+    <Content Include="$(FoundryLocalRuntimePath)\$(RuntimeIdentifier)\native\*">
       <Link>%(Filename)%(Extension)</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
       <Visible>false</Visible>
     </Content>
   </ItemGroup>
+
+  <Target Name="MakeFoundryLocalHostExecutable"
+          AfterTargets="CopyFilesToOutputDirectory;Publish"
+          Condition="'$(OS)' != 'Windows_NT'">
+    <ItemGroup>
+      <_FoundryLocalHostExecutable Include="$(TargetDir)foundry-local-host"
+                                  Condition="Exists('$(TargetDir)foundry-local-host')" />
+      <_FoundryLocalHostExecutable Include="$(PublishDir)foundry-local-host"
+                                  Condition="'$(PublishDir)' != '' and Exists('$(PublishDir)foundry-local-host')" />
+    </ItemGroup>
+    <Exec Command="chmod u+x &quot;%(_FoundryLocalHostExecutable.Identity)&quot;"
+          Condition="'@(_FoundryLocalHostExecutable)' != ''" />
+  </Target>
 
 </Project>

@@ -413,6 +413,42 @@ TEST(ChatSessionDecisionTest, HostOutputLimitTruncatesOnlyAnUnfinishedBackendAtT
                                           /*backend_finished=*/true));
 }
 
+TEST(ChatSessionDecisionTest, FencedRequiredCallBypassesTokenOwnershipAndSuppressesRawBytes) {
+  ToolCallContext context;
+  context.tools_json =
+      R"([{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}])";
+  context.tool_plan = ToolCallPlan::Create(context.tools_json);
+  context.tool_output = true;
+  context.fenced_tool_call_output = true;
+  context.tool_call_start_token_id = 101;
+  context.tool_call_end_token_id = 102;
+
+  ToolCallStreamAccumulator accumulator(
+      context.GeneratedToolCallStart(), context.GeneratedToolCallEnd(), context.tools_json, "",
+      chat_session_internal::CreateToolCallPayloadParser(context), true);
+  std::vector<ToolCallStreamAccumulator::Event> events;
+  for (const auto& segment : std::vector<ReasoningStreamSplitter::Segment>{
+           {"```json\n", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT, 7},
+           {R"([{"name":"lookup","parameters":{"city":"Paris"}}])",
+            FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT, 8},
+           {"\n```", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT, 9},
+       }) {
+    auto output = chat_session_internal::PushToolOutputSegment(segment, context, nullptr, accumulator);
+    events.insert(events.end(),
+                  std::make_move_iterator(output.events.begin()),
+                  std::make_move_iterator(output.events.end()));
+  }
+  auto final = chat_session_internal::FlushToolOutput(nullptr, accumulator);
+  events.insert(events.end(),
+                std::make_move_iterator(final.events.begin()),
+                std::make_move_iterator(final.events.end()));
+
+  ASSERT_EQ(events.size(), 1u);
+  const auto& call = std::get<ParsedToolCall>(events.front());
+  EXPECT_EQ(call.name, "lookup");
+  EXPECT_EQ(nlohmann::json::parse(call.arguments), nlohmann::json({{"city", "Paris"}}));
+}
+
 TEST(ChatSessionDecisionTest, JsonToolContextUsesOnlyTheCapturedSessionSnapshot) {
   ToolRegistry registry;
   const auto captured = registry.Definitions();
@@ -1898,6 +1934,78 @@ TEST_F(QwenNativeProductionIntegrationTest,
     EXPECT_EQ(completion.at("choices").at(0).at("finish_reason"),
               test_case.call_count == 0 ? "stop" : "tool_calls");
     EXPECT_TRUE(stateless.Transcript().Empty());
+  }
+}
+
+TEST_F(QwenNativeProductionIntegrationTest, ReasoningGeneratorsUseTurnBudgetAndRebuildForFollowup) {
+  auto catalog_model = MakeCatalogModel(/*reasoning=*/true);
+  int creations = 0;
+  TextChatGeneratorFactory factory =
+      [&](const auto&, const auto&, auto&, const auto&, bool use_full_context) {
+        EXPECT_FALSE(use_full_context);
+        ++creations;
+        return std::make_unique<FixedOutputGenerator>("answer", BackendTerminationCause::kNaturalEnd);
+      };
+  ChatSession session(catalog_model, *model_, *logger_, telemetry_, {}, std::move(factory));
+
+  for (int turn = 0; turn < 2; ++turn) {
+    auto request = MakeStatefulRequest("hello");
+    Response response;
+    session.ProcessRequest(request, response);
+    EXPECT_FALSE(response.items.empty());
+  }
+
+  EXPECT_EQ(creations, 2);
+  EXPECT_EQ(session.TurnCount(), 2u);
+}
+
+TEST_F(QwenNativeProductionIntegrationTest, TypedRequestsUseCatalogDefaultsBelowSessionAndRequestOptions) {
+  ModelInfo info;
+  info.task = "chat-completion";
+  info.model_settings.Add("temperature", "0.6");
+  info.model_settings.Add("top_p", "0.95");
+  info.model_settings.Add("top_k", "20");
+  info.model_settings.Add("random_seed", "42");
+  info.model_settings.Add("max_tokens", "64");
+  auto catalog_model = Model::FromModelInfo(
+      std::move(info), "", services_.download_manager, services_.model_load_manager);
+
+  for (int override_level = 0; override_level < 3; ++override_level) {
+    SCOPED_TRACE(override_level);
+    std::optional<SearchOptions> captured;
+    TextChatGeneratorFactory factory =
+        [&](const auto&, const SearchOptions& options, auto&, const auto&, bool use_full_context) {
+          EXPECT_TRUE(use_full_context);
+          captured = options;
+          return std::make_unique<FixedOutputGenerator>("answer", BackendTerminationCause::kNaturalEnd);
+        };
+    ChatSession session(catalog_model, *model_, *logger_, telemetry_, {}, std::move(factory));
+    KeyValuePairs session_options;
+    if (override_level > 0) {
+      session_options.Add("temperature", "0.8");
+      session_options.Add("max_output_tokens", "32");
+    }
+
+    session.SetSessionOptions(session_options);
+    Request request;
+    request.AddOwnedItem(std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_USER, "hello"));
+    if (override_level > 1) {
+      request.options.Add("temperature", "0.9");
+      request.options.Add("max_output_tokens", "16");
+    }
+
+    Response response;
+    session.ProcessRequest(request, response);
+
+    ASSERT_TRUE(captured.has_value());
+    ASSERT_TRUE(captured->temperature.has_value());
+    EXPECT_FLOAT_EQ(*captured->temperature, override_level == 0 ? 0.6f : override_level == 1 ? 0.8f
+                                                                                             : 0.9f);
+    EXPECT_EQ(captured->max_output_tokens, override_level == 0 ? 64 : override_level == 1 ? 32
+                                                                                          : 16);
+    EXPECT_EQ(captured->top_p, 0.95f);
+    EXPECT_EQ(captured->top_k, 20);
+    EXPECT_EQ(captured->seed, 42);
   }
 }
 
@@ -5787,7 +5895,7 @@ TEST_F(ChatSessionTest, ForcedBuiltInRawCallRemainsVisibleWhenPromptOpensReasoni
       "*** Begin Patch\n*** Delete File: old.txt\n*** End Patch";
   TextChatGeneratorFactory factory =
       [envelope](const auto&, const auto&, auto&, const auto&, bool use_full_context) {
-        EXPECT_TRUE(use_full_context);
+        EXPECT_FALSE(use_full_context);
         return std::make_unique<FixedOutputGenerator>(
             envelope, BackendTerminationCause::kNaturalEnd,
             /*prompt_opens_reasoning=*/true);

@@ -23,6 +23,24 @@ For a user-facing introduction to the inference API and cross-language examples,
 
 ---
 
+## Native shared hosting
+
+Set `useSharedHost: true` in `FoundryLocalManager` configuration to route existing model/session APIs through the
+native host included in the npm package. The default remains in-process. Metadata, discovery and model downloads do
+not start the host; execution, cache removal, EP download/registration or `manager.startWebService()` starts or joins it.
+Clients must match the Foundry native build, IPC protocol, platform and effective catalog, data/cache, provider, web,
+logs directory/level, telemetry and additional settings other than `UserAgent`. Dependency hashes and packaging paths
+do not split hosts; the first starter's verified runtime serves all clients. This cannot be combined with
+`serviceEndpoint`; hosted mode never falls back to in-process execution.
+
+`manager.dispose()` releases only this client. After the final owner, the host drains admitted work, allows a
+five-second reconnect grace and exits normally. Keep the manager alive while using its HTTP endpoint; HTTP
+connections are not owners. Explicit model unload stays shared and rejects in-use models. Web-service Stop rejects
+other owners or active HTTP work.
+
+`manager.urls` observes listeners without starting the service and returns `[]` after disposal. See the
+[shared-host requirements](../cpp/README.md#quick-start) for inherited environment/cwd and Linux prerequisites.
+
 ## 1. Architecture in 30 seconds
 
 ```

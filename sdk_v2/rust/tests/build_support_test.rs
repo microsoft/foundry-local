@@ -377,6 +377,8 @@ fn native_collection_matches_http_mode_layout_and_extension_filter() {
     let native_dir = root.join("runtimes").join("linux-x64").join("native");
     let runtime_dir = root.join("runtimes").join("linux-x64");
     create_file(&native_dir.join("libfoundry_local.so"));
+    create_file(&native_dir.join("foundry-local-host"));
+    create_file(&native_dir.join("foundry-local-runtime.json"));
     create_file(&native_dir.join("readme.txt"));
     create_file(&runtime_dir.join("libonnxruntime-genai.so"));
     create_file(&runtime_dir.join("libonnxruntime.so.1"));
@@ -387,6 +389,8 @@ fn native_collection_matches_http_mode_layout_and_extension_filter() {
         files,
         [
             runtime_dir.join("libonnxruntime-genai.so"),
+            native_dir.join("foundry-local-host"),
+            native_dir.join("foundry-local-runtime.json"),
             native_dir.join("libfoundry_local.so")
         ]
     );

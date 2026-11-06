@@ -5,10 +5,14 @@
 #include "internal_api/test_helpers.h"
 #include "model.h"
 #include "model_info.h"
+#include "util/scope_guard.h"
 
 #include <gtest/gtest.h>
 
 #include <string>
+#include <atomic>
+#include <filesystem>
+#include <fstream>
 #include <type_traits>
 #include <utility>
 
@@ -102,4 +106,90 @@ TEST(ModelConstructionTest, AddVariantRejectsContainerAndPreservesExistingSelect
   ASSERT_TRUE(container.IsContainer());
   EXPECT_EQ(container.Variants().size(), 1u);
   EXPECT_EQ(container.Info().model_id, "test-model");
+}
+
+TEST(ModelConstructionTest, ExecutionCaptureOwnsTheSelectedLeafAfterTheCatalogObjectIsDestroyed) {
+  auto captured = [] {
+    auto container = Model::MakeContainer(MakeLeaf("first"));
+    container.AddVariant(MakeLeaf("second", "coding"));
+    for (auto* variant : container.Variants()) {
+      if (variant->Id() == "second") {
+        container.SelectVariant(*variant);
+      }
+    }
+
+    return container.CaptureExecutionModel();
+  }();
+  EXPECT_FALSE(captured.IsContainer());
+  EXPECT_EQ(captured.Id(), "second");
+  EXPECT_EQ(captured.Info().task, "coding");
+}
+
+TEST(ModelConstructionTest, ExecutionCapturePreservesCachedAndExternalRegistrationPolicies) {
+  fl::test::FakeServiceBindings svc;
+  ModelInfo info;
+  info.model_id = "capture:1";
+  auto downloaded = Model::FromModelInfo(info, "captured-cache", svc.download_manager, svc.model_load_manager);
+  auto captured = downloaded.CaptureExecutionModel();
+  EXPECT_TRUE(captured.IsCached());
+  EXPECT_EQ(captured.GetPath(), downloaded.GetPath());
+
+  auto external = Model::FromLocalRegistration(info, "", svc.download_manager, svc.model_load_manager);
+  EXPECT_FALSE(external.CaptureExecutionModel().IsCached());
+}
+
+TEST(ModelConstructionTest, ExecutionCaptureRejectsRetiredCatalogSelections) {
+  auto source = MakeLeaf();
+  source.Deactivate();
+  EXPECT_THROW(source.CaptureExecutionModel(), Exception);
+}
+
+TEST(ModelConstructionTest, CacheRefreshObservesCompletedRevisionWithoutDownloadingOrAdoptingPartialAssets) {
+  static std::atomic<uint64_t> sequence{0};
+  const auto scratch = std::filesystem::path(FOUNDRY_LOCAL_TEST_SCRATCH_DIR);
+  ASSERT_TRUE(scratch.is_absolute());
+  std::filesystem::create_directories(scratch);
+  ASSERT_FALSE(std::filesystem::is_symlink(scratch));
+  std::filesystem::path root;
+  do {
+    root = scratch / ("cache-refresh-" + std::to_string(test::CurrentPid()) + "-" + std::to_string(sequence++));
+  } while (!std::filesystem::create_directory(root));
+
+  ScopeGuard cleanup([&]() noexcept {
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+  });
+
+  test::FakeServiceBindings svc;
+  svc.download_manager.SetCacheDirectory(root.string());
+  ModelInfo info;
+  info.model_id = "shared-download:1";
+  auto model = Model::FromModelInfo(info, "", svc.download_manager, svc.model_load_manager);
+  const auto model_path = root / "shared-download-1";
+  const auto revision = model_path / "v1";
+  std::filesystem::create_directories(revision);
+  std::ofstream(revision / "genai_config.json") << "{}";
+  model.RefreshCachedState();
+  EXPECT_FALSE(model.IsCached());
+  EXPECT_TRUE(model.GetPath().empty());
+
+  std::ofstream(revision / "inference_model.json") << "{}";
+  std::ofstream(model_path / "download.tmp") << "";
+  model.RefreshCachedState();
+  EXPECT_FALSE(model.IsCached());
+  std::filesystem::remove(model_path / "download.tmp");
+  model.RefreshCachedState();
+  EXPECT_TRUE(model.IsCached());
+  EXPECT_EQ(model.GetPath(), revision.string());
+  EXPECT_EQ(model.CaptureExecutionModel().GetPath(), revision.string());
+  EXPECT_THROW(model.RemoveFromCache((root / "replaced").string()), Exception);
+  EXPECT_TRUE(model.IsCached());
+  EXPECT_TRUE(std::filesystem::exists(revision / "inference_model.json"));
+  model.ForgetCachedState();
+  EXPECT_FALSE(model.IsCached());
+  EXPECT_TRUE(model.GetPath().empty());
+  EXPECT_TRUE(std::filesystem::exists(revision / "genai_config.json"));
+  EXPECT_TRUE(std::filesystem::exists(revision / "inference_model.json"));
+  model.RefreshCachedState();
+  EXPECT_EQ(model.GetPath(), revision.string());
 }

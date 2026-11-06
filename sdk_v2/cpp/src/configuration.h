@@ -19,6 +19,9 @@ void ValidateCatalogUrl(const std::string& url);
 /// Top-level configuration for Manager.
 /// Mirrors the C API's flConfiguration design.
 struct Configuration {
+  static constexpr const char* kDefaultCatalogUrl = "https://api.catalog.azureml.ms/asset-gallery/v1.0/models";
+  static constexpr const char* kDefaultCatalogFilter = "";
+
   std::string app_name;
   std::optional<std::string> app_data_dir;
   std::optional<std::string> model_cache_dir;
@@ -47,6 +50,9 @@ struct Configuration {
   /// blocked. The user is responsible for remote operations (model load/unload,
   /// inference) via the external service's HTTP endpoints.
   std::optional<std::string> external_service_url;
+
+  /// Route execution to the packaged native shared host. Defaults to in-process execution.
+  bool use_shared_host = false;
 
   /// Disable non-essential telemetry. Foundry Local may still send a minimal ProcessInfo event.
   /// Defaults to false.

@@ -19,10 +19,8 @@ if TYPE_CHECKING:
     from foundry_local_sdk.response import Response
     from foundry_local_sdk.session_types import RequestOptions, RequestPreflightResult
 
-# Stamped on every versioned struct this module builds. Must match the version requested from
-# FoundryLocalGetApi (see _native/api.py): a tool definition carrying `kind` is only read as such
-# by a runtime that supports version 2.
-_API_VERSION = 2  # FOUNDRY_LOCAL_API_VERSION
+# Payload schemas stay at v2 independently of newer function-table versions.
+_API_VERSION = 2
 
 # flToolKind values.
 _TOOL_KIND_FUNCTION = 0

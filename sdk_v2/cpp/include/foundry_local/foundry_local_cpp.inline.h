@@ -180,6 +180,19 @@ inline Configuration& Configuration::SetExternalServiceUrl(const std::string& ur
   return *this;
 }
 
+inline Configuration& Configuration::SetUseSharedHost(bool enabled) {
+  if (detail::api_version() < 3) {
+    if (enabled) {
+      throw Error("shared hosting requires an API v3 Foundry Local runtime", FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED);
+    }
+
+    return *this;
+  }
+
+  Check(detail::config_api()->SetUseSharedHost(handle_.get_mutable(), enabled));
+  return *this;
+}
+
 inline Configuration& Configuration::SetCatalogRegion(const std::string& region) {
   Check(detail::config_api()->SetCatalogRegion(handle_.get_mutable(), region.c_str()));
   return *this;
@@ -692,28 +705,28 @@ inline flItemType Item::GetType() const noexcept {
 
 inline BytesContent Item::GetBytes() const {
   flBytesData bytes{};
-  bytes.version = FOUNDRY_LOCAL_API_VERSION;
+  bytes.version = FOUNDRY_LOCAL_DATA_VERSION;
   Check(detail::item_api()->GetBytes(handle_.get(), &bytes));
   return {bytes.item_type, bytes.data, bytes.data_size};
 }
 
 inline TextContent Item::GetText() const {
   flTextData data{};
-  data.version = FOUNDRY_LOCAL_API_VERSION;
+  data.version = FOUNDRY_LOCAL_DATA_VERSION;
   Check(detail::item_api()->GetText(handle_.get(), &data));
   return {data.text ? std::string_view{data.text} : std::string_view{}, data.type};
 }
 
 inline TensorContent Item::GetTensor() const {
   flTensorData tensor{};
-  tensor.version = FOUNDRY_LOCAL_API_VERSION;
+  tensor.version = FOUNDRY_LOCAL_DATA_VERSION;
   Check(detail::item_api()->GetTensor(handle_.get(), &tensor));
   return {tensor.data_type, tensor.data, {tensor.shape, tensor.shape + tensor.rank}};
 }
 
 inline ImageContent Item::GetImage() const {
   flImageData image{};
-  image.version = FOUNDRY_LOCAL_API_VERSION;
+  image.version = FOUNDRY_LOCAL_DATA_VERSION;
   Check(detail::item_api()->GetImage(handle_.get(), &image));
   return {image.data, image.data_size,
           image.format ? std::optional<std::string_view>{image.format} : std::nullopt,
@@ -722,7 +735,7 @@ inline ImageContent Item::GetImage() const {
 
 inline AudioContent Item::GetAudio() const {
   flAudioData audio{};
-  audio.version = FOUNDRY_LOCAL_API_VERSION;
+  audio.version = FOUNDRY_LOCAL_DATA_VERSION;
   Check(detail::item_api()->GetAudio(handle_.get(), &audio));
   return {audio.data, audio.data_size,
           audio.format ? std::optional<std::string_view>{audio.format} : std::nullopt,
@@ -732,7 +745,7 @@ inline AudioContent Item::GetAudio() const {
 
 inline MessageContent Item::GetMessage() const {
   flMessageData msg{};
-  msg.version = FOUNDRY_LOCAL_API_VERSION;
+  msg.version = FOUNDRY_LOCAL_DATA_VERSION;
   Check(detail::item_api()->GetMessage(handle_.get(), &msg));
 
   MessageContent out;
@@ -760,7 +773,7 @@ inline std::string MessageContent::GetSimpleText() const {
 
 inline ToolCallContent Item::GetToolCall() const {
   flToolCallData tc{};
-  tc.version = FOUNDRY_LOCAL_API_VERSION;
+  tc.version = FOUNDRY_LOCAL_DATA_VERSION;
   Check(detail::item_api()->GetToolCall(handle_.get(), &tc));
   return {tc.call_id ? std::string_view{tc.call_id} : std::string_view{},
           tc.name ? std::string_view{tc.name} : std::string_view{},
@@ -769,7 +782,7 @@ inline ToolCallContent Item::GetToolCall() const {
 
 inline ToolResultContent Item::GetToolResult() const {
   flToolResultData tr{};
-  tr.version = FOUNDRY_LOCAL_API_VERSION;
+  tr.version = FOUNDRY_LOCAL_DATA_VERSION;
   Check(detail::item_api()->GetToolResult(handle_.get(), &tr));
   return {tr.call_id ? std::string_view{tr.call_id} : std::string_view{},
           tr.result ? std::string_view{tr.result} : std::string_view{}};
@@ -793,7 +806,7 @@ inline std::optional<std::string_view> SpeechOptStr(const char* s) {
 
 inline SpeechSegmentContent Item::GetSpeechSegment() const {
   flSpeechSegmentData s{};
-  s.version = FOUNDRY_LOCAL_API_VERSION;
+  s.version = FOUNDRY_LOCAL_DATA_VERSION;
   Check(detail::item_api()->GetSpeechSegment(handle_.get(), &s));
 
   SpeechSegmentContent out;
@@ -819,7 +832,7 @@ inline SpeechSegmentContent Item::GetSpeechSegment() const {
 
 inline SpeechResultContent Item::GetSpeechResult() const {
   flSpeechResultData r{};
-  r.version = FOUNDRY_LOCAL_API_VERSION;
+  r.version = FOUNDRY_LOCAL_DATA_VERSION;
   Check(detail::item_api()->GetSpeechResult(handle_.get(), &r));
 
   SpeechResultContent out;
@@ -848,7 +861,7 @@ inline flItem* detail::CreateItem(flItemType type) {
 inline Item Item::Text(const std::string& text, flTextItemType type) {
   Item item(FOUNDRY_LOCAL_ITEM_TEXT);
   flTextData data{};
-  data.version = FOUNDRY_LOCAL_API_VERSION;
+  data.version = FOUNDRY_LOCAL_DATA_VERSION;
   data.text = text.c_str();
   data.type = type;
   Check(detail::item_api()->SetText(item.handle_.get_mutable(), &data));
@@ -872,7 +885,7 @@ inline MessageItem::MessageItem(flMessageRole role, std::vector<Item> parts,
   }
 
   flMessageData msg{};
-  msg.version = FOUNDRY_LOCAL_API_VERSION;
+  msg.version = FOUNDRY_LOCAL_DATA_VERSION;
   msg.role = role;
   msg.content_items = ptrs.empty() ? nullptr : ptrs.data();
   msg.content_items_count = ptrs.size();
@@ -885,7 +898,7 @@ inline MessageItem::MessageItem(flMessageRole role, std::vector<Item> parts,
 inline Item Item::Bytes(flItemType item_type, const void* data, size_t data_size) {
   Item item(FOUNDRY_LOCAL_ITEM_BYTES);
   flBytesData bytes{};
-  bytes.version = FOUNDRY_LOCAL_API_VERSION;
+  bytes.version = FOUNDRY_LOCAL_DATA_VERSION;
   bytes.item_type = item_type;
   bytes.data = data;
   bytes.mutable_data = nullptr;
@@ -901,7 +914,7 @@ inline Item Item::Bytes(flItemType item_type, void* data, size_t data_size,
   auto helper = std::make_unique<detail::DataDeleterHelper<flBytesData>>(std::move(deleter));
   Item item(FOUNDRY_LOCAL_ITEM_BYTES);
   flBytesData bytes{};
-  bytes.version = FOUNDRY_LOCAL_API_VERSION;
+  bytes.version = FOUNDRY_LOCAL_DATA_VERSION;
   bytes.item_type = item_type;
   bytes.data = data;
   bytes.mutable_data = data;
@@ -917,7 +930,7 @@ inline Item Item::Bytes(flItemType item_type, void* data, size_t data_size,
 inline Item Item::Tensor(flTensorDataType data_type, const void* data, const int64_t* shape, size_t rank) {
   Item item(FOUNDRY_LOCAL_ITEM_TENSOR);
   flTensorData tensor{};
-  tensor.version = FOUNDRY_LOCAL_API_VERSION;
+  tensor.version = FOUNDRY_LOCAL_DATA_VERSION;
   tensor.data_type = data_type;
   tensor.data = data;
   tensor.mutable_data = nullptr;
@@ -934,7 +947,7 @@ inline Item Item::Tensor(flTensorDataType data_type, void* data, const int64_t* 
   auto helper = std::make_unique<detail::DataDeleterHelper<flTensorData>>(std::move(deleter));
   Item item(FOUNDRY_LOCAL_ITEM_TENSOR);
   flTensorData tensor{};
-  tensor.version = FOUNDRY_LOCAL_API_VERSION;
+  tensor.version = FOUNDRY_LOCAL_DATA_VERSION;
   tensor.data_type = data_type;
   tensor.data = data;
   tensor.mutable_data = data;
@@ -951,7 +964,7 @@ inline Item Item::Tensor(flTensorDataType data_type, void* data, const int64_t* 
 inline Item Item::ImageFromData(const std::string& format, const void* data, size_t data_size) {
   Item item(FOUNDRY_LOCAL_ITEM_IMAGE);
   flImageData image{};
-  image.version = FOUNDRY_LOCAL_API_VERSION;
+  image.version = FOUNDRY_LOCAL_DATA_VERSION;
   image.data = data;
   image.mutable_data = nullptr;
   image.data_size = data_size;
@@ -968,7 +981,7 @@ inline Item Item::ImageFromData(const std::string& format, void* data, size_t da
   auto helper = std::make_unique<detail::DataDeleterHelper<flImageData>>(std::move(deleter));
   Item item(FOUNDRY_LOCAL_ITEM_IMAGE);
   flImageData image{};
-  image.version = FOUNDRY_LOCAL_API_VERSION;
+  image.version = FOUNDRY_LOCAL_DATA_VERSION;
   image.data = data;
   image.mutable_data = data;
   image.data_size = data_size;
@@ -985,7 +998,7 @@ inline Item Item::ImageFromData(const std::string& format, void* data, size_t da
 inline Item Item::ImageFromUri(const std::string& uri, const std::optional<std::string>& format) {
   Item item(FOUNDRY_LOCAL_ITEM_IMAGE);
   flImageData image{};
-  image.version = FOUNDRY_LOCAL_API_VERSION;
+  image.version = FOUNDRY_LOCAL_DATA_VERSION;
   image.data = nullptr;
   image.mutable_data = nullptr;
   image.data_size = 0;
@@ -1001,7 +1014,7 @@ inline Item Item::AudioFromData(const std::string& format, const void* data, siz
                                 int sample_rate, int channels) {
   Item item(FOUNDRY_LOCAL_ITEM_AUDIO);
   flAudioData audio{};
-  audio.version = FOUNDRY_LOCAL_API_VERSION;
+  audio.version = FOUNDRY_LOCAL_DATA_VERSION;
   audio.data = data;
   audio.mutable_data = nullptr;
   audio.data_size = data_size;
@@ -1021,7 +1034,7 @@ inline Item Item::AudioFromData(const std::string& format, void* data, size_t da
   auto helper = std::make_unique<detail::DataDeleterHelper<flAudioData>>(std::move(deleter));
   Item item(FOUNDRY_LOCAL_ITEM_AUDIO);
   flAudioData audio{};
-  audio.version = FOUNDRY_LOCAL_API_VERSION;
+  audio.version = FOUNDRY_LOCAL_DATA_VERSION;
   audio.data = data;
   audio.mutable_data = data;
   audio.data_size = data_size;
@@ -1041,7 +1054,7 @@ inline Item Item::AudioFromUri(const std::string& uri, const std::optional<std::
                                int sample_rate, int channels) {
   Item item(FOUNDRY_LOCAL_ITEM_AUDIO);
   flAudioData audio{};
-  audio.version = FOUNDRY_LOCAL_API_VERSION;
+  audio.version = FOUNDRY_LOCAL_DATA_VERSION;
   audio.data = nullptr;
   audio.mutable_data = nullptr;
   audio.data_size = 0;
@@ -1064,7 +1077,7 @@ inline Item Item::ToolCall(const std::string& call_id, const std::string& name,
   }
 
   Item item(FOUNDRY_LOCAL_ITEM_TOOL_CALL);
-  flToolCallData tc{FOUNDRY_LOCAL_API_VERSION, call_id.c_str(), name.c_str(), arguments.c_str()};
+  flToolCallData tc{FOUNDRY_LOCAL_DATA_VERSION, call_id.c_str(), name.c_str(), arguments.c_str()};
   Check(detail::item_api()->SetToolCall(item.handle_.get_mutable(), &tc));
   return item;
 }
@@ -1076,7 +1089,7 @@ inline Item Item::ToolResult(const std::string& call_id, const std::string& resu
   }
 
   Item item(FOUNDRY_LOCAL_ITEM_TOOL_RESULT);
-  flToolResultData tr{FOUNDRY_LOCAL_API_VERSION, call_id.c_str(), result.c_str()};
+  flToolResultData tr{FOUNDRY_LOCAL_DATA_VERSION, call_id.c_str(), result.c_str()};
   Check(detail::item_api()->SetToolResult(item.handle_.get_mutable(), &tr));
   return item;
 }
@@ -1174,7 +1187,7 @@ inline RequestPreflight::RequestPreflight(flRequestPreflight* preflight)
 
 inline flRequestPreflightResult RequestPreflight::Execute() {
   flRequestPreflightResult result{};
-  result.version = FOUNDRY_LOCAL_API_VERSION;
+  result.version = FOUNDRY_LOCAL_REQUEST_PREFLIGHT_RESULT_VERSION;
   Check(detail::inference_api()->RequestPreflight_Execute(handle_.get_mutable(), &result));
   return result;
 }
@@ -1201,7 +1214,7 @@ inline flFinishReason Response::GetFinishReason() const noexcept {
 
 inline flUsage Response::GetUsage() const {
   flUsage usage{};
-  usage.version = FOUNDRY_LOCAL_API_VERSION;
+  usage.version = FOUNDRY_LOCAL_DATA_VERSION;
   Check(detail::inference_api()->Response_GetUsage(handle_.get(), &usage));
   return usage;
 }

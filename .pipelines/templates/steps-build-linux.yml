@@ -162,6 +162,15 @@ steps:
     cp -P "$primary" "$dst/"
     echo "  staged libfoundry_local.so"
 
+    for required in foundry-local-host foundry-local-runtime.json; do
+      if [ ! -f "$src/$required" ]; then
+        echo "ERROR: $required not found at $src/$required" >&2
+        exit 1
+      fi
+      cp -P "$src/$required" "$dst/"
+    done
+    chmod u+x "$dst/foundry-local-host"
+
     for required in libonnxruntime.so libonnxruntime-genai.so; do
       if [ ! -e "$src/$required" ]; then
         echo "ERROR: $required not found at $src/$required" >&2
