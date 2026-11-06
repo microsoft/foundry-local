@@ -143,14 +143,18 @@ TEST(NonGenerativeSdkTest, ExportedPackagesRunWhenConfigured) {
   std::filesystem::remove_all(app_data, ec);
 }
 
-TEST(NonGenerativeSdkTest, RequiredKevPackageRunsWhenConfigured) {
-  const auto package =
-      fl::test::SafeGetEnv("FOUNDRY_LOCAL_REQUIRED_KEV_PACKAGE");
-  if (package.empty()) {
-    if (fl::test::SafeGetEnv("FOUNDRY_LOCAL_REQUIRE_KEV_TESTS") == "1")
-      FAIL() << "required KEV package path is not configured";
-    GTEST_SKIP() << "set FOUNDRY_LOCAL_REQUIRED_KEV_PACKAGE";
+TEST(NonGenerativeSdkTest, RequiredKevPackageRunsFromSharedCache) {
+  const auto test_data = fl::test::SafeGetEnv("FOUNDRY_TEST_DATA_DIR");
+  if (test_data.empty()) {
+    if (fl::test::SafeGetEnv("TF_BUILD") == "true")
+      FAIL() << "FOUNDRY_TEST_DATA_DIR is required in CI";
+    GTEST_SKIP() << "set FOUNDRY_TEST_DATA_DIR";
   }
+  const auto package =
+      std::filesystem::path(test_data) / "Microsoft" /
+      "kev-0.8b-mixed-generic-cpu-1";
+  ASSERT_TRUE(std::filesystem::is_directory(package))
+      << "required KEV package is missing: " << package;
 
   const auto app_data =
       std::filesystem::temp_directory_path() /
@@ -167,7 +171,7 @@ TEST(NonGenerativeSdkTest, RequiredKevPackageRunsWhenConfigured) {
     metadata.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR,
                                "typed-decision");
     auto model = catalog.RegisterModel(
-        package, "kev-0.8b-mixed-generic-cpu:1", metadata);
+        package.string(), "kev-0.8b-mixed-generic-cpu:1", metadata);
     model->Load();
     EXPECT_TRUE(model->IsLoaded());
     {

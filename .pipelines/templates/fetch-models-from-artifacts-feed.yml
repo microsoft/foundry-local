@@ -103,4 +103,4 @@ steps:
       vstsFeed: 'AIFoundryLocal/AIFoundryLocal_PublicPackages'
       vstsFeedPackage: 'foundry-local-kev-0-8b-mixed-generic-cpu'
       vstsPackageVersion: '1.0.0'
-      downloadDirectory: '${{ parameters.destinationPath }}/kev-0.8b-mixed-generic-cpu'
+      downloadDirectory: '${{ parameters.destinationPath }}/Microsoft/kev-0.8b-mixed-generic-cpu-1'

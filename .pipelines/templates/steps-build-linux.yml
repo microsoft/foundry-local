@@ -71,7 +71,7 @@ steps:
 - ${{ if and(eq(parameters.runTests, true), eq(parameters.arch, 'x64')) }}:
   - template: fetch-models-from-artifacts-feed.yml
     parameters:
-      destinationPath: '$(Agent.BuildDirectory)/test-data-non-generative'
+      destinationPath: '$(Agent.BuildDirectory)/test-data-shared'
       modelSet: non-generative
 
 - bash: |
@@ -152,15 +152,14 @@ steps:
         --user "$user_id:$group_id" \
         --volume "$(Build.SourcesDirectory):$(Build.SourcesDirectory)" \
         --volume "$(Build.BinariesDirectory):$(Build.BinariesDirectory)" \
-        --volume "$(Agent.BuildDirectory)/test-data-non-generative:$(Agent.BuildDirectory)/test-data-non-generative:ro" \
+        --volume "$(Agent.BuildDirectory)/test-data-shared:$(Agent.BuildDirectory)/test-data-shared:ro" \
         --env "HOME=$(Build.BinariesDirectory)/manylinux-home" \
-        --env "FOUNDRY_LOCAL_REQUIRED_KEV_PACKAGE=$(Agent.BuildDirectory)/test-data-non-generative/kev-0.8b-mixed-generic-cpu" \
-        --env "FOUNDRY_LOCAL_REQUIRE_KEV_TESTS=1" \
+        --env "FOUNDRY_TEST_DATA_DIR=$(Agent.BuildDirectory)/test-data-shared" \
         --env "LD_LIBRARY_PATH=$(Build.SourcesDirectory)/sdk_v2/cpp/build/Linux/${{ parameters.buildConfig }}/bin" \
         --workdir "$(Build.SourcesDirectory)/sdk_v2/cpp" \
         "$(manylinuxImage)" \
         build/Linux/${{ parameters.buildConfig }}/bin/non_generative_sdk_tests \
-          --gtest_filter=NonGenerativeSdkTest.RequiredKevPackageRunsWhenConfigured
+          --gtest_filter=NonGenerativeSdkTest.RequiredKevPackageRunsFromSharedCache
     displayName: 'Run required KEV real-model integration'
 
 - bash: |
