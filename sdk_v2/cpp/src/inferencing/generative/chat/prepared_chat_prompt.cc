@@ -13,6 +13,8 @@
 
 #include <ort_genai.h>
 
+#include <algorithm>
+#include <functional>
 #include <unordered_map>
 
 namespace fl {
@@ -39,19 +41,122 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
              tool_ctx.template_kwargs_json.find(prefix) != std::string::npos);
 
     std::unordered_map<std::string, std::string> literals;
-    const auto projected = BuildCanonicalToolMessagesJson(
-        messages.Messages(), tool_ctx, [&](std::string text) {
-          if (text.empty()) {
-            return text;
+    const auto protect_literal = [&](std::string text) {
+      if (text.empty()) {
+        return text;
+      }
+      auto marker = prefix + std::to_string(literals.size()) + "__";
+      literals.emplace(marker, std::move(text));
+      return marker;
+    };
+    std::string projected;
+    std::string projected_tools;
+    if (tool_ctx.native_qwen_xml_tool_calls || tool_ctx.native_tagged_json_tool_calls) {
+      auto projected_json =
+          nlohmann::ordered_json::parse(BuildChatMessagesJson(messages.Messages(),
+                                                              tool_ctx.supports_reasoning_history));
+      struct HistoricalCall {
+        std::string id;
+        std::string name;
+        std::string arguments;
+      };
+      std::vector<HistoricalCall> pending_calls;
+      std::vector<HistoricalCall> completed_calls;
+      for (const auto& message : projected_json) {
+        const auto role = message.value("role", "");
+        if (role == "assistant" && message.contains("tool_calls") &&
+            message["tool_calls"].is_array()) {
+          for (const auto& call : message["tool_calls"]) {
+            if (!call.is_object() || !call.contains("function") ||
+                !call["function"].is_object()) {
+              continue;
+            }
+            const auto& function = call["function"];
+            if (!function.contains("name") || !function["name"].is_string() ||
+                !function.contains("arguments") ||
+                (!function["arguments"].is_string() && !function["arguments"].is_object())) {
+              continue;
+            }
+            pending_calls.push_back({
+                call.value("id", ""),
+                function["name"].get<std::string>(),
+                function["arguments"].is_string()
+                    ? function["arguments"].get<std::string>()
+                    : function["arguments"].dump(),
+            });
           }
-          auto marker = prefix + std::to_string(literals.size()) + "__";
-          literals.emplace(marker, std::move(text));
-          return marker;
-        });
+        } else if (role == "tool" && !pending_calls.empty()) {
+          auto completed = pending_calls.begin();
+          if (message.contains("tool_call_id") && message["tool_call_id"].is_string()) {
+            const auto id = message["tool_call_id"].get<std::string>();
+            if (const auto match = std::ranges::find(pending_calls, id, &HistoricalCall::id);
+                match != pending_calls.end()) {
+              completed = match;
+            }
+          }
+          completed_calls.push_back(std::move(*completed));
+          pending_calls.erase(completed);
+        }
+      }
+      std::string state =
+          "Use a tool only when the user's request requires it. For serial work, emit only calls whose "
+          "prerequisites are already available; do not wait or deliberate about later calls.";
+      if (!tool_ctx.automatic_retry_instruction.empty()) {
+        state += "\n" + tool_ctx.automatic_retry_instruction;
+      }
+      if (!completed_calls.empty()) {
+        state +=
+            "\nTool calls with results already present in this conversation are complete. "
+            "Do not repeat any exact call listed below:\n";
+        for (const auto& call : completed_calls) {
+          state += "- " + call.name + "(" + call.arguments + ")\n";
+        }
+        state +=
+            "A call to the same function with different arguments is new work, not a repeated call. "
+            "Continue only the user's remaining requested work. If remaining work requires a tool, emit that "
+            "tool call now without describing or simulating its result. If all requested calls are complete, "
+            "answer from their actual results without calling another tool.";
+      }
+      if (!projected_json.empty() && projected_json.front().value("role", "") == "system") {
+        auto content = projected_json.front().value("content", "");
+        projected_json.front()["content"] = content.empty() ? state : content + "\n\n" + state;
+      } else {
+        projected_json.insert(projected_json.begin(),
+                              nlohmann::ordered_json{{"role", "system"}, {"content", state}});
+      }
+      std::function<void(nlohmann::ordered_json&)> protect_json_strings =
+          [&](nlohmann::ordered_json& value) {
+            if (value.is_string()) {
+              value = protect_literal(value.get<std::string>());
+            } else if (value.is_array()) {
+              for (auto& item : value) {
+                protect_json_strings(item);
+              }
+            } else if (value.is_object()) {
+              for (auto& [key, item] : value.items()) {
+                protect_json_strings(item);
+              }
+            }
+          };
+      for (auto& message : projected_json) {
+        for (const auto* field : {"content", "reasoning_content", "tool_calls"}) {
+          if (message.contains(field)) {
+            protect_json_strings(message[field]);
+          }
+        }
+      }
+      auto tools = nlohmann::ordered_json::parse(tool_ctx.tools_json);
+      protect_json_strings(tools);
+      projected = projected_json.dump();
+      projected_tools = tools.dump();
+    } else {
+      projected = BuildCanonicalToolMessagesJson(messages.Messages(), tool_ctx, protect_literal);
+    }
     auto& preprocessor = model.GetPreprocessor();
     const auto* kwargs = tool_ctx.template_kwargs_json.empty() ? nullptr : tool_ctx.template_kwargs_json.c_str();
+    const auto* tools = projected_tools.empty() ? nullptr : projected_tools.c_str();
     const auto rendered =
-        preprocessor.ApplyChatTemplateWithOptions(projected.c_str(), nullptr, kwargs, true);
+        preprocessor.ApplyChatTemplateWithOptions(projected.c_str(), tools, kwargs, true);
     const auto append = [&](const std::string& text, bool literal) {
       if (text.empty()) {
         return;
