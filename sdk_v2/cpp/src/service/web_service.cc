@@ -7,12 +7,14 @@
 
 #include "exception.h"
 #include "inferencing/generative/openresponses/response_store.h"
+#include "inferencing/model_load_manager.h"
 #include "inferencing/session/session_manager.h"
 #include "service/audio_transcriptions_handler.h"
 #include "service/chat_completions_handler.h"
 #include "service/embeddings_handler.h"
 #include "service/handler_utils.h"
 #include "service/models_handlers.h"
+#include "service/non_generative_handlers.h"
 #include "service/responses_handler.h"
 
 #include <fmt/format.h>
@@ -218,6 +220,8 @@ void RegisterOpenAIRoutes(const std::shared_ptr<oatpp::web::server::HttpRouter>&
   Route(router, "POST", prefix + "/v1/chat/completions", CreateChatCompletionsHandler(ctx), lifetime);
   Route(router, "POST", prefix + "/v1/audio/transcriptions", CreateAudioTranscriptionsHandler(ctx), lifetime);
   Route(router, "POST", prefix + "/v1/embeddings", CreateEmbeddingsHandler(ctx), lifetime);
+  Route(router, "POST", prefix + "/v1/systemone", CreateSystemOneHandler(ctx), lifetime);
+  Route(router, "POST", prefix + "/v1/rank", CreateRankHandler(ctx), lifetime);
   Route(router, "POST", prefix + "/v1/responses", CreateResponsesHandler(ctx), lifetime);
   Route(router, "GET", prefix + "/v1/responses", CreateListResponsesHandler(ctx), lifetime);
   Route(router, "GET", prefix + "/v1/responses/{id}", CreateGetResponseHandler(ctx), lifetime);
@@ -307,7 +311,8 @@ struct WebService::Impl {
                            session_manager,
                            local_response_store,
                            telemetry,
-                           thread_tracker})) {}
+                           thread_tracker})) {
+  }
 };
 
 WebService::WebService(ICatalog& public_catalog, ICatalog& local_catalog, ILogger& logger, std::string model_cache_dir,

@@ -232,7 +232,7 @@ class EmbeddedManager final : public ManagerBackend {
   }
 
   bool IsModelArtifactLoaded(const std::string& model_id, const std::string& path) const override {
-    return owner_.manager.GetModelLoadManager().GetLoadedModel(model_id, path) != nullptr;
+    return owner_.manager.GetModelLoadManager().IsModelArtifactLoaded(model_id, path);
   }
 
   void ReconcileLoadedSelections(
@@ -241,7 +241,7 @@ class EmbeddedManager final : public ManagerBackend {
   }
 
   void UnloadModelArtifact(const std::string& model_id, const std::string& path) override {
-    owner_.manager.GetModelLoadManager().UnloadModel(model_id, path);
+    owner_.manager.GetModelLoadManager().UnloadModelArtifact(model_id, path);
   }
 
   void StartWebService() override { owner_.manager.StartWebService(); }

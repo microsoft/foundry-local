@@ -4,6 +4,8 @@
 
 #include "inferencing/execution_provider.h"
 #include "inferencing/generative/genai_model_instance.h"
+#include "inferencing/predictive/non_generative_admission.h"
+#include "catalog/non_generative_package.h"
 #include "logger.h"
 #include "ep_detection/ep_detector.h"
 
@@ -11,6 +13,8 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <future>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -21,7 +25,10 @@
 
 namespace fl {
 
+class Model;
 class ModelLoadManager;
+class ManagedModelRuntime;
+class ModelLoadManagerTestAccess;
 
 /// Keeps an admitted hosted load's selection stable until it succeeds or unwinds. The manager must outlive the lease.
 class LoadedSelectionReservation {
@@ -59,7 +66,11 @@ class ModelLoadManager {
     GenAIModelInstance* model = nullptr;  // non-owning pointer; lifetime managed by this class
   };
 
-  ModelLoadManager(IEpDetector& ep_detector, ILogger& logger);
+  ModelLoadManager(
+      IEpDetector& ep_detector, ILogger& logger,
+      uint64_t non_generative_memory_budget_bytes =
+          (std::numeric_limits<uint64_t>::max)(),
+      size_t non_generative_readiness_concurrency = 1);
   ~ModelLoadManager();
 
   ModelLoadManager(const ModelLoadManager&) = delete;
@@ -74,6 +85,21 @@ class ModelLoadManager {
   LoadResult LoadModel(std::string_view model_path,
                        std::string_view model_id,
                        ExecutionProvider ep_override = ExecutionProvider::kDefault);
+
+  /// Verify that a required provider is registered and prepare its runtime
+  /// dependencies before constructing an ORT GenAI model or session.
+  void PrepareProviderForModelLoad(std::string_view registration_name,
+                                   std::string_view model_id);
+  std::shared_ptr<void> AcquireNonGenerativeRuntime(
+      Model& model,
+      const std::function<void()>& on_admitted = {});
+  bool UnloadNonGenerativeRuntime(Model& model);
+  bool IsModelLoaded(const Model& model) const;
+  bool IsModelLoading(const Model& model) const;
+  bool IsModelArtifactLoaded(std::string_view model_id,
+                             std::string_view model_path) const;
+  bool UnloadModelArtifact(std::string_view model_id,
+                           std::string_view model_path);
 
   /// Unload a previously loaded model.
   /// @returns true if the model was found and unloaded; false if the model was not loaded
@@ -144,18 +170,37 @@ class ModelLoadManager {
 
  private:
   friend class LoadedSelectionReservation;
+  friend class ModelLoadManagerTestAccess;
   void CompleteSelectionReservation(const std::pair<std::string, std::string>& identity, bool commit) noexcept;
+  std::shared_ptr<void> AcquireManagedRuntime(
+      std::string identity, std::string model_id, std::string model_path,
+      uint64_t estimated_resident_bytes, std::string readiness_group,
+      const std::function<std::shared_ptr<void>()>& factory,
+      const std::function<void()>& on_admitted = {},
+      std::shared_ptr<const GenAIConfig> config = {});
 
   bool HasEP(const std::string& ep_name) const;
+  NonGenerativePackageMetadata InspectNonGenerativePackage(Model& model);
   bool UnloadModel(std::string_view model_id, const std::string* normalized_model_path);
   GenAIModelInstance* GetLoadedModel(std::string_view model_id, const std::string* normalized_model_path);
   GenAIModelInstance* FindLoadedModelLocked(std::string_view model_id, const std::string* normalized_model_path);
 
   IEpDetector& ep_detector_;
   ILogger& logger_;
+  std::shared_ptr<NonGenerativeAdmissionCoordinator>
+      non_generative_admission_;
   std::atomic<bool> shutdown_{false};
   mutable std::mutex mutex_;
-  std::map<std::string, std::unique_ptr<GenAIModelInstance>> loaded_models_;
+  std::map<std::string, std::shared_ptr<ManagedModelRuntime>> loaded_runtimes_;
+  struct LoadingRuntimeEntry {
+    std::string model_id;
+    std::string model_path;
+    std::shared_future<std::shared_ptr<ManagedModelRuntime>> runtime;
+  };
+  std::map<std::string, LoadingRuntimeEntry> loading_runtimes_;
+  std::map<std::pair<std::string, std::string>,
+           NonGenerativePackageMetadata>
+      non_generative_packages_;
   struct SelectionState {
     bool preserved = false;
     size_t reservations = 0;

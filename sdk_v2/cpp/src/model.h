@@ -17,6 +17,8 @@
 
 namespace fl {
 
+class NonGenerativeAdmissionCoordinator;
+
 class DownloadManager;
 struct Item;
 class ModelLoadManager;
@@ -136,6 +138,7 @@ class Model {
 
   bool IsCached() const;
   bool IsLoaded() const;
+  Model* SelectedLeaf() const;
 
   /// Get the supported input and output item types for this model, based on its task.
   /// Returns arrays of Item pointers (type-tag-only descriptors) from static storage.
@@ -174,6 +177,7 @@ class Model {
   void Load(ExecutionProvider ep = ExecutionProvider::kDefault,
             std::optional<std::string_view> expected_path = std::nullopt);
   void Unload();
+  std::shared_ptr<void> AcquireNonGenerativeRuntime();
   void RemoveFromCache(std::optional<std::string_view> expected_path = std::nullopt);
 
   /// Mark this model and its variants inactive while retaining pointer validity.
@@ -243,7 +247,7 @@ class Model {
   mutable bool has_eligible_default_variant_ = true;                       // guarded by state_mutex_
   mutable Model* loading_variant_ = nullptr;                               // guarded by state_mutex_
   mutable std::function<bool(const Model&)> default_variant_eligibility_;  // guarded by state_mutex_
-  std::function<void()> default_variant_refresh_;  // guarded by state_mutex_
+  std::function<void()> default_variant_refresh_;                          // guarded by state_mutex_
 
   // Guards variants_ across reader/writer threads (catalog refresh adding variants
   // while another thread enumerates via Variants()).
