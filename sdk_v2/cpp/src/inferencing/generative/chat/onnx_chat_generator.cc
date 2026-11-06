@@ -314,7 +314,7 @@ void OnnxChatGenerator::ResetTurnState() {
 
 std::string OnnxChatGenerator::TransformMessagesForMedia(const std::vector<MessageItem>& messages) {
   // Find the index of the last user message so we can rewrite only that one
-  // into structured media markers followed by its text content.
+  // into structured content, preserving the positions of text and media.
   // Other messages are emitted in plain `{"role","content"}` form so the chat
   // template renders them the same way it does for text-only requests.
   size_t last_user_idx = messages.size();
@@ -341,9 +341,14 @@ std::string OnnxChatGenerator::TransformMessagesForMedia(const std::vector<Messa
           content.push_back(nlohmann::json{{"type", "image"}});
         } else if (part.view->type == FOUNDRY_LOCAL_ITEM_AUDIO) {
           content.push_back(nlohmann::json{{"type", "audio"}});
+        } else if (part.view->type == FOUNDRY_LOCAL_ITEM_TEXT) {
+          const auto& text = static_cast<const TextItem&>(*part.view);
+          if (text.text_type != FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING) {
+            content.push_back(nlohmann::json{{"type", "text"}, {"text", text.text}});
+          }
         }
       }
-      content.push_back(nlohmann::json{{"type", "text"}, {"text", RenderMessageForPrompt(msg)}});
+
       entry["content"] = std::move(content);
     } else {
       for (const auto& part : msg.content) {

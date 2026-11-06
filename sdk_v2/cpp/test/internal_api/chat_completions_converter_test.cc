@@ -9,7 +9,9 @@
 #include "exception.h"
 #include "inferencing/generative/chat/chat_template.h"
 #include "inferencing/generative/chat/chat_transcript.h"
+#include "inferencing/generative/chat/media_input.h"
 #include "inferencing/generative/chat/stop_strings.h"
+#include "items/image_item.h"
 #include "items/message_item.h"
 #include "items/text_item.h"
 #include "items/tool_call_item.h"
@@ -70,6 +72,91 @@ TEST(ChatCompletionsConverterTest, MapRequestParameters_ParallelToolCallsPreserv
   request.parallel_tool_calls = true;
   MapRequestParameters(request, session_request);
   EXPECT_STREQ(session_request.options.Find("parallel_tool_calls"), "true");
+}
+
+TEST(ChatCompletionsConverterTest, ImageUrlPartsReachTheMediaPipeline) {
+  const auto body = json::parse(R"({
+    "model": "vision",
+    "messages": [{"role": "user", "content": [
+      {"type": "text", "text": "Describe this: "},
+      {"type": "image_url", "image_url": {"url": "data:image/png;base64,AQIDBA==", "detail": "low"}},
+      {"type": "text", "text": "and this"},
+      {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,BQYHCA=="}},
+      {"type": "text", "text": "Compare them"}
+    ]}]
+  })");
+  Request request;
+  BuildRequestItems(body.get<ChatCompletionRequest>(), request);
+
+  const auto media = CollectMediaInput(request);
+  ASSERT_EQ(media.images.size(), 2u);
+  EXPECT_EQ(media.images[0]->ReadBytes(), (std::vector<std::uint8_t>{1, 2, 3, 4}));
+  EXPECT_EQ(media.images[0]->format, "image/png");
+  EXPECT_EQ(media.images[1]->ReadBytes(), (std::vector<std::uint8_t>{5, 6, 7, 8}));
+  EXPECT_EQ(media.images[1]->format, "image/jpeg");
+  ASSERT_EQ(media.messages.size(), 1u);
+  const auto& parts = media.messages[0].content;
+  ASSERT_EQ(parts.size(), 5u);
+  ASSERT_EQ(parts[0].view->type, FOUNDRY_LOCAL_ITEM_TEXT);
+  EXPECT_EQ(static_cast<const TextItem&>(*parts[0].view).text, "Describe this: ");
+  ASSERT_EQ(parts[1].view->type, FOUNDRY_LOCAL_ITEM_IMAGE);
+  ASSERT_EQ(parts[2].view->type, FOUNDRY_LOCAL_ITEM_TEXT);
+  EXPECT_EQ(static_cast<const TextItem&>(*parts[2].view).text, "and this");
+  ASSERT_EQ(parts[3].view->type, FOUNDRY_LOCAL_ITEM_IMAGE);
+  ASSERT_EQ(parts[4].view->type, FOUNDRY_LOCAL_ITEM_TEXT);
+  EXPECT_EQ(static_cast<const TextItem&>(*parts[4].view).text, "Compare them");
+}
+
+TEST(ChatCompletionsConverterTest, ImageOnlyMessageIsNotDiscarded) {
+  const auto body = json::parse(R"({
+    "model": "vision",
+    "messages": [{"role": "user", "content": [
+      {"type": "image_url", "image_url": {"url": "data:image/png;base64,AQIDBA=="}}
+    ]}]
+  })");
+  Request request;
+  BuildRequestItems(body.get<ChatCompletionRequest>(), request);
+
+  const auto media = CollectMediaInput(request);
+  ASSERT_EQ(media.images.size(), 1u);
+  ASSERT_EQ(media.messages.size(), 1u);
+  ASSERT_EQ(media.messages[0].content.back().view->type, FOUNDRY_LOCAL_ITEM_TEXT);
+  EXPECT_FALSE(static_cast<const TextItem&>(*media.messages[0].content.back().view).text.empty());
+}
+
+TEST(ChatCompletionsConverterTest, MalformedImageUrlsAreRejectedInsteadOfIgnored) {
+  for (const auto& source : {json(), json("data:image/png;base64,AQIDBA=="), json::object(), json{{"url", ""}},
+                             json{{"url", "data:image/png;base64,"}}, json{{"url", "data:image/png;base64,!!!!"}}}) {
+    SCOPED_TRACE(source.dump());
+    const json body = {
+        {"model", "vision"},
+        {"messages", json::array({{{"role", "user"},
+                                   {"content", json::array({{{"type", "text"}, {"text", "Describe"}},
+                                                            {{"type", "image_url"}, {"image_url", source}}})}}})},
+    };
+    ExpectInvalidArgument(
+        [&] {
+          Request request;
+          BuildRequestItems(body.get<ChatCompletionRequest>(), request);
+        },
+        "image_url");
+  }
+}
+
+TEST(ChatCompletionsConverterTest, RemoteImageUrlsAreRejectedInsteadOfIgnored) {
+  const auto body = json::parse(R"({
+    "model": "vision",
+    "messages": [{"role": "user", "content": [
+      {"type": "image_url", "image_url": {"url": "https://example.com/image.png"}}
+    ]}]
+  })");
+  try {
+    Request request;
+    BuildRequestItems(body.get<ChatCompletionRequest>(), request);
+    FAIL() << "Expected unsupported remote image URL to be rejected";
+  } catch (const fl::Exception& e) {
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  }
 }
 
 // ========================================================================
