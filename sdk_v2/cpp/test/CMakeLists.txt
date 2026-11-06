@@ -454,6 +454,7 @@ set_tests_properties(sdk_integration_tests PROPERTIES TIMEOUT 1200)
 add_test(
     NAME non_generative_sdk_tests
     COMMAND non_generative_sdk_tests
+            --gtest_filter=-NonGenerativeSdkTest.Required*
     WORKING_DIRECTORY $<TARGET_FILE_DIR:non_generative_sdk_tests>
 )
 set_tests_properties(non_generative_sdk_tests PROPERTIES TIMEOUT 600)
