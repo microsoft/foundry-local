@@ -11,11 +11,16 @@
 
 #include <chrono>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace fl {
+
+namespace http {
+class ModelHttpTransport;
+}
 
 /// Returns whether a current Semantic Version meets a catalog minimum version.
 /// Invalid versions are incompatible.
@@ -52,7 +57,8 @@ class AzureCatalogClient : public ICatalogClient {
                      const IEpDetector& ep_detector,
                      ILogger& logger,
                      HttpPostResponseFn http_post = {},
-                     http::RetryConfig retry_config = {});
+                     http::RetryConfig retry_config = {},
+                     std::shared_ptr<http::ModelHttpTransport> model_http_transport = nullptr);
 
   /// Fetch every catalog model entry visible to the local hardware (raw form,
   /// before conversion to ModelInfo). One filter set per device, fully paginated.

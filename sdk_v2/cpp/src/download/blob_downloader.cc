@@ -184,8 +184,14 @@ void CommitVerifiedState(BlobDownloadState& state, ILogger& logger) {
 }
 
 /// Uses the same resolved CA bundle as the SDK's other curl transports.
-Azure::Storage::Blobs::BlobClientOptions MakeBlobClientOptions() {
+Azure::Storage::Blobs::BlobClientOptions MakeBlobClientOptions(
+    const std::shared_ptr<Azure::Core::Http::HttpTransport>& transport) {
   Azure::Storage::Blobs::BlobClientOptions options;
+  if (transport) {
+    options.Transport.Transport = transport;
+    return options;
+  }
+
 #if !defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
   // Only override the Storage SDK's default transport when a CA bundle is configured.
   auto curl_options = fl::http::MakeCurlTransportOptions();
@@ -223,11 +229,7 @@ AzureBlobDownloader::AzureBlobDownloader(ILogger& logger, std::shared_ptr<Azure:
 
 std::vector<BlobItemInfo> AzureBlobDownloader::ListBlobs(const std::string& sas_uri) {
   try {
-    auto options = MakeBlobClientOptions();
-    if (transport_) {
-      options.Transport.Transport = transport_;
-    }
-
+    auto options = MakeBlobClientOptions(transport_);
     auto container_client = Azure::Storage::Blobs::BlobContainerClient(sas_uri, options);
     std::vector<BlobItemInfo> items;
 
@@ -344,11 +346,7 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
     // Configure retry at the SDK level instead of a manual retry loop.
     // Exponential backoff: 2s initial delay, 30s cap, generous retry count.
     // MakeBlobClientOptions wires the CA bundle into the transport (see its comment).
-    auto client_options = MakeBlobClientOptions();
-    if (transport_) {
-      client_options.Transport.Transport = transport_;
-    }
-
+    auto client_options = MakeBlobClientOptions(transport_);
     client_options.Retry.MaxRetries = 10;
     client_options.Retry.RetryDelay = std::chrono::milliseconds{2000};
     client_options.Retry.MaxRetryDelay = std::chrono::milliseconds{30000};
@@ -363,6 +361,22 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
     // propagates into every in-flight chunk read.
     auto azure_ctx = Azure::Core::Context{}.WithDeadline(
         Azure::DateTime(std::chrono::system_clock::now() + std::chrono::hours{3}));
+    // Workers cannot observe an external flag while blocked in HEAD, Send, or Read. Azure Context has no callback
+    // registration, so one bounded monitor links that flag for the entire blob, including the initial HEAD.
+    std::jthread cancellation_monitor;
+    if (cancelled) {
+      cancellation_monitor = std::jthread([cancelled, context = azure_ctx](std::stop_token stop) mutable {
+        while (!stop.stop_requested()) {
+          if (cancelled->load(std::memory_order_relaxed)) {
+            context.Cancel();
+            return;
+          }
+
+          std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+      });
+    }
+
     // Internal cancel flag flipped by the orchestrator on first chunk failure
     // or by external cancellation; checked by workers between iterations.
     std::atomic<bool> internal_cancel{false};

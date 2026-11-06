@@ -60,12 +60,13 @@
  * Incremented with each release.
  * Used to request the API function table via FoundryLocalGetApi.
  * ----------------------------------------------------------------------- */
-#define FOUNDRY_LOCAL_API_VERSION 3
+#define FOUNDRY_LOCAL_API_VERSION 4
 
 // Payload schemas evolve independently of the function-table ABI.
 #define FOUNDRY_LOCAL_DATA_VERSION 2
 #define FOUNDRY_LOCAL_TOOL_DEFINITION_VERSION 2
 #define FOUNDRY_LOCAL_REQUEST_PREFLIGHT_RESULT_VERSION 2
+#define FOUNDRY_LOCAL_HTTP_TRANSPORT_VERSION 1
 
 /* -----------------------------------------------------------------------
  * Platform export macros (C version)
@@ -373,6 +374,75 @@ typedef enum flToolChoice {
   FOUNDRY_LOCAL_TOOL_CHOICE_NONE = 1,      ///< Model must not call a tool; respond with text only.
   FOUNDRY_LOCAL_TOOL_CHOICE_REQUIRED = 2,  ///< Model must call a tool.
 } flToolChoice;
+
+/// A borrowed HTTP header. name and value are required, null-terminated HTTP field strings, not necessarily UTF-8.
+typedef struct flHttpHeader {
+  const char* name;
+  const char* value;
+} flHttpHeader;
+
+/// One HTTP request. The SDK keeps this structure and all referenced storage valid through ReleaseOperation.
+typedef struct flHttpRequestData {
+  uint32_t version;             ///< FOUNDRY_LOCAL_HTTP_TRANSPORT_VERSION.
+  const char* method;           ///< Required, null-terminated HTTP method.
+  const char* url;              ///< Required, null-terminated UTF-8 URL.
+  const flHttpHeader* headers;  ///< May be null only when header_count is zero.
+  size_t header_count;
+  const uint8_t* body;  ///< May be null only when body_size is zero.
+  size_t body_size;
+  /// Total timeout budget in milliseconds for Send and subsequent Reads, starting at Send; zero means no deadline.
+  /// The transport must enforce this budget across calls, not restart it for each Read.
+  uint64_t timeout_ms;
+} flHttpRequestData;
+
+/// Response status and headers only; the body is obtained with Read.
+typedef struct flHttpResponseData {
+  uint32_t version;  ///< Initialized by the SDK to FOUNDRY_LOCAL_HTTP_TRANSPORT_VERSION before Send.
+  uint32_t status_code;
+  const flHttpHeader* headers;  ///< May be null only when header_count is zero.
+  size_t header_count;
+} flHttpResponseData;
+
+/// Synchronous, streaming HTTP transport for model HTTP requests. All callbacks are required and must not throw.
+/// Callbacks may run on SDK worker threads; distinct operations may run concurrently. user_data may be null.
+/// The SDK copies this table and retains its context. Retain/Release must be thread-safe and balanced; callback code
+/// and user_data must remain valid until the final Release, after all operations have been released.
+/// Each operation performs exactly one request: callbacks must not retry, follow redirects, or decompress responses.
+/// The SDK's callers own HTTP policy; this contract does not grant automatic redirect or content-decoding support.
+/// Fallible callbacks return null on success. On failure, return an owned flStatus created by Status_Create from the
+/// same SDK instance; ownership transfers to the SDK, which releases it. HTTP error status codes are not callback
+/// failures: Send succeeds with the received status_code. Use error statuses for transport failures or cancellation.
+typedef struct flHttpTransport {
+  uint32_t version;  ///< Set to FOUNDRY_LOCAL_HTTP_TRANSPORT_VERSION.
+  void* user_data;
+
+  void FL_API_T(Retain, _In_opt_ void* user_data);
+  void FL_API_T(Release, _In_opt_ void* user_data);
+
+  /// Create local operation state only: no network I/O and no blocking on network activity.
+  /// On success, return a non-null operation owned by the SDK until ReleaseOperation; on failure, leave it null.
+  FL_API_STATUS(CreateOperation, _In_opt_ void* user_data, _In_ const flHttpRequestData* request,
+                _Outptr_ void** out_operation);
+
+  /// Send the request and return once response status and headers are available; do not buffer the entire body.
+  /// Response header arrays and strings remain valid until ReleaseOperation. The SDK copies them after Send.
+  FL_API_STATUS(Send, _In_ void* operation, _Inout_ flHttpResponseData* response);
+
+  /// Read at most buffer_size bytes into buffer and set out_bytes_read (never greater than buffer_size).
+  /// The SDK supplies a non-null buffer and positive buffer_size. A successful zero-byte read means permanent EOF,
+  /// not "try again"; successful short reads are allowed. Read is called only after Send succeeds.
+  /// Send and Read are serialized for each operation.
+  FL_API_STATUS(Read, _In_ void* operation, _Out_writes_(buffer_size) uint8_t* buffer, _In_ size_t buffer_size,
+                _Out_ size_t* out_bytes_read);
+
+  /// Thread-safe, non-blocking, idempotent and sticky: may race Send/Read or precede Send. Interrupt pending I/O;
+  /// subsequent Send/Read calls must fail with FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, even without pending I/O.
+  void FL_API_T(Cancel, _In_ void* operation);
+
+  /// Release operation state exactly once, including after cancellation or Send/Read failure.
+  /// The SDK waits for Send, Read and Cancel to finish before calling this; no callbacks race on the same operation.
+  void FL_API_T(ReleaseOperation, _Frees_ptr_opt_ void* operation);
+} flHttpTransport;
 
 /// Token usage statistics returned with a completed response.
 typedef struct flUsage {
@@ -1048,6 +1118,15 @@ struct flConfigurationApi {
   FL_API_STATUS(SetUseSharedHost, _In_ flConfiguration* config, _In_ bool enabled);
 
   // End V3
+
+  /// Optional. Override model HTTP transport; pass null to restore the default transport. Requires API version 4.
+  /// Validates version and all callbacks, copies the table, and retains user_data before returning success.
+  /// The caller may then discard the table itself. Replacement/clearing releases the configuration's previous context.
+  /// Managers retain their own transport snapshot: this setter does not change any already-created manager.
+  /// Validation failure leaves the existing configuration unchanged. Request/response lifetimes are in flHttpTransport.
+  FL_API_STATUS(SetModelHttpTransport, _In_ flConfiguration* config, _In_opt_ const flHttpTransport* transport);
+
+  // End V4
 };
 
 /* --- Catalog API ------------------------------------------------------- */

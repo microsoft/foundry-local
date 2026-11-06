@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "catalog/azure_catalog_client.h"
+#include "http/model_http_transport.h"
 
 #include "http/http_client.h"
 #include "util/region_fallback.h"
@@ -243,7 +244,8 @@ AzureCatalogClient::AzureCatalogClient(const std::string& base_url,
                                        const IEpDetector& ep_detector,
                                        ILogger& logger,
                                        HttpPostResponseFn http_post,
-                                       http::RetryConfig retry_config)
+                                       http::RetryConfig retry_config,
+                                       std::shared_ptr<http::ModelHttpTransport> model_http_transport)
     : base_url_(base_url),
       ep_detector_(ep_detector),
       logger_(logger),
@@ -253,11 +255,13 @@ AzureCatalogClient::AzureCatalogClient(const std::string& base_url,
   model_filter_ = std::move(parsed_filter.values);
   uses_legacy_foundry_local_filter_ = parsed_filter.uses_legacy_foundry_local_filter;
   if (!http_post_response_) {
-    http_post_response_ = [](const std::string& url, const std::string& body) {
+    http_post_response_ = [transport = std::move(model_http_transport)](
+                              const std::string& url, const std::string& body) {
       http::HttpRequestOptions options;
       options.user_agent = kUserAgent;
       options.headers["x-ms-use-full-service-contracts"] = "true";
-      return http::HttpPostWithResponse(url, body, options);
+      return transport ? transport->Request("POST", url, body, options)
+                       : http::HttpPostWithResponse(url, body, options);
     };
   }
 }

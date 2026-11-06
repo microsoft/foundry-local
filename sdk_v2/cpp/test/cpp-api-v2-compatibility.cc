@@ -79,6 +79,17 @@ int main() {
       if (!rejected || configurations_created != 1 || options_applied != 1) {
         throw std::runtime_error("v2 configuration failed or the v3-only setting did not fail explicitly");
       }
+
+      rejected = false;
+      try {
+        config.SetModelHttpTransport(nullptr);
+      } catch (const foundry_local::Error& error) {
+        rejected = error.Code() == FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED;
+      }
+
+      if (!rejected) {
+        throw std::runtime_error("v2 runtime must reject the v4-only transport setter without reading its table tail");
+      }
     }
 
     if (configurations_released != 1) {
