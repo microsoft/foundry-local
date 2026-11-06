@@ -5,6 +5,7 @@
 #include "inferencing/model_load_manager.h"
 #include "inferencing/predictive/non_generative_runtime.h"
 #include "inferencing/predictive/non_generative_session.h"
+#include "inferencing/predictive/session_executor.h"
 #include "internal_api/test_helpers.h"
 #include "items/text_item.h"
 #include "model.h"
@@ -61,6 +62,96 @@ class ModelLoadManagerTestAccess {
 };
 
 namespace {
+
+struct FakeExecutorSession {};
+
+TEST(PredictiveSessionExecutorTest, QueuedCancellationSkipsWork) {
+  detail::SessionExecutor<FakeExecutorSession> executor(
+      [] { return std::make_unique<FakeExecutorSession>(); });
+  std::promise<void> entered;
+  std::promise<void> release;
+  auto release_future = release.get_future().share();
+  auto blocking = std::async(std::launch::async, [&] {
+    executor.Invoke([&](FakeExecutorSession&) {
+      entered.set_value();
+      release_future.wait();
+    });
+  });
+  entered.get_future().wait();
+
+  std::atomic<bool> canceled{};
+  std::atomic<bool> invoked{};
+  auto queued = std::async(std::launch::async, [&] {
+    EXPECT_THROW(
+        executor.Invoke(
+            [&](FakeExecutorSession&) { invoked = true; },
+            [&] { return canceled.load(); }),
+        std::runtime_error);
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  canceled = true;
+  queued.get();
+  EXPECT_FALSE(invoked.load());
+
+  release.set_value();
+  blocking.get();
+  executor.Invoke([&](FakeExecutorSession&) { EXPECT_FALSE(invoked.load()); });
+}
+
+TEST(PredictiveSessionExecutorTest, CancellationAfterExecutionWaitsForWork) {
+  detail::SessionExecutor<FakeExecutorSession> executor(
+      [] { return std::make_unique<FakeExecutorSession>(); });
+  std::promise<void> entered;
+  std::promise<void> release;
+  auto release_future = release.get_future().share();
+  std::atomic<bool> canceled{};
+  auto running = std::async(std::launch::async, [&] {
+    executor.Invoke(
+        [&](FakeExecutorSession&) {
+          entered.set_value();
+          release_future.wait();
+        },
+        [&] { return canceled.load(); });
+  });
+  entered.get_future().wait();
+  canceled = true;
+  EXPECT_EQ(running.wait_for(std::chrono::milliseconds(20)),
+            std::future_status::timeout);
+  release.set_value();
+  EXPECT_EQ(running.wait_for(std::chrono::seconds(1)),
+            std::future_status::ready);
+}
+
+TEST(PredictiveSessionExecutorTest, RejectsBeyondQueueCapacity) {
+  detail::SessionExecutor<FakeExecutorSession> executor(
+      [] { return std::make_unique<FakeExecutorSession>(); });
+  std::promise<void> entered;
+  std::promise<void> release;
+  auto release_future = release.get_future().share();
+  auto blocking = std::async(std::launch::async, [&] {
+    executor.Invoke([&](FakeExecutorSession&) {
+      entered.set_value();
+      release_future.wait();
+    });
+  });
+  entered.get_future().wait();
+
+  std::vector<std::future<void>> queued;
+  queued.reserve(detail::kMaximumQueuedPredictiveRequests);
+  for (size_t index = 0;
+       index < detail::kMaximumQueuedPredictiveRequests; ++index) {
+    queued.push_back(std::async(std::launch::async, [&] {
+      executor.Invoke([](FakeExecutorSession&) {});
+    }));
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  EXPECT_THROW(executor.Invoke([](FakeExecutorSession&) {}),
+               RuntimeCapacityError);
+
+  release.set_value();
+  blocking.get();
+  for (auto& request : queued) request.get();
+}
 
 void WriteRankingBundle(const std::filesystem::path& path,
                         const std::string& model_id) {
