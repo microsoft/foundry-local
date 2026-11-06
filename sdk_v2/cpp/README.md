@@ -760,6 +760,31 @@ Some integration tests require cached test models. Set `FOUNDRY_TEST_DATA_DIR` t
 shared test-model cache directory before running them. Tests that cannot use the cache
 are skipped rather than downloading multi-gigabyte assets.
 
+### Retained-prefix regression tests
+
+`DynamicEngineChatTest` uses the checked-in `tiny-paged-attention` CPU model, without
+model downloads or a GPU. It exercises Foundry's `ChatSession` and Engine stream paths:
+an exact retained prefix submits only the unmatched suffix, while edited or
+reordered retained history, including changes that preserve token count, replaces the
+resident conversation and submits the full prompt. Warm results are compared with
+fresh replay. GenAI's shared prefix-block cache can independently reuse valid
+blocks; its cached-token metric does not measure retained-session KV reuse.
+
+After building, run the focused cases directly (macOS Release example):
+
+```bash
+./build/macOS/Release/bin/foundry_local_tests \
+  --gtest_filter='DynamicEngineChatTest.Retained*:DynamicEngineChatTest.MismatchedResidentPrompt*:DynamicEngineChatTest.SameLengthEditedOrReorderedHistory*'
+```
+
+For local runtime qualification, configure with both `--ort_home` and
+`--ort_genai_home` as described above, using headers and libraries from the intended
+matching builds. The GenAI override expects `src/` and its platform/configuration
+build directory under that root; a staging root with symlinks can expose an
+out-of-tree build without copying libraries. These CPU checks do not qualify WebGPU
+kernels, published packages, or a coding model. Those require separate SDK-path runs
+with the matching ORT core, GenAI library, WebGPU provider, and registered model.
+
 ## Project Layout
 
 ```text

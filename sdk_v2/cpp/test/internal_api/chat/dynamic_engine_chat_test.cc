@@ -745,6 +745,54 @@ TEST_F(DynamicEngineChatTest, MismatchedResidentPromptIsReplacedAndMatchesFreshR
   EXPECT_EQ(warm_second.usage.generated_tokens, fresh_second.usage.generated_tokens);
 }
 
+TEST_F(DynamicEngineChatTest, SameLengthEditedOrReorderedHistoryReplacesResidentState) {
+  SearchOptions options;
+  options.max_output_tokens = 4;
+  options.do_sample = false;
+  ToolCallContext tool_context;
+  const std::vector<TranscriptMessage> first_messages = {
+      {FOUNDRY_LOCAL_ROLE_USER, "File alpha: return 1."},
+      {FOUNDRY_LOCAL_ROLE_ASSISTANT, "Alpha noted."},
+      {FOUNDRY_LOCAL_ROLE_USER, "File beta: return 2."},
+      {FOUNDRY_LOCAL_ROLE_ASSISTANT, "Beta noted."},
+      {FOUNDRY_LOCAL_ROLE_USER, "Summarize these files."}};
+
+  for (const bool reorder : {false, true}) {
+    SCOPED_TRACE(reorder ? "reordered context" : "edited context");
+    auto warm = OnnxEngineChatStream::Create(first_messages, options, ModelInstance(), tool_context);
+    const auto first = FinishStream(*warm);
+    ASSERT_EQ(first.text, ReferenceText(EncodeMessages(first_messages, ModelInstance()), 4));
+
+    auto full_history = first_messages;
+    full_history.emplace_back(FOUNDRY_LOCAL_ROLE_ASSISTANT, first.text);
+    full_history.emplace_back(FOUNDRY_LOCAL_ROLE_USER, "Describe the changed files.");
+    const auto unchanged_prompt = EncodeMessages(full_history, ModelInstance());
+    if (reorder) {
+      std::swap(full_history[0], full_history[2]);
+      std::swap(full_history[1], full_history[3]);
+    } else {
+      full_history[0] = TranscriptMessage(FOUNDRY_LOCAL_ROLE_USER, "File alpha: return 3.");
+    }
+
+    const auto full_prompt = EncodeMessages(full_history, ModelInstance());
+    ASSERT_EQ(full_prompt.size(), unchanged_prompt.size());
+    ASSERT_NE(full_prompt, unchanged_prompt);
+    const auto submitted =
+        warm->AppendMessages({full_history.back()}, full_history, ModelInstance(), tool_context, options);
+    EXPECT_EQ(submitted, static_cast<int>(full_prompt.size()));
+    const auto output = FinishStream(*warm);
+
+    auto fresh = OnnxEngineChatStream::Create(full_history, options, ModelInstance(), tool_context);
+    const auto replay = FinishStream(*fresh);
+    EXPECT_EQ(output.text, ReferenceText(full_prompt, 4));
+    EXPECT_EQ(output.text, replay.text);
+    EXPECT_EQ(output.usage.prompt_tokens, full_prompt.size());
+    EXPECT_EQ(output.usage.prompt_tokens, replay.usage.prompt_tokens);
+    EXPECT_EQ(output.usage.generated_tokens, replay.usage.generated_tokens);
+    EXPECT_EQ(output.usage.finish_reason, replay.usage.finish_reason);
+  }
+}
+
 TEST_F(DynamicEngineChatTest, RunsTwoConcurrentSessions) {
   const std::string first_prompt = "History A must remain isolated across pages.";
   const std::string second_prompt = "History B must remain isolated across pages.";
