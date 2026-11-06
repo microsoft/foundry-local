@@ -1,6 +1,6 @@
 // Streaming tests for Session.stream / ChatSession.stream.
 // Gated by FOUNDRY_TEST_DATA_DIR (real model required).
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { FlErrorCode, isFoundryLocalError } from "../src/detail/errors.js";
 import type { NativeChatSession } from "../src/detail/native.js";
@@ -75,7 +75,7 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
   let session: ChatSession | undefined;
 
   beforeAll(async () => {
-    fixture = await setupRealModelManager();
+    fixture = await setupRealModelManager({ namePreference: "qwen2.5-0.5b-instruct-generic-cpu:4" });
   }, 5 * 60_000);
 
   afterAll(() => {
@@ -326,6 +326,57 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
         release();
       }
       await expect(active).resolves.toMatchObject({ output: expect.any(Array) });
+    },
+    3 * 60_000,
+  );
+
+  it.each([false, true])(
+    "rejects shared-Request contenders before their signals can cancel the owner (streaming=%s)",
+    async (streaming) => {
+      if (session === undefined || fixture === undefined) throw new Error("fixture missing");
+      const owner = session;
+      const contender = new ChatSession(fixture.model);
+      const native = (owner as unknown as { native: NativeChatSession }).native;
+      const process = native.processRequest.bind(native);
+      let workerStarted!: (release: () => void) => void;
+      const started = new Promise<() => void>((resolve) => {
+        workerStarted = resolve;
+      });
+      const submission = vi.spyOn(native, "processRequest").mockImplementationOnce((request) => {
+        return process(request, workerStarted);
+      });
+      const request = buildPrompt().setOptions({ search: { maxOutputTokens: 4, temperature: 0 } });
+      const cancel = vi.spyOn(request, "cancel");
+      const active = owner.processRequest(request);
+      const release = await started;
+      try {
+        const controller = new AbortController();
+        const listener = vi.spyOn(controller.signal, "addEventListener");
+        if (streaming) {
+          expect(() => contender.processStreamingRequest(request, { signal: controller.signal })).toThrow(
+            /already being processed/,
+          );
+        } else {
+          await expect(contender.processRequest(request, { signal: controller.signal })).rejects.toMatchObject({
+            code: FlErrorCode.InvalidUsage,
+          });
+        }
+        controller.abort();
+        expect(listener).not.toHaveBeenCalled();
+        expect(cancel).not.toHaveBeenCalled();
+        release();
+        await expect(active).resolves.toMatchObject({ output: expect.any(Array) });
+        expect(owner.turnCount).toBe(1);
+        expect(contender.turnCount).toBe(0);
+        await expect(contender.processRequest(request)).resolves.toMatchObject({ output: expect.any(Array) });
+        expect(contender.turnCount).toBe(1);
+      } finally {
+        release();
+        await active.catch(() => {});
+        submission.mockRestore();
+        cancel.mockRestore();
+        contender.dispose();
+      }
     },
     3 * 60_000,
   );

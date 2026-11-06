@@ -6,6 +6,7 @@
 #include "contracts/tool_definitions.h"
 #include "inferencing/generative/chat/search_options.h"
 #include "inferencing/generative/chat/stop_strings.h"
+#include "items/image_item.h"
 #include "items/message_item.h"
 #include "items/text_item.h"
 #include "items/tool_call_item.h"
@@ -153,8 +154,15 @@ std::string MapFinishReason(flFinishReason reason) {
 void BuildRequestItems(const ChatCompletionRequest& req, Request& session_request) {
   for (const auto& msg : req.messages) {
     auto role = Utils::StringToRole(msg.role);
+    const bool has_images = std::any_of(msg.content_parts.begin(), msg.content_parts.end(), [](const auto& part) {
+      return part.kind == ChatCompletionContentPart::Kind::kImageUrl;
+    });
 
     if (role == FOUNDRY_LOCAL_ROLE_TOOL) {
+      if (has_images) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "image_url content is not supported in tool messages");
+      }
+
       // A tool result may legitimately be an empty string; the call ID is what correlates it with its call.
       session_request.AddOwnedItem(
           std::make_unique<ToolResultItem>(msg.tool_call_id.value_or(""), msg.content.value_or("")));
@@ -163,7 +171,7 @@ void BuildRequestItems(const ChatCompletionRequest& req, Request& session_reques
 
     const std::string content = msg.content.value_or("");
     const std::string reasoning = msg.reasoning_content.value_or("");
-    if (!content.empty() || (role == FOUNDRY_LOCAL_ROLE_ASSISTANT && !reasoning.empty())) {
+    if (!content.empty() || has_images || (role == FOUNDRY_LOCAL_ROLE_ASSISTANT && !reasoning.empty())) {
       auto message = std::make_unique<MessageItem>();
       message->role = role;
       message->name = msg.name.value_or("");
@@ -171,9 +179,31 @@ void BuildRequestItems(const ChatCompletionRequest& req, Request& session_reques
         message->content.push_back(
             MessagePart::Own(std::make_unique<TextItem>(reasoning, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING)));
       }
-      if (!content.empty()) {
+      if (!has_images && !content.empty()) {
         message->content.push_back(MessagePart::Own(std::make_unique<TextItem>(content)));
       }
+
+      if (has_images) {
+        for (const auto& part : msg.content_parts) {
+          if (part.kind == ChatCompletionContentPart::Kind::kText) {
+            if (!part.value.empty()) {
+              message->content.push_back(MessagePart::Own(std::make_unique<TextItem>(part.value)));
+            }
+          } else {
+            if (!part.value.starts_with("data:")) {
+              FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                       "image_url must be a data: URL; remote http(s) URLs are not supported");
+            }
+
+            message->content.push_back(MessagePart::Own(ImageItem::FromDataUrl(part.value)));
+          }
+        }
+      }
+
+      if (content.empty() && has_images) {
+        message->content.push_back(MessagePart::Own(std::make_unique<TextItem>(" ")));
+      }
+
       session_request.AddOwnedItem(std::move(message));
     }
 

@@ -5,7 +5,7 @@ import { Item, type Item as ItemT, type TextItem } from "../items.js";
 import type { Model } from "../model.js";
 import { Request } from "../request.js";
 import type { Response } from "../response.js";
-import { EmbeddingsSession } from "../session.js";
+import { EmbeddingsSession, type StreamOptions } from "../session.js";
 
 // biome-ignore lint/suspicious/noExplicitAny: OpenAI request/response objects are user-shaped JSON.
 type Json = any;
@@ -45,15 +45,15 @@ export class EmbeddingClient {
   }
 
   /** Generate an embedding for a single input. */
-  async generateEmbedding(input: string): Promise<Json> {
+  async generateEmbedding(input: string, options?: StreamOptions): Promise<Json> {
     if (typeof input !== "string" || input.length === 0) {
       throw new Error("Embedding input must be a non-empty string.");
     }
-    return this.#dispatch(input);
+    return this.#dispatch(input, options);
   }
 
   /** Generate embeddings for an array of inputs (batch). */
-  async generateEmbeddings(inputs: string[]): Promise<Json> {
+  async generateEmbeddings(inputs: string[], options?: StreamOptions): Promise<Json> {
     if (!inputs || !Array.isArray(inputs) || inputs.length === 0) {
       throw new Error("Embedding inputs must be a non-empty array of strings.");
     }
@@ -62,23 +62,22 @@ export class EmbeddingClient {
         throw new Error("Every embedding input must be a non-empty string.");
       }
     }
-    return this.#dispatch(inputs);
+    return this.#dispatch(inputs, options);
   }
 
-  async #dispatch(input: string | string[]): Promise<Json> {
+  async #dispatch(input: string | string[], options?: StreamOptions): Promise<Json> {
     if (this.#disposed) {
       throw new Error("EmbeddingClient: already disposed");
     }
     const request = new Request();
-    request.addItem(
-      Item.text(JSON.stringify({ model: this.modelId, input }), "openai-json"),
-    );
+    request.addItem(Item.text(JSON.stringify({ model: this.modelId, input }), "openai-json"));
 
     const session = new EmbeddingsSession(this.#model);
     let response: Response;
     try {
-      response = await session.processRequest(request);
+      response = await session.processRequest(request, options);
     } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") throw err;
       throw new Error(
         `Embedding generation failed for model '${this.modelId}': ${err instanceof Error ? err.message : String(err)}`,
         { cause: err },
@@ -89,9 +88,7 @@ export class EmbeddingClient {
 
     const text = findOpenAiJsonText(response.output);
     if (text === undefined) {
-      throw new Error(
-        `Embedding generation for model '${this.modelId}' returned no openai-json text item.`,
-      );
+      throw new Error(`Embedding generation for model '${this.modelId}' returned no openai-json text item.`);
     }
     return JSON.parse(text);
   }

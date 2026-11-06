@@ -18,12 +18,65 @@
 #include "model_fixture.h"
 #include "web_service_fixture.h"
 
+#include <regex>
+#include <sstream>
+#include <string>
+#include <utility>
+
 namespace {
 
 // 1x1 transparent PNG. Smallest valid PNG payload — enough to exercise the
 // base64-decode + ProcessImages path without bloating the test data dir.
 constexpr const char* kTinyPngBase64 =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkAAIAAAoAAv/lxKUAAAAASUVORK5CYII=";
+
+constexpr const char* kRedPngBase64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAb0lEQVR4nO3PAQkAAAyEwO9feoshgnABdLep8QUNyPEFDcjxBQ3I"
+    "8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3IPanc"
+    "8OLDQitxAAAAAElFTkSuQmCC";
+constexpr const char* kBluePngBase64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAb0lEQVR4nO3PAQkAAAyEwO9feoshgnABdNvJ8QUNyPEFDcjxBQ3I"
+    "8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ2oPcf8"
+    "8OIhvJ6vAAAAAElFTkSuQmCC";
+
+json ChatImageContent(const char* png) {
+  return json::array({{{"type", "image_url"},
+                       {"image_url", {{"url", std::string("data:image/png;base64,") + png}}}}});
+}
+
+std::string ReadChatStream(const std::string& body) {
+  std::string text;
+  bool done = false;
+  bool has_usage = false;
+  std::istringstream stream(body);
+  std::string line;
+  while (std::getline(stream, line)) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    if (line.rfind("data: ", 0) != 0) {
+      continue;
+    }
+    if (line.substr(6) == "[DONE]") {
+      done = true;
+      break;
+    }
+
+    const auto chunk = json::parse(line.substr(6));
+    EXPECT_FALSE(chunk.contains("error")) << chunk.dump(2);
+    for (const auto& choice : chunk.value("choices", json::array())) {
+      text += choice["delta"].value("content", "");
+    }
+    if (chunk.contains("usage")) {
+      has_usage = true;
+      EXPECT_GT(chunk["usage"]["prompt_tokens"].get<int>(), 0);
+    }
+  }
+
+  EXPECT_TRUE(done) << body;
+  EXPECT_TRUE(has_usage) << body;
+  return text;
+}
 
 }  // namespace
 
@@ -39,6 +92,9 @@ class ResponsesVisionIntegrationTest : public WebServiceFixture {
 
   void SetUp() override {
     auto& env = SharedTestEnv::Get();
+    if (!fl::test::SafeGetEnv("FOUNDRY_LOCAL_VISION_TEST_MODEL_PATH").empty()) {
+      ASSERT_NE(env.vision_model(), nullptr) << "The explicitly supplied cached vision model must load";
+    }
     if (!env.vision_model()) {
       GTEST_SKIP() << "No vision-language-chat model available";
     }
@@ -46,6 +102,10 @@ class ResponsesVisionIntegrationTest : public WebServiceFixture {
 
   static const std::string& vision_model_id() {
     return SharedTestEnv::Get().vision_model_id();
+  }
+
+  static std::string VisionEndpoint(const char* path) {
+    return SharedTestEnv::Get().vision_endpoint(path);
   }
 };
 
@@ -75,7 +135,7 @@ TEST_F(ResponsesVisionIntegrationTest, DataUrlImageProducesOutput) {
       {"store", false},
   };
 
-  auto result = client.Post("/v1/responses", request_body.dump(), "application/json");
+  auto result = client.Post(VisionEndpoint("/v1/responses"), request_body.dump(), "application/json");
   ASSERT_TRUE(result) << "HTTP request failed: " << httplib::to_string(result.error());
   ASSERT_EQ(result->status, 200) << result->body;
 
@@ -94,6 +154,118 @@ TEST_F(ResponsesVisionIntegrationTest, DataUrlImageProducesOutput) {
   ASSERT_TRUE(response.contains("usage"));
   EXPECT_GT(response["usage"]["input_tokens"].get<int>(), 0);
   EXPECT_GT(response["usage"]["output_tokens"].get<int>(), 0);
+}
+
+TEST_F(ResponsesVisionIntegrationTest, ChatCompletionsUsesImageColorIncludingStreaming) {
+  auto client = MakeClient(600);
+  for (const bool streaming : {false, true}) {
+    for (const auto& [png, color] : {std::pair{kRedPngBase64, "red"}, std::pair{kBluePngBase64, "blue"}}) {
+      SCOPED_TRACE(std::string(color) + (streaming ? " streaming" : " nonstreaming"));
+      auto content = ChatImageContent(png);
+      content.insert(content.begin(),
+                     json{{"type", "text"}, {"text", "What color is this image? Answer with one word."}});
+      const json body = {
+          {"model", vision_model_id()},
+          {"messages", json::array({{{"role", "user"}, {"content", content}}})},
+          {"max_completion_tokens", 32},
+          {"temperature", 0},
+          {"stream", streaming},
+          {"stream_options", {{"include_usage", true}}},
+      };
+      const auto result = client.Post(VisionEndpoint("/v1/chat/completions"), body.dump(), "application/json");
+      ASSERT_TRUE(result) << httplib::to_string(result.error());
+      ASSERT_EQ(result->status, 200) << result->body;
+      const auto text = streaming ? ReadChatStream(result->body)
+                                  : json::parse(result->body)["choices"][0]["message"]["content"].get<std::string>();
+      const auto normalized = fl::test::ToLower(text);
+      EXPECT_TRUE(std::regex_search(normalized, std::regex("\\b" + std::string(color) + "\\b"))) << text;
+      const auto other_color = std::string(color) == "red" ? "blue" : "red";
+      EXPECT_FALSE(std::regex_search(normalized, std::regex("\\b" + std::string(other_color) + "\\b"))) << text;
+    }
+  }
+}
+
+TEST_F(ResponsesVisionIntegrationTest, ChatCompletionsImageOnlyProducesOutput) {
+  auto client = MakeClient(600);
+  const json body = {
+      {"model", vision_model_id()},
+      {"messages", json::array({{{"role", "user"}, {"content", ChatImageContent(kTinyPngBase64)}}})},
+      {"max_completion_tokens", 32},
+      {"temperature", 0},
+  };
+  const auto result = client.Post(VisionEndpoint("/v1/chat/completions"), body.dump(), "application/json");
+  ASSERT_TRUE(result) << httplib::to_string(result.error());
+  ASSERT_EQ(result->status, 200) << result->body;
+  const auto response = json::parse(result->body);
+  EXPECT_EQ(response["object"], "chat.completion");
+  EXPECT_FALSE(response["choices"][0]["message"]["content"].get<std::string>().empty()) << response.dump(2);
+  EXPECT_GT(response["usage"]["prompt_tokens"].get<int>(), 0);
+  EXPECT_GT(response["usage"]["completion_tokens"].get<int>(), 0);
+}
+
+TEST_F(ResponsesVisionIntegrationTest, ChatCompletionsImageOnlyStreamsOutput) {
+  auto client = MakeClient(600);
+  const json body = {
+      {"model", vision_model_id()},
+      {"messages",
+       json::array(
+           {{{"role", "user"},
+             {"content",
+              json::array({{{"type", "image_url"},
+                            {"image_url", {{"url", std::string("data:image/png;base64,") + kTinyPngBase64}}}}})}}})},
+      {"max_completion_tokens", 32},
+      {"temperature", 0},
+      {"stream", true},
+      {"stream_options", {{"include_usage", true}}},
+  };
+  const auto result = client.Post(VisionEndpoint("/v1/chat/completions"), body.dump(), "application/json");
+  ASSERT_TRUE(result) << httplib::to_string(result.error());
+  ASSERT_EQ(result->status, 200) << result->body;
+
+  EXPECT_FALSE(ReadChatStream(result->body).empty()) << result->body;
+}
+
+TEST_F(ResponsesVisionIntegrationTest, ChatJsonImageOnlyPreflightMatchesExecutionBudget) {
+  using namespace foundry_local;
+  for (const bool explicit_limit : {false, true}) {
+    SCOPED_TRACE(explicit_limit ? "explicit output limit" : "default media output limit");
+    ChatSession session(*SharedTestEnv::Get().vision_model());
+    json body = {
+        {"model", vision_model_id()},
+        {"messages", json::array({{{"role", "user"}, {"content", ChatImageContent(kTinyPngBase64)}}})},
+        {"temperature", 0},
+    };
+    if (explicit_limit) {
+      body["max_completion_tokens"] = 8;
+    }
+
+    Request request;
+    request.AddItem(Item::Text(body.dump(), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+    const auto budget = session.PreflightRequest(request);
+    ASSERT_TRUE(budget.fits);
+    ASSERT_GT(budget.prompt_tokens, 0);
+    EXPECT_EQ(budget.output_reserve_tokens, explicit_limit ? 8 : 3072);
+    const auto response = session.ProcessRequest(request);
+    const auto usage = response.GetUsage();
+    EXPECT_EQ(usage.prompt_tokens, budget.prompt_tokens);
+    EXPECT_GT(usage.completion_tokens, 0);
+    EXPECT_LE(usage.completion_tokens, budget.output_reserve_tokens);
+
+    body["max_completion_tokens"] = budget.context_limit_tokens - budget.prompt_tokens + 1;
+    Request oversized;
+    oversized.AddItem(Item::Text(body.dump(), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+    const auto rejected = session.PreflightRequest(oversized);
+    EXPECT_EQ(rejected.prompt_tokens, budget.prompt_tokens);
+    EXPECT_EQ(rejected.required_tokens, budget.context_limit_tokens + 1);
+    EXPECT_EQ(rejected.deficit_tokens, 1);
+    EXPECT_FALSE(rejected.fits);
+    try {
+      (void)session.ProcessRequest(oversized);
+      FAIL() << "Expected the image prompt plus output reserve to exceed the context limit";
+    } catch (const Error& error) {
+      EXPECT_EQ(error.Code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT) << error.what();
+    }
+  }
 }
 
 TEST_F(ResponsesVisionIntegrationTest, ImageOnlyMessageProducesOutput) {
@@ -115,7 +287,7 @@ TEST_F(ResponsesVisionIntegrationTest, ImageOnlyMessageProducesOutput) {
       {"store", false},
   };
 
-  auto result = client.Post("/v1/responses", request_body.dump(), "application/json");
+  auto result = client.Post(VisionEndpoint("/v1/responses"), request_body.dump(), "application/json");
   ASSERT_TRUE(result) << "HTTP request failed: " << httplib::to_string(result.error());
   ASSERT_EQ(result->status, 200) << result->body;
 
@@ -146,7 +318,7 @@ TEST_F(ResponsesVisionIntegrationTest, ImageDataProducesOutput) {
       {"store", false},
   };
 
-  auto result = client.Post("/v1/responses", request_body.dump(), "application/json");
+  auto result = client.Post(VisionEndpoint("/v1/responses"), request_body.dump(), "application/json");
   ASSERT_TRUE(result) << "HTTP request failed: " << httplib::to_string(result.error());
   ASSERT_EQ(result->status, 200) << result->body;
 
@@ -177,7 +349,7 @@ TEST_F(ResponsesVisionIntegrationTest, RemoteHttpUrlIsRejected) {
       {"store", false},
   };
 
-  auto result = client.Post("/v1/responses", request_body.dump(), "application/json");
+  auto result = client.Post(VisionEndpoint("/v1/responses"), request_body.dump(), "application/json");
   ASSERT_TRUE(result) << "HTTP request failed: " << httplib::to_string(result.error());
   // The converter throws NOT_IMPLEMENTED → service maps that to a 4xx/5xx,
   // not a 200. Exact code is the handler's choice; the contract is "not 200".
@@ -210,7 +382,7 @@ TEST_F(ResponsesVisionIntegrationTest, TwoImagesProduceOutput) {
       {"store", false},
   };
 
-  auto result = client.Post("/v1/responses", request_body.dump(), "application/json");
+  auto result = client.Post(VisionEndpoint("/v1/responses"), request_body.dump(), "application/json");
   ASSERT_TRUE(result) << "HTTP request failed: " << httplib::to_string(result.error());
   ASSERT_EQ(result->status, 200) << result->body;
 
@@ -255,7 +427,7 @@ TEST_F(ResponsesVisionIntegrationTest, ImageWithDeclaredToolsIsRejected) {
       {"store", false},
   };
 
-  auto result = client.Post("/v1/responses", request_body.dump(), "application/json");
+  auto result = client.Post(VisionEndpoint("/v1/responses"), request_body.dump(), "application/json");
   ASSERT_TRUE(result) << "HTTP request failed: " << httplib::to_string(result.error());
   EXPECT_EQ(result->status, 400) << "media + declared tools must be a client error: " << result->body;
   EXPECT_NE(result->body.find("tool definitions"), std::string::npos) << result->body;
@@ -273,7 +445,7 @@ TEST_F(ResponsesVisionIntegrationTest, ImageOnAContinuationIsRejected) {
       {"temperature", 0},
   };
 
-  auto first_result = client.Post("/v1/responses", first.dump(), "application/json");
+  auto first_result = client.Post(VisionEndpoint("/v1/responses"), first.dump(), "application/json");
   ASSERT_TRUE(first_result) << "HTTP request failed";
   ASSERT_EQ(first_result->status, 200) << first_result->body;
   const std::string first_id = json::parse(first_result->body)["id"].get<std::string>();
@@ -295,7 +467,7 @@ TEST_F(ResponsesVisionIntegrationTest, ImageOnAContinuationIsRejected) {
         {"max_output_tokens", 64},
         {"store", false},
     };
-    return client.Post("/v1/responses", body.dump(), "application/json");
+    return client.Post(VisionEndpoint("/v1/responses"), body.dump(), "application/json");
   };
 
   // Warm: the session cached under first_id still holds the conversation.

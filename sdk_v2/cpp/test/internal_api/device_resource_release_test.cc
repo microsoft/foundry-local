@@ -16,6 +16,18 @@
 #include <string>
 #include <utility>
 
+namespace fl {
+
+class ModelLoadManagerTestAccess {
+ public:
+  static std::shared_ptr<void> Acquire(ModelLoadManager& manager, const std::function<void()>& on_admitted = {}) {
+    return manager.AcquireManagedRuntime(
+        "typed", "typed", "/typed", 0, "cpu", [] { return std::make_shared<int>(42); }, on_admitted);
+  }
+};
+
+}  // namespace fl
+
 namespace {
 
 thread_local bool fail_allocations = false;
@@ -169,7 +181,8 @@ class DeviceResourceReleaseTest : public ::testing::Test {
       config.additional_options["ExclusiveGenAICudaOwnership"] = *ownership;
     }
 
-    manager_ = std::make_unique<fl::ModelLoadManager>(ep_, logger_, config, ResolveReleaseSymbol);
+    manager_ = std::make_unique<fl::ModelLoadManager>(
+        ep_, logger_, (std::numeric_limits<uint64_t>::max)(), 1, config, ResolveReleaseSymbol);
   }
 
   void LoadModel(const char* id = "cuda-model", const char* device_type = "CUDA") {
@@ -262,8 +275,44 @@ TEST_F(DeviceResourceReleaseTest, ShutdownUnloadAlsoHonorsOptInAndLastCudaModel)
   LoadModel("second");
   manager_->UnloadAll();
   EXPECT_EQ(state_.releases, 1);
+  EXPECT_TRUE(state_.destroyed_before_release);
   EXPECT_EQ(manager_->GetLoadedModel("first"), nullptr);
   EXPECT_EQ(manager_->GetLoadedModel("second"), nullptr);
+}
+
+TEST_F(DeviceResourceReleaseTest, TypedRuntimePreventsReleaseUntilDestroyed) {
+  CreateManager();
+  auto lease = fl::ModelLoadManagerTestAccess::Acquire(*manager_);
+  LoadModel();
+  ExpectSuccessfulUnload();
+  EXPECT_EQ(state_.releases, 0);
+
+  lease.reset();
+  EXPECT_TRUE(manager_->UnloadModelArtifact("typed", "/typed"));
+  LoadModel();
+  ExpectSuccessfulUnload();
+  EXPECT_EQ(state_.releases, 1);
+}
+
+TEST_F(DeviceResourceReleaseTest, LoadingTypedRuntimePreventsReleaseBeforeAdmissionReservation) {
+  CreateManager();
+  LoadModel();
+  auto lease = fl::ModelLoadManagerTestAccess::Acquire(*manager_, [&] {
+    ExpectSuccessfulUnload();
+    EXPECT_EQ(state_.releases, 0);
+  });
+  EXPECT_NE(lease, nullptr);
+  EXPECT_EQ(state_.releases, 0);
+}
+
+TEST_F(DeviceResourceReleaseTest, TypedLeaseRetainedAcrossShutdownPreventsRelease) {
+  CreateManager();
+  auto lease = fl::ModelLoadManagerTestAccess::Acquire(*manager_);
+  LoadModel();
+  manager_->UnloadAll();
+  EXPECT_EQ(manager_->GetLoadedModel("cuda-model"), nullptr);
+  EXPECT_EQ(*static_cast<int*>(lease.get()), 42);
+  EXPECT_EQ(state_.releases, 0);
 }
 
 TEST_F(DeviceResourceReleaseTest, MissingOptionalSymbolDoesNotFailUnload) {
