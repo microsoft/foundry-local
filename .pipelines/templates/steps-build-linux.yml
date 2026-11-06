@@ -155,6 +155,7 @@ steps:
         --volume "$(Agent.BuildDirectory)/test-data-shared:$(Agent.BuildDirectory)/test-data-shared:ro" \
         --env "HOME=$(Build.BinariesDirectory)/manylinux-home" \
         --env "FOUNDRY_TEST_DATA_DIR=$(Agent.BuildDirectory)/test-data-shared" \
+        --env "FOUNDRY_LOCAL_REQUIRE_NON_GENERATIVE_TESTS=1" \
         --env "LD_LIBRARY_PATH=$(Build.SourcesDirectory)/sdk_v2/cpp/build/Linux/${{ parameters.buildConfig }}/bin" \
         --workdir "$(Build.SourcesDirectory)/sdk_v2/cpp" \
         "$(manylinuxImage)" \
