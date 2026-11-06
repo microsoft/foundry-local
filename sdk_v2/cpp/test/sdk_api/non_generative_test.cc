@@ -143,4 +143,55 @@ TEST(NonGenerativeSdkTest, ExportedPackagesRunWhenConfigured) {
   std::filesystem::remove_all(app_data, ec);
 }
 
+TEST(NonGenerativeSdkTest, RequiredKevPackageRunsWhenConfigured) {
+  const auto package =
+      fl::test::SafeGetEnv("FOUNDRY_LOCAL_REQUIRED_KEV_PACKAGE");
+  if (package.empty()) {
+    if (fl::test::SafeGetEnv("FOUNDRY_LOCAL_REQUIRE_KEV_TESTS") == "1")
+      FAIL() << "required KEV package path is not configured";
+    GTEST_SKIP() << "set FOUNDRY_LOCAL_REQUIRED_KEV_PACKAGE";
+  }
+
+  const auto app_data =
+      std::filesystem::temp_directory_path() /
+      ("fl_required_kev_sdk_" +
+       std::to_string(
+           std::chrono::steady_clock::now().time_since_epoch().count()));
+  std::filesystem::create_directories(app_data);
+  {
+    foundry_local::Configuration config("required-kev-sdk-test");
+    config.SetAppDataDir(app_data.string());
+    foundry_local::Manager manager(std::move(config));
+    auto& catalog = manager.GetCatalog(FOUNDRY_LOCAL_CATALOG_LOCAL);
+    foundry_local::ModelInfo metadata;
+    metadata.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR,
+                               "typed-decision");
+    auto model = catalog.RegisterModel(
+        package, "kev-0.8b-mixed-generic-cpu:1", metadata);
+    model->Load();
+    EXPECT_TRUE(model->IsLoaded());
+    {
+      foundry_local::DecisionSession session(*model);
+      const auto result = nlohmann::json::parse(session.DecideJson(
+          nlohmann::json{
+              {"state", {{"weather", "heavy rain"}}},
+              {"questions",
+               {{"umbrella",
+                 {{"type", "noul"},
+                  {"instructions", "Should I take an umbrella?"}}}}}}
+              .dump()));
+      const auto value =
+          result.at("answers").at("umbrella").at("noul").get<double>();
+      EXPECT_GE(value, 0.0);
+      EXPECT_LE(value, 1.0);
+      EXPECT_THROW(model->Unload(), foundry_local::Error);
+    }
+    EXPECT_TRUE(model->IsLoaded());
+    model->Unload();
+    EXPECT_FALSE(model->IsLoaded());
+  }
+  std::error_code ec;
+  std::filesystem::remove_all(app_data, ec);
+}
+
 }  // namespace

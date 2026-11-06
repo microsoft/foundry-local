@@ -11,7 +11,7 @@ parameters:
 - name: modelSet
   type: string
   default: all
-  values: ['all', 'streaming-asr']
+  values: ['all', 'streaming-asr', 'non-generative']
 
 steps:
 # Downloads are immutable and can be retried; a stalled transfer must not consume the whole job budget.
@@ -91,3 +91,16 @@ steps:
       vstsFeedPackage: 'foundry-local-deepseek-r1-distill-qwen-14b-generic-cpu'
       vstsPackageVersion: '4.0.0'
       downloadDirectory: '${{ parameters.destinationPath }}/Microsoft/deepseek-r1-distill-qwen-14b-generic-cpu-4'
+
+- ${{ if eq(parameters.modelSet, 'non-generative') }}:
+  - task: UniversalPackages@0
+    displayName: 'Fetch KEV 0.8B mixed CPU integration model'
+    timeoutInMinutes: 20
+    retryCountOnTaskFailure: 2
+    inputs:
+      command: download
+      feedsToUse: internal
+      vstsFeed: 'AIFoundryLocal/AIFoundryLocal_PublicPackages'
+      vstsFeedPackage: 'foundry-local-kev-0-8b-mixed-generic-cpu'
+      vstsPackageVersion: '1.0.0'
+      downloadDirectory: '${{ parameters.destinationPath }}/kev-0.8b-mixed-generic-cpu'
