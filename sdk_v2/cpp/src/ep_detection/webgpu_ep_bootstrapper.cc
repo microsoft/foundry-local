@@ -209,10 +209,11 @@ bool WebGpuEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallbac
   }
 }
 
-bool WebGpuEpBootstrapper::PrepareForModelLoad([[maybe_unused]] ILogger& logger) {
+bool WebGpuEpBootstrapper::PrepareForModelLoad(ILogger& logger) {
 #ifdef _WIN32
   return platform::SetDynamicLibrarySearchDirectory(bundle_dir_, logger);
 #else
+  (void)logger;
   return true;
 #endif
 }

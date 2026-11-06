@@ -12,6 +12,7 @@
 #include "internal_api/test_model_cache.h"
 #include "utils/safe_getenv.h"
 #include "utils/string_utils.h"
+#include "utils/temp_path.h"
 
 #include <algorithm>
 #include <array>
@@ -273,6 +274,10 @@ class SharedTestEnv : public ::testing::Environment {
 
   void SetUp() override {
     foundry_local::Configuration config("foundry_local_sdk_test");
+    const auto vision_path = fl::test::SafeGetEnv("FOUNDRY_LOCAL_VISION_TEST_MODEL_PATH");
+    if (!vision_path.empty()) {
+      config.SetAppDataDir(local_vision_app_data_.string());
+    }
 
     // Bump default log level so EP registration / runtime version messages
     // surface during test runs and end up in the rotating log file.
@@ -282,7 +287,9 @@ class SharedTestEnv : public ::testing::Environment {
 
     // Point the model cache at the shared test data directory when available.
     auto cache_dir = fl::test::SafeGetEnv("FOUNDRY_TEST_DATA_DIR");
-    if (!cache_dir.empty()) {
+    if (!vision_path.empty()) {
+      config.SetModelCacheDir((local_vision_app_data_.path() / "models").string());
+    } else if (!cache_dir.empty()) {
       config.SetModelCacheDir(cache_dir);
     }
 
@@ -299,11 +306,11 @@ class SharedTestEnv : public ::testing::Environment {
     }
 
     // ---- Detect and register EPs ----
-    has_cuda_ = EnsureEpRegistered("CUDAExecutionProvider");
+    has_cuda_ = vision_path.empty() && EnsureEpRegistered("CUDAExecutionProvider");
     std::cout << "SharedTestEnv: device="
               << (has_cuda_ ? "GPU (CUDA)" : "CPU") << "\n";
 
-    has_webgpu_ = EnsureEpRegistered("WebGpuExecutionProvider");
+    has_webgpu_ = vision_path.empty() && EnsureEpRegistered("WebGpuExecutionProvider");
     std::cout << "SharedTestEnv: webgpu="
               << (has_webgpu_ ? "registered" : "unavailable") << "\n";
 
@@ -398,6 +405,15 @@ class SharedTestEnv : public ::testing::Environment {
 
     // ---- Vision model ----
     vision_model_ = FindSmallestModelByTask(*model_list_, "vision-language-chat", FOUNDRY_LOCAL_DEVICE_CPU);
+    if (!vision_path.empty()) {
+      foundry_local::ModelInfo metadata;
+      metadata.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "vision-language-chat");
+      metadata.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_EP_STR, "CPUExecutionProvider");
+      metadata.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_DEVICE_TYPE_STR, "CPU");
+      auto& local_catalog = manager_->GetCatalog(FOUNDRY_LOCAL_CATALOG_LOCAL);
+      local_vision_model_ = local_catalog.RegisterModel(vision_path, "sdk-vision-test:1", metadata);
+      vision_model_ = local_vision_model_.get();
+    }
 
     if (vision_model_) {
       vision_model_id_ = std::string(vision_model_->GetInfo().Id());
@@ -486,6 +502,7 @@ class SharedTestEnv : public ::testing::Environment {
     embeddings_model_ = nullptr;
     reasoning_model_ = nullptr;
     acquired_.clear();
+    local_vision_model_.reset();
     model_list_.reset();
     manager_.reset();
   }
@@ -608,6 +625,9 @@ class SharedTestEnv : public ::testing::Environment {
 
   foundry_local::IModel* vision_model() { return Loaded(vision_model_); }
   const std::string& vision_model_id() { return vision_model_id_; }
+  std::string vision_endpoint(const char* path) const {
+    return std::string(local_vision_model_ ? "/catalogs/local" : "") + path;
+  }
 
   foundry_local::IModel* reasoning_model() { return Loaded(reasoning_model_); }
   const std::string& reasoning_model_id() { return reasoning_model_id_; }
@@ -707,6 +727,7 @@ class SharedTestEnv : public ::testing::Environment {
     return false;
   }
 
+  fl::test::TempPath local_vision_app_data_ = fl::test::TempPath::CreateTempDir("fl_vision_sdk_");
   std::unique_ptr<foundry_local::Manager> manager_;
   std::unique_ptr<foundry_local::ModelList> model_list_;
 
@@ -730,6 +751,7 @@ class SharedTestEnv : public ::testing::Environment {
   std::string embeddings_model_id_;
 
   foundry_local::IModel* vision_model_ = nullptr;
+  std::unique_ptr<foundry_local::IModel> local_vision_model_;
   std::string vision_model_id_;
 
   foundry_local::IModel* reasoning_model_ = nullptr;

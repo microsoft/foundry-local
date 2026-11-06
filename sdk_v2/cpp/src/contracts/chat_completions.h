@@ -59,6 +59,13 @@ struct ChatCompletionToolCall {
 
 // --- Request types ---
 
+struct ChatCompletionContentPart {
+  enum class Kind { kText,
+                    kImageUrl };
+  Kind kind;
+  std::string value;
+};
+
 /// A single message in the conversation. Maps to OpenAI ChatMessage.
 /// JSON keys: "role", "content", "name", "tool_call_id", "tool_calls"
 struct ChatCompletionMessage {
@@ -83,6 +90,7 @@ struct ChatCompletionMessage {
   // one representation and a custom call keeps its raw text instead of being read as JSON arguments.
   std::vector<ChatCompletionToolCall> tool_calls;  // for role="assistant": the calls this message issued
   std::optional<std::string> reasoning_content;    // typed history; projected only for qualified templates
+  std::vector<ChatCompletionContentPart> content_parts;  // ordered text and image_url content parts
 };
 
 /// Function definition within a tool. JSON keys: "name", "description", "parameters", "strict"
