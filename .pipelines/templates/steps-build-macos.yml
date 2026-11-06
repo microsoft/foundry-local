@@ -23,6 +23,10 @@ steps:
 
 - template: steps-prefetch-vcpkg.yml
 
+- template: steps-cache-vcpkg.yml
+  parameters:
+    platform: 'macos-arm64'
+
 - bash: |
     set -euo pipefail
     # Most macOS images include cmake/ninja; install via brew if missing.
@@ -103,6 +107,7 @@ steps:
     env:
       VCPKG_ROOT: $(Build.BinariesDirectory)/vcpkg
       FOUNDRY_TEST_DATA_DIR: $(Agent.BuildDirectory)/test-data-shared
+      CTEST_PARALLEL_LEVEL: '4'
 
 - bash: |
     echo "=== vcpkg buildtrees error logs ==="
