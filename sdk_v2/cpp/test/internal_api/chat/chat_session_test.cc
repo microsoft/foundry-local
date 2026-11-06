@@ -450,6 +450,46 @@ TEST(ChatSessionDecisionTest, FencedRequiredCallBypassesTokenOwnershipAndSuppres
   EXPECT_EQ(nlohmann::json::parse(call.arguments), nlohmann::json({{"city", "Paris"}}));
 }
 
+TEST(ChatSessionDecisionTest, InterruptedFencedRequiredCallIsDiscardedOnlyAtNonNaturalEnd) {
+  const std::string tools =
+      R"([{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}])";
+  ToolCallContext context;
+  context.tools_json = tools;
+  context.tool_plan = ToolCallPlan::Create(tools);
+  context.tool_output = true;
+  context.fenced_tool_call_output = true;
+  context.tool_call_start = "```json\n";
+  context.tool_call_end = "\n```";
+  for (const auto& pending : {
+           std::string("```"),
+           std::string("```json\n[{\"name\":\"lookup\",\"parameters\":{\"city\":\"Par"),
+       }) {
+    ToolCallStreamAccumulator interrupted(
+        context.GeneratedToolCallStart(), context.GeneratedToolCallEnd(), tools, "",
+        chat_session_internal::CreateToolCallPayloadParser(context),
+        true);
+    EXPECT_TRUE(interrupted.Push(pending).events.empty());
+    const auto discarded = chat_session_internal::FlushToolOutput(
+        nullptr, interrupted, /*natural_end=*/false,
+        /*discard_interrupted_selected_payload=*/true);
+    EXPECT_TRUE(discarded.events.empty());
+    EXPECT_FALSE(discarded.malformed);
+  }
+
+  ToolCallStreamAccumulator natural(
+      context.GeneratedToolCallStart(), context.GeneratedToolCallEnd(), tools, "",
+      chat_session_internal::CreateToolCallPayloadParser(context),
+      true);
+  EXPECT_TRUE(natural.Push(
+                         "```json\n[{\"name\":\"lookup\",\"parameters\":{\"city\":\"Par")
+                  .events.empty());
+  const auto rejected = chat_session_internal::FlushToolOutput(
+      nullptr, natural, /*natural_end=*/true,
+      /*discard_interrupted_selected_payload=*/true);
+  EXPECT_TRUE(rejected.events.empty());
+  EXPECT_TRUE(rejected.malformed);
+}
+
 TEST(ChatSessionDecisionTest, JsonToolContextUsesOnlyTheCapturedSessionSnapshot) {
   ToolRegistry registry;
   const auto captured = registry.Definitions();
@@ -1534,6 +1574,25 @@ class QwenNativeProductionIntegrationTest : public ::testing::Test {
     ASSERT_EQ(classic_tags.bot_str, "<tool_call>");
     ASSERT_EQ(classic_tags.eot_str, "</tool_call>");
 
+    qwen2_model_directory_ = test::MakeUniqueTempPath("qwen2_fenced_production_");
+    ASSERT_TRUE(std::filesystem::create_directory(qwen2_model_directory_));
+    for (const auto& entry : std::filesystem::directory_iterator(model_directory_)) {
+      if (entry.is_regular_file()) {
+        std::filesystem::copy_file(
+            entry.path(), qwen2_model_directory_ / entry.path().filename());
+      }
+    }
+    const auto qwen2_config_path = qwen2_model_directory_ / "genai_config.json";
+    auto qwen2_config = nlohmann::json::parse(ReadText(qwen2_config_path));
+    qwen2_config["model"]["type"] = "qwen2";
+    WriteText(qwen2_config_path, qwen2_config.dump(2));
+    const auto qwen2_result = load_manager_->LoadModel(
+        qwen2_model_directory_.string(), kQwen2ModelId, ExecutionProvider::kCPU);
+    ASSERT_EQ(qwen2_result.status, ModelLoadManager::LoadStatus::kSuccess);
+    qwen2_model_ = qwen2_result.model;
+    ASSERT_NE(qwen2_model_, nullptr);
+    ASSERT_EQ(qwen2_model_->ModelType(), "qwen2");
+
     engine_model_directory_ = test::MakeUniqueTempPath("qwen_native_engine_");
     ASSERT_TRUE(std::filesystem::create_directory(engine_model_directory_));
     const auto engine_source = test::GetTestDataPath("tiny-paged-attention");
@@ -1590,11 +1649,15 @@ class QwenNativeProductionIntegrationTest : public ::testing::Test {
     if (load_manager_ && engine_model_) {
       EXPECT_TRUE(load_manager_->UnloadModel(kEngineModelId));
     }
+    if (load_manager_ && qwen2_model_) {
+      EXPECT_TRUE(load_manager_->UnloadModel(kQwen2ModelId));
+    }
     if (load_manager_ && model_) {
       EXPECT_TRUE(load_manager_->UnloadModel(kModelId));
     }
 
     engine_model_ = nullptr;
+    qwen2_model_ = nullptr;
     model_ = nullptr;
     load_manager_.reset();
     ep_detector_.reset();
@@ -1603,6 +1666,10 @@ class QwenNativeProductionIntegrationTest : public ::testing::Test {
     std::filesystem::remove_all(model_directory_, error);
     EXPECT_FALSE(error) << error.message();
     model_directory_.clear();
+
+    std::filesystem::remove_all(qwen2_model_directory_, error);
+    EXPECT_FALSE(error) << error.message();
+    qwen2_model_directory_.clear();
 
     std::filesystem::remove_all(engine_model_directory_, error);
     EXPECT_FALSE(error) << error.message();
@@ -1786,13 +1853,16 @@ class QwenNativeProductionIntegrationTest : public ::testing::Test {
   }
 
   static constexpr const char* kModelId = "qwen-native-production-fixture";
+  static constexpr const char* kQwen2ModelId = "qwen2-fenced-production-fixture";
   static constexpr const char* kEngineModelId = "qwen-native-engine-fixture";
   static inline std::filesystem::path model_directory_;
+  static inline std::filesystem::path qwen2_model_directory_;
   static inline std::filesystem::path engine_model_directory_;
   static inline std::unique_ptr<StderrLogger> logger_;
   static inline std::unique_ptr<test::CpuOnlyEpDetector> ep_detector_;
   static inline std::unique_ptr<ModelLoadManager> load_manager_;
   static inline GenAIModelInstance* model_ = nullptr;
+  static inline GenAIModelInstance* qwen2_model_ = nullptr;
   static inline GenAIModelInstance* engine_model_ = nullptr;
   static inline test::FakeServiceBindings services_;
   TelemetryLogger telemetry_{"qwen-native-production-test", test::NullLog()};
@@ -4817,6 +4887,122 @@ TEST_F(QwenNativeProductionIntegrationTest,
   EXPECT_EQ(completed.at("output").at(0).at("type"), "function_call");
   EXPECT_EQ(completed.at("output").at(0).at("name"), "zero");
   EXPECT_EQ(completed.at("output").at(0).at("arguments"), "{}");
+}
+
+TEST_F(QwenNativeProductionIntegrationTest,
+       Qwen2MandatoryFencedTruncationPublishesLengthWithoutTextCallsOrRetry) {
+  const std::vector<std::pair<std::string, int>> cases = {
+      {"```", 1},
+      {"```json\n[{\"name\":\"lookup\",\"parameters\":{\"city\":\"Par", 24},
+  };
+  for (const auto& [output, max_tokens] : cases) {
+    for (const bool streaming : {false, true}) {
+      SCOPED_TRACE(::testing::Message()
+                   << "output=" << output << " streaming=" << streaming);
+      auto counters = std::make_shared<GeneratorCounters>();
+      auto catalog_model = MakeCatalogModel();
+      ChatSession session(
+          catalog_model, *qwen2_model_, *logger_, telemetry_, {},
+          OutputFactory(output, counters, BackendTerminationCause::kOutputTokenLimit));
+      AddFunctionTools(session);
+
+      std::string streamed_text;
+      if (streaming) {
+        session.SetStreamingCallback([&](flStreamingCallbackData event, void*) {
+          auto* queue = reinterpret_cast<ItemQueue*>(event.item_queue);
+          while (auto item = queue->TryPop()) {
+            if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
+              streamed_text += static_cast<const TextItem&>(*item).text;
+            }
+          }
+          return 0;
+        });
+      }
+
+      auto request = MakeStatefulRequest("route this");
+      request.options[FOUNDRY_LOCAL_PARAM_TOOL_CHOICE] = "required";
+      request.options.Add("max_output_tokens", std::to_string(max_tokens));
+      Response response;
+      ASSERT_NO_THROW(session.ProcessRequest(request, response));
+
+      EXPECT_EQ(counters->created, 1);
+      EXPECT_TRUE(Calls(response).empty());
+      EXPECT_TRUE(session.Transcript().Messages().back().VisibleText().empty());
+      EXPECT_TRUE(streamed_text.empty());
+      EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_LENGTH);
+      EXPECT_EQ(response.termination_cause,
+                BackendTerminationCause::kOutputTokenLimit);
+    }
+
+    for (const bool streaming : {false, true}) {
+      SCOPED_TRACE(::testing::Message()
+                   << "chat_completions output=" << output
+                   << " streaming=" << streaming);
+      auto counters = std::make_shared<GeneratorCounters>();
+      auto catalog_model = MakeCatalogModel();
+      ChatSession session(
+          catalog_model, *qwen2_model_, *logger_, telemetry_, {},
+          OutputFactory(output, counters, BackendTerminationCause::kOutputTokenLimit));
+
+      std::vector<nlohmann::json> chunks;
+      if (streaming) {
+        session.SetStreamingCallback([&](flStreamingCallbackData event, void*) {
+          auto* queue = reinterpret_cast<ItemQueue*>(event.item_queue);
+          while (auto item = queue->TryPop()) {
+            if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
+              chunks.push_back(nlohmann::json::parse(
+                  static_cast<const TextItem&>(*item).text));
+            }
+          }
+          return 0;
+        });
+      }
+
+      const auto body = nlohmann::json{
+          {"model", kQwen2ModelId},
+          {"messages", nlohmann::json::array(
+                           {{{"role", "user"}, {"content", "route this"}}})},
+          {"tools", nlohmann::json::array(
+                        {{{"type", "function"},
+                          {"function",
+                           {{"name", "lookup"},
+                            {"description", "Look up a city."},
+                            {"parameters",
+                             {{"type", "object"},
+                              {"properties",
+                               {{"city", {{"type", "string"}}}}},
+                              {"required", nlohmann::json::array({"city"})}}}}}}})},
+          {"tool_choice", "required"},
+          {"max_tokens", max_tokens},
+          {"stream", streaming}};
+      Request request;
+      request.AddOwnedItem(std::make_unique<TextItem>(
+          body.dump(), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+      Response response;
+      ASSERT_NO_THROW(session.ProcessRequest(request, response));
+
+      EXPECT_EQ(counters->created, 1);
+      EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_LENGTH);
+      if (streaming) {
+        ASSERT_FALSE(chunks.empty());
+        const auto& terminal = chunks.back().at("choices").at(0);
+        EXPECT_EQ(terminal.at("finish_reason"), "length");
+        for (const auto& chunk : chunks) {
+          const auto& delta = chunk.at("choices").at(0).at("delta");
+          EXPECT_EQ(delta.value("content", ""), "");
+          EXPECT_FALSE(delta.contains("tool_calls"));
+        }
+      } else {
+        ASSERT_EQ(response.items.size(), 1u);
+        const auto completion = nlohmann::json::parse(
+            static_cast<const TextItem&>(*response.items.front()).text);
+        const auto& choice = completion.at("choices").at(0);
+        EXPECT_EQ(choice.at("finish_reason"), "length");
+        EXPECT_TRUE(choice.at("message").value("content", "").empty());
+        EXPECT_FALSE(choice.at("message").contains("tool_calls"));
+      }
+    }
+  }
 }
 
 TEST_F(QwenNativeProductionIntegrationTest,

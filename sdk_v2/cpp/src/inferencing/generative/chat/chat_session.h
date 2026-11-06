@@ -138,7 +138,8 @@ ToolCallStreamAccumulator::Output PushToolOutputSegment(
 ToolCallStreamAccumulator::Output FlushToolOutput(
     RawEnvelopeDetector* raw_detector,
     ToolCallStreamAccumulator& structured_accumulator,
-    bool natural_end = true);
+    bool natural_end = true,
+    bool discard_interrupted_selected_payload = false);
 ToolCallStreamAccumulator::Output AbortRawToolOutput(
     RawEnvelopeDetector* raw_detector);
 bool InsideToolOutput(const RawEnvelopeDetector* raw_detector,
