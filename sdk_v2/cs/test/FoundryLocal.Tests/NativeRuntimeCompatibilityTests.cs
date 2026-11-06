@@ -40,10 +40,14 @@ internal sealed class NativeRuntimeCompatibilityTests
             await Assert.That(second.IdleDuration).IsGreaterThanOrEqualTo(first.IdleDuration);
             await Assert.That(manager.Urls ?? []).IsEquivalentTo(urls ?? []);
             await Assert.That(FoundryLocalManager.Instance).IsSameReferenceAs(manager);
+            await Assert.That(() => manager.TryStopWebServiceIfIdle(TimeSpan.FromTicks(-1)))
+                .Throws<ArgumentOutOfRangeException>();
+            await Assert.That(manager.TryStopWebServiceIfIdle(TimeSpan.MaxValue)).IsFalse();
             if (ownsManager)
             {
                 manager.Dispose();
                 await Assert.That(() => manager.GetWebServiceActivity()).Throws<ObjectDisposedException>();
+                await Assert.That(() => manager.TryStopWebServiceIfIdle(TimeSpan.Zero)).Throws<ObjectDisposedException>();
             }
         }
         finally
@@ -111,6 +115,54 @@ internal sealed class NativeRuntimeCompatibilityTests
     {
         await Assert.That(Api.ReadWebServiceActivity(IntPtr.Zero, 2)).IsNull();
         await Assert.That(Api.ReadWebServiceActivity(IntPtr.Zero, 3)).IsNull();
+    }
+
+    [Test]
+    public async Task OlderRuntimesDoNotReadTheAppendedIdleStopMethod()
+    {
+        await Assert.That(Api.ReadTryStopWebServiceIfIdle(IntPtr.Zero, 2)).IsNull();
+        await Assert.That(Api.ReadTryStopWebServiceIfIdle(IntPtr.Zero, 3)).IsNull();
+    }
+
+    [Test]
+    public async Task IdleStopRejectsNegativeDurationsBeforeCallingNative()
+    {
+        await Assert.That(() => Detail.Native.Manager.ValidateMinimumIdleDuration(TimeSpan.FromTicks(-1)))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(Detail.Native.Manager.ValidateMinimumIdleDuration(TimeSpan.Zero)).IsEqualTo(0UL);
+        await Assert.That(Detail.Native.Manager.ValidateMinimumIdleDuration(TimeSpan.FromTicks(1))).IsEqualTo(1UL);
+        await Assert.That(Detail.Native.Manager.ValidateMinimumIdleDuration(TimeSpan.MaxValue))
+            .IsEqualTo(922337203685478UL);
+    }
+
+    [Test]
+    [NotInParallel]
+    public async Task IdleStopUsesTheAppendedNativeMethodAndRejectsAnOlderRuntime()
+    {
+        using var configuration = new Detail.Native.Configuration("idle-stop-native-compatibility");
+        configuration.SetAppDataDir(Path.Combine(AppContext.BaseDirectory, "TestResults", "idle-stop-native-compatibility"));
+        using var manager = new Detail.Native.Manager(configuration);
+        var stop = Api.TryStopWebServiceIfIdle;
+        try
+        {
+            Api.TryStopWebServiceIfIdle = null;
+            await Assert.That(() => manager.TryStopWebServiceIfIdle(TimeSpan.Zero)).Throws<NotSupportedException>();
+            await Assert.That(() => manager.TryStopWebServiceIfIdle(TimeSpan.FromTicks(-1)))
+                .Throws<ArgumentOutOfRangeException>();
+        }
+        finally
+        {
+            Api.TryStopWebServiceIfIdle = stop;
+        }
+
+        manager.StartService();
+        await Assert.That(manager.TryStopWebServiceIfIdle(TimeSpan.MaxValue)).IsFalse();
+        await Assert.That(manager.GetServiceUrls().Length).IsGreaterThan(0);
+        await Assert.That(manager.TryStopWebServiceIfIdle(TimeSpan.Zero)).IsTrue();
+        await Assert.That(manager.GetServiceUrls().Length).IsEqualTo(0);
+        manager.StartService();
+        await Assert.That(manager.GetServiceUrls().Length).IsGreaterThan(0);
+        manager.StopService();
     }
 
     [Test]

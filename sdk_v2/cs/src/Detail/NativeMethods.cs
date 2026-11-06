@@ -481,6 +481,10 @@ public delegate IntPtr FlApi_ManagerWebServiceActivityDelegate(
     IntPtr manager, out ulong activeRequests, out ulong idleMilliseconds);
 
 [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+public delegate IntPtr FlApi_ManagerTryStopWebServiceIfIdleDelegate(
+    IntPtr manager, ulong minimumIdleMilliseconds, [MarshalAs(UnmanagedType.I1)] out bool stopped);
+
+[UnmanagedFunctionPointer(CallingConvention.Winapi)]
 public delegate IntPtr FlApi_ManagerWebServiceStopDelegate(IntPtr manager);
 
 // Sub-API accessors

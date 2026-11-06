@@ -468,6 +468,71 @@ TEST_F(WebServiceTest, HttpActivityIncludesLocalCatalogAndRoutingErrorsWithoutCo
   EXPECT_GE(service_->GetActivity().idle_milliseconds, first.idle_milliseconds);
 }
 
+TEST_F(WebServiceTest, IdleFenceRejectsNewHandlersAndRoutingErrorsUntilRestart) {
+  auto activity = std::make_shared<HttpActivityTracker>();
+  std::binary_semaphore entered(0);
+  std::binary_semaphore release(0);
+  std::atomic<int> calls{0};
+  WebService service(
+      *public_catalog_, *local_catalog_, *logger_, FOUNDRY_LOCAL_TEST_SCRATCH_DIR, *model_load_manager_,
+      *session_manager_, *telemetry_,
+      [&] {
+        if (++calls == 1) {
+          entered.release();
+          release.acquire();
+        }
+      },
+      {}, activity);
+  const auto url = service.Start({"http://127.0.0.1:0"}).front();
+  std::thread request([&] {
+    httplib::Client client(url);
+    client.set_read_timeout(10, 0);
+    const auto response = client.Post("/shutdown", "", "application/json");
+    EXPECT_TRUE(response);
+    if (response) {
+      EXPECT_EQ(response->status, 200);
+    }
+  });
+  ScopeGuard cleanup([&]() noexcept {
+    release.release();
+    request.join();
+  });
+  ASSERT_TRUE(entered.try_acquire_for(std::chrono::seconds(5)));
+  EXPECT_EQ(activity->Snapshot().active_requests, 1u);
+  EXPECT_FALSE(activity->TryBeginStop(0));
+  httplib::Client client(url);
+  const auto still_running = client.Get("/status");
+  ASSERT_TRUE(still_running);
+  EXPECT_EQ(still_running->status, 200);
+  release.release();
+  request.join();
+  cleanup.Dismiss();
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (activity->Snapshot().active_requests && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  ASSERT_TRUE(activity->TryBeginStop(0));
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  const auto baseline = activity->Snapshot().idle_milliseconds;
+  EXPECT_GE(baseline, 10u);
+  for (const auto* path : {"/shutdown", "/no-such-route"}) {
+    const auto response = client.Post(path, "", "application/json");
+    ASSERT_TRUE(response);
+    EXPECT_EQ(response->status, 503);
+  }
+
+  EXPECT_EQ(calls.load(), 1);
+  EXPECT_EQ(activity->Snapshot().active_requests, 0u);
+  EXPECT_GE(activity->Snapshot().idle_milliseconds, baseline);
+  service.Stop();
+  const auto restarted_url = service.Start({"http://127.0.0.1:0"}).front();
+  httplib::Client restarted(restarted_url);
+  const auto response = restarted.Get("/status");
+  ASSERT_TRUE(response);
+  EXPECT_EQ(response->status, 200);
+}
+
 TEST_F(WebServiceTest, StatusAdvertisesArtifactQualifiedModelManagementAsBoolean) {
   const auto body = Get("/status");
   ASSERT_TRUE(body.contains("artifact_qualified_model_management"));

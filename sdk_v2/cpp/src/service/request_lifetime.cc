@@ -31,14 +31,25 @@ class ActivityInterceptor final : public oatpp::web::server::interceptor::Reques
   explicit ActivityInterceptor(std::shared_ptr<HttpActivityTracker> activity) : activity_(std::move(activity)) {}
 
   std::shared_ptr<OutgoingResponse> intercept(const std::shared_ptr<IncomingRequest>& request) override {
-    request->putBundleData(kActivityWork, oatpp::Void(activity_->Begin()));
+    auto work = activity_->Begin();
+    if (!work) {
+      return ErrorResponse(Status::CODE_503, "Web service is stopping");
+    }
+
+    request->putBundleData(kActivityWork, oatpp::Void(std::move(work)));
     return nullptr;
   }
 
   std::shared_ptr<OutgoingResponse> intercept(const std::shared_ptr<IncomingRequest>& request,
                                               const std::shared_ptr<OutgoingResponse>& response) override {
+    const auto& bundle = request->getBundle().getAll();
+    const auto work = bundle.find(kActivityWork);
+    if (work == bundle.end()) {
+      return response;
+    }
+
     auto retained = std::make_shared<AdmittedResponse>();
-    retained->work = request->getBundleData<oatpp::Void>(kActivityWork).getPtr();
+    retained->work = work->second.getPtr();
     retained->response = response;
     return std::shared_ptr<OutgoingResponse>(retained, response.get());
   }

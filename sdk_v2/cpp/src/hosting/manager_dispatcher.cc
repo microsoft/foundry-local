@@ -25,6 +25,7 @@ bool ManagerDispatcher::Handles(Operation operation) noexcept {
     case Operation::WebServiceUrls:
     case Operation::WebServiceActivity:
     case Operation::WebServiceStop:
+    case Operation::TryStopWebServiceIfIdle:
     case Operation::DiscoverableEps:
     case Operation::RuntimeDevices:
     case Operation::DownloadAndRegisterEps:
@@ -90,6 +91,17 @@ Json ManagerDispatcher::Execute(SdkConnection::IncomingCall& call, std::optional
 
       manager_->StopWebService();
       return nullptr;
+    }
+    case Operation::TryStopWebServiceIfIdle: {
+      const auto minimum_idle_milliseconds = call.Payload().at("minimum_idle_milliseconds").get<std::uint64_t>();
+      std::lock_guard lock(web_mutex_);
+      auto stop = owner ? lifetime_.TryAdmitWebServiceStop(*owner, std::chrono::steady_clock::now())
+                        : HostLifetime::WorkGuard{};
+      if (!stop) {
+        return false;
+      }
+
+      return manager_->TryStopWebServiceIfIdle(minimum_idle_milliseconds);
     }
     case Operation::DiscoverableEps: {
       Json result = Json::array();

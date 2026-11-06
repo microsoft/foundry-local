@@ -33,11 +33,37 @@ class HttpActivityTracker {
                       std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - state_->completed).count())};
   }
 
-  std::shared_ptr<void> Begin() { return std::make_shared<Work>(state_); }
+  std::shared_ptr<void> Begin() {
+    std::lock_guard lock(state_->mutex);
+    if (state_->closed) {
+      return {};
+    }
+
+    auto work = std::make_shared<Work>(state_);
+    ++state_->active;
+    return work;
+  }
+
+  bool TryBeginStop(std::uint64_t minimum_idle_milliseconds) {
+    std::lock_guard lock(state_->mutex);
+    const auto idle = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - state_->completed).count();
+    if (state_->active || static_cast<std::uint64_t>(idle) < minimum_idle_milliseconds) {
+      return false;
+    }
+
+    state_->closed = true;
+    return true;
+  }
+
+  void CancelStop() {
+    std::lock_guard lock(state_->mutex);
+    state_->closed = false;
+  }
 
   void StartBaseline() {
     std::lock_guard lock(state_->mutex);
     state_->completed = Clock::now();
+    state_->closed = false;
   }
 
  private:
@@ -45,13 +71,11 @@ class HttpActivityTracker {
   struct State {
     std::mutex mutex;
     std::uint64_t active{};
+    bool closed{};
     Clock::time_point completed = Clock::now();
   };
   struct Work {
-    explicit Work(std::shared_ptr<State> state) : state(std::move(state)) {
-      std::lock_guard lock(this->state->mutex);
-      ++this->state->active;
-    }
+    explicit Work(std::shared_ptr<State> state) : state(std::move(state)) {}
     ~Work() {
       std::lock_guard lock(state->mutex);
       if (--state->active == 0) {

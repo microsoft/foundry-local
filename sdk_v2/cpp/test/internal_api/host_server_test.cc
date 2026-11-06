@@ -172,6 +172,7 @@ TEST_F(HostServerTest, ObservationHasNoOwnershipAndCannotLoadOrExtendUnusedStart
   const auto activity = observer->Call(Operation::WebServiceActivity, {});
   EXPECT_EQ(activity.at("active_requests"), 0u);
   EXPECT_TRUE(activity.at("idle_milliseconds").is_number_unsigned());
+  EXPECT_THROW(observer->Call(Operation::TryStopWebServiceIfIdle, {{"minimum_idle_milliseconds", 0}}), Exception);
   EXPECT_TRUE(manager_->GetWebServiceUrls().empty());
   EXPECT_EQ(observer->Call(Operation::Observe, {}).at("owners"), 0);
 #endif
@@ -483,6 +484,7 @@ TEST_F(HostServerTest, NativeHttpUsesTheOwnerControllerRejectsGlobalShutdownAndK
   EXPECT_EQ(inventory->status, 200);
   EXPECT_TRUE(Json::parse(inventory->body).is_array());
   EXPECT_THROW(first->Call(Operation::WebServiceStop, {}), Exception);
+  EXPECT_FALSE(first->Call(Operation::TryStopWebServiceIfIdle, {{"minimum_idle_milliseconds", 0}}).get<bool>());
   second->Close();
   ASSERT_TRUE(WaitFor(State::kAccepting, 1));
   const auto deadline = std::chrono::steady_clock::now() + 5s;
@@ -495,9 +497,17 @@ TEST_F(HostServerTest, NativeHttpUsesTheOwnerControllerRejectsGlobalShutdownAndK
     auto active_http = lifetime_->TryAdmitHttpWork(Now());
     ASSERT_TRUE(active_http);
     EXPECT_THROW(first->Call(Operation::WebServiceStop, {}), Exception);
+    EXPECT_FALSE(first->Call(Operation::TryStopWebServiceIfIdle, {{"minimum_idle_milliseconds", 0}}).get<bool>());
   }
 
-  first->Call(Operation::WebServiceStop, {});
+  EXPECT_FALSE(
+      first->Call(Operation::TryStopWebServiceIfIdle, {{"minimum_idle_milliseconds", UINT64_MAX}}).get<bool>());
+  EXPECT_EQ(first->Call(Operation::WebServiceUrls, {}), urls);
+  {
+    auto admission = lifetime_->TryAdmitHttpWork(Now());
+    EXPECT_TRUE(admission);
+  }
+  EXPECT_TRUE(first->Call(Operation::TryStopWebServiceIfIdle, {{"minimum_idle_milliseconds", 0}}).get<bool>());
   EXPECT_TRUE(first->Call(Operation::WebServiceUrls, {}).empty());
   EXPECT_EQ(first->Call(Operation::Observe, {}).at("owners"), 1);
   first->Call(Operation::WebServiceStart, {});

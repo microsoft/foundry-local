@@ -412,6 +412,7 @@ typedef struct flApi {
     _Bool (*Manager_IsShutdownRequested)(const flManager* manager);
     flStatusPtr (*Manager_GetCatalogByType)(const flManager* manager, flCatalogType catalog_type, flCatalog** out_catalog);
     flStatusPtr (*Manager_WebServiceActivity)(const flManager* manager, uint64_t* active_requests, uint64_t* idle_milliseconds);
+    flStatusPtr (*Manager_TryStopWebServiceIfIdle)(flManager* manager, uint64_t minimum_idle_milliseconds, bool* stopped);
 } flApi;
 
 /* -----------------------------------------------------------------------

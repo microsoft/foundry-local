@@ -135,6 +135,7 @@ class ManagerBackend : public BackendObject {
   virtual void StartWebService() = 0;
   virtual const std::vector<std::string>& GetWebServiceUrls() const = 0;
   virtual WebServiceActivity GetWebServiceActivity() const = 0;
+  virtual bool TryStopWebServiceIfIdle(std::uint64_t minimum_idle_milliseconds) = 0;
   virtual void StopWebService() = 0;
   virtual std::span<const flEpInfo> GetDiscoverableEps() const = 0;
   virtual DeviceProviders GetRuntimeDevices() const = 0;

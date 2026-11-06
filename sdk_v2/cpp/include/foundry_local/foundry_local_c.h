@@ -786,6 +786,11 @@ typedef struct flApi {
   /// Queries do not reset idle time. Builds without web service support return NOT_IMPLEMENTED.
   FL_API_STATUS(Manager_WebServiceActivity, _In_ const flManager* manager, _Out_ uint64_t* active_requests,
                 _Out_ uint64_t* idle_milliseconds);
+  /// Atomically fence HTTP admissions and stop only when no requests are active and the idle threshold has elapsed.
+  /// False leaves the listener and idle baseline unchanged. Shared hosts require the existing sole owner.
+  /// Does not unload models or acquire ownership. Builds without web service support return NOT_IMPLEMENTED.
+  FL_API_STATUS(Manager_TryStopWebServiceIfIdle, _Inout_ flManager* manager, uint64_t minimum_idle_milliseconds,
+                _Out_ bool* stopped);
   // End V4
   /* Append new function pointers at the end for future versions and add marker for the end of each version */
 } flApi;

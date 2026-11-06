@@ -910,6 +910,8 @@ class Manager {
   std::vector<std::string> GetWebServiceEndpoints() const;
   /// Observe HTTP work without starting the service, acquiring ownership, or resetting its monotonic idle clock.
   WebServiceActivity GetWebServiceActivity() const;
+  /// Atomically fence HTTP admissions and stop an idle listener. Does not unload models or acquire host ownership.
+  bool TryStopWebServiceIfIdle(std::chrono::milliseconds minimum_idle_duration);
 
   /// Get discoverable execution providers and their registration status.
   std::vector<EpInfo> GetDiscoverableEps() const;

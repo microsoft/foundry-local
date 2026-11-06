@@ -91,6 +91,19 @@ public class FoundryLocalManager : IDisposable
     public WebServiceActivity GetWebServiceActivity() => WithNativeManager(manager => manager.GetWebServiceActivity());
 
     /// <summary>
+    /// Atomically close HTTP admissions and stop the listener only when no requests are active and the minimum idle
+    /// duration has elapsed. Returns false without changing the listener or idle baseline when busy, including when
+    /// a shared host has other owners. Does not unload models or acquire shared-host ownership.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">The duration is negative.</exception>
+    /// <exception cref="NotSupportedException">The native runtime predates C API table version 4.</exception>
+    public bool TryStopWebServiceIfIdle(TimeSpan minimumIdleDuration)
+    {
+        Detail.Native.Manager.ValidateMinimumIdleDuration(minimumIdleDuration);
+        return WithNativeManager(manager => manager.TryStopWebServiceIfIdle(minimumIdleDuration));
+    }
+
+    /// <summary>
     /// Create the <see cref="FoundryLocalManager"/> singleton instance.
     /// </summary>
     /// <param name="configuration">Configuration to use.</param>

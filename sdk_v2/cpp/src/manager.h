@@ -96,6 +96,7 @@ class Manager {
   /// the web service is running. Throws if web service is not running.
   const std::vector<std::string>& GetWebServiceUrls() const;
   WebServiceActivity GetWebServiceActivity() const;
+  bool TryStopWebServiceIfIdle(std::uint64_t minimum_idle_milliseconds);
 
   /// Stop the embedded web service.
   void StopWebService();
@@ -161,6 +162,7 @@ class Manager {
   std::atomic<bool> shutdown_requested_{false};
   std::atomic<bool> shutdown_started_{false};
   std::atomic<bool> web_service_running_{false};
+  std::recursive_mutex web_service_mutex_;
   std::vector<std::string> bound_urls_;
   mutable std::mutex urls_mutex_;
   mutable std::set<std::vector<std::string>> url_snapshots_;

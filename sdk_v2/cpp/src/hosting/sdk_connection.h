@@ -42,7 +42,8 @@ enum class Operation : std::uint16_t {
   ProcessRequest,
   RemoveFromCache,
   RuntimeDevices,
-  WebServiceActivity
+  WebServiceActivity,
+  TryStopWebServiceIfIdle
 };
 
 constexpr bool IsResourceRelease(Operation operation) noexcept {

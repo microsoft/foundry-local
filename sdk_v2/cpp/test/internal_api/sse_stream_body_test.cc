@@ -480,6 +480,47 @@ TEST(HttpActivityTest, OverlappingRequestsResetIdleOnlyAfterTheLastCompletion) {
   EXPECT_LT(activity->Snapshot().idle_milliseconds, baseline.idle_milliseconds);
 }
 
+TEST(HttpActivityTest, IdleStopFencesAdmissionsWithoutResettingFailedChecksAndStartReopens) {
+  HttpActivityTracker activity;
+  auto work = activity.Begin();
+  EXPECT_FALSE(activity.TryBeginStop(0));
+  work.reset();
+  EXPECT_FALSE(activity.TryBeginStop(UINT64_MAX));
+  EXPECT_TRUE(activity.Begin());
+  const auto baseline = activity.Snapshot().idle_milliseconds;
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  EXPECT_FALSE(activity.TryBeginStop(UINT64_MAX));
+  EXPECT_GE(activity.Snapshot().idle_milliseconds, baseline + 10);
+  EXPECT_TRUE(activity.TryBeginStop(10));
+  EXPECT_FALSE(activity.Begin());
+  EXPECT_EQ(activity.Snapshot().active_requests, 0u);
+  const auto idle = activity.Snapshot().idle_milliseconds;
+  activity.CancelStop();
+  EXPECT_GE(activity.Snapshot().idle_milliseconds, idle);
+  EXPECT_TRUE(activity.Begin());
+  EXPECT_TRUE(activity.TryBeginStop(0));
+  activity.StartBaseline();
+  EXPECT_TRUE(activity.Begin());
+}
+
+TEST(HttpActivityTest, RacingStopAndAdmissionCannotBothSucceed) {
+  for (int i = 0; i < 100; ++i) {
+    HttpActivityTracker activity;
+    std::atomic<bool> ready{false};
+    std::shared_ptr<void> work;
+    std::thread request([&] {
+      while (!ready.load()) {
+        std::this_thread::yield();
+      }
+      work = activity.Begin();
+    });
+    ready.store(true);
+    const auto stopped = activity.TryBeginStop(0);
+    request.join();
+    EXPECT_NE(stopped, bool(work));
+  }
+}
+
 TEST(HttpActivityTest, WorkEntirelyBetweenSnapshotsResetsIdleAndExceptionsReleaseWork) {
   auto activity = std::make_shared<HttpActivityTracker>();
   std::this_thread::sleep_for(std::chrono::milliseconds(20));

@@ -157,6 +157,7 @@ class RecordingManager final : public fl::api::ManagerBackend {
   void StartWebService() override {}
   const std::vector<std::string>& GetWebServiceUrls() const override { return urls_; }
   fl::WebServiceActivity GetWebServiceActivity() const override { return {7, 0}; }
+  bool TryStopWebServiceIfIdle(std::uint64_t) override { return true; }
   void StopWebService() override {}
   std::span<const flEpInfo> GetDiscoverableEps() const override { return {}; }
   fl::api::DeviceProviders GetRuntimeDevices() const override { return {}; }

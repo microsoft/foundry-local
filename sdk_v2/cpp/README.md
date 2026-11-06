@@ -681,6 +681,18 @@ time since manager creation. Stopping the service preserves the last completion 
 Builds without HTTP service support report `NOT_IMPLEMENTED`. Older runtimes remain usable for existing APIs, but
 the new observation API requires a matching runtime supporting table version 4.
 
+Use `manager.TryStopWebServiceIfIdle(std::chrono::milliseconds minimum_idle_duration)` for a race-free idle shutdown,
+not a snapshot followed by `StopWebService()`. The C equivalent is the appended table-v4 operation
+`Manager_TryStopWebServiceIfIdle(manager, minimum_idle_milliseconds, &stopped)`. It atomically checks for no active HTTP
+requests and the minimum monotonic idle duration, closes request admissions, and returns true only after stopping
+the listener. Active requests or an unmet threshold return false without changing the listener or idle baseline.
+Late requests are rejected with HTTP 503 before their handlers run. Restart reopens admissions and resets the baseline.
+Zero is allowed; negative C++ durations are rejected. The unsigned C threshold cannot overflow the native clock.
+Shared hosting requires an already-acquired sole owner; other owners or admitted HTTP work return false. An ownerless
+hosted manager returns false without acquiring ownership. The operation never unloads models or stops native IPC.
+An embedded manager with no started listener still evaluates its creation-time idle baseline. Builds without HTTP
+support return `NOT_IMPLEMENTED`.
+
 Model management accepts exact versioned model IDs as well as legacy aliases:
 `GET /models/load/{name}` and `GET /models/unload/{name}` use the public catalog;
 `GET /catalogs/local/models/load/{name}` and `GET /catalogs/local/models/unload/{name}` use the local catalog.
