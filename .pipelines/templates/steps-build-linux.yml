@@ -24,6 +24,10 @@ steps:
 
 - template: steps-prefetch-vcpkg.yml
 
+- template: steps-cache-vcpkg.yml
+  parameters:
+    platform: 'manylinux-${{ parameters.arch }}'
+
 - task: PipAuthenticate@1
   displayName: 'Authenticate AIFoundryLocal_PublicPackages for pip'
   inputs:
@@ -84,6 +88,7 @@ steps:
       --env "HOME=$home_dir" \
       --env "VCPKG_ROOT=$(Build.BinariesDirectory)/vcpkg" \
       --env "VCPKG_DOWNLOADS=$(Build.BinariesDirectory)/vcpkg-downloads" \
+      --env VCPKG_BINARY_SOURCES \
       --env "NUGET_CACHE=$(Build.BinariesDirectory)/nuget_packages" \
       --env "SDK_VERSION=$version" \
       --env PIP_INDEX_URL \
@@ -129,6 +134,7 @@ steps:
         --env "VCPKG_ROOT=$(Build.BinariesDirectory)/vcpkg" \
         --env "FOUNDRY_TEST_DATA_DIR=$(Agent.BuildDirectory)/test-data-shared" \
         --env "TF_BUILD=true" \
+        --env "CTEST_PARALLEL_LEVEL=4" \
         --workdir "$(Build.SourcesDirectory)/sdk_v2/cpp" \
         "$(manylinuxImage)" \
         "$(Build.BinariesDirectory)/manylinux-home/venv/bin/python" build.py --test \

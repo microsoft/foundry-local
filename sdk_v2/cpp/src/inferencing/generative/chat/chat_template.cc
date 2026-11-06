@@ -263,21 +263,37 @@ std::string BuildCanonicalToolMessagesJson(const std::vector<TranscriptMessage>&
 
   auto instructions =
       "Tool calling protocol for this conversation:\nAvailable tools:\n" +
-      (protect_literal ? protect_literal(tool_ctx.tools_json) : tool_ctx.tools_json) +
-      "\nTo call tools, emit " + tool_ctx.tool_call_start +
-      " followed by a JSON array of objects with exactly the keys \"name\" and \"parameters\", then " +
-      tool_ctx.tool_call_end +
-      ". \"name\" must be a declared tool name and \"parameters\" must be its argument object. "
-      "Use the dedicated tool boundary tokens, not a textual description or substitute characters. "
-      "Emit the call block itself, without quoting it or using Markdown. "
-      "Put all calls for this turn in one array inside one pair of tool boundaries. "
-      "After the closing boundary, stop and wait for the external tool results. "
-      "Use {} for parameterless tools. Do not use XML function or parameter tags. "
-      "Each argument object must satisfy its tool's complete JSON Schema. "
-      "Properties may appear in any order; omit unused optional properties. "
-      "Preserve argument values exactly. JSON escaping, including Unicode escapes for literal angle brackets "
-      "in strings, preserves the decoded value and is not substitution. "
-      "If no tool is needed, answer normally.";
+      (protect_literal ? protect_literal(tool_ctx.tools_json) : tool_ctx.tools_json);
+  if (tool_ctx.fenced_tool_call_output) {
+    instructions +=
+        "\nYou must call a declared tool for this turn. Emit one JSON code fence containing an array of objects "
+        "with exactly the keys \"name\" and \"parameters\". \"name\" must be a declared tool name and "
+        "\"parameters\" must be its argument object. Do not emit text before or after the fence. "
+        "Use {} for parameterless tools. Each argument object must satisfy its tool's complete JSON Schema. "
+        "Preserve argument values exactly. After the closing fence, stop and wait for the external tool results. "
+        "Use this exact shape: ```json\n"
+        "[{\"name\":\"tool_name\",\"parameters\":{\"argument\":\"value\"}}]\n"
+        "```. Replace the example names and values with a declared tool and its requested arguments.";
+    if (tool_ctx.forced_tool) {
+      instructions += " Call exactly the tool \"" + tool_ctx.forced_tool->name + "\".";
+    }
+  } else {
+    instructions +=
+        "\nTo call tools, emit " + tool_ctx.tool_call_start +
+        " followed by a JSON array of objects with exactly the keys \"name\" and \"parameters\", then " +
+        tool_ctx.tool_call_end +
+        ". \"name\" must be a declared tool name and \"parameters\" must be its argument object. "
+        "Use the dedicated tool boundary tokens, not a textual description or substitute characters. "
+        "Emit the call block itself, without quoting it or using Markdown. "
+        "Put all calls for this turn in one array inside one pair of tool boundaries. "
+        "After the closing boundary, stop and wait for the external tool results. "
+        "Use {} for parameterless tools. Do not use XML function or parameter tags. "
+        "Each argument object must satisfy its tool's complete JSON Schema. "
+        "Properties may appear in any order; omit unused optional properties. "
+        "Preserve argument values exactly. JSON escaping, including Unicode escapes for literal angle brackets "
+        "in strings, preserves the decoded value and is not substitution. "
+        "If no tool is needed, answer normally.";
+  }
   if (const auto* raw = tool_ctx.ActiveRawEnvelope()) {
     const auto raw_instructions =
         "\nThe custom tool \"" + raw->tool_name + "\" also accepts a raw envelope instead of a JSON call. "
