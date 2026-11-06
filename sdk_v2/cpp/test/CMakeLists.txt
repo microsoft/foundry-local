@@ -334,21 +334,32 @@ list(JOIN foundry_parallel_suites ":" foundry_parallel_filter)
 # foundry_local.dll links against Microsoft.Windows.AI.MachineLearning.dll
 # (delay-loaded) plus standalone ORT, and process startup + gtest enumeration
 # can exceed 5s on cold caches or slow CI agents. Bump to 60s for headroom.
-gtest_discover_tests(foundry_local_tests
-    WORKING_DIRECTORY $<TARGET_FILE_DIR:foundry_local_tests>
-    DISCOVERY_MODE PRE_TEST
-    DISCOVERY_TIMEOUT 60
-    TEST_FILTER "${foundry_parallel_filter}"
-    TEST_LIST foundry_parallel_tests
-)
-gtest_discover_tests(foundry_local_tests
-    WORKING_DIRECTORY $<TARGET_FILE_DIR:foundry_local_tests>
-    DISCOVERY_MODE PRE_TEST
-    DISCOVERY_TIMEOUT 60
-    TEST_FILTER "-${foundry_parallel_filter}"
-    TEST_LIST foundry_serial_tests
-    PROPERTIES RUN_SERIAL TRUE
-)
+if(CMAKE_VERSION VERSION_LESS 3.22)
+    # TEST_FILTER was added in 3.22. Keep one unfiltered, serial discovery on older CMake.
+    set(foundry_parallel_filter "")
+    gtest_discover_tests(foundry_local_tests
+        WORKING_DIRECTORY $<TARGET_FILE_DIR:foundry_local_tests>
+        DISCOVERY_MODE PRE_TEST
+        DISCOVERY_TIMEOUT 60
+        PROPERTIES RUN_SERIAL TRUE
+    )
+else()
+    gtest_discover_tests(foundry_local_tests
+        WORKING_DIRECTORY $<TARGET_FILE_DIR:foundry_local_tests>
+        DISCOVERY_MODE PRE_TEST
+        DISCOVERY_TIMEOUT 60
+        TEST_FILTER "${foundry_parallel_filter}"
+        TEST_LIST foundry_parallel_tests
+    )
+    gtest_discover_tests(foundry_local_tests
+        WORKING_DIRECTORY $<TARGET_FILE_DIR:foundry_local_tests>
+        DISCOVERY_MODE PRE_TEST
+        DISCOVERY_TIMEOUT 60
+        TEST_FILTER "-${foundry_parallel_filter}"
+        TEST_LIST foundry_serial_tests
+        PROPERTIES RUN_SERIAL TRUE
+    )
+endif()
 
 add_test(
     NAME FoundryLocalVersionConfigureTwice
@@ -520,7 +531,7 @@ if(NOT CMAKE_CROSSCOMPILING AND NOT ANDROID AND NOT IOS)
             --build-dir ${PROJECT_BINARY_DIR}
             --config $<CONFIG>
             --unit-binary $<TARGET_FILE:foundry_local_tests>
-            --parallel-filter "${foundry_parallel_filter}")
+            "--parallel-filter=${foundry_parallel_filter}")
 endif()
 
 # Discovered Google Tests are registered at test time; the tests available

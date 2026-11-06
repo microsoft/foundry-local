@@ -44,7 +44,7 @@ def main():
     )
     actual = Counter()
     parallel_count = 0
-    patterns = args.parallel_filter.split(":")
+    patterns = list(filter(None, args.parallel_filter.split(":")))
     for test in json.loads(manifest.stdout)["tests"]:
         command = test.get("command", [])
         properties = {prop["name"]: prop["value"] for prop in test["properties"]}
@@ -63,7 +63,7 @@ def main():
 
     if actual != expected:
         raise RuntimeError(f"Missing tests: {expected - actual}; duplicated/unexpected tests: {actual - expected}")
-    if parallel_count == 0:
+    if patterns and parallel_count == 0:
         raise RuntimeError("No parallel-safe unit tests were registered")
     print(f"All {sum(expected.values())} unit tests registered exactly once; "
           f"{parallel_count} parallel-safe tests; all other tests serialized.")
