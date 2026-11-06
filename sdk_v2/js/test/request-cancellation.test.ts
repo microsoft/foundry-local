@@ -97,6 +97,20 @@ describe("non-streaming request cancellation", () => {
     test.reject(failure);
     await expect(pending).rejects.toBe(failure);
   });
+
+  it.each([false, true])("preserves successful completion when racing an abort (aborted=%s)", async (aborted) => {
+    vi.useFakeTimers();
+    const test = fixture();
+    const controller = new AbortController();
+    const removeListener = vi.spyOn(controller.signal, "removeEventListener");
+    const pending = test.session.processRequest(test.request, { signal: controller.signal });
+    if (aborted) controller.abort();
+    const response = {} as NativeResponse;
+    test.resolve(response);
+    await expect(pending).resolves.toBe(response);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(removeListener).toHaveBeenCalledWith("abort", expect.any(Function));
+  });
 });
 
 describe("streaming request cancellation", () => {

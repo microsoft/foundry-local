@@ -59,21 +59,27 @@ describe.skipIf(!haveTestModelCache)("ChatClient (real model, V1 OpenAI-JSON pas
   });
 
   it(
-    "completeChat propagates AbortSignal cancellation and permits a subsequent call",
+    "completeChat handles the cancellation/completion race and permits a subsequent call",
     async () => {
       if (client === undefined) throw new Error("client missing");
       client.settings.maxTokens = 256;
       client.settings.temperature = 0;
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 100);
+      controller.abort();
+      await expect(
+        client.completeChat([{ role: "user", content: "Say hello." }], undefined, { signal: controller.signal }),
+      ).rejects.toMatchObject({ name: "AbortError" });
+      const activeController = new AbortController();
+      const timer = setTimeout(() => activeController.abort(), 100);
       try {
-        await expect(
-          client.completeChat(
-            [{ role: "user", content: "Count from 1 to 10000, writing every integer on its own line." }],
-            undefined,
-            { signal: controller.signal },
-          ),
-        ).rejects.toMatchObject({ name: "AbortError" });
+        const result = await client.completeChat(
+          [{ role: "user", content: "Count from 1 to 10000, writing every integer on its own line." }],
+          undefined,
+          { signal: activeController.signal },
+        );
+        expect(result.choices.length).toBeGreaterThan(0);
+      } catch (error) {
+        expect(error).toMatchObject({ name: "AbortError" });
       } finally {
         clearTimeout(timer);
       }
