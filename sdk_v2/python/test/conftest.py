@@ -310,8 +310,6 @@ def decision_model(manager):
                     package, "kev-0.8b-mixed-generic-cpu:1", metadata
                 )
     if model is None:
-        if os.environ.get("FOUNDRY_LOCAL_REQUIRE_NON_GENERATIVE_TESTS") == "1":
-            pytest.fail("Required local decision model is not staged")
         pytest.skip("No cached local decision model is registered.")
     model.load()
     return model

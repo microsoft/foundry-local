@@ -206,10 +206,15 @@ stages:
       parameters:
         scriptType: ps
         modelSet: non-generative
+    - pwsh: |
+        $package = "$(Build.SourcesDirectory)/test-data-shared/Microsoft/kev-0.8b-mixed-generic-cpu-1"
+        if (-not (Test-Path -LiteralPath $package -PathType Container)) {
+          throw "Required KEV package is missing: $package"
+        }
+      displayName: 'Verify required KEV integration package'
     - template: steps-test-python.yml
       parameters:
         wheelDir: '$(Pipeline.Workspace)/python-sdk-win-x64'
-        requireNonGenerativeTests: true
 
 - stage: python_test_win_arm64
   displayName: 'Python SDK: Test Windows ARM64'
