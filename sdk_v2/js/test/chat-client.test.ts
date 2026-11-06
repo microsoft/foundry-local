@@ -58,30 +58,34 @@ describe.skipIf(!haveTestModelCache)("ChatClient (real model, V1 OpenAI-JSON pas
     client = undefined;
   });
 
-  it(
-    "completeChat handles the cancellation/completion race and permits a subsequent call",
-    async () => {
+  it.each([false, true])(
+    "completeChat permits reuse after cancellation or native completion (pre-aborted=%s)",
+    async (cancelBeforeStart) => {
       if (client === undefined) throw new Error("client missing");
       client.settings.maxTokens = 256;
       client.settings.temperature = 0;
       const controller = new AbortController();
-      controller.abort();
-      await expect(
-        client.completeChat([{ role: "user", content: "Say hello." }], undefined, { signal: controller.signal }),
-      ).rejects.toMatchObject({ name: "AbortError" });
-      const activeController = new AbortController();
-      const timer = setTimeout(() => activeController.abort(), 100);
+      if (cancelBeforeStart) controller.abort();
+      const timer = cancelBeforeStart ? undefined : setTimeout(() => controller.abort(), 100);
       try {
-        const result = await client.completeChat(
-          [{ role: "user", content: "Count from 1 to 10000, writing every integer on its own line." }],
-          undefined,
-          { signal: activeController.signal },
-        );
-        expect(result.choices.length).toBeGreaterThan(0);
-      } catch (error) {
-        expect(error).toMatchObject({ name: "AbortError" });
+        await client
+          .completeChat(
+            [{ role: "user", content: "Count from 1 to 10000, writing every integer on its own line." }],
+            undefined,
+            { signal: controller.signal },
+          )
+          .then(
+            (result) => {
+              // A short answer can finish before the abort timer, even with a large maximum token budget.
+              expect(cancelBeforeStart).toBe(false);
+              expect(result.choices.length).toBeGreaterThan(0);
+            },
+            (error: unknown) => {
+              expect(error).toMatchObject({ name: "AbortError" });
+            },
+              );
       } finally {
-        clearTimeout(timer);
+        if (timer !== undefined) clearTimeout(timer);
       }
       client.settings.maxTokens = 8;
       const result = await client.completeChat([{ role: "user", content: "Say hello." }]);
