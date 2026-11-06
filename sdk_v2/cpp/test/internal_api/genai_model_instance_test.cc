@@ -165,6 +165,25 @@ TEST(ModelCapabilitiesTest, GenericTaggedJsonProtocolIsOnboarded) {
   EXPECT_TRUE(capabilities.positional_tool_results);
 }
 
+TEST(ModelCapabilitiesTest, NativeXmlProtocolUsesPublishedCustomBoundaries) {
+  constexpr std::string_view kToolCallProjection =
+      "Capability probe\n"
+      "<|tool_start|>\n"
+      "<function=probe_function>\n"
+      "<parameter=probe_parameter>\n"
+      "probe_value\n"
+      "</parameter>\n"
+      "</function>\n"
+      "<|tool_end|>";
+
+  const auto capabilities = fl::model_capabilities_internal::ResolveRenderedProbes(
+      "custom", kToolCallProjection, {}, "<|tool_start|>", "<|tool_end|>");
+
+  EXPECT_TRUE(capabilities.supports_tool_calling);
+  EXPECT_TRUE(capabilities.native_qwen_xml_tool_calls);
+  EXPECT_FALSE(capabilities.native_tagged_json_tool_calls);
+}
+
 TEST(ModelCapabilitiesTest, CallSerializationWithoutRenderedDefinitionsDoesNotEnableNativeProtocol) {
   constexpr std::string_view kCallOnlyProjection =
       "<tool_call>{\"name\":\"probe_function\",\"arguments\":"

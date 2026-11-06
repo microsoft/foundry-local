@@ -227,6 +227,24 @@ TEST(QwenTaggedJsonToolCallAccumulatorTest, RejectsMalformedEnvelopeWithoutPubli
   EXPECT_TRUE(CollectCalls(outputs).empty());
 }
 
+TEST(QwenTaggedJsonToolCallAccumulatorTest, UsesRequestPublishedBoundaries) {
+  constexpr std::string_view start = "<|tool_start|>";
+  constexpr std::string_view end = "<|tool_end|>";
+  ToolCallStreamAccumulator accumulator(
+      std::string(start), std::string(end), kQwenTools, "",
+      CreateQwenTaggedJsonToolCallPayloadParser(
+          kQwenTools, kQwenToolKinds, std::string(start), std::string(end)));
+
+  auto outputs = RunChunks(
+      accumulator,
+      SplitIntoBytes(
+          R"(<|tool_start|>{"name":"typed","arguments":{"text":"value"}}<|tool_end|>)"));
+  auto calls = CollectCalls(outputs);
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "typed");
+  EXPECT_EQ(calls[0].arguments, R"({"text":"value"})");
+}
+
 TEST(QwenXmlToolCallAccumulatorTest, ValidCallIsHiddenAndEmittedOnlyWhenBatchEnds) {
   auto acc = MakeQwenAccumulator();
   const std::string generated =
@@ -251,6 +269,29 @@ TEST(QwenXmlToolCallAccumulatorTest, ValidCallIsHiddenAndEmittedOnlyWhenBatchEnd
   EXPECT_TRUE(call.id.starts_with("call_"));
   EXPECT_EQ(std::get<std::string>(completed.events[1]), "after");
   EXPECT_FALSE(acc.InsideToolCall());
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, UsesRequestPublishedBoundaries) {
+  constexpr std::string_view start = "<|tool_start|>";
+  constexpr std::string_view end = "<|tool_end|>";
+  ToolCallStreamAccumulator accumulator(
+      std::string(start), std::string(end), kQwenTools, "",
+      CreateQwenXmlToolCallPayloadParser(
+          kQwenTools, kQwenToolKinds, false, std::string(start), std::string(end)));
+  const std::string generated =
+      "<|tool_start|>\n"
+      "<function=typed>\n"
+      "<parameter=text>\n"
+      "value\n"
+      "</parameter>\n"
+      "</function>\n"
+      "<|tool_end|>";
+
+  auto outputs = RunChunks(accumulator, SplitIntoBytes(generated));
+  auto calls = CollectCalls(outputs);
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "typed");
+  EXPECT_EQ(calls[0].arguments, R"({"text":"value"})");
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, UnsupportedSchemaKeywordsRemainUnadmittable) {
@@ -667,10 +708,10 @@ TEST(QwenXmlToolCallAccumulatorTest, ScopedPlanningRequiresNativeAutomaticEngine
   EXPECT_FALSE(plan());
   context.tool_call_end_token_id = 248059;
   context.tool_call_start = "<custom_tool_call>";
-  EXPECT_FALSE(plan());
+  EXPECT_TRUE(plan());
   context.tool_call_start = "<tool_call>";
   context.tool_call_end = "</custom_tool_call>";
-  EXPECT_FALSE(plan());
+  EXPECT_TRUE(plan());
   context.tool_call_end = "</tool_call>";
   context.tool_call_start_token_id = -1;
   EXPECT_FALSE(plan());

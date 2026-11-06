@@ -686,25 +686,28 @@ TEST(ChatSessionDecisionTest, InvalidLaterCustomCallPreventsTheWholeBatchFromStr
   EXPECT_EQ(streamed_calls, 0u);
 }
 
-TEST(ChatSessionDecisionTest, CompletedCallGuardRejectsExactRepeatButAllowsDifferentArguments) {
+TEST(ChatSessionDecisionTest, CompletedCallGuardUsesGenericSemanticArguments) {
   ToolCallContext context;
-  context.completed_tool_calls = {{"get_weather", R"({"city":"Paris"})"}};
+  context.completed_tool_calls = {
+      {"perform_action", R"({"request":{"id":7,"flags":["a","b"]},"enabled":true})"}};
 
   ToolCallStreamAccumulator::Output repeated;
   repeated.events.emplace_back(
-      ParsedToolCall{"call_1", "get_weather", R"({"city":"Paris"})"});
+      ParsedToolCall{"call_1", "perform_action",
+                     R"({ "enabled": true, "request": { "flags": ["a", "b"], "id": 7 } })"});
   EXPECT_THROW(
       chat_session_internal::NormalizeToolOutputBatch(repeated, context),
       fl::Exception);
 
   ToolCallStreamAccumulator::Output pending;
   pending.events.emplace_back(
-      ParsedToolCall{"call_2", "get_weather", R"({"city":"London"})"});
+      ParsedToolCall{"call_2", "perform_action",
+                     R"({"request":{"id":8,"flags":["a","b"]},"enabled":true})"});
   EXPECT_NO_THROW(
       chat_session_internal::NormalizeToolOutputBatch(pending, context));
   ASSERT_EQ(pending.events.size(), 1u);
   EXPECT_EQ(std::get<ParsedToolCall>(pending.events.front()).arguments,
-            R"({"city":"London"})");
+            R"({"request":{"id":8,"flags":["a","b"]},"enabled":true})");
 }
 
 TEST(ChatSessionDecisionTest, CustomBatchNormalizationUsesTheCompleteArgumentSource) {

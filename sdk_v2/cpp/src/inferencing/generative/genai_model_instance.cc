@@ -65,15 +65,6 @@ constexpr const char* kReasoningProbeMessages = R"([
 ])";
 constexpr const char* kDisableReasoningPreservation = R"({"preserve_thinking":false})";
 
-constexpr std::string_view kExpectedToolCallBlock =
-    "<tool_call>\n"
-    "<function=probe_function>\n"
-    "<parameter=probe_parameter>\n"
-    "probe_value\n"
-    "</parameter>\n"
-    "</function>\n"
-    "</tool_call>";
-
 bool ContainsInOrder(std::string_view text, std::initializer_list<std::string_view> values) {
   size_t offset = 0;
   for (const auto value : values) {
@@ -200,7 +191,11 @@ ModelCapabilities model_capabilities_internal::ResolveRenderedProbes(
   const bool native_qwen_xml_tool_calls =
       supports_tool_calling &&
       tool_call_projection.find(kToolDefinitionProbeDescription) != std::string_view::npos &&
-      tool_call_projection.find(kExpectedToolCallBlock) != std::string_view::npos;
+      std::ranges::any_of(tool_call_regions, [](const auto& region) {
+        return ContainsInOrder(region.body,
+                               {"<function=probe_function>", "<parameter=probe_parameter>",
+                                "probe_value", "</parameter>", "</function>"});
+      });
   const bool native_tagged_json_tool_calls =
       supports_tool_calling &&
       tool_call_projection.find(kToolDefinitionProbeDescription) != std::string_view::npos &&

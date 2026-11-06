@@ -473,11 +473,13 @@ ToolCallPayloadParser CreateToolCallPayloadParser(const ToolCallContext& context
   if (context.tool_plan && context.tool_output && context.HasToolCallTokens()) {
     if (context.native_qwen_xml_tool_calls) {
       return CreateQwenXmlToolCallPayloadParser(context.tools_json, context.tool_kinds,
-                                                /*recovery_aware=*/true);
+                                                /*recovery_aware=*/true,
+                                                context.tool_call_start, context.tool_call_end);
     }
     if (context.native_tagged_json_tool_calls) {
       return CreateQwenTaggedJsonToolCallPayloadParser(
-          context.tools_json, context.tool_kinds);
+          context.tools_json, context.tool_kinds,
+          context.tool_call_start, context.tool_call_end);
     }
     return CreateJsonToolCallPayloadParser(context.tool_plan, context.tool_call_start, context.tool_call_end,
                                            context.parallel_tool_calls);
@@ -500,8 +502,8 @@ std::optional<std::string> FindRepeatedCompletedToolCall(
             return false;
           }
           try {
-            return nlohmann::ordered_json::parse(completed.second) ==
-                   nlohmann::ordered_json::parse(call->arguments);
+            return nlohmann::json::parse(completed.second) ==
+                   nlohmann::json::parse(call->arguments);
           } catch (const nlohmann::json::exception&) {
             return completed.second == call->arguments;
           }
@@ -1152,7 +1154,9 @@ GuidedToolRetryResult RunGuidedToolRetry(const chat_internal::PreparedChatMessag
     ToolCallStreamAccumulator accumulator(
         tool_ctx.tool_call_start, tool_ctx.tool_call_end, tool_ctx.tools_json,
         tool_ctx.reasoning_end,
-        CreateQwenTaggedJsonToolCallPayloadParser(tool_ctx.tools_json, tool_ctx.tool_kinds),
+        CreateQwenTaggedJsonToolCallPayloadParser(
+            tool_ctx.tools_json, tool_ctx.tool_kinds,
+            tool_ctx.tool_call_start, tool_ctx.tool_call_end),
         /*canonical_json_payload=*/true);
     auto output = accumulator.Push(tagged_output);
     auto terminal = accumulator.Flush();
@@ -1550,12 +1554,6 @@ ToolCallContext BuildToolCallContextForRequest(const Request& request,
       tool_ctx.native_tagged_json_tool_calls =
           model.HasNativeTaggedJsonToolCalls() && !tool_ctx.ActiveRawEnvelope();
       if (tool_ctx.native_qwen_xml_tool_calls || tool_ctx.native_tagged_json_tool_calls) {
-        if (tool_ctx.native_tagged_json_tool_calls && model.ModelType().starts_with("qwen")) {
-          tool_ctx.tool_call_start = std::string(kQwenXmlToolCallStartMarker);
-          tool_ctx.tool_call_end = std::string(kQwenXmlToolCallEndMarker);
-          tool_ctx.tool_call_start_token_id.reset();
-          tool_ctx.tool_call_end_token_id.reset();
-        }
         tool_ctx.supports_reasoning_history = false;
         tool_ctx.guidance_disabled = true;
       }
