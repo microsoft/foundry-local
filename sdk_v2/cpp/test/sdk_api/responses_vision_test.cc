@@ -124,7 +124,7 @@ TEST_F(ResponsesVisionIntegrationTest, ImageOnlyMessageProducesOutput) {
   EXPECT_FALSE(response.value("output_text", "").empty());
 }
 
-TEST_F(ResponsesVisionIntegrationTest, ImageDataProducesOutput) {
+TEST_F(ResponsesVisionIntegrationTest, LegacyImageDataProducesOutput) {
   auto client = MakeClient();
   client.set_read_timeout(600, 0);
 
@@ -197,12 +197,10 @@ TEST_F(ResponsesVisionIntegrationTest, TwoImagesProduceOutput) {
                                       {"text", "Describe both images in one short sentence."}},
                                      {{"type", "input_image"},
                                       {"detail", "low"},
-                                      {"image_data", kTinyPngBase64},
-                                      {"media_type", "image/png"}},
+                                      {"image_url", std::string("data:image/png;base64,") + kTinyPngBase64}},
                                      {{"type", "input_image"},
                                       {"detail", "low"},
-                                      {"image_data", kTinyPngBase64},
-                                      {"media_type", "image/png"}},
+                                      {"image_url", std::string("data:image/png;base64,") + kTinyPngBase64}},
                                  })}},
                 })},
       {"max_output_tokens", 512},
@@ -243,8 +241,7 @@ TEST_F(ResponsesVisionIntegrationTest, ImageWithDeclaredToolsIsRejected) {
                                      {{"type", "input_text"}, {"text", "What is in this image?"}},
                                      {{"type", "input_image"},
                                       {"detail", "low"},
-                                      {"image_data", kTinyPngBase64},
-                                      {"media_type", "image/png"}},
+                                      {"image_url", std::string("data:image/png;base64,") + kTinyPngBase64}},
                                  })}},
                 })},
       {"tools", json::array({{{"type", "function"},
@@ -288,8 +285,7 @@ TEST_F(ResponsesVisionIntegrationTest, ImageOnAContinuationIsRejected) {
                                        {{"type", "input_text"}, {"text", "And this image?"}},
                                        {{"type", "input_image"},
                                         {"detail", "low"},
-                                        {"image_data", kTinyPngBase64},
-                                        {"media_type", "image/png"}},
+                                        {"image_url", std::string("data:image/png;base64,") + kTinyPngBase64}},
                                    })}},
                   })},
         {"max_output_tokens", 64},

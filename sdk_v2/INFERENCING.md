@@ -122,6 +122,33 @@ A **tool call** is a request from the model to your application, not an automati
 executed function. Your application runs the tool and sends a tool-result item, with
 the matching call ID, in the next request. See the [tool-calling example](cpp/examples/tool_calling/main.cc).
 
+### Inline images in Responses JSON
+
+For `POST /v1/responses`, send inline images as `input_image` parts with an
+`image_url` containing a base64 data URL. The MIME type is included in the URL:
+
+```json
+{
+  "model": "<vision-model-id>",
+  "input": [{
+    "role": "user",
+    "content": [
+      {"type": "input_text", "text": "Describe this image."},
+      {"type": "input_image", "image_url": "data:image/png;base64,<base64-image-bytes>"}
+    ]
+  }]
+}
+```
+
+Use the MIME type matching the encoded image, such as `image/png` or `image/jpeg`.
+The separate `image_data` (raw base64) and `media_type` fields remain accepted as a
+Foundry Local compatibility extension; prefer `image_url` data URLs for new requests.
+Remote HTTP(S) image fetching is not supported. Image input is restricted to the
+first conversation turn and cannot be combined with tool definitions.
+
+This JSON representation is separate from typed SDK `ImageItem` input, which can
+carry binary image-file bytes directly without base64 encoding.
+
 ## Run a request, then stream a follow-up
 
 The examples below perform the same two-turn conversation. The first request returns
