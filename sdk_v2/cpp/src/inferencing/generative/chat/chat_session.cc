@@ -804,9 +804,10 @@ struct GuidedToolRetryResult {
   bool canceled = false;
 };
 
-[[noreturn]] void ThrowInvalidGuidedToolRetry(const std::string& detail) {
+[[noreturn]] void ThrowInvalidGuidedToolRetry(const std::string& validation_error, const std::string& detail) {
   FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
-           "Model emitted a malformed tool call and guided recovery did not produce a valid tool call: " + detail);
+           "Model emitted a malformed tool call and guided recovery did not produce a valid tool call. "
+           "Original tool-call error: " + validation_error + ". Recovery error: " + detail);
 }
 
 std::vector<ParsedToolCall> ParseStrictGuidedToolCalls(const std::string& text, const ToolCallContext& tool_ctx) {
@@ -942,31 +943,53 @@ GuidedToolRetryResult RunGuidedToolRetry(const chat_internal::PreparedChatMessag
   }
 
   if (!token_boundary_error.empty()) {
-    ThrowInvalidGuidedToolRetry(token_boundary_error);
+    ThrowInvalidGuidedToolRetry(validation_error, token_boundary_error);
   }
 
+  const bool output_budget_exhausted =
+      host_output_limit_reached ||
+      (options.max_output_tokens && result.total_tokens - result.prompt_tokens > *options.max_output_tokens) ||
+      result.termination_cause == BackendTerminationCause::kOutputTokenLimit ||
+      result.termination_cause == BackendTerminationCause::kSessionTokenLimit;
   const bool natural_end = chat_session_internal::IsNaturalToolOutputEnd(
       /*canceled=*/false, /*stop_sequence_matched=*/false,
-      host_output_limit_reached ||
-          (options.max_output_tokens && result.total_tokens - result.prompt_tokens > *options.max_output_tokens),
-      result.termination_cause);
+      output_budget_exhausted, result.termination_cause);
   result.reasoning_tokens = splitter.ReasoningTokenCount();
+
+  if (!natural_end) {
+    ThrowInvalidGuidedToolRetry(validation_error, output_budget_exhausted
+                                                    ? "Guided recovery exhausted its remaining token budget"
+                                                    : "Incomplete or interrupted tool-call output");
+  }
 
   if (tool_ctx.tool_call_start_token_id && tool_ctx.tool_call_end_token_id &&
       !boundary_validator.HasCompleteTokenOwnedEnvelope()) {
-    ThrowInvalidGuidedToolRetry("Missing token-owned tool-call boundaries");
+    ThrowInvalidGuidedToolRetry(validation_error, "Missing token-owned tool-call boundaries");
   }
 
-  auto calls = ParseStrictGuidedToolCalls(structured_output, tool_ctx);
-  if (!natural_end || calls.empty()) {
-    ThrowInvalidGuidedToolRetry("Incomplete, interrupted, or over-budget tool-call output");
+  std::vector<ParsedToolCall> calls;
+  try {
+    calls = ParseStrictGuidedToolCalls(structured_output, tool_ctx);
+    for (auto& call : calls) {
+      ToolCallStreamAccumulator::Output output;
+      output.events.emplace_back(std::move(call));
+      chat_session_internal::NormalizeToolOutputBatch(output, tool_ctx);
+      call = std::move(std::get<ParsedToolCall>(output.events.front()));
+    }
+  } catch (const Exception& error) {
+    if (error.code() != FOUNDRY_LOCAL_ERROR_INTERNAL) {
+      throw;
+    }
+
+    ThrowInvalidGuidedToolRetry(validation_error, error.what());
+  }
+
+  if (calls.empty()) {
+    ThrowInvalidGuidedToolRetry(validation_error, "Incomplete tool-call output");
   }
 
   for (auto& call : calls) {
-    ToolCallStreamAccumulator::Output output;
-    output.events.emplace_back(std::move(call));
-    chat_session_internal::NormalizeToolOutputBatch(output, tool_ctx);
-    result.events.emplace_back(std::move(std::get<ParsedToolCall>(output.events.front())));
+    result.events.emplace_back(std::move(call));
   }
 
   return result;
