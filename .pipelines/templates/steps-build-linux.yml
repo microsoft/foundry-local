@@ -159,8 +159,8 @@ steps:
         --workdir "$(Build.SourcesDirectory)/sdk_v2/cpp" \
         "$(manylinuxImage)" \
         build/Linux/${{ parameters.buildConfig }}/bin/non_generative_sdk_tests \
-          --gtest_filter=NonGenerativeSdkTest.RequiredKevPackageRunsFromSharedCache
-    displayName: 'Run required KEV real-model integration'
+          '--gtest_filter=NonGenerativeSdkTest.Required*'
+    displayName: 'Run required non-generative real-model integration'
 
 - bash: |
     echo "=== vcpkg buildtrees error logs ==="

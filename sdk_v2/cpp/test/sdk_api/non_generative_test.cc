@@ -196,4 +196,53 @@ TEST(NonGenerativeSdkTest, RequiredKevPackageRunsFromSharedCache) {
   std::filesystem::remove_all(app_data, ec);
 }
 
+TEST(NonGenerativeSdkTest, RequiredClmPackageRunsFromSharedCache) {
+  const auto test_data = fl::test::SafeGetEnv("FOUNDRY_TEST_DATA_DIR");
+  ASSERT_FALSE(test_data.empty())
+      << "FOUNDRY_TEST_DATA_DIR is required for this real-model test";
+  const auto package =
+      std::filesystem::path(test_data) / "Microsoft" /
+      "clm-v0.1-8b-mixed-generic-cpu-1";
+  if (!std::filesystem::is_directory(package))
+    FAIL() << "required CLM package is missing: " << package;
+
+  const auto app_data =
+      std::filesystem::temp_directory_path() /
+      ("fl_required_clm_sdk_" +
+       std::to_string(
+           std::chrono::steady_clock::now().time_since_epoch().count()));
+  std::filesystem::create_directories(app_data);
+  {
+    foundry_local::Configuration config("required-clm-sdk-test");
+    config.SetAppDataDir(app_data.string());
+    foundry_local::Manager manager(std::move(config));
+    auto& catalog = manager.GetCatalog(FOUNDRY_LOCAL_CATALOG_LOCAL);
+    foundry_local::ModelInfo metadata;
+    metadata.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR,
+                               "text-ranking");
+    auto model = catalog.RegisterModel(
+        package.string(), "clm-v0.1-8b-mixed-generic-cpu:1", metadata);
+    model->Load();
+    EXPECT_TRUE(model->IsLoaded());
+    {
+      foundry_local::RankingSession session(*model);
+      const auto result = nlohmann::json::parse(session.RankJson(
+          nlohmann::json{
+              {"context", {{"weather", "heavy rain"}}},
+              {"question", "Which activity is more suitable?"},
+              {"answers",
+               {"Have a picnic outdoors", "Visit an indoor museum"}}}
+              .dump()));
+      ASSERT_EQ(result.at("ranked").size(), 2u);
+      EXPECT_EQ(result.at("ranked").at(0).at("index"), 0u);
+      EXPECT_THROW(model->Unload(), foundry_local::Error);
+    }
+    EXPECT_TRUE(model->IsLoaded());
+    model->Unload();
+    EXPECT_FALSE(model->IsLoaded());
+  }
+  std::error_code ec;
+  std::filesystem::remove_all(app_data, ec);
+}
+
 }  // namespace
