@@ -61,10 +61,12 @@ class ProviderBackend final : public api::ManagerBackend {
   api::CatalogBackend& GetCatalog(CatalogType) override {
     FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED, "provider fixture has no catalog");
   }
-  std::unique_ptr<api::ModelBackend> CaptureModel(const api::ModelBackend&) override {
+  std::unique_ptr<api::ModelBackend> CaptureModel(
+      const api::ModelBackend&, std::unique_ptr<LoadedSelectionReservation>*) override {
     FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED, "provider fixture has no model");
   }
   bool IsModelArtifactLoaded(const std::string&, const std::string&) const override { return false; }
+  void ReconcileLoadedSelections(const std::function<bool(const std::string&, const std::string&)>&) override {}
   void UnloadModelArtifact(const std::string&, const std::string&) override {}
   void StartWebService() override {}
   const std::vector<std::string>& GetWebServiceUrls() const override { return urls_; }
@@ -501,6 +503,7 @@ TEST_F(SdkSessionTest, HostedManagerReconcilesLiveRegistrationsAndRetainsCapture
   catalog.UnregisterModel("hosted-live:1");
   EXPECT_THROW(model->Load(), Exception);
   EXPECT_FALSE(model->IsLoaded());
+  EXPECT_NO_THROW(model->Unload());
   hosted.reset();
   EXPECT_EQ(capture->Info().model_id, "hosted-live:1");
   EXPECT_THROW(capture->CreateSession(), Exception);
@@ -525,6 +528,165 @@ TEST_F(SdkSessionTest, HostedManagerDisposalClosesOnlyTheClientAndInvalidatesIts
   auto independent = manager_->GetCatalog(CatalogType::kLocal).GetModelVariant("tiny-rpc:1")->CreateSession();
   independent->ProcessRequest(request, response);
   EXPECT_EQ(AssistantText(response).size(), 17);
+}
+
+TEST_F(SdkSessionTest, HostedAliasLoadIsReleasedByVariantAndCapturedHandleUnloads) {
+  auto context = ClientContext();
+  auto hosted = api::CreateHostedBackend(manager_, [&](bool) { return context; });
+  auto& catalog = hosted->GetCatalog(CatalogType::kLocal);
+  const auto path = (std::filesystem::path(FOUNDRY_LOCAL_TEST_DATA_DIR) / "tiny-paged-attention").string();
+  ModelInfo info;
+  info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "coding");
+  for (const bool capture : {false, true}) {
+    const std::string alias = capture ? "captured-pin" : "variant-pin";
+    SCOPED_TRACE(alias);
+    auto* variant = catalog.RegisterModel(path, alias + ":1", info);
+    auto* model = catalog.GetModel(alias);
+    ASSERT_NE(model, nullptr);
+    ASSERT_NE(variant, nullptr);
+    auto captured = capture ? hosted->CaptureModel(*variant) : nullptr;
+    model->Load();
+    EXPECT_TRUE(model->IsLoaded());
+
+    ASSERT_NE(catalog.RegisterModel(path, alias + ":2", info), nullptr);
+    EXPECT_EQ(model->Info().model_id, alias + ":1");
+    (capture ? captured.get() : variant)->Unload();
+    EXPECT_FALSE(variant->IsLoaded());
+    ASSERT_NE(catalog.RegisterModel(path, alias + ":3", info), nullptr);
+    EXPECT_EQ(catalog.GetModel(alias), model);
+    EXPECT_EQ(model->Info().model_id, alias + ":3");
+  }
+}
+
+TEST_F(SdkSessionTest, FailedHostedLoadRollsBackItsReservationWithoutClearingAnExistingPin) {
+  auto context = ClientContext();
+  auto hosted = api::CreateHostedBackend(manager_, [&](bool acquire) -> std::shared_ptr<api::HostedContext> {
+    if (acquire) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK, "configured host acquisition failure");
+    }
+    return context;
+  });
+  auto& source = manager_->GetCatalog(CatalogType::kLocal);
+  auto& catalog = hosted->GetCatalog(CatalogType::kLocal);
+  const auto path = (std::filesystem::path(FOUNDRY_LOCAL_TEST_DATA_DIR) / "tiny-paged-attention").string();
+  ModelInfo info;
+  info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "coding");
+  for (const bool preserved : {false, true}) {
+    SCOPED_TRACE(preserved);
+    const std::string alias = preserved ? "existing-failed-pin" : "new-failed-pin";
+    auto* variant = source.RegisterModel(path, alias + ":1", info);
+    auto* model = catalog.GetModel(alias);
+    ASSERT_NE(model, nullptr);
+    ASSERT_NE(variant, nullptr);
+    if (preserved) {
+      variant->Load();
+      EXPECT_FALSE(variant->PreserveLoadedSelection(true));
+    }
+
+    EXPECT_THROW(model->Load("mismatched-path"), Exception);
+    EXPECT_THROW(model->Load(), Exception);
+    ASSERT_NE(source.RegisterModel(path, alias + ":2", info), nullptr);
+    EXPECT_EQ(catalog.GetModel(alias)->Info().model_id, alias + (preserved ? ":1" : ":2"));
+    EXPECT_EQ(variant->PreserveLoadedSelection(false), preserved);
+    variant->Unload();
+    EXPECT_EQ(catalog.GetModel(alias)->Info().model_id, alias + ":2");
+  }
+}
+
+TEST_F(SdkSessionTest, HostedUnloadReleasesOnlyTheCapturedArtifactAfterConcurrentReselection) {
+  auto context = ClientContext();
+  auto hosted = api::CreateHostedBackend(manager_, [&](bool) { return context; });
+  auto& catalog = hosted->GetCatalog(CatalogType::kLocal);
+  const auto path = (std::filesystem::path(FOUNDRY_LOCAL_TEST_DATA_DIR) / "tiny-paged-attention").string();
+  ModelInfo info;
+  info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "coding");
+  auto* original = catalog.RegisterModel(path, "unload-selection:1", info);
+  auto* model = catalog.GetModel("unload-selection");
+  ASSERT_NE(original, nullptr);
+  ASSERT_NE(model, nullptr);
+  model->Load();
+  auto* replacement = catalog.RegisterModel(path, "unload-selection:2", info);
+  ASSERT_NE(replacement, nullptr);
+  replacement->Load();
+  ASSERT_EQ(catalog.GetModel("unload-selection")->Info().model_id, "unload-selection:1");
+
+  bool reselected = false;
+  auto unloader = api::CreateHostedBackend(manager_, [&](bool acquire) {
+    if (acquire) {
+      // Interleave a peer unload and lookup after the unload payload has captured the original selection.
+      context->Call(Operation::Unload, {{"model", EncodeModelSelection(CatalogType::kLocal, *original)}});
+      EXPECT_EQ(catalog.GetModel("unload-selection")->Info().model_id, "unload-selection:2");
+      reselected = true;
+    }
+    return context;
+  });
+  auto* unloading = unloader->GetCatalog(CatalogType::kLocal).GetModel("unload-selection");
+  ASSERT_NE(unloading, nullptr);
+  unloading->Unload();
+  EXPECT_TRUE(reselected);
+  EXPECT_FALSE(original->IsLoaded());
+  EXPECT_TRUE(replacement->IsLoaded());
+  EXPECT_FALSE(original->PreserveLoadedSelection(false));
+  EXPECT_TRUE(replacement->PreserveLoadedSelection(false));
+  replacement->Unload();
+}
+
+TEST_F(SdkSessionTest, HostedDefaultRecoversAfterAnIndependentPeerUnloadsTheArtifact) {
+  auto context = ClientContext();
+  auto hosted = api::CreateHostedBackend(manager_, [&](bool) { return context; });
+  auto& catalog = hosted->GetCatalog(CatalogType::kLocal);
+  const auto path = (std::filesystem::path(FOUNDRY_LOCAL_TEST_DATA_DIR) / "tiny-paged-attention").string();
+  ModelInfo info;
+  info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "coding");
+  auto* original = catalog.RegisterModel(path, "peer-unload:1", info);
+  auto* model = catalog.GetModel("peer-unload");
+  ASSERT_NE(original, nullptr);
+  ASSERT_NE(model, nullptr);
+  model->Load();
+  ASSERT_NE(catalog.RegisterModel(path, "peer-unload:2", info), nullptr);
+  EXPECT_EQ(catalog.GetModel("peer-unload")->Info().model_id, "peer-unload:1");
+
+  // The peer talks directly to the host and cannot clear this client's metadata pin.
+  context->Call(Operation::Unload, {{"model", EncodeModelSelection(CatalogType::kLocal, *original)}});
+  EXPECT_FALSE(model->IsLoaded());
+  EXPECT_EQ(catalog.GetModel("peer-unload")->Info().model_id, "peer-unload:2");
+  model->Load();
+  EXPECT_TRUE(model->IsLoaded());
+  model->Unload();
+}
+
+TEST_F(SdkSessionTest, HostedRefreshDoesNotRecheckAnInFlightSelectionAsIfItWereACommittedPin) {
+  auto context = ClientContext();
+  std::promise<void> acquiring;
+  std::promise<void> release;
+  auto released = release.get_future().share();
+  auto hosted = api::CreateHostedBackend(manager_, [&](bool acquire) {
+    if (acquire) {
+      acquiring.set_value();
+      released.wait();
+    }
+    return context;
+  });
+  auto& source = manager_->GetCatalog(CatalogType::kLocal);
+  auto& catalog = hosted->GetCatalog(CatalogType::kLocal);
+  const auto path = (std::filesystem::path(FOUNDRY_LOCAL_TEST_DATA_DIR) / "tiny-paged-attention").string();
+  ModelInfo info;
+  info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "coding");
+  ASSERT_NE(source.RegisterModel(path, "pending-peer:1", info), nullptr);
+  auto* model = catalog.GetModel("pending-peer");
+  ASSERT_NE(model, nullptr);
+  auto loading = std::async(std::launch::async, [&] { model->Load(); });
+  ScopeGuard release_guard([&]() noexcept { release.set_value(); });
+  ASSERT_EQ(acquiring.get_future().wait_for(5s), std::future_status::ready);
+  ASSERT_NE(source.RegisterModel(path, "pending-peer:2", info), nullptr);
+  auto querying = std::async(std::launch::async, [&] { return catalog.GetModel("pending-peer")->Info().model_id; });
+  EXPECT_EQ(querying.wait_for(1s), std::future_status::ready);
+  release.set_value();
+  release_guard.Dismiss();
+  EXPECT_EQ(querying.get(), "pending-peer:1");
+  EXPECT_NO_THROW(loading.get());
+  EXPECT_TRUE(model->IsLoaded());
+  model->Unload();
 }
 
 TEST_F(SdkSessionTest, HostedManagerNeverReconnectsOrFallsBackAfterLosingItsOwner) {

@@ -48,6 +48,13 @@ TEST(ChatCompletionMessageTest, ArrayContentExtractsTextParts) {
 
   ASSERT_TRUE(msg.content.has_value());
   EXPECT_EQ(*msg.content, "Look at this: and this");
+  ASSERT_EQ(msg.content_parts.size(), 3u);
+  EXPECT_EQ(msg.content_parts[0].kind, ChatCompletionContentPart::Kind::kText);
+  EXPECT_EQ(msg.content_parts[0].value, "Look at this: ");
+  EXPECT_EQ(msg.content_parts[1].kind, ChatCompletionContentPart::Kind::kImageUrl);
+  EXPECT_EQ(msg.content_parts[1].value, "http://img.png");
+  EXPECT_EQ(msg.content_parts[2].kind, ChatCompletionContentPart::Kind::kText);
+  EXPECT_EQ(msg.content_parts[2].value, "and this");
 }
 
 TEST(ChatCompletionMessageTest, OptionalFieldsPopulated) {

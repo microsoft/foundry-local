@@ -65,6 +65,16 @@ steps:
       </settings>
       '@ | Set-Content -LiteralPath $settings -Encoding utf8
 
+      # Maven 3.9 uses Resolver's native HTTP transport, not Wagon. Retry downloads, not builds or tests.
+      $mavenArgs = @(
+        $env:MAVEN_ARGS
+        '--errors'
+        '-Daether.connector.http.retryHandler.count=5'
+        '-Daether.connector.http.retryHandler.intervalMax=30000'
+        '-Daether.connector.http.retryHandler.serviceUnavailable=429,500,502,503,504'
+      ) -join ' '
+      Write-Host "##vso[task.setvariable variable=MAVEN_ARGS]$($mavenArgs.Trim())"
+
       Write-Host "##vso[task.setvariable variable=foundryMavenHome]$mavenHome"
       Write-Host "##vso[task.setvariable variable=foundryMavenSettings]$settings"
       Write-Host "##vso[task.prependpath]$(Join-Path $mavenHome 'bin')"

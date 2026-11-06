@@ -6,12 +6,46 @@
 #include "exception.h"
 #include "util/file_uri.h"
 
+#include <azure/core/base64.hpp>
+
 #include <fstream>
 #include <ios>
 #include <string>
 #include <string_view>
 
 namespace fl {
+
+std::unique_ptr<ImageItem> ImageItem::FromDataUrl(const std::string& url, std::string_view error_source) {
+  if (!url.starts_with("data:")) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, std::string(error_source) + " must start with 'data:'");
+  }
+
+  const auto comma = url.find(',');
+  if (comma == std::string::npos) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, std::string(error_source) + " is missing payload separator ','");
+  }
+
+  const std::string header = url.substr(5, comma - 5);
+  constexpr std::string_view kBase64Marker = ";base64";
+  const auto base64_pos = header.find(kBase64Marker);
+  if (base64_pos == std::string::npos) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, std::string(error_source) + " must use ';base64,' encoding");
+  }
+
+  std::vector<std::uint8_t> bytes;
+  try {
+    bytes = Azure::Core::Convert::Base64Decode(url.substr(comma + 1));
+  } catch (const std::exception& e) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             std::string(error_source) + " has invalid base64 payload: " + e.what());
+  }
+
+  if (bytes.empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, std::string(error_source) + " decoded to zero bytes");
+  }
+
+  return std::make_unique<ImageItem>(std::move(bytes), header.substr(0, base64_pos));
+}
 
 std::vector<std::uint8_t> ImageItem::ReadBytes() const {
   if (data && data_size > 0) {
