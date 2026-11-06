@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "configuration.h"
 #include "inferencing/execution_provider.h"
 #include "inferencing/generative/genai_model_instance.h"
 #include "inferencing/predictive/non_generative_admission.h"
@@ -66,11 +67,16 @@ class ModelLoadManager {
     GenAIModelInstance* model = nullptr;  // non-owning pointer; lifetime managed by this class
   };
 
+  using SymbolResolver = void* (*)(const char* library_name, const char* symbol_name);
+
+  /// ExclusiveGenAICudaOwnership opts into automatic CUDA release; the application must ensure process-wide quiescence.
+  /// A null resolver uses optional symbol lookup in the already-loaded GenAI runtime.
   ModelLoadManager(
       IEpDetector& ep_detector, ILogger& logger,
       uint64_t non_generative_memory_budget_bytes =
           (std::numeric_limits<uint64_t>::max)(),
-      size_t non_generative_readiness_concurrency = 1);
+      size_t non_generative_readiness_concurrency = 1,
+      const Configuration& config = {}, SymbolResolver symbol_resolver = nullptr);
   ~ModelLoadManager();
 
   ModelLoadManager(const ModelLoadManager&) = delete;
@@ -187,6 +193,8 @@ class ModelLoadManager {
 
   IEpDetector& ep_detector_;
   ILogger& logger_;
+  bool exclusive_genai_cuda_ownership_ = false;
+  SymbolResolver symbol_resolver_;
   std::shared_ptr<NonGenerativeAdmissionCoordinator>
       non_generative_admission_;
   std::atomic<bool> shutdown_{false};

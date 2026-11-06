@@ -65,6 +65,7 @@ class GenAIModelInstance {
   const GenAIConfig& GetGenAIConfig() const { return genai_config_; }
   ILogger& GetLogger() const { return logger_; }
   ExecutionProvider EP() const { return ep_; }
+  const std::string& DeviceType() const { return device_type_; }
   bool IsMultiModal() const;
   const std::string& ModelType() const { return model_type_; }
   bool SupportsToolCalling() const { return capabilities_.supports_tool_calling; }
@@ -121,6 +122,7 @@ class GenAIModelInstance {
   std::string model_path_;
   GenAIConfig genai_config_;
   ExecutionProvider ep_;
+  std::string device_type_;
   ILogger& logger_;
   std::unique_ptr<OgaModel> oga_model_;
   std::string model_type_;

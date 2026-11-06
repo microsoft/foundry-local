@@ -29,11 +29,18 @@ void NonGenerativeAdmissionCoordinator::Reserve(
         "non-generative runtime budget",
         model_id, bytes, memory_budget_bytes_ - reserved_bytes_));
   reserved_bytes_ += bytes;
+  ++reservation_count_;
+}
+
+bool NonGenerativeAdmissionCoordinator::HasReservations() {
+  std::lock_guard lock(mutex_);
+  return reservation_count_ != 0;
 }
 
 void NonGenerativeAdmissionCoordinator::Release(uint64_t bytes) noexcept {
   std::lock_guard lock(mutex_);
   reserved_bytes_ -= bytes;
+  --reservation_count_;
 }
 
 void NonGenerativeAdmissionCoordinator::BeginReadiness(

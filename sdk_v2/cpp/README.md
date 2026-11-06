@@ -115,6 +115,42 @@ required runtime directories when using it. It is not needed solely for the x64 
 Foundry Local leaves runtime dependency loading to ORT and GenAI. On Linux, use the
 system loader configuration or `LD_LIBRARY_PATH`.
 
+#### Optional CUDA resource release on unload
+
+Automatic release of GenAI's **process-global** CUDA resources is disabled by default.
+An application that exclusively owns GenAI CUDA usage may set
+`ExclusiveGenAICudaOwnership` to `"true"` through configuration's additional options
+(`Configuration::SetAdditionalOptions` in C++, `flConfigurationApi::SetAdditionalOptions` in C,
+or the equivalent additional-options map in other bindings). This option also accepts
+case-insensitive `"true"`/`"yes"` or `"1"` and is read when the Manager is created.
+
+Opting in requires the application to guarantee that **no external GenAI models,
+generators, sessions, tensors, or concurrent device initialization/use exist** when
+Foundry releases resources. This includes other GenAI consumers or independently
+linked Foundry instances in the same process. Foundry's model counts, session
+references, and mutex cover only its own objects; they do not establish process-wide
+quiescence or synchronize external callers.
+
+When enabled, release is attempted only after the last Foundry-managed CUDA model
+is destroyed by unload (including shutdown's unload path). Other Foundry CUDA models
+and live sessions prevent release. Non-CUDA models may remain loaded.
+Release is also deferred while any non-generative runtime is loading or retains an
+admission reservation, including typed-runtime leases that outlive shutdown's unload.
+Those runtimes initialize outside Foundry's model mutex and may themselves use GenAI
+CUDA resources. Unloading a typed runtime alone does not trigger a release attempt.
+Release is best-effort: a missing optional `OgaReleaseDeviceResources` runtime symbol,
+a release error, or a diagnostic failure never changes a successful unload into failure.
+
+Release requires a matching GenAI core and CUDA add-on providing `OgaReleaseDeviceResources`
+and `ReleaseInterfaceResources`, respectively. The currently pinned GenAI 0.19.0 core and
+November 4 CUDA bundles do not provide these APIs: inference works, but opting in does
+not reclaim process-global resources with those dependencies. Enabling release with the
+default downloads requires publishing and pinning a matching release-enabled core and
+CUDA bundle set together, not changing or bypassing the interface version check.
+
+This option does not change the existing process-global `OgaShutdown` call on Manager
+destruction; applications sharing GenAI must still coordinate final teardown.
+
 ## Clearing a Model Cache
 
 Use `Model::RemoveFromCache()` to clear a completed, interrupted, or corrupted download.

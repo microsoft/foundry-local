@@ -9,8 +9,11 @@
 #include "inferencing/generative/chat/search_options.h"
 #include "inferencing/generative/genai_config.h"
 #include "inferencing/generative/genai_model_instance.h"
+#include "platform/dynlib_loader.h"
 #include "util/path_safety.h"
 #include "utils.h"
+
+#include <ort_genai.h>
 
 #include <algorithm>
 #include <chrono>
@@ -119,6 +122,46 @@ std::pair<std::string, std::string> SelectionIdentity(std::string_view model_id,
   return {std::string(model_id), std::move(path)};
 }
 
+void LogDeviceReleaseWarning(ILogger& logger, const char* device_type, const char* error) noexcept {
+  try {
+    logger.Log(LogLevel::Warning,
+               fmt::format("GenAI device resource release failed for {}: {}", device_type,
+                           error ? error : "unknown error"));
+  } catch (...) {
+  }
+}
+
+void ReleaseDeviceResourcesIfAvailable(const char* device_type, ILogger& logger,
+                                       ModelLoadManager::SymbolResolver symbol_resolver) noexcept {
+#if defined(_WIN32) || defined(__linux__) || defined(__APPLE__)
+  try {
+    using ReleaseDeviceResourcesFn = OgaResult*(OGA_API_CALL*)(const char*);
+    if (!symbol_resolver) {
+      symbol_resolver = platform::GetLoadedLibrarySymbol;
+    }
+
+    auto release_device_resources = reinterpret_cast<ReleaseDeviceResourcesFn>(
+        symbol_resolver("onnxruntime-genai.dll", "OgaReleaseDeviceResources"));
+    if (!release_device_resources) {
+      return;
+    }
+
+    if (OgaResult* result = release_device_resources(device_type)) {
+      const std::unique_ptr<OgaResult, decltype(&OgaDestroyResult)> owned_result(result, OgaDestroyResult);
+      LogDeviceReleaseWarning(logger, device_type, OgaResultGetError(result));
+    }
+  } catch (const std::exception& ex) {
+    LogDeviceReleaseWarning(logger, device_type, ex.what());
+  } catch (...) {
+    LogDeviceReleaseWarning(logger, device_type, nullptr);
+  }
+#else
+  (void)device_type;
+  (void)logger;
+  (void)symbol_resolver;
+#endif
+}
+
 }  // namespace
 
 LoadedSelectionReservation::LoadedSelectionReservation(ModelLoadManager& manager,
@@ -145,13 +188,21 @@ void LoadedSelectionReservation::Commit() noexcept {
 ModelLoadManager::ModelLoadManager(
     IEpDetector& ep_detector, ILogger& logger,
     uint64_t non_generative_memory_budget_bytes,
-    size_t non_generative_readiness_concurrency)
+    size_t non_generative_readiness_concurrency,
+    const Configuration& config, SymbolResolver symbol_resolver)
     : ep_detector_(ep_detector),
       logger_(logger),
+      symbol_resolver_(symbol_resolver),
       non_generative_admission_(
           std::make_shared<NonGenerativeAdmissionCoordinator>(
               non_generative_memory_budget_bytes,
-              non_generative_readiness_concurrency)) {}
+              non_generative_readiness_concurrency)) {
+  const auto option = config.additional_options.find("ExclusiveGenAICudaOwnership");
+  if (option != config.additional_options.end()) {
+    const auto value = ToLower(option->second);
+    exclusive_genai_cuda_ownership_ = value == "true" || value == "1" || value == "yes";
+  }
+}
 
 ModelLoadManager::~ModelLoadManager() {
   // Destroy all loaded models under the lock.
@@ -579,8 +630,21 @@ bool ModelLoadManager::UnloadModel(std::string_view model_id, const std::string*
 
   logger_.Log(LogLevel::Information, fmt::format("unloading model: {}", id_str));
 
+  const bool was_cuda = it->second->GenAI()->DeviceType() == "CUDA";
   // Erasing destroys the GenAIModelInstance, which destroys OGA objects in reverse order.
   loaded_runtimes_.erase(it);
+
+  // This mutex covers only Foundry models. The opt-in delegates process-wide GenAI quiescence to the application.
+  // Typed runtimes initialize outside this mutex and retain admission reservations until after destruction.
+  if (exclusive_genai_cuda_ownership_ && was_cuda &&
+      loading_runtimes_.empty() && !non_generative_admission_->HasReservations() &&
+      std::none_of(loaded_runtimes_.begin(), loaded_runtimes_.end(), [](const auto& entry) {
+        const auto* model = entry.second->GenAI();
+        return model && model->DeviceType() == "CUDA";
+      })) {
+    ReleaseDeviceResourcesIfAvailable("CUDA", logger_, symbol_resolver_);
+  }
+
   return true;
 }
 
@@ -589,15 +653,15 @@ void ModelLoadManager::RejectNewLoads() {
 }
 
 void ModelLoadManager::UnloadAll(std::chrono::milliseconds timeout) {
-  std::vector<std::pair<std::string, std::shared_ptr<ManagedModelRuntime>>>
-      snapshot;
+  // Snapshot IDs only: retaining runtime owners would defer model destruction until after CUDA resource release.
+  std::vector<std::string> snapshot;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     snapshot.reserve(loaded_runtimes_.size());
     for (auto it = loaded_runtimes_.begin();
          it != loaded_runtimes_.end();) {
       if (it->second->GenAI()) {
-        snapshot.emplace_back(std::string(it->second->ModelId()), it->second);
+        snapshot.emplace_back(it->second->ModelId());
         ++it;
       } else {
         it = loaded_runtimes_.erase(it);
@@ -621,12 +685,18 @@ void ModelLoadManager::UnloadAll(std::chrono::milliseconds timeout) {
   // time linearly with model count.
   auto deadline = clock::now() + timeout;
 
-  for (auto& [id, runtime] : snapshot) {
-    while (runtime->SessionRefCount() > 0 && clock::now() < deadline) {
+  for (const auto& id : snapshot) {
+    const auto session_count = [&] {
+      std::lock_guard lock(mutex_);
+      const auto found = loaded_runtimes_.find(GenerativeRuntimeKey(id));
+      return found == loaded_runtimes_.end() ? size_t{0} : found->second->SessionRefCount();
+    };
+    auto remaining = session_count();
+    while (remaining > 0 && clock::now() < deadline) {
       std::this_thread::sleep_for(kPollInterval);
+      remaining = session_count();
     }
 
-    auto remaining = runtime->SessionRefCount();
     if (remaining > 0) {
       logger_.Log(LogLevel::Warning,
                   fmt::format("Shutdown: model '{}' still has {} session(s) after overall {}ms deadline; "
