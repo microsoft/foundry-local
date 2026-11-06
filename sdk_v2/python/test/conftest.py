@@ -241,6 +241,21 @@ def _model_fixture_or_skip(manager, task: str, role: str, *, load: bool, name_su
     return model
 
 
+def _register_staged_model(catalog, directory: str, model_id: str, task: str):
+    if not FOUNDRY_TEST_DATA_DIR:
+        return None
+
+    package = Path(FOUNDRY_TEST_DATA_DIR) / "Microsoft" / directory
+    if not package.is_dir():
+        return None
+
+    from foundry_local_sdk import ModelInfoBuilder
+
+    with ModelInfoBuilder() as metadata:
+        metadata.set_string_property("task", task)
+        return catalog.register_model(package, model_id, metadata)
+
+
 # Pinned chat model for deterministic streaming/content assertions. Matches the
 # JS/C#/C++ integration suites (qwen2.5-0.5b-instruct, generic-cpu variant 4) so
 # cross-language tests exercise the same weights. Auto-selecting "smallest cached
@@ -283,6 +298,13 @@ def ranking_model(manager):
         manager, "text-ranking", catalog=catalog, require_size=False
     )
     if model is None:
+        model = _register_staged_model(
+            catalog,
+            "clm-v0.1-8b-mixed-generic-cpu-1",
+            "clm-v0.1-8b-mixed-generic-cpu:1",
+            "text-ranking",
+        )
+    if model is None:
         pytest.skip("No cached local ranking model is registered.")
     model.load()
     return model
@@ -291,24 +313,19 @@ def ranking_model(manager):
 @pytest.fixture(scope="session")
 def decision_model(manager):
     """Smallest cached and explicitly loaded typed-decision model."""
-    from foundry_local_sdk import CatalogType, ModelInfoBuilder
+    from foundry_local_sdk import CatalogType
 
     catalog = manager.get_catalog(CatalogType.LOCAL)
     model = _find_smallest_cached_model_for_task(
         manager, "typed-decision", catalog=catalog, require_size=False
     )
-    if model is None and FOUNDRY_TEST_DATA_DIR:
-        package = (
-            Path(FOUNDRY_TEST_DATA_DIR)
-            / "Microsoft"
-            / "kev-0.8b-mixed-generic-cpu-1"
+    if model is None:
+        model = _register_staged_model(
+            catalog,
+            "kev-0.8b-mixed-generic-cpu-1",
+            "kev-0.8b-mixed-generic-cpu:1",
+            "typed-decision",
         )
-        if package.is_dir():
-            with ModelInfoBuilder() as metadata:
-                metadata.set_string_property("task", "typed-decision")
-                model = catalog.register_model(
-                    package, "kev-0.8b-mixed-generic-cpu:1", metadata
-                )
     if model is None:
         pytest.skip("No cached local decision model is registered.")
     model.load()

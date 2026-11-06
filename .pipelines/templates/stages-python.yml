@@ -207,11 +207,16 @@ stages:
         scriptType: ps
         modelSet: non-generative
     - pwsh: |
-        $package = "$(Build.SourcesDirectory)/test-data-shared/Microsoft/kev-0.8b-mixed-generic-cpu-1"
-        if (-not (Test-Path -LiteralPath $package -PathType Container)) {
-          throw "Required KEV package is missing: $package"
+        $packages = @(
+          "$(Build.SourcesDirectory)/test-data-shared/Microsoft/clm-v0.1-8b-mixed-generic-cpu-1",
+          "$(Build.SourcesDirectory)/test-data-shared/Microsoft/kev-0.8b-mixed-generic-cpu-1"
+        )
+        foreach ($package in $packages) {
+          if (-not (Test-Path -LiteralPath $package -PathType Container)) {
+            throw "Required non-generative package is missing: $package"
+          }
         }
-      displayName: 'Verify required KEV integration package'
+      displayName: 'Verify required non-generative integration packages'
     - template: steps-test-python.yml
       parameters:
         wheelDir: '$(Pipeline.Workspace)/python-sdk-win-x64'
