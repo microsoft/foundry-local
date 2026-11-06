@@ -74,6 +74,13 @@ class SessionExecutor {
   SessionExecutor(const SessionExecutor&) = delete;
   SessionExecutor& operator=(const SessionExecutor&) = delete;
 
+  bool WaitForPendingTasks(size_t count,
+                           std::chrono::milliseconds timeout) {
+    std::unique_lock lock(mutex_);
+    return condition_.wait_for(
+        lock, timeout, [&] { return tasks_.size() >= count; });
+  }
+
   template <typename Function>
   auto Invoke(Function&& function, std::function<bool()> is_canceled = {})
       -> std::invoke_result_t<Function, Session&> {
@@ -107,7 +114,7 @@ class SessionExecutor {
             }
           });
     }
-    condition_.notify_one();
+    condition_.notify_all();
     while (future.wait_for(std::chrono::milliseconds(10)) !=
            std::future_status::ready) {
       if (is_canceled && is_canceled()) {

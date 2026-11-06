@@ -88,7 +88,8 @@ TEST(PredictiveSessionExecutorTest, QueuedCancellationSkipsWork) {
             [&] { return canceled.load(); }),
         std::runtime_error);
   });
-  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  EXPECT_TRUE(
+      executor.WaitForPendingTasks(1, std::chrono::seconds(1)));
   canceled = true;
   queued.get();
   EXPECT_FALSE(invoked.load());
@@ -140,17 +141,35 @@ TEST(PredictiveSessionExecutorTest, RejectsBeyondQueueCapacity) {
   queued.reserve(detail::kMaximumQueuedPredictiveRequests);
   for (size_t index = 0;
        index < detail::kMaximumQueuedPredictiveRequests; ++index) {
-    queued.push_back(std::async(std::launch::async, [&] {
+    queued.push_back(std::async(std::launch::async, [&, index] {
+      if (index + 1 == detail::kMaximumQueuedPredictiveRequests)
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
       executor.Invoke([](FakeExecutorSession&) {});
     }));
   }
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  EXPECT_THROW(executor.Invoke([](FakeExecutorSession&) {}),
-               RuntimeCapacityError);
+  const bool all_queued = executor.WaitForPendingTasks(
+      detail::kMaximumQueuedPredictiveRequests,
+      std::chrono::seconds(5));
+  std::optional<std::future<bool>> overflow;
+  std::future_status overflow_status = std::future_status::deferred;
+  if (all_queued) {
+    overflow.emplace(std::async(std::launch::async, [&] {
+      try {
+        executor.Invoke([](FakeExecutorSession&) {});
+        return false;
+      } catch (const RuntimeCapacityError&) {
+        return true;
+      }
+    }));
+    overflow_status = overflow->wait_for(std::chrono::seconds(1));
+  }
 
   release.set_value();
   blocking.get();
   for (auto& request : queued) request.get();
+  ASSERT_TRUE(all_queued);
+  ASSERT_EQ(overflow_status, std::future_status::ready);
+  EXPECT_TRUE(overflow->get());
 }
 
 void WriteRankingBundle(const std::filesystem::path& path,
