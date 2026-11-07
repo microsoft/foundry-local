@@ -84,24 +84,36 @@ chat, audio, and embedding methods accept the same options as their last argumen
 ```ts
 import { DecisionSession, RankingSession } from "foundry-local-sdk";
 
-using ranking = new RankingSession(cachedRankingModel);
-const ranked = await ranking.rank({
-  context: { weather: "rain" },
-  question: "Which activity is best?",
-  answers: ["picnic", "museum"],
-});
+await cachedRankingModel.load();
+const ranking = new RankingSession(cachedRankingModel);
+try {
+  const ranked = await ranking.rank({
+    context: { weather: "rain" },
+    question: "Which activity is best?",
+    answers: ["picnic", "museum"],
+  });
+} finally {
+  ranking.dispose();
+  await cachedRankingModel.unload();
+}
 
-using decisions = new DecisionSession(cachedDecisionModel);
-const result = await decisions.decide({
-  state: { weather: "rain" },
-  questions: {
-    umbrella: { type: "noul", instructions: "Should I take an umbrella?" },
-  },
-});
+await cachedDecisionModel.load();
+const decisions = new DecisionSession(cachedDecisionModel);
+try {
+  const result = await decisions.decide({
+    state: { weather: "rain" },
+    questions: {
+      umbrella: { type: "noul", instructions: "Should I take an umbrella?" },
+    },
+  });
+} finally {
+  decisions.dispose();
+  await cachedDecisionModel.unload();
+}
 ```
 
-Ranking and decision models must be cached, but callers do not explicitly load
-or unload them; the native session manages their runtime.
+Ranking and decision models must be cached and loaded before session construction. Dispose the session before awaiting
+`model.unload()`. A session borrows its caller-owned model and never unloads it.
 
 The inherited low-level `processRequest()` API accepts exactly one
 `Item.text(JSON.stringify(payload), "openai-json")` item and returns one OpenAI JSON text item.

@@ -18,6 +18,8 @@ export interface RankingRequest {
 
 export interface RankedCandidate {
   readonly rank: number;
+  readonly id: string;
+  readonly index: number;
   readonly candidate: string;
   readonly prob: number;
 }
@@ -30,11 +32,23 @@ export interface RankingResult {
 
 export type DecisionQuestionType = "noul" | "choice" | "score";
 
-export interface DecisionQuestion {
-  readonly type: DecisionQuestionType;
-  readonly criteria?: StructuredValue;
+interface DecisionQuestionOptions {
   readonly instructions?: StructuredValue;
 }
+
+export type DecisionQuestion =
+  | (DecisionQuestionOptions & {
+      readonly type: "noul";
+      readonly criteria?: never;
+    })
+  | (DecisionQuestionOptions & {
+      readonly type: "choice";
+      readonly criteria: Readonly<Record<string, StructuredValue>>;
+    })
+  | (DecisionQuestionOptions & {
+      readonly type: "score";
+      readonly criteria: ReadonlyArray<StructuredValue>;
+    });
 
 /** Request contract used by `POST /v1/systemone` and `DecisionSession.decide`. */
 export interface DecisionRequest {

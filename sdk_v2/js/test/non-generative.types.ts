@@ -31,8 +31,10 @@ const decisionRequest = {
   },
 } satisfies DecisionRequest;
 
-ranking.rank(rankingRequest).then((result) => result.ranked[0]?.prob);
-decisions.decide(decisionRequest).then((result) => result.answers.quality?.type);
+ranking.rank(rankingRequest, { signal: new AbortController().signal }).then((result) => result.ranked[0]?.prob);
+decisions
+  .decide(decisionRequest, { signal: new AbortController().signal })
+  .then((result) => result.answers.quality?.type);
 // @ts-expect-error Predictive sessions are one-shot and do not stream.
 ranking.processStreamingRequest(new Request());
 
@@ -40,3 +42,7 @@ ranking.processStreamingRequest(new Request());
 ranking.rank({ answers: [1, 2] });
 // @ts-expect-error Decision question types are a closed union.
 decisions.decide({ questions: { invalid: { type: "freeform" } } });
+// @ts-expect-error Choice questions require object criteria.
+decisions.decide({ questions: { invalid: { type: "choice" } } });
+// @ts-expect-error Score questions require array criteria.
+decisions.decide({ questions: { invalid: { type: "score", criteria: { low: 0 } } } });

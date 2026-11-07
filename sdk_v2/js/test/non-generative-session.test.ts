@@ -71,10 +71,16 @@ describe.skipIf(!haveTestModelCache)("RankingSession (real model)", () => {
     }
   }, 5 * 60_000);
 
-  afterAll(() => teardownRealModelManager(fixture));
+  afterAll(async () => {
+    if (fixture !== undefined) {
+      await fixture.model.unload();
+    }
+    teardownRealModelManager(fixture);
+  });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     if (fixture === undefined) return;
+    await fixture.model.load();
     session = new RankingSession(fixture.model);
   });
 
@@ -155,6 +161,13 @@ describe.skipIf(!haveTestModelCache)("RankingSession (real model)", () => {
     expect(session?.disposed).toBe(true);
     expect(() => session?.dispose()).not.toThrow();
   });
+
+  it("does not unload its caller-owned model when disposed", async (context) => {
+    if (skipReason !== undefined) context.skip();
+    if (fixture === undefined || session === undefined) throw new Error("fixture missing");
+    session.dispose();
+    expect(await fixture.model.isLoaded()).toBe(true);
+  });
 });
 
 describe.skipIf(!haveTestModelCache)("DecisionSession (real model)", () => {
@@ -175,10 +188,16 @@ describe.skipIf(!haveTestModelCache)("DecisionSession (real model)", () => {
     }
   }, 5 * 60_000);
 
-  afterAll(() => teardownRealModelManager(fixture));
+  afterAll(async () => {
+    if (fixture !== undefined) {
+      await fixture.model.unload();
+    }
+    teardownRealModelManager(fixture);
+  });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     if (fixture === undefined) return;
+    await fixture.model.load();
     session = new DecisionSession(fixture.model);
   });
 
@@ -200,5 +219,14 @@ describe.skipIf(!haveTestModelCache)("DecisionSession (real model)", () => {
     expect(result.model).toBeTruthy();
     expect(result.answers.umbrella?.type).toBe("noul");
     expect(result.usage.billing_units).toBe(0);
+  });
+
+  it("rejects calls after disposal", async (context) => {
+    if (skipReason !== undefined) context.skip();
+    if (session === undefined) throw new Error("session missing");
+    session.dispose();
+    await expect(session.decide({ questions: { umbrella: { type: "noul" } } })).rejects.toMatchObject({
+      code: expect.any(Number),
+    });
   });
 });

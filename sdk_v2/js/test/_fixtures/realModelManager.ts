@@ -47,9 +47,9 @@ export interface RealModelManagerOptions {
    */
   readonly namePreference?: string;
   /**
-   * Whether to load the selected model through the generative model loader.
-   * Defaults to true. Set false for cache-only predictive packages whose
-   * session owns an external runtime.
+   * Whether to load the selected model before returning. Defaults to true.
+   * Set false when a test needs to exercise the explicit caller-owned model
+   * lifecycle itself.
    */
   readonly loadModel?: boolean;
 }
