@@ -31,10 +31,19 @@ async fn cached_model(task: &str, environment: &str) -> Option<Arc<Model>> {
     })
 }
 
+fn missing_model(task: &str) {
+    if std::env::var("FOUNDRY_REQUIRE_NON_GENERATIVE_MODELS")
+        .is_ok_and(|value| value.eq_ignore_ascii_case("true"))
+    {
+        panic!("required cached {task} model was not discovered");
+    }
+    eprintln!("Skipping {task} integration test: no cached model available");
+}
+
 #[tokio::test]
 async fn ranking_session_round_trips_native_openai_json() {
     let Some(model) = cached_model("text-ranking", "FOUNDRY_TEST_CLM_MODEL").await else {
-        eprintln!("Skipping ranking integration test: no cached CLM model available");
+        missing_model("text-ranking");
         return;
     };
     model.load().await.expect("ranking model.load() failed");
@@ -65,7 +74,7 @@ async fn ranking_session_round_trips_native_openai_json() {
 #[tokio::test]
 async fn decision_session_round_trips_native_openai_json() {
     let Some(model) = cached_model("typed-decision", "FOUNDRY_TEST_KEV_MODEL").await else {
-        eprintln!("Skipping decision integration test: no cached KEV model available");
+        missing_model("typed-decision");
         return;
     };
     model.load().await.expect("decision model.load() failed");
