@@ -414,7 +414,8 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreatePrepared(
   const int default_max_output_tokens = GetDefaultMaxOutputTokens(prepared.HasMedia());
   const int max_length =
       ApplySearchOptions(options, input_token_count, model.GetGenAIConfig(), *gen_params, model.EP(),
-                         use_full_context, default_max_output_tokens);
+                         use_full_context, default_max_output_tokens,
+                         model.GetOgaModel().SupportsExternalPrefillChunking());
   const int max_output_tokens = ResolveMaxOutputTokens(options, default_max_output_tokens);
 
   auto reasoning_markers = ResolveReasoningMarkers(tool_ctx, model);

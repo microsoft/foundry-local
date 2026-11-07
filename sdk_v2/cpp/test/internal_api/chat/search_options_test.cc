@@ -894,6 +894,16 @@ TEST_F(SearchOptionsTest, ChunkedPrefillSkippedForUnlistedEp) {
   EXPECT_EQ(params->GetSearchNumber("chunk_size"), 0);
 }
 
+TEST_F(SearchOptionsTest, ChunkedPrefillSkippedWhenModelDoesNotSupportIt) {
+  SearchOptions opts;
+  auto params = MakeParams();
+
+  ApplySearchOptions(opts, 10, GetConfig(), *params, ExecutionProvider::kCUDA,
+                     /*use_full_context=*/false, kDefaultChatTextMaxOutputTokens,
+                     /*supports_external_prefill_chunking=*/false);
+  EXPECT_EQ(params->GetSearchNumber("chunk_size"), 0);
+}
+
 TEST_F(SearchOptionsTest, ChunkedPrefillResolvesSupportedProvidersFromConfig) {
   SearchOptions opts;
   GenAIConfig config;
