@@ -3,6 +3,7 @@
 #include "inferencing/generative/toolcalling/qwen_xml_tool_call_decoder.h"
 #include "inferencing/generative/toolcalling/grammar.h"
 #include "inferencing/generative/toolcalling/tool_call_context.h"
+#include "inferencing/generative/toolcalling/tool_call_utils.h"
 #include "inferencing/session/tool_registry.h"
 
 #include <nlohmann/json.hpp>
@@ -1203,7 +1204,7 @@ ToolCallPayloadParseResult ParseTaggedJsonBatch(std::string_view source, bool en
     }
 
     const auto body_start = position + markers.start.size();
-    const auto body_end = source.find(markers.end, body_start);
+    const auto body_end = FindMarkerOutsideJsonString(source, markers.end, body_start);
     if (body_end == std::string_view::npos) {
       if (!end_of_stream) {
         return {};
@@ -1431,6 +1432,17 @@ ToolCallPayloadParser CreateQwenXmlToolCallPayloadParser(
 
     return ParseBatch(source, end_of_stream, schemas, recovery_aware, markers);
   };
+}
+
+bool CanDecodeQwenXmlToolSchemas(
+    const std::string& tools_json,
+    const std::unordered_map<std::string, ToolKind>& tool_kinds) {
+  size_t declaration_count = 0;
+  const auto schemas = ParseFunctionSchemas(tools_json, tool_kinds, declaration_count);
+  return HasCompleteDeclaredSet(schemas, declaration_count, tool_kinds) &&
+         std::ranges::all_of(schemas, [](const auto& schema) {
+           return schema.second.valid;
+         });
 }
 
 ToolCallPayloadParser CreateQwenTaggedJsonToolCallPayloadParser(

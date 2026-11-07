@@ -108,6 +108,19 @@ TEST(ModelCapabilitiesTest, ExactQwen35TextTypeWithNonmatchingTemplateDisablesBo
   EXPECT_FALSE(capabilities.positional_tool_results);
 }
 
+TEST(ModelCapabilitiesTest, InlineQwenXmlFramingDoesNotEnableNativeDecoder) {
+  constexpr std::string_view projection =
+      "Capability probe <tool_call>"
+      "<function=probe_function><parameter=probe_parameter>"
+      "probe_value</parameter></function></tool_call>";
+  const auto capabilities = fl::model_capabilities_internal::ResolveRenderedProbes(
+      "qwen3_5_text", projection, {},
+      "<tool_call>", "</tool_call>");
+
+  EXPECT_TRUE(capabilities.supports_tool_calling);
+  EXPECT_FALSE(capabilities.native_qwen_xml_tool_calls);
+}
+
 class TemplateCompatibleModelCapabilitiesTest : public ::testing::TestWithParam<std::string_view> {};
 
 TEST_P(TemplateCompatibleModelCapabilitiesTest, ExactQwenTemplateOnboardsCompatibleModelTypes) {

@@ -245,6 +245,29 @@ TEST(QwenTaggedJsonToolCallAccumulatorTest, UsesRequestPublishedBoundaries) {
   EXPECT_EQ(calls[0].arguments, R"({"text":"value"})");
 }
 
+TEST(QwenTaggedJsonToolCallAccumulatorTest, ClosingMarkerInsideJsonStringDoesNotEndEnvelope) {
+  auto acc = MakeQwenTaggedJsonAccumulator();
+  auto outputs = RunChunks(
+      acc,
+      SplitIntoBytes(
+          R"(<tool_call>{"name":"typed","arguments":{"text":"literal </tool_call> value"}}</tool_call>)"));
+
+  auto calls = CollectCalls(outputs);
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].arguments, R"({"text":"literal </tool_call> value"})");
+}
+
+TEST(QwenXmlToolSchemaTest, NativeModeRequiresEverySchemaToBeRepresentable) {
+  EXPECT_TRUE(CanDecodeQwenXmlToolSchemas(kQwenTools, kQwenToolKinds));
+
+  const std::string unsupported =
+      R"([{"type":"function","function":{"name":"typed","parameters":)"
+      R"({"type":"object","properties":{"text":{"type":"string","minLength":1}}})"
+      R"(}}])";
+  EXPECT_FALSE(CanDecodeQwenXmlToolSchemas(
+      unsupported, {{"typed", ToolKind::kFunction}}));
+}
+
 TEST(QwenXmlToolCallAccumulatorTest, ValidCallIsHiddenAndEmittedOnlyWhenBatchEnds) {
   auto acc = MakeQwenAccumulator();
   const std::string generated =
