@@ -173,6 +173,13 @@ describe.skipIf(!haveTestModelCache)("RankingSession (real model)", () => {
     session.dispose();
     expect(await fixture.model.isLoaded()).toBe(true);
   });
+
+  it("rejects unloading while the session is active", async (context) => {
+    if (skipReason !== undefined) context.skip();
+    if (fixture === undefined || session === undefined) throw new Error("fixture missing");
+    await expect(fixture.model.unload()).rejects.toThrow();
+    expect(await fixture.model.isLoaded()).toBe(true);
+  });
 });
 
 describe.skipIf(!haveTestModelCache)("DecisionSession (real model)", () => {
@@ -226,6 +233,13 @@ describe.skipIf(!haveTestModelCache)("DecisionSession (real model)", () => {
 
     expect(result.model).toBeTruthy();
     expect(result.answers.umbrella?.type).toBe("noul");
+  });
+
+  it("rejects unloading while the session is active", async (context) => {
+    if (skipReason !== undefined) context.skip();
+    if (fixture === undefined || session === undefined) throw new Error("fixture missing");
+    await expect(fixture.model.unload()).rejects.toThrow();
+    expect(await fixture.model.isLoaded()).toBe(true);
     expect(result.usage.billing_units).toBe(0);
   });
 
