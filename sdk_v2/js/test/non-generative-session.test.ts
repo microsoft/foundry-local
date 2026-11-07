@@ -24,6 +24,8 @@ if (!haveTestModelCache) {
   console.warn(testModelCacheDiagnostic);
 }
 
+const requireNonGenerativeModels = process.env.FOUNDRY_REQUIRE_NON_GENERATIVE_MODELS === "true";
+
 describe("non-generative session constructor guards", () => {
   it("requires a Model instance", () => {
     expect(() => new RankingSession({} as never)).toThrow(TypeError);
@@ -67,6 +69,9 @@ describe.skipIf(!haveTestModelCache)("RankingSession (real model)", () => {
       });
     } catch (error) {
       if (!(error instanceof SkipFixture)) throw error;
+      if (requireNonGenerativeModels) {
+        throw new Error(`Required CLM real-model fixture is unavailable: ${error.message}`, { cause: error });
+      }
       skipReason = error.message;
     }
   }, 5 * 60_000);
@@ -184,6 +189,9 @@ describe.skipIf(!haveTestModelCache)("DecisionSession (real model)", () => {
       });
     } catch (error) {
       if (!(error instanceof SkipFixture)) throw error;
+      if (requireNonGenerativeModels) {
+        throw new Error(`Required KEV real-model fixture is unavailable: ${error.message}`, { cause: error });
+      }
       skipReason = error.message;
     }
   }, 5 * 60_000);
