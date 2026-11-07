@@ -3,6 +3,8 @@ import {
   type NativeAudioSession,
   type NativeChatSession,
   type NativeEmbeddingsSession,
+  type NativeGenericSession,
+  type NativeOneShotSession,
   type NativeSession,
   getAddon,
 } from "./detail/native.js";
@@ -25,8 +27,10 @@ import {
 //   * `setOptions(...)`, `dispose()`, `Symbol.dispose`.
 import type { IModel } from "./imodel.js";
 import type { Item } from "./items.js";
+import { Item as ItemFactory } from "./items.js";
 import { Model, unwrapNativeModel } from "./model.js";
-import { type Request, type RequestOptions, unwrapNativeRequest } from "./request.js";
+import type { DecisionRequest, DecisionResult, RankingRequest, RankingResult } from "./non-generative.js";
+import { Request, type RequestOptions, unwrapNativeRequest } from "./request.js";
 import type { Response } from "./response.js";
 
 /** Cancellation options accepted by Session request APIs. */
@@ -130,6 +134,234 @@ function modelToNativeAudioSession(model: IModel): NativeAudioSession {
   }
   const nativeModel = unwrapNativeModel(model);
   return new (getAddon().AudioSession)(nativeModel);
+}
+
+function modelToNativeGenericSession(
+  model: IModel,
+  sessionName: string,
+  expectedTask: "text-ranking" | "typed-decision",
+): NativeGenericSession {
+  if (!(model instanceof Model)) {
+    throw new TypeError(`${sessionName}: expected a Model as the first argument`);
+  }
+  const task = model.info.task;
+  if (task !== expectedTask) {
+    throw new TypeError(`${sessionName} requires a model with task '${expectedTask}', but got '${task ?? "(unset)"}'.`);
+  }
+  return new (getAddon().Session)(unwrapNativeModel(model));
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function validateStructuredValue(value: unknown, name: string, seen = new Set<object>()): void {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new RangeError(`${name} numbers must be finite`);
+    return;
+  }
+  if (typeof value !== "object") {
+    throw new TypeError(`${name} must contain only JSON-compatible values`);
+  }
+  if (seen.has(value)) throw new TypeError(`${name} must not contain cycles`);
+  seen.add(value);
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => validateStructuredValue(item, `${name}[${index}]`, seen));
+  } else {
+    if (!isPlainObject(value)) throw new TypeError(`${name} must contain only plain JSON objects`);
+    for (const [key, item] of Object.entries(value)) {
+      validateStructuredValue(item, `${name}.${key}`, seen);
+    }
+  }
+  seen.delete(value);
+}
+
+function validateTemperature(value: unknown, decision: boolean): void {
+  if (typeof value !== "number") throw new TypeError("temperature must be a number");
+  if (!Number.isFinite(value) || value <= 0 || value > 100) {
+    throw new RangeError("temperature must be in (0, 100]");
+  }
+  if (decision && value !== 1) throw new RangeError("decision temperature must be exactly 1.0");
+}
+
+function validateOptionalModel(model: unknown): void {
+  if (model !== undefined && (typeof model !== "string" || model.length === 0)) {
+    throw new TypeError("model must be a non-empty string");
+  }
+}
+
+function validateRankingRequest(request: RankingRequest): void {
+  if (!isPlainObject(request)) throw new TypeError("request must be a plain object");
+  if (!Array.isArray(request.answers) || request.answers.length === 0) {
+    throw new TypeError("answers must be a non-empty array");
+  }
+  if (request.answers.some((answer) => typeof answer !== "string" || answer.length === 0)) {
+    throw new TypeError("answers must contain only non-empty strings");
+  }
+  if (request.question !== undefined && typeof request.question !== "string") {
+    throw new TypeError("question must be a string");
+  }
+  if (request.context !== undefined) validateStructuredValue(request.context, "context");
+  validateOptionalModel(request.model);
+  if (request.temperature !== undefined) validateTemperature(request.temperature, false);
+}
+
+function validateDecisionRequest(request: DecisionRequest): void {
+  if (!isPlainObject(request)) throw new TypeError("request must be a plain object");
+  if (!isPlainObject(request.questions) || Object.keys(request.questions).length === 0) {
+    throw new TypeError("questions must be a non-empty plain object");
+  }
+  for (const [questionId, question] of Object.entries(request.questions)) {
+    if (!isPlainObject(question)) throw new TypeError(`questions.${questionId} must be a plain object`);
+    if (question.type !== "noul" && question.type !== "choice" && question.type !== "score") {
+      throw new TypeError(`questions.${questionId}.type must be 'noul', 'choice', or 'score'`);
+    }
+    if (question.type === "choice") {
+      if (
+        !isPlainObject(question.criteria) ||
+        Object.keys(question.criteria).length < 1 ||
+        Object.keys(question.criteria).length > 255
+      ) {
+        throw new TypeError(`questions.${questionId}.criteria must be an object with 1 to 255 entries`);
+      }
+      validateStructuredValue(question.criteria, `questions.${questionId}.criteria`);
+    } else if (question.type === "score") {
+      if (!Array.isArray(question.criteria) || question.criteria.length < 1 || question.criteria.length > 255) {
+        throw new TypeError(`questions.${questionId}.criteria must be an array with 1 to 255 entries`);
+      }
+      validateStructuredValue(question.criteria, `questions.${questionId}.criteria`);
+    } else if ("criteria" in question) {
+      throw new TypeError(`questions.${questionId}.criteria is not supported for noul questions`);
+    }
+    if ("instructions" in question) {
+      validateStructuredValue(question.instructions, `questions.${questionId}.instructions`);
+    }
+  }
+  if (request.state !== undefined) validateStructuredValue(request.state, "state");
+  validateOptionalModel(request.model);
+  if (request.temperature !== undefined) validateTemperature(request.temperature, true);
+}
+
+function jsonRequest(value: RankingRequest | DecisionRequest): Request {
+  return new Request().addItem(ItemFactory.text(JSON.stringify(value), "openai-json"));
+}
+
+function jsonResult(response: Response, sessionName: string): unknown {
+  if (response.output.length !== 1) {
+    throw new TypeError(`${sessionName}: expected one response item, but got ${response.output.length}`);
+  }
+  const item = response.output[0];
+  if (item?.type !== "text" || item.textType !== "openai-json") {
+    throw new TypeError(`${sessionName}: expected one OpenAI JSON text response item`);
+  }
+  try {
+    return JSON.parse(item.text);
+  } catch {
+    throw new TypeError(`${sessionName}: response contained invalid JSON`);
+  }
+}
+
+function invalidResult(sessionName: string): never {
+  throw new TypeError(`${sessionName}: response did not match the typed result contract`);
+}
+
+function finiteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function rankingResult(response: Response, request: RankingRequest): RankingResult {
+  const value = jsonResult(response, "RankingSession");
+  if (
+    !isPlainObject(value) ||
+    typeof value.model !== "string" ||
+    value.model.length === 0 ||
+    !Array.isArray(value.ranked)
+  ) {
+    return invalidResult("RankingSession");
+  }
+  if (value.ranked.length !== request.answers.length) return invalidResult("RankingSession");
+  const ranks = new Set<number>();
+  const indexes = new Set<number>();
+  for (const candidate of value.ranked) {
+    if (
+      !isPlainObject(candidate) ||
+      !Number.isInteger(candidate.rank) ||
+      (candidate.rank as number) < 1 ||
+      (candidate.rank as number) > request.answers.length ||
+      typeof candidate.id !== "string" ||
+      !Number.isInteger(candidate.index) ||
+      (candidate.index as number) < 0 ||
+      (candidate.index as number) >= request.answers.length ||
+      candidate.id !== String(candidate.index) ||
+      typeof candidate.candidate !== "string" ||
+      candidate.candidate !== request.answers[candidate.index as number] ||
+      !finiteNumber(candidate.prob) ||
+      candidate.prob < 0 ||
+      candidate.prob > 1 ||
+      ranks.has(candidate.rank as number) ||
+      indexes.has(candidate.index as number)
+    ) {
+      return invalidResult("RankingSession");
+    }
+    ranks.add(candidate.rank as number);
+    indexes.add(candidate.index as number);
+  }
+  return value as unknown as RankingResult;
+}
+
+function validateDecisionAnswer(value: unknown, expectedType: string): boolean {
+  if (!isPlainObject(value) || value.type !== expectedType) return false;
+  const answer =
+    expectedType === "noul"
+      ? value.noul
+      : expectedType === "choice"
+        ? value.choice
+        : expectedType === "score"
+          ? value.score
+          : undefined;
+  if (expectedType === "choice" ? typeof answer !== "string" : !finiteNumber(answer)) return false;
+  if (value.confidence !== undefined && !finiteNumber(value.confidence)) return false;
+  if (
+    value.probabilities !== undefined &&
+    (!isPlainObject(value.probabilities) || Object.values(value.probabilities).some((item) => !finiteNumber(item)))
+  ) {
+    return false;
+  }
+  return !(
+    value.legend !== undefined &&
+    (!isPlainObject(value.legend) || Object.values(value.legend).some((item) => typeof item !== "string"))
+  );
+}
+
+function decisionResult(response: Response, request: DecisionRequest): DecisionResult {
+  const value = jsonResult(response, "DecisionSession");
+  if (
+    !isPlainObject(value) ||
+    typeof value.model !== "string" ||
+    value.model.length === 0 ||
+    !isPlainObject(value.answers) ||
+    !isPlainObject(value.usage) ||
+    !Number.isSafeInteger(value.usage.billing_units) ||
+    (value.usage.billing_units as number) < 0
+  ) {
+    return invalidResult("DecisionSession");
+  }
+  const answers = value.answers;
+  const expectedKeys = Object.keys(request.questions);
+  const answerKeys = Object.keys(answers);
+  if (
+    answerKeys.length !== expectedKeys.length ||
+    expectedKeys.some(
+      (key) =>
+        !Object.hasOwn(answers, key) || !validateDecisionAnswer(answers[key], request.questions[key]?.type ?? ""),
+    )
+  ) {
+    return invalidResult("DecisionSession");
+  }
+  return value as unknown as DecisionResult;
 }
 
 /**
@@ -303,19 +535,18 @@ function makeAbortError(message: string): Error {
   return err;
 }
 
-export abstract class Session {
+abstract class OneShotSession {
   // `protected` (not `#private`) so subclasses can downcast for
   // modality-specific native methods without a second field/storage slot.
-  protected readonly native: NativeSession;
+  protected readonly native: NativeOneShotSession;
 
-  protected constructor(native: NativeSession) {
+  protected constructor(native: NativeOneShotSession) {
     this.native = native;
   }
 
   /**
    * Run inference for `request`. Resolves with a `Response` snapshot when
-   * generation completes. The full output is materialised before resolution
-   * — use {@link processStreamingRequest} to consume items incrementally.
+   * generation completes. The full output is materialised before resolution.
    *
    * Rejects with a `FoundryLocalError` on native failure. Calling
    * `request.cancel()` from another async context causes this promise to
@@ -365,26 +596,6 @@ export abstract class Session {
     }
   }
 
-  /**
-   * Run inference for `request`, yielding each `Item` produced by the model
-   * as it streams. The returned value is an `AsyncIterable<Item>` that can
-   * be consumed with `for await (const item of session.processStreamingRequest(req)) { ... }`,
-   * and also exposes a `response` promise that resolves to the terminal
-   * `Response` (stop reason, usage, aggregate text item, etc.) once the
-   * native call completes.
-   *
-   * Cancellation: pass `{ signal }`; aborting removes queued work or cancels an active native request and causes the
-   * iterator to throw an `Error` with `name === "AbortError"`. A signal already aborted at call time rejects before
-   * submission.
-   * Breaking out of the `for await` loop similarly requests active cancellation. If native completion wins the race,
-   * `response` resolves normally; otherwise it rejects with `OperationCancelled`.
-   *
-   * Non-cancellation failures throw a `FoundryLocalError`.
-   */
-  processStreamingRequest(request: Request, options?: StreamOptions): StreamingResponse {
-    return streamItems(this.native, request, options?.signal);
-  }
-
   /** Apply session-level options that persist across `processRequest()` calls. */
   setOptions(options: RequestOptions): this {
     this.native.setOptions(options);
@@ -407,6 +618,34 @@ export abstract class Session {
 
   [Symbol.dispose](): void {
     this.dispose();
+  }
+}
+
+export abstract class Session extends OneShotSession {
+  protected declare readonly native: NativeSession;
+
+  protected constructor(native: NativeSession) {
+    super(native);
+  }
+
+  /**
+   * Run inference for `request`, yielding each `Item` produced by the model
+   * as it streams. The returned value is an `AsyncIterable<Item>` that can
+   * be consumed with `for await (const item of session.processStreamingRequest(req)) { ... }`,
+   * and also exposes a `response` promise that resolves to the terminal
+   * `Response` (stop reason, usage, aggregate text item, etc.) once the
+   * native call completes.
+   *
+   * Cancellation: pass `{ signal }`; aborting removes queued work or cancels an active native request and causes the
+   * iterator to throw an `Error` with `name === "AbortError"`. A signal already aborted at call time rejects before
+   * submission.
+   * Breaking out of the `for await` loop similarly requests active cancellation. If native completion wins the race,
+   * `response` resolves normally; otherwise it rejects with `OperationCancelled`.
+   *
+   * Non-cancellation failures throw a `FoundryLocalError`.
+   */
+  processStreamingRequest(request: Request, options?: StreamOptions): StreamingResponse {
+    return streamItems(this.native, request, options?.signal);
   }
 }
 
@@ -573,3 +812,43 @@ export class AudioSession extends Session {
     super(modelToNativeAudioSession(model));
   }
 }
+
+/**
+ * One-shot inference session for `text-ranking` models.
+ *
+ * {@link rank} uses the same JSON request and result contracts as `POST /v1/rank`.
+ * The lower-level inherited {@link Session.processRequest} API accepts exactly
+ * one `Item.text(json, "openai-json")` input and returns the same item shape.
+ */
+export class RankingSession extends OneShotSession {
+  constructor(model: IModel) {
+    super(modelToNativeGenericSession(model, "RankingSession", "text-ranking"));
+  }
+
+  async rank(request: RankingRequest, options?: StreamOptions): Promise<RankingResult> {
+    validateRankingRequest(request);
+    return rankingResult(await this.processRequest(jsonRequest(request), options), request);
+  }
+}
+
+/**
+ * One-shot inference session for `typed-decision` models.
+ *
+ * {@link decide} uses the same JSON request and result contracts as
+ * `POST /v1/systemone`.
+ */
+export class DecisionSession extends OneShotSession {
+  constructor(model: IModel) {
+    super(modelToNativeGenericSession(model, "DecisionSession", "typed-decision"));
+  }
+
+  async decide(request: DecisionRequest, options?: StreamOptions): Promise<DecisionResult> {
+    validateDecisionRequest(request);
+    return decisionResult(await this.processRequest(jsonRequest(request), options), request);
+  }
+}
+
+/** @deprecated Use {@link DecisionSession}. */
+export type TypedDecisionSession = DecisionSession;
+/** @deprecated Use {@link DecisionSession}. */
+export const TypedDecisionSession = DecisionSession;

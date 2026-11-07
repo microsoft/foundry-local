@@ -258,10 +258,14 @@ stages:
     - checkout: self
       clean: true
     - template: fetch-models-from-artifacts-feed.yml
+    - template: fetch-models-from-artifacts-feed.yml
+      parameters:
+        modelSet: 'non-generative'
     - template: steps-test-js.yml
       parameters:
         rid: 'linux-x64'
         prebuildArtifactDir: '$(Pipeline.Workspace)/js-prebuild-linux-x64'
+        runRequiredNonGenerativeTests: true
 
 - stage: js_test_linux_arm64
   displayName: 'JS SDK: Test Linux ARM64'

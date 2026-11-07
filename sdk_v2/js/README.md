@@ -17,7 +17,7 @@ For a user-facing introduction to the inference API and cross-language examples,
 
 - **Model catalog** — browse public models and inspect cached or loaded state
 - **Bring your own model (BYOM)** — register existing local model assets without copying or taking ownership of them
-- **Native inference** — run chat, embeddings, and audio sessions directly through the C++ engine
+- **Native inference** — run chat, embeddings, audio, ranking, and typed-decision sessions directly through the C++ engine
 - **Streaming and tool calling** — consume streamed items and run multi-turn tool-enabled chat
 - **Embedded web service** — optionally expose OpenAI-compatible HTTP endpoints
 
@@ -75,6 +75,50 @@ accept an `AbortSignal`. Pre-aborted signals prevent submission; aborting remove
 inference. Cancellation rejects with `AbortError`, but a completed native response can win the race. Compatibility
 chat, audio, and embedding methods accept the same options as their last argument; for chat without tools, use
 `client.completeChat(messages, undefined, { signal })`.
+
+### Ranking and typed decisions
+
+`RankingSession` and `DecisionSession` use the same contracts as
+`POST /v1/rank` and `POST /v1/systemone`:
+
+```ts
+import { DecisionSession, RankingSession } from "foundry-local-sdk";
+
+await cachedRankingModel.load();
+const ranking = new RankingSession(cachedRankingModel);
+try {
+  const ranked = await ranking.rank({
+    context: { weather: "rain" },
+    question: "Which activity is best?",
+    answers: ["picnic", "museum"],
+  });
+} finally {
+  ranking.dispose();
+  await cachedRankingModel.unload();
+}
+
+await cachedDecisionModel.load();
+const decisions = new DecisionSession(cachedDecisionModel);
+try {
+  const result = await decisions.decide({
+    state: { weather: "rain" },
+    questions: {
+      umbrella: { type: "noul", instructions: "Should I take an umbrella?" },
+    },
+  });
+} finally {
+  decisions.dispose();
+  await cachedDecisionModel.unload();
+}
+```
+
+Ranking and decision models must be cached and loaded before session construction. Dispose the session before awaiting
+`model.unload()`. A session borrows its caller-owned model and never unloads it.
+
+The inherited low-level `processRequest()` API accepts exactly one
+`Item.text(JSON.stringify(payload), "openai-json")` item and returns one OpenAI JSON text item.
+Sessions validate the model task before native construction and must be disposed like chat and
+embeddings sessions.
 
 ---
 
