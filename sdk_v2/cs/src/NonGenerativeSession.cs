@@ -18,7 +18,7 @@ public abstract class NonGenerativeSession : Session
 {
     private readonly Func<string, CancellationToken, Task<string>>? _testTransport;
 
-    protected NonGenerativeSession(IModel model) : base(model)
+    protected NonGenerativeSession(IModel model) : base(model, requireLoaded: true)
     {
     }
 
@@ -62,17 +62,6 @@ public abstract class NonGenerativeSession : Session
         request.AddItem(TextItem.OpenAIJson(requestJson));
 #pragma warning restore CA2000
 
-        using var cancellation = ct.Register(static state =>
-        {
-            try
-            {
-                ((Request)state!).Cancel();
-            }
-            catch
-            {
-                // Cancellation races native completion and request teardown.
-            }
-        }, request);
         using var response = await ProcessRequestAsync(request, ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
         if (response.ItemCount != 1)
