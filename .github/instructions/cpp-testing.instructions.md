@@ -25,6 +25,10 @@ See `FindSmallestModelByTask`, `FindSmallestModelByName`, `FindSmallestToolCalli
 
 If a model role prints `(none)`, the test fixtures for that role will skip. Check variant selection logic first — the model likely exists but the wrong variant is selected.
 
+For embedding tests, `FOUNDRY_TEST_EMBEDDING_MODEL` selects an exact model variant ID instead of the default CPU
+selection. Combine it with `FOUNDRY_TEST_DATA_DIR` to exercise a pre-cached CPU or GPU model; the CI no-download gate
+still applies.
+
 ## Test Binary Quick Reference
 
 | Binary | Type | Startup | Count |
