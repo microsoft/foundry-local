@@ -29,6 +29,11 @@ ToolCallPayloadParser CreateQwenXmlToolCallPayloadParser(
     std::string tool_call_start = std::string(kQwenXmlToolCallStartMarker),
     std::string tool_call_end = std::string(kQwenXmlToolCallEndMarker));
 
+/// Whether every declared function schema can be represented and validated by the native XML decoder.
+bool CanDecodeQwenXmlToolSchemas(
+    const std::string& tools_json,
+    const std::unordered_map<std::string, ToolKind>& tool_kinds);
+
 /// Creates the parser for Qwen templates that emit a JSON object inside <tool_call> markers.
 /// A single unmatched trailing object close is repaired because released Qwen models may emit it;
 /// the repaired call still requires an exact declared tool and complete schema validation.

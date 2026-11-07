@@ -2492,29 +2492,20 @@ TEST_F(QwenNativeProductionIntegrationTest, SerialToolCallsCapGuidedEngineRetry)
   EXPECT_EQ(result.finish_reason, FOUNDRY_LOCAL_FINISH_TOOL_CALLS);
 }
 
-TEST_F(QwenNativeProductionIntegrationTest, CompletedCallRetriesOnceAndPublishesOnlyPendingArguments) {
-  constexpr std::string_view kPendingLookupCall =
-      R"(<tool_call>[{"name":"lookup","parameters":{"city":"London"}}]</tool_call>)";
-
+TEST_F(QwenNativeProductionIntegrationTest, UnqualifiedCanonicalContinuationDoesNotInterceptCompletedCall) {
   for (const bool streaming : {false, true}) {
     SCOPED_TRACE(streaming);
     const std::vector<std::string> outputs = {
         std::string(kCanonicalLookupCall),
         std::string(kCanonicalLookupCall),
-        std::string(kPendingLookupCall),
     };
     size_t attempt = 0;
     TextChatGeneratorFactory factory =
         [&](const auto&, const auto&, auto&, const ToolCallContext& context,
             bool) -> std::unique_ptr<ChatGenerator> {
-      if (attempt == 2) {
-        const auto retry_tools = nlohmann::json::parse(context.tools_json);
-        const auto& parameters = retry_tools.at(0).at("function").at("parameters");
-        EXPECT_TRUE(parameters.contains("allOf"));
-        if (parameters.contains("allOf")) {
-          EXPECT_EQ(parameters.at("allOf").at(0).at("not").at("const").at("city"), "Paris");
-        }
-        EXPECT_FALSE(context.supports_reasoning);
+      if (attempt == 1) {
+        EXPECT_FALSE(context.qualified_native_tool_calls);
+        EXPECT_TRUE(context.completed_tool_calls.empty());
       }
       auto generator = std::make_unique<FixedOutputGenerator>(
           outputs.at(attempt++), BackendTerminationCause::kNaturalEnd,
@@ -2555,10 +2546,10 @@ TEST_F(QwenNativeProductionIntegrationTest, CompletedCallRetriesOnceAndPublishes
     const auto pending_calls = Calls(second_response);
     ASSERT_EQ(pending_calls.size(), 1u);
     EXPECT_EQ(pending_calls.front()->name, "lookup");
-    EXPECT_EQ(nlohmann::json::parse(pending_calls.front()->arguments).at("city"), "London");
+    EXPECT_EQ(nlohmann::json::parse(pending_calls.front()->arguments).at("city"), "Paris");
     EXPECT_EQ(second_response.finish_reason, FOUNDRY_LOCAL_FINISH_TOOL_CALLS);
     EXPECT_EQ(streamed_calls, streaming ? 1u : 0u);
-    EXPECT_EQ(attempt, 3u);
+    EXPECT_EQ(attempt, 2u);
   }
 }
 

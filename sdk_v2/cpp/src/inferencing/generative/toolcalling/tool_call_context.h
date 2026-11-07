@@ -81,6 +81,7 @@ struct ToolCallContext {
   std::optional<ForcedToolChoice> forced_tool;
   std::optional<RawEnvelopeDescriptor> raw_envelope;
   bool guidance_disabled = false;
+  bool qualified_native_tool_calls = false;
   bool native_qwen_xml_tool_calls = false;
   bool native_tagged_json_tool_calls = false;
   std::shared_ptr<const ToolCallPlan> tool_plan;
@@ -173,6 +174,7 @@ struct ToolCallContext {
     return tools_json == other.tools_json && tool_kinds == other.tool_kinds &&
            custom_lark_grammars == other.custom_lark_grammars && raw_envelope == other.raw_envelope &&
            guidance_disabled == other.guidance_disabled &&
+           qualified_native_tool_calls == other.qualified_native_tool_calls &&
            native_qwen_xml_tool_calls == other.native_qwen_xml_tool_calls &&
            native_tagged_json_tool_calls == other.native_tagged_json_tool_calls &&
            tool_body_grammar == other.tool_body_grammar &&

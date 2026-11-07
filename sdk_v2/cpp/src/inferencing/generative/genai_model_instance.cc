@@ -192,9 +192,12 @@ ModelCapabilities model_capabilities_internal::ResolveRenderedProbes(
       supports_tool_calling &&
       tool_call_projection.find(kToolDefinitionProbeDescription) != std::string_view::npos &&
       std::ranges::any_of(tool_call_regions, [](const auto& region) {
-        return ContainsInOrder(region.body,
-                               {"<function=probe_function>", "<parameter=probe_parameter>",
-                                "probe_value", "</parameter>", "</function>"});
+        return region.body.find(
+                   "<function=probe_function>\n"
+                   "<parameter=probe_parameter>\n"
+                   "probe_value\n"
+                   "</parameter>\n"
+                   "</function>") != std::string_view::npos;
       });
   const bool native_tagged_json_tool_calls =
       supports_tool_calling &&

@@ -56,47 +56,13 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
           nlohmann::ordered_json::parse(BuildChatMessagesJson(messages.Messages(),
                                                               tool_ctx.supports_reasoning_history));
       struct HistoricalCall {
-        std::string id;
         std::string name;
         std::string arguments;
       };
-      std::vector<HistoricalCall> pending_calls;
       std::vector<HistoricalCall> completed_calls;
-      for (const auto& message : projected_json) {
-        const auto role = message.value("role", "");
-        if (role == "assistant" && message.contains("tool_calls") &&
-            message["tool_calls"].is_array()) {
-          for (const auto& call : message["tool_calls"]) {
-            if (!call.is_object() || !call.contains("function") ||
-                !call["function"].is_object()) {
-              continue;
-            }
-            const auto& function = call["function"];
-            if (!function.contains("name") || !function["name"].is_string() ||
-                !function.contains("arguments") ||
-                (!function["arguments"].is_string() && !function["arguments"].is_object())) {
-              continue;
-            }
-            pending_calls.push_back({
-                call.value("id", ""),
-                function["name"].get<std::string>(),
-                function["arguments"].is_string()
-                    ? function["arguments"].get<std::string>()
-                    : function["arguments"].dump(),
-            });
-          }
-        } else if (role == "tool" && !pending_calls.empty()) {
-          auto completed = pending_calls.begin();
-          if (message.contains("tool_call_id") && message["tool_call_id"].is_string()) {
-            const auto id = message["tool_call_id"].get<std::string>();
-            if (const auto match = std::ranges::find(pending_calls, id, &HistoricalCall::id);
-                match != pending_calls.end()) {
-              completed = match;
-            }
-          }
-          completed_calls.push_back(std::move(*completed));
-          pending_calls.erase(completed);
-        }
+      completed_calls.reserve(tool_ctx.completed_tool_calls.size());
+      for (const auto& [name, arguments] : tool_ctx.completed_tool_calls) {
+        completed_calls.push_back({name, arguments});
       }
       std::string state =
           "Use a tool only when the user's request requires it. For serial work, emit only calls whose "
@@ -124,29 +90,37 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
         projected_json.insert(projected_json.begin(),
                               nlohmann::ordered_json{{"role", "system"}, {"content", state}});
       }
-      std::function<void(nlohmann::ordered_json&)> protect_json_strings =
-          [&](nlohmann::ordered_json& value) {
+      const auto json_string_contents = [](const std::string& value) {
+        auto encoded = nlohmann::json(value).dump();
+        return encoded.substr(1, encoded.size() - 2);
+      };
+      std::function<void(nlohmann::ordered_json&, bool)> protect_json_strings =
+          [&](nlohmann::ordered_json& value, bool json_escaped) {
             if (value.is_string()) {
-              value = protect_literal(value.get<std::string>());
+              auto literal = value.get<std::string>();
+              value = protect_literal(json_escaped ? json_string_contents(literal) : std::move(literal));
             } else if (value.is_array()) {
               for (auto& item : value) {
-                protect_json_strings(item);
+                protect_json_strings(item, json_escaped);
               }
             } else if (value.is_object()) {
               for (auto& [key, item] : value.items()) {
-                protect_json_strings(item);
+                protect_json_strings(item, json_escaped);
               }
             }
           };
       for (auto& message : projected_json) {
-        for (const auto* field : {"content", "reasoning_content", "tool_calls"}) {
+        for (const auto* field : {"content", "reasoning_content"}) {
           if (message.contains(field)) {
-            protect_json_strings(message[field]);
+            protect_json_strings(message[field], false);
           }
+        }
+        if (message.contains("tool_calls")) {
+          protect_json_strings(message["tool_calls"], true);
         }
       }
       auto tools = nlohmann::ordered_json::parse(tool_ctx.tools_json);
-      protect_json_strings(tools);
+      protect_json_strings(tools, true);
       projected = projected_json.dump();
       projected_tools = tools.dump();
     } else {
