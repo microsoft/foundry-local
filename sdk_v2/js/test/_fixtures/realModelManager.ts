@@ -11,10 +11,13 @@
 // a multi-gigabyte download. Local devs implicitly opt into downloads simply
 // by setting FOUNDRY_TEST_DATA_DIR.
 import { existsSync, statSync } from "node:fs";
+import { join } from "node:path";
 
 import type { Catalog } from "../../src/catalog.js";
 import { FoundryLocalManager } from "../../src/foundryLocalManager.js";
 import type { IModel } from "../../src/imodel.js";
+import { ModelInfoStringProperty, MutableModelInfo } from "../../src/modelInfo.js";
+import { CatalogType } from "../../src/types.js";
 
 const envCache = process.env.FOUNDRY_TEST_DATA_DIR;
 const cacheDirExists =
@@ -79,7 +82,7 @@ export async function setupRealModelManager(opts: RealModelManagerOptions = {}):
     appName: opts.appName ?? "foundry-local-js-sdk-v2-real-tests",
     modelCacheDir: envCache,
   });
-  const catalog = manager.catalog;
+  let catalog = manager.catalog;
   const namePref = opts.namePreference ?? "qwen2.5-0.5b";
 
   // Preference 1: exact name / alias hit (V1 throws on miss, so swallow).
@@ -100,6 +103,14 @@ export async function setupRealModelManager(opts: RealModelManagerOptions = {}):
     const prefixed = all.find((m) => m.info.deviceType === "CPU" && m.info.name.startsWith(namePref));
     if (prefixed !== undefined) {
       model = prefixed;
+    }
+  }
+
+  if (model === undefined && opts.task !== undefined) {
+    const staged = await registerStagedNonGenerativeModel(manager, opts.task);
+    if (staged !== undefined) {
+      catalog = staged.catalog;
+      model = staged.model;
     }
   }
 
@@ -139,6 +150,43 @@ export async function setupRealModelManager(opts: RealModelManagerOptions = {}):
     await model.load();
   }
   return { manager, catalog, model };
+}
+
+async function registerStagedNonGenerativeModel(
+  manager: FoundryLocalManager,
+  task: string,
+): Promise<{ catalog: Catalog; model: IModel } | undefined> {
+  if (envCache === undefined) return undefined;
+  const packageInfo =
+    task === "text-ranking"
+      ? {
+          directory: "clm-v0.1-8b-mixed-generic-cpu-1",
+          modelId: "clm-v0.1-8b-mixed-generic-cpu:1",
+        }
+      : task === "typed-decision"
+        ? {
+            directory: "kev-0.8b-mixed-generic-cpu-1",
+            modelId: "kev-0.8b-mixed-generic-cpu:1",
+          }
+        : undefined;
+  if (packageInfo === undefined) return undefined;
+
+  const packagePath = join(envCache, "Microsoft", packageInfo.directory);
+  if (!existsSync(packagePath) || !statSync(packagePath).isDirectory()) return undefined;
+
+  const localCatalog = manager.getCatalog(CatalogType.Local);
+  try {
+    return {
+      catalog: localCatalog,
+      model: await localCatalog.getModelVariant(packageInfo.modelId),
+    };
+  } catch {
+    using metadata = new MutableModelInfo().setStringProperty(ModelInfoStringProperty.Task, task);
+    return {
+      catalog: localCatalog,
+      model: await localCatalog.registerModel(packagePath, packageInfo.modelId, metadata),
+    };
+  }
 }
 
 export function teardownRealModelManager(fixture: RealModelManagerFixture | undefined): void {

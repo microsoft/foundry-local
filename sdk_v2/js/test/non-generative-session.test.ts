@@ -77,17 +77,22 @@ describe.skipIf(!haveTestModelCache)("RankingSession (real model)", () => {
   }, 5 * 60_000);
 
   afterAll(async () => {
-    if (fixture !== undefined) {
-      await fixture.model.unload();
+    session?.dispose();
+    session = undefined;
+    try {
+      if (fixture !== undefined) {
+        await fixture.model.unload();
+      }
+    } finally {
+      teardownRealModelManager(fixture);
     }
-    teardownRealModelManager(fixture);
-  });
+  }, 5 * 60_000);
 
   beforeEach(async () => {
     if (fixture === undefined) return;
     await fixture.model.load();
     session = new RankingSession(fixture.model);
-  });
+  }, 5 * 60_000);
 
   afterEach(() => {
     session?.dispose();
@@ -204,17 +209,22 @@ describe.skipIf(!haveTestModelCache)("DecisionSession (real model)", () => {
   }, 5 * 60_000);
 
   afterAll(async () => {
-    if (fixture !== undefined) {
-      await fixture.model.unload();
+    session?.dispose();
+    session = undefined;
+    try {
+      if (fixture !== undefined) {
+        await fixture.model.unload();
+      }
+    } finally {
+      teardownRealModelManager(fixture);
     }
-    teardownRealModelManager(fixture);
-  });
+  }, 5 * 60_000);
 
   beforeEach(async () => {
     if (fixture === undefined) return;
     await fixture.model.load();
     session = new DecisionSession(fixture.model);
-  });
+  }, 5 * 60_000);
 
   afterEach(() => {
     session?.dispose();
@@ -233,6 +243,7 @@ describe.skipIf(!haveTestModelCache)("DecisionSession (real model)", () => {
 
     expect(result.model).toBeTruthy();
     expect(result.answers.umbrella?.type).toBe("noul");
+    expect(result.usage.billing_units).toBe(0);
   });
 
   it("rejects unloading while the session is active", async (context) => {
@@ -240,7 +251,6 @@ describe.skipIf(!haveTestModelCache)("DecisionSession (real model)", () => {
     if (fixture === undefined || session === undefined) throw new Error("fixture missing");
     await expect(fixture.model.unload()).rejects.toThrow();
     expect(await fixture.model.isLoaded()).toBe(true);
-    expect(result.usage.billing_units).toBe(0);
   });
 
   it("rejects calls after disposal", async (context) => {
