@@ -464,6 +464,10 @@ Manager::~Manager() {
   web_service_.reset();
 #endif
   session_manager_.reset();
+  if (model_load_manager_) {
+    model_load_manager_->WaitForPredictiveRequests();
+    model_load_manager_->ReleasePredictiveSessions();
+  }
   model_load_manager_.reset();
   download_manager_.reset();
   local_catalog_.reset();
@@ -601,10 +605,7 @@ void Manager::StartWebService() {
   ActionTracker tracker(Action::kCoreServiceStart, *telemetry_);
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
-  web_service_ = std::make_unique<WebService>(*public_catalog_, *local_catalog_, *logger_, *config_.model_cache_dir,
-                                              *model_load_manager_,
-                                              *session_manager_, *telemetry_,
-                                              [this]() { RequestShutdown(); }, shared_host_lifetime_);
+  web_service_ = std::make_unique<WebService>(*public_catalog_, *local_catalog_, *logger_, *config_.model_cache_dir, *model_load_manager_, *session_manager_, *telemetry_, [this]() { RequestShutdown(); }, shared_host_lifetime_);
 
   auto endpoints = config_.web_service_endpoints;
   if (endpoints.empty()) {
@@ -637,7 +638,7 @@ void Manager::SetSharedHostLifetime(std::shared_ptr<hosting::HostLifetime> lifet
   if (!lifetime || web_service_running_ ||
       (shared_host_lifetime_ && shared_host_lifetime_ != lifetime)) {
     FL_LOG_AND_THROW(*logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
-                    "shared-host HTTP admission must be configured once before starting the web service");
+                     "shared-host HTTP admission must be configured once before starting the web service");
   }
 
   shared_host_lifetime_ = std::move(lifetime);
