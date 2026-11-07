@@ -41,6 +41,27 @@
 #include <sys/acl.h>
 #endif
 
+#ifdef __linux__
+namespace {
+thread_local const char* unlink_after_connect{};
+thread_local int unlink_after_connect_result{};
+}  // namespace
+
+extern "C" int __real_connect(int fd, const sockaddr* address, socklen_t size);
+
+extern "C" int __wrap_connect(int fd, const sockaddr* address, socklen_t size) {
+  const auto result = __real_connect(fd, address, size);
+  if (result == 0 && unlink_after_connect) {
+    const auto error = errno;
+    unlink_after_connect_result = unlink(unlink_after_connect);
+    unlink_after_connect = nullptr;
+    errno = error;
+  }
+
+  return result;
+}
+#endif
+
 namespace fl::hosting {
 namespace {
 
@@ -658,6 +679,24 @@ TEST_F(IpcChannelTest, MalformedAndTruncatedFramesAreRejectedAndChannelIsClosed)
 }
 
 #ifndef _WIN32
+#ifdef __linux__
+TEST_F(IpcChannelTest, EndpointUnlinkedAfterSuccessfulConnectIsRetryable) {
+  Listener listener(endpoint_);
+  unlink_after_connect_result = -1;
+  unlink_after_connect = endpoint_.c_str();
+  ScopeGuard reset_hook([]() noexcept { unlink_after_connect = nullptr; });
+
+  EXPECT_FALSE(TryConnect(endpoint_));
+  EXPECT_EQ(unlink_after_connect, nullptr);
+  ASSERT_EQ(unlink_after_connect_result, 0);
+  EXPECT_FALSE(fs::exists(endpoint_));
+
+  listener.Close();
+  Listener replacement(endpoint_);
+  EXPECT_TRUE(TryConnect(endpoint_));
+}
+#endif
+
 TEST_F(IpcChannelTest, BoundSocketIsRetryableBeforeListenButInsecureListenerIsRejected) {
   const auto fd = socket(AF_UNIX, SOCK_STREAM, 0);
   ASSERT_GE(fd, 0);

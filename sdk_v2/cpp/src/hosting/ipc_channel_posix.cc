@@ -247,10 +247,16 @@ struct Endpoint {
     return status.st_mode & 0777;
   }
 
-  void VerifySocket() const {
-    if (*SocketMode() != 0600) {
+  bool VerifySocket(bool allow_absent = false) const {
+    const auto mode = SocketMode(allow_absent);
+    if (!mode) {
+      return false;
+    }
+    if (*mode != 0600) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Native IPC endpoint must be an owner-only socket");
     }
+
+    return true;
   }
 
   Descriptor directory;
@@ -673,7 +679,11 @@ std::optional<Channel> TryConnect(const std::filesystem::path& endpoint,
 
   // bind publishes the socket before chmod and listen. A refused connection is retryable during that window;
   // a connected socket must still have owner-only permissions before authentication or any protocol traffic.
-  address.VerifySocket();
+  // A closing listener can unlink the endpoint after connect succeeds.
+  if (!address.VerifySocket(true)) {
+    return std::nullopt;
+  }
+
   SetNonBlocking(fd.Get(), false);
   const auto peer = Authenticate(fd.Get());
   return Channel(std::make_shared<Channel::State>(std::move(fd), peer));

@@ -193,6 +193,11 @@ if(FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS)
 endif()
 
 if(FOUNDRY_LOCAL_HAS_SHARED_HOST)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # The IPC regression unlinks the endpoint immediately after a successful connect.
+        target_link_options(foundry_local_tests PRIVATE "LINKER:--wrap=connect")
+    endif()
+
     target_sources(foundry_local_tests PRIVATE
         internal_api/host_server_test.cc
         internal_api/host_state_test.cc
