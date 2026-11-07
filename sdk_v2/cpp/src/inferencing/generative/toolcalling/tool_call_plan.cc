@@ -241,6 +241,37 @@ void CheckReferences(Json& document, const std::string& context) {
   WalkSchema(document, "", check);
 }
 
+std::string JsonGrammar() {
+  // Whitespace is explicit at structural boundaries, never ignored inside string, escape or number terminals.
+  // Escaped surrogates must be paired; all other BMP escapes and raw Unicode scalar values are accepted.
+  return R"lark(
+tool_json_value: tool_json_object | tool_json_array | TOOL_JSON_STRING | TOOL_JSON_NUMBER | "true" | "false" | "null"
+tool_json_object: "{" tool_json_ws (tool_json_member (tool_json_comma tool_json_member)*)? tool_json_ws "}"
+tool_json_member: TOOL_JSON_STRING tool_json_colon tool_json_value
+tool_json_array: "[" tool_json_ws (tool_json_value (tool_json_comma tool_json_value)*)? tool_json_ws "]"
+tool_json_comma: tool_json_ws "," tool_json_ws
+tool_json_colon: tool_json_ws ":" tool_json_ws
+tool_json_ws: TOOL_JSON_WS?
+TOOL_JSON_WS: /[ \t\r\n]+/
+TOOL_JSON_STRING: /)lark"
+         R"regex("(?:[^"\\\x00-\x1f]|\\(?:["\\\/bfnrt]|u(?:)regex"
+         R"regex([0-9a-cA-Ce-fE-F][0-9a-fA-F]{3}|[dD][0-7][0-9a-fA-F]{2}|)regex"
+         R"regex([dD][89aAbB][0-9a-fA-F]{2}\\u[dD][c-fC-F][0-9a-fA-F]{2})))*")regex"
+         R"lark(/
+TOOL_JSON_NUMBER: /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/
+)lark";
+}
+
+void ValidateRootRule(std::string_view root_rule) {
+  const auto is_initial = [](char c) { return (c >= 'a' && c <= 'z') || c == '_'; };
+  const auto is_remaining = [&](char c) { return is_initial(c) || (c >= '0' && c <= '9'); };
+  if (root_rule.empty() || !is_initial(root_rule.front()) || root_rule.starts_with("tool_json_") ||
+      !std::ranges::all_of(root_rule, is_remaining)) {
+    Fail(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "grammar root rule",
+         "expected a lowercase Lark identifier outside the reserved tool_json_ prefix");
+  }
+}
+
 std::string BuildGrammar(const std::vector<std::string>& names, bool parallel) {
   std::string grammar = parallel
                             ? "start: tool_json_ws \"[\" tool_json_ws tool_json_call "
@@ -252,31 +283,13 @@ std::string BuildGrammar(const std::vector<std::string>& names, bool parallel) {
     if (i != 0) {
       grammar += " | ";
     }
-
-    // The inner string is JSON data; the outer string quotes those exact bytes as a Lark literal.
     grammar += Json(Json(names[i]).dump()).dump();
   }
-
-  // Whitespace is explicit at structural boundaries, never ignored inside string, escape or number terminals.
-  // Escaped surrogates must be paired; all other BMP escapes and raw Unicode scalar values are accepted.
   grammar += R"lark(
 tool_json_call: "{" tool_json_ws "\"name\"" tool_json_colon tool_json_name tool_json_comma )lark"
              R"lark("\"parameters\"" tool_json_colon tool_json_object tool_json_ws "}"
-tool_json_value: tool_json_object | tool_json_array | TOOL_JSON_STRING | TOOL_JSON_NUMBER | "true" | "false" | "null"
-tool_json_object: "{" tool_json_ws (tool_json_member (tool_json_comma tool_json_member)*)? tool_json_ws "}"
-tool_json_member: TOOL_JSON_STRING tool_json_colon tool_json_value
-tool_json_array: "[" tool_json_ws (tool_json_value (tool_json_comma tool_json_value)*)? tool_json_ws "]"
-tool_json_comma: tool_json_ws "," tool_json_ws
-tool_json_colon: tool_json_ws ":" tool_json_ws
-tool_json_ws: TOOL_JSON_WS?
-TOOL_JSON_WS: /[ \t\r\n]+/
-TOOL_JSON_STRING: /)lark"
-             R"regex("(?:[^"\\\x00-\x1f]|\\(?:["\\\/bfnrt]|u(?:)regex"
-             R"regex([0-9a-cA-Ce-fE-F][0-9a-fA-F]{3}|[dD][0-7][0-9a-fA-F]{2}|)regex"
-             R"regex([dD][89aAbB][0-9a-fA-F]{2}\\u[dD][c-fC-F][0-9a-fA-F]{2})))*")regex"
-             R"lark(/
-TOOL_JSON_NUMBER: /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/
 )lark";
+  grammar += JsonGrammar();
   return grammar;
 }
 
@@ -391,15 +404,23 @@ std::shared_ptr<const ToolCallPlan> ToolCallPlan::Create(
 }
 
 std::string ToolCallPlan::Grammar(std::string_view root_rule) const {
-  const auto is_initial = [](char c) { return (c >= 'a' && c <= 'z') || c == '_'; };
-  const auto is_remaining = [&](char c) { return is_initial(c) || (c >= '0' && c <= '9'); };
-  if (root_rule.empty() || !is_initial(root_rule.front()) || root_rule.starts_with("tool_json_") ||
-      !std::ranges::all_of(root_rule, is_remaining)) {
-    Fail(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "grammar root rule",
-         "expected a lowercase Lark identifier outside the reserved tool_json_ prefix");
-  }
-
+  ValidateRootRule(root_rule);
   return std::string(root_rule) + impl_->grammar.substr(std::string_view("start").size());
+}
+
+std::string ToolCallPlan::ObjectGrammar(std::string_view root_rule) const {
+  ValidateRootRule(root_rule);
+  return std::string(root_rule) + ": tool_json_ws tool_json_object tool_json_ws\n" + JsonGrammar();
+}
+
+std::vector<std::string> ToolCallPlan::AllowedNames() const {
+  std::vector<std::string> names;
+  for (const auto& entry : impl_->validators) {
+    if (!impl_->forced_name || entry.first == *impl_->forced_name) {
+      names.push_back(entry.first);
+    }
+  }
+  return names;
 }
 
 std::vector<ParsedToolCall> ToolCallPlan::ParseCalls(std::string_view canonical_json) const {
@@ -415,7 +436,6 @@ std::vector<ParsedToolCall> ToolCallPlan::ParseCalls(std::string_view canonical_
       const auto envelope = batch[i].get<Envelope>();
       ParsedToolCall call{"", envelope.name, envelope.parameters.dump()};
       call.argument_source = call.arguments;
-      ValidateCall(call);
       calls.push_back(std::move(call));
     } catch (const Exception&) {
       throw;
@@ -424,11 +444,31 @@ std::vector<ParsedToolCall> ToolCallPlan::ParseCalls(std::string_view canonical_
     }
   }
 
+  ValidateBatch(calls);
   for (auto& call : calls) {
     call.id = GenerateToolCallId();
   }
 
   return calls;
+}
+
+void ToolCallPlan::ValidateBatch(const std::vector<ParsedToolCall>& calls) const {
+  if (calls.empty() || (!impl_->parallel && calls.size() > 1)) {
+    Fail(FOUNDRY_LOCAL_ERROR_INTERNAL, "tool call batch", "expected non-empty batch within parallel call limit");
+  }
+  size_t bytes = 0;
+  for (const auto& call : calls) {
+    const auto& source = call.argument_source.empty() ? call.arguments : call.argument_source;
+    if (call.name.size() > kMaxBatchBytes - bytes) {
+      Fail(FOUNDRY_LOCAL_ERROR_INTERNAL, "tool call batch", "batch exceeds byte limit");
+    }
+    bytes += call.name.size();
+    if (source.size() > kMaxBatchBytes - bytes) {
+      Fail(FOUNDRY_LOCAL_ERROR_INTERNAL, "tool call batch", "batch exceeds byte limit");
+    }
+    bytes += source.size();
+    ValidateCall(call);
+  }
 }
 
 void ToolCallPlan::ValidateCall(const ParsedToolCall& call) const {
