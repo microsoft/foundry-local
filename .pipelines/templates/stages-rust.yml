@@ -94,11 +94,15 @@ stages:
     - checkout: self
       clean: true
     - template: fetch-models-from-artifacts-feed.yml
+    - template: fetch-models-from-artifacts-feed.yml
+      parameters:
+        modelSet: non-generative
     - template: steps-build-rust.yml
       parameters:
         rid: 'linux-x64'
         nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-linux-x64'
         runTests: true
+        runRequiredNonGenerativeTests: true
 
 - stage: rust_build_linux_arm64
   displayName: 'Rust SDK: Build + Test Linux ARM64'
