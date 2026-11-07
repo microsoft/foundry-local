@@ -451,7 +451,8 @@ bool ShouldStartInsideReasoning(const ToolCallContext& context, bool prompt_open
 
 ToolCallPayloadParser CreateToolCallPayloadParser(const ToolCallContext& context) {
   if (context.tool_plan && context.tool_output && context.HasToolCallTokens()) {
-    return CreateJsonToolCallPayloadParser(context.tool_plan, context.tool_call_start, context.tool_call_end,
+    return CreateJsonToolCallPayloadParser(context.tool_plan, context.GeneratedToolCallStart(),
+                                           context.GeneratedToolCallEnd(),
                                            context.parallel_tool_calls);
   }
 
@@ -639,7 +640,8 @@ ToolCallStreamAccumulator::Output PushToolOutput(
 ToolCallStreamAccumulator::Output PushToolOutputSegment(
     const ReasoningStreamSplitter::Segment& segment, const ToolCallContext& context,
     RawEnvelopeDetector* raw_detector, ToolCallStreamAccumulator& structured_accumulator) {
-  if (context.tool_plan && context.tool_call_start_token_id && context.tool_call_end_token_id &&
+  if (!context.fenced_tool_call_output && context.tool_plan &&
+      context.tool_call_start_token_id && context.tool_call_end_token_id &&
       (raw_detector == nullptr || !raw_detector->InsideEnvelope() || structured_accumulator.InsideToolCall())) {
     auto ownership = structured_accumulator.ObserveTokenBoundaries(
         segment.text, segment.token_id == context.tool_call_start_token_id,
@@ -649,7 +651,8 @@ ToolCallStreamAccumulator::Output PushToolOutputSegment(
     }
   }
 
-  if (context.tool_plan && context.tool_call_start_token_id && !structured_accumulator.InsideToolCall() &&
+  if (!context.fenced_tool_call_output && context.tool_plan &&
+      context.tool_call_start_token_id && !structured_accumulator.InsideToolCall() &&
       segment.token_id != context.tool_call_start_token_id) {
     if (raw_detector != nullptr) {
       return RouteRawToolOutput(raw_detector->Push(segment.text), *raw_detector, structured_accumulator,
@@ -666,14 +669,19 @@ ToolCallStreamAccumulator::Output PushToolOutputSegment(
 ToolCallStreamAccumulator::Output FlushToolOutput(
     RawEnvelopeDetector* raw_detector,
     ToolCallStreamAccumulator& structured_accumulator,
-    bool natural_end) {
+    bool natural_end,
+    bool discard_interrupted_selected_payload) {
   if (raw_detector == nullptr) {
     if (!structured_accumulator.HasPayloadParser()) {
       return structured_accumulator.Flush();
     }
 
-    return natural_end ? structured_accumulator.Flush()
-                       : structured_accumulator.RejectPendingSelectedPayload();
+    if (natural_end) {
+      return structured_accumulator.Flush();
+    }
+    return discard_interrupted_selected_payload
+               ? structured_accumulator.DiscardPendingSelectedPayload()
+               : structured_accumulator.RejectPendingSelectedPayload();
   }
 
   auto raw_output = natural_end ? raw_detector->FinalizeNatural() : raw_detector->Abort();
@@ -686,6 +694,8 @@ ToolCallStreamAccumulator::Output FlushToolOutput(
     AppendToolOutput(output, structured_accumulator.Flush());
   } else if (natural_end) {
     AppendToolOutput(output, structured_accumulator.Flush());
+  } else if (discard_interrupted_selected_payload) {
+    AppendToolOutput(output, structured_accumulator.DiscardPendingSelectedPayload());
   } else {
     AppendToolOutput(output, structured_accumulator.RejectPendingSelectedPayload());
   }
@@ -713,6 +723,14 @@ bool InsideToolOutput(const RawEnvelopeDetector* raw_detector,
                       const ToolCallStreamAccumulator& structured_accumulator) {
   return (raw_detector != nullptr && raw_detector->InsideEnvelope()) ||
          structured_accumulator.InsideToolCall();
+}
+
+bool ResolveToolCallingSupport(std::optional<int64_t> catalog_support,
+                               bool inferred_support) noexcept {
+  if (!catalog_support.has_value() || *catalog_support == -1) {
+    return inferred_support;
+  }
+  return *catalog_support == 1;
 }
 
 bool IsNaturalToolOutputEnd(bool canceled,
@@ -809,14 +827,24 @@ std::vector<ParsedToolCall> ParseStrictGuidedToolCalls(const std::string& text, 
   }
 
   const auto trimmed = std::string_view(text).substr(first, last - first + 1);
-  if (trimmed.size() < tool_ctx.tool_call_start.size() + tool_ctx.tool_call_end.size() ||
-      !trimmed.starts_with(tool_ctx.tool_call_start) || !trimmed.ends_with(tool_ctx.tool_call_end)) {
-    return {};
+  const auto& start = tool_ctx.GeneratedToolCallStart();
+  const auto& end = tool_ctx.GeneratedToolCallEnd();
+  if (trimmed.size() >= start.size() + end.size() &&
+      trimmed.starts_with(start) && trimmed.ends_with(end)) {
+    const auto payload = trimmed.substr(start.size(), trimmed.size() - start.size() - end.size());
+    return tool_ctx.tool_plan->ParseCalls(payload);
   }
 
-  const auto payload = trimmed.substr(tool_ctx.tool_call_start.size(),
-                                      trimmed.size() - tool_ctx.tool_call_start.size() - tool_ctx.tool_call_end.size());
-  return tool_ctx.tool_plan->ParseCalls(payload);
+  if (tool_ctx.fenced_tool_call_output) {
+    if (trimmed.starts_with('[') && trimmed.ends_with(']')) {
+      return tool_ctx.tool_plan->ParseCalls(trimmed);
+    }
+    if (trimmed.starts_with('{') && trimmed.ends_with('}')) {
+      return tool_ctx.tool_plan->ParseCalls("[" + std::string(trimmed) + "]");
+    }
+  }
+
+  return {};
 }
 
 GuidedToolRetryResult RunGuidedToolRetry(const chat_internal::PreparedChatMessages& messages,
@@ -829,6 +857,10 @@ GuidedToolRetryResult RunGuidedToolRetry(const chat_internal::PreparedChatMessag
   }
 
   tool_ctx.ConfigureForGuidedToolRetry();
+  if (tool_ctx.fenced_tool_call_output) {
+    tool_ctx.fenced_tool_call_output = false;
+    tool_ctx.guidance_disabled = false;
+  }
   if (retry_prompt) {
     tool_ctx.supports_reasoning = false;
   }
@@ -864,7 +896,8 @@ GuidedToolRetryResult RunGuidedToolRetry(const chat_internal::PreparedChatMessag
   auto process_segments = [&](const std::vector<TextSegment>& segments) {
     for (const auto& segment : segments) {
       if (segment.type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT) {
-        if (tool_ctx.tool_call_start_token_id && tool_ctx.tool_call_end_token_id) {
+        if (!tool_ctx.fenced_tool_call_output &&
+            tool_ctx.tool_call_start_token_id && tool_ctx.tool_call_end_token_id) {
           const auto ownership = boundary_validator.ObserveTokenBoundaries(
               segment.text, segment.token_id == tool_ctx.tool_call_start_token_id,
               segment.token_id == tool_ctx.tool_call_end_token_id);
@@ -944,7 +977,8 @@ GuidedToolRetryResult RunGuidedToolRetry(const chat_internal::PreparedChatMessag
       result.termination_cause);
   result.reasoning_tokens = splitter.ReasoningTokenCount();
 
-  if (tool_ctx.tool_call_start_token_id && tool_ctx.tool_call_end_token_id &&
+  if (!tool_ctx.fenced_tool_call_output &&
+      tool_ctx.tool_call_start_token_id && tool_ctx.tool_call_end_token_id &&
       !boundary_validator.HasCompleteTokenOwnedEnvelope()) {
     ThrowInvalidGuidedToolRetry("Missing token-owned tool-call boundaries");
   }
@@ -981,7 +1015,8 @@ bool IsGuidedToolRetryEligible(
     int attempted_tokens,
     std::optional<int> output_budget) {
   return tool_ctx.tool_plan && natural_tool_output_end &&
-         (!semantic_output_seen || safe_prefix_available) && !tool_call_published &&
+           (!semantic_output_seen || safe_prefix_available || !tool_ctx.text_output) &&
+           !tool_call_published &&
          (!output_budget || attempted_tokens < *output_budget) &&
          options.stop_sequences.empty() &&
          tool_ctx.tool_output &&
@@ -1082,9 +1117,9 @@ ToolCallContext BuildToolCallContextForRequest(const Request& request,
 
   // Check if the model supports tool calling
   const auto* tool_calling_val = info.GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT);
-  if (tool_calling_val && *tool_calling_val == 1) {
-    tool_ctx.supports_tool_calling = true;
-  }
+  tool_ctx.supports_tool_calling = chat_session_internal::ResolveToolCallingSupport(
+      tool_calling_val ? std::optional<int64_t>{*tool_calling_val} : std::nullopt,
+      model.SupportsToolCalling());
 
   if (tool_ctx.tool_call_start.empty()) {
     const auto* val = info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR);
@@ -1203,6 +1238,12 @@ ToolCallContext BuildToolCallContextForRequest(const Request& request,
       if (!request.raw_envelope_descriptor && !tool_ctx.forced_tool) {
         tool_ctx.raw_envelope.reset();
       }
+      if (!tool_ctx.text_output &&
+          (model.ModelType().starts_with("qwen2") || model.ModelId().starts_with("qwen2")) &&
+          !tool_ctx.ActiveRawEnvelope() && !tool_ctx.HasAnyExplicitGuidance()) {
+        tool_ctx.fenced_tool_call_output = true;
+        tool_ctx.guidance_disabled = true;
+      }
     }
   }
 
@@ -1215,7 +1256,6 @@ ToolCallContext BuildToolCallContextForRequest(const Request& request,
 
 struct PreparedChatRequest {
   TranscriptIngest ingest;
-  MediaInput media;
   ToolCallContext tool_context;
   SearchOptions options;
   ChatBackendKind backend_kind = ChatBackendKind::kGenerator;
@@ -1260,7 +1300,7 @@ std::unique_ptr<PreparedChatRequest> PrepareChatRequest(
 
     auto request_json = ParseJsonStrict(text_item.text);
     if (model_info.task == "coding") {
-      // Validate media before the text-only chat contract parser discards non-text content parts.
+      // Reject coding media before decoding any image payload.
       for (const auto& message : request_json.at("messages")) {
         const auto content = message.find("content");
         if (content == message.end() || !content->is_array()) {
@@ -1332,6 +1372,15 @@ std::unique_ptr<PreparedChatRequest> PrepareChatRequest(
     }
 
     const auto effective_kvp = MergeKeyValuePairs(base_session_options, internal_request.options);
+    auto media = CollectMediaInput(internal_request);
+    const bool media_turn = !media.Empty();
+    if (media_turn) {
+      ToolCallContext declarations;
+      chat_session_internal::PopulateToolDefinitions(request_definitions, declarations);
+      ValidateMediaTurn(media, BuildTranscriptMessages(internal_request.items),
+                        {.tools_declared = declarations.HasTools()});
+    }
+
     prepared->tool_context = BuildToolCallContextForRequest(internal_request, effective_kvp, request_definitions,
                                                             model_info, model, logger);
     prepared->options = SearchOptions::FromParameters(effective_kvp);
@@ -1341,20 +1390,26 @@ std::unique_ptr<PreparedChatRequest> PrepareChatRequest(
     const ChatTranscript payload_transcript;
     payload_transcript.ValidateInputs(messages);
     prepared->messages.emplace(message_preparer(std::move(messages), model.HasPositionalToolResults()));
-    prepared->prompt = PrepareTextChatPrompt(*prepared->messages, model, prepared->tool_context);
+    if (media_turn) {
+      prepared->prompt =
+          PrepareMediaChatPrompt(media.messages, model, media.images, media.audios, prepared->tool_context);
+    } else {
+      prepared->prompt = PrepareTextChatPrompt(*prepared->messages, model, prepared->tool_context);
+    }
+
     prepared->json_passthrough = true;
-    ResolvePreparedGenerationLimit(*prepared, /*media_turn=*/false);
+    ResolvePreparedGenerationLimit(*prepared, media_turn);
     return prepared;
   }
 
   auto effective_kvp = MergeKeyValuePairs(base_session_options, request.options);
   chat_completions::ApplyCatalogDefaults(effective_kvp, model_info.model_settings);
-  prepared->media = CollectMediaInput(request);
-  const bool media_turn = !prepared->media.Empty();
+  auto media = CollectMediaInput(request);
+  const bool media_turn = !media.Empty();
   if (media_turn) {
     ToolCallContext declarations;
     chat_session_internal::PopulateToolDefinitions(tool_definitions, declarations);
-    ValidateMediaTurn(prepared->media, BuildTranscriptMessages(request.items),
+    ValidateMediaTurn(media, BuildTranscriptMessages(request.items),
                       {.session_has_history = !transcript.Empty(), .tools_declared = declarations.HasTools()});
   }
 
@@ -1386,15 +1441,14 @@ std::unique_ptr<PreparedChatRequest> PrepareChatRequest(
   prepared->messages.emplace(message_preparer(std::move(all_messages), model.HasPositionalToolResults()));
 
   if (media_turn) {
-    auto media_messages = std::move(prepared->media.messages);
+    auto media_messages = std::move(media.messages);
     if (!prepared->system_prompt.empty()) {
       media_messages.insert(media_messages.begin(),
                             MessageItem(FOUNDRY_LOCAL_ROLE_SYSTEM, prepared->system_prompt));
     }
 
     prepared->prompt =
-        PrepareMediaChatPrompt(media_messages, model, prepared->media.images, prepared->media.audios,
-                               prepared->tool_context);
+        PrepareMediaChatPrompt(media_messages, model, media.images, media.audios, prepared->tool_context);
   } else {
     prepared->prompt = PrepareTextChatPrompt(*prepared->messages, model, prepared->tool_context);
   }
@@ -1438,7 +1492,7 @@ class ChatRequestPreflightOperation final : public Session::RequestPreflightOper
     auto prepared = PrepareChatRequest(request, transcript_, base_session_options_,
                                        tool_definitions_, model_info_, model_, logger_, message_preparer_);
     auto context_limit = static_cast<int64_t>(GetModelMaxContextLength(model_.GetGenAIConfig()));
-    if (prepared->backend_kind == ChatBackendKind::kEngine && prepared->media.Empty()) {
+    if (prepared->backend_kind == ChatBackendKind::kEngine && !prepared->prompt.HasMedia()) {
       const auto* engine = model_.GetChatEngine();
       if (!engine) {
         FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "Engine request preflight requires a loaded chat engine");
@@ -1450,7 +1504,7 @@ class ChatRequestPreflightOperation final : public Session::RequestPreflightOper
     }
 
     const auto output_reserve =
-        ResolveOutputReserve(prepared->options, prepared->backend_kind, !prepared->media.Empty(),
+        ResolveOutputReserve(prepared->options, prepared->backend_kind, prepared->prompt.HasMedia(),
                              prepared->prompt.prompt_token_count, context_limit);
     return ComputeRequestBudget(prepared->prompt.prompt_token_count, output_reserve, context_limit);
   }
@@ -1571,8 +1625,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   auto turn_tool_ctx = prepared->tool_context;
   auto& ingest = prepared->ingest;
   auto inputs = std::move(ingest.messages);
-  auto& media = prepared->media;
-  const bool media_turn = !media.Empty();
+  const bool media_turn = prepared->prompt.HasMedia();
   const auto& effective_options = prepared->options;
   const auto backend_kind = prepared->backend_kind;
   const auto& turn_system_prompt = prepared->system_prompt;
@@ -1709,8 +1762,8 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   // REASONING segments bypass the accumulator entirely — tool-call-shaped text inside <think>...</think> is the
   // model's scratchpad and is not a real tool call.
   ToolCallStreamAccumulator tool_accumulator(
-      cached_tool_ctx_.tool_output ? cached_tool_ctx_.tool_call_start : std::string{},
-      cached_tool_ctx_.tool_output ? cached_tool_ctx_.tool_call_end : std::string{},
+      cached_tool_ctx_.tool_output ? cached_tool_ctx_.GeneratedToolCallStart() : std::string{},
+      cached_tool_ctx_.tool_output ? cached_tool_ctx_.GeneratedToolCallEnd() : std::string{},
       cached_tool_ctx_.tools_json,
       cached_tool_ctx_.reasoning_end,
       chat_session_internal::CreateToolCallPayloadParser(cached_tool_ctx_),
@@ -1824,7 +1877,8 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
   auto flush_accumulator = [&](bool natural_end) {
     emit_tool_output(chat_session_internal::FlushToolOutput(
-        active_raw_detector, tool_accumulator, natural_end));
+        active_raw_detector, tool_accumulator, natural_end,
+        cached_tool_ctx_.fenced_tool_call_output));
   };
 
   while (!cached_generator_->IsDone() && !request.IsCancellationRequested() && !turn_guard.TurnEnded()) {
@@ -2064,9 +2118,16 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
   ToolCallRecoveryCheckpoint recovery_checkpoint(prepared.prompt, tool_ctx.tool_call_start_token_id,
                                                  tool_ctx.tool_plan != nullptr);
   const auto& prepared_messages = *prepared.messages;
-  auto generator =
-      CreatePreparedTextChatGenerator(prepared_messages, std::move(prepared.prompt), options, Model(), tool_ctx,
-                                      /*use_full_context=*/false, text_generator_factory_);
+  std::unique_ptr<ChatGenerator> generator;
+  if (prepared.prompt.HasMedia()) {
+    generator = OnnxChatGenerator::CreatePrepared(std::move(prepared.prompt), options, Model(), tool_ctx,
+                                                  /*use_full_context=*/false);
+  } else {
+    generator =
+        CreatePreparedTextChatGenerator(prepared_messages, std::move(prepared.prompt), options, Model(), tool_ctx,
+                                        /*use_full_context=*/false, text_generator_factory_);
+  }
+
   int prompt_tokens = generator->PromptTokenCount();
 
   auto streaming_callback = CreateCallbackHandler(original_request);
@@ -2084,8 +2145,8 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
   // qwen tokenizer happens to emit `<tool_call>` as a single special token. Tokenizers that split the marker across
   // multiple tokens (or chat templates that produce marker-shaped text gradually) would silently fail. The shared
   // accumulator buffers across tokens and is verified by unit tests.
-  ToolCallStreamAccumulator tool_accumulator(tool_ctx.tool_output ? tool_ctx.tool_call_start : std::string{},
-                                             tool_ctx.tool_output ? tool_ctx.tool_call_end : std::string{},
+  ToolCallStreamAccumulator tool_accumulator(tool_ctx.tool_output ? tool_ctx.GeneratedToolCallStart() : std::string{},
+                                             tool_ctx.tool_output ? tool_ctx.GeneratedToolCallEnd() : std::string{},
                                              tool_ctx.tools_json,
                                              tool_ctx.reasoning_end,
                                              chat_session_internal::CreateToolCallPayloadParser(tool_ctx),
@@ -2281,7 +2342,8 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
                                      original_request.IsCancellationRequested(), stop_sequence_matched,
                                      /*host_output_limit_reached=*/false, backend_termination);
   process_tool_output(chat_session_internal::FlushToolOutput(
-      active_raw_detector, tool_accumulator, natural_tool_output_end));
+      active_raw_detector, tool_accumulator, natural_tool_output_end,
+      tool_ctx.fenced_tool_call_output));
   emit_visible_text(text_framer.Flush());
   if (natural_tool_output_end && tool_ctx.tool_plan && !tool_ctx.text_output && !tool_ctx.ActiveRawEnvelope() &&
       !malformed_tool_output_seen && !HasGeneratedToolCalls(generated_events)) {

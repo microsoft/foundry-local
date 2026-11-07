@@ -160,6 +160,21 @@ class ToolCallStreamAccumulator {
     return out;
   }
 
+  /// Discard an interrupted selected payload without publishing text or marking it malformed.
+  Output DiscardPendingSelectedPayload() {
+    Output out;
+    if (!payload_parser_ || selected_payload_malformed_) {
+      return out;
+    }
+
+    tool_call_buffer_.clear();
+    buffer_.clear();
+    inside_tool_call_ = false;
+    ResetPayloadScan();
+    ResetSelectedPayloadBoundaryScan();
+    return out;
+  }
+
   bool HasPayloadParser() const noexcept { return static_cast<bool>(payload_parser_); }
 
   /// Whether the accumulator is currently inside a `<tool_call>...</tool_call>` block (between start and end markers).

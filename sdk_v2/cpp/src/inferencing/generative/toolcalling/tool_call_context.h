@@ -22,7 +22,8 @@ class ToolCallPlan;
 struct ToolCallContext {
   static constexpr std::string_view kAssistantTextPrefix = "MESSAGE\n";
 
-  /// Whether the model supports tool calling (controlled by catalog metadata and/or request option)
+  /// Whether the model supports tool calling, using explicit catalog metadata when present
+  /// and otherwise the loaded model's rendered-template probe.
   bool supports_tool_calling = false;
 
   /// The special token that marks the start of a tool call in generated text.
@@ -82,6 +83,17 @@ struct ToolCallContext {
   bool guidance_disabled = false;
   std::shared_ptr<const ToolCallPlan> tool_plan;
   std::optional<std::string> tool_body_grammar;
+  bool fenced_tool_call_output = false;
+
+  const std::string& GeneratedToolCallStart() const {
+    static const std::string fence = "```json";
+    return fenced_tool_call_output ? fence : tool_call_start;
+  }
+
+  const std::string& GeneratedToolCallEnd() const {
+    static const std::string fence = "```";
+    return fenced_tool_call_output ? fence : tool_call_end;
+  }
 
   void ConfigureForGuidedToolRetry() {
     text_output = false;
@@ -155,7 +167,8 @@ struct ToolCallContext {
     return tools_json == other.tools_json && tool_kinds == other.tool_kinds &&
            custom_lark_grammars == other.custom_lark_grammars && raw_envelope == other.raw_envelope &&
            guidance_disabled == other.guidance_disabled &&
-           tool_body_grammar == other.tool_body_grammar;
+           tool_body_grammar == other.tool_body_grammar &&
+           fenced_tool_call_output == other.fenced_tool_call_output;
   }
 
   /// Whether the model has known tool call marker tokens.

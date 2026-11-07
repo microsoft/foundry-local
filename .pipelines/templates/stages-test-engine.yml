@@ -25,6 +25,10 @@ stages:
 
     - template: steps-prefetch-vcpkg.yml
 
+    - template: steps-cache-vcpkg.yml
+      parameters:
+        platform: 'engine-linux-x64'
+
     - task: PipAuthenticate@1
       displayName: 'Authenticate Lotus for pip'
       inputs:
