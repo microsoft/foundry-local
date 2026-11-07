@@ -223,25 +223,89 @@ if !model.is_cached().await? {
     return Err("download and review the model before opening a session".into());
 }
 model.load().await?;
-let session = RankingSession::new(&model).await?;
-let request = RankingRequest::new(
-    "Which activity is more suitable?",
-    vec!["Have a picnic".into(), "Visit a museum".into()],
-);
-let result = session.rank(&request).await?;
+let rank_result = async {
+    let session = RankingSession::new(&model).await?;
+    let request = RankingRequest::new(
+        "Which activity is more suitable?",
+        vec!["Have a picnic".into(), "Visit a museum".into()],
+    );
+    session.rank(&request).await
+}
+.await;
+// The inner scope drops the session on both success and error.
+let unload_result = model.unload().await;
+let result = match (rank_result, unload_result) {
+    (Ok(result), Ok(())) => result,
+    (Ok(_), Err(unload_error)) => return Err(unload_error.into()),
+    (Err(rank_error), _) => return Err(rank_error.into()),
+};
 println!("best: {}", result.ranked[0].candidate);
-drop(session);
-model.unload().await?;
 ```
 
-Use `DecisionSession::decide` with `DecisionRequest` and keyed
-`DecisionQuestion` values for a model whose task is `typed-decision`. Both
-sessions send and receive exactly one OpenAI-JSON text item through the native
-generic session. Ranking and decision models must be cached and loaded before
-constructing a session. Session clones share the same underlying native session;
-drop every clone before calling `model.unload().await`. Dropping an in-progress
-`rank` or `decide` future after native submission cancels the request through
-the generic `Session::process_request` cancellation mechanism.
+Typed decisions use keyed questions and return answers under the same keys:
+
+```rust
+use std::collections::BTreeMap;
+use foundry_local_sdk::{
+    DecisionAnswerValue, DecisionQuestion, DecisionQuestionType, DecisionRequest,
+    DecisionSession,
+};
+use serde_json::json;
+
+model.load().await?;
+let decision_result = async {
+    let session = DecisionSession::new(&model).await?;
+    let mut umbrella = DecisionQuestion::new(DecisionQuestionType::Noul);
+    umbrella.instructions = json!("Should I take an umbrella?");
+    let questions = BTreeMap::from([
+        ("umbrella".into(), umbrella),
+        (
+            "activity".into(),
+            DecisionQuestion::choice(BTreeMap::from([
+                ("indoors".into(), json!("Visit a museum")),
+                ("outdoors".into(), json!("Have a picnic")),
+            ])),
+        ),
+        (
+            "urgency".into(),
+            DecisionQuestion::score(vec![json!("low"), json!("medium"), json!("high")]),
+        ),
+    ]);
+    let mut request = DecisionRequest::new(questions);
+    request.state = json!({"weather": "heavy rain"});
+    session.decide(&request).await
+}
+.await;
+let unload_result = model.unload().await;
+let result = match (decision_result, unload_result) {
+    (Ok(result), Ok(())) => result,
+    (Ok(_), Err(unload_error)) => return Err(unload_error.into()),
+    (Err(decision_error), _) => return Err(decision_error.into()),
+};
+for (key, answer) in &result.answers {
+    match answer.value() {
+        Some(DecisionAnswerValue::Noul(probability)) => {
+            println!("{key}: probability={probability}");
+        }
+        Some(DecisionAnswerValue::Choice(choice)) => println!("{key}: choice={choice}"),
+        Some(DecisionAnswerValue::Score(score)) => println!("{key}: score={score}"),
+        None => println!("{key}: missing value"),
+    }
+}
+```
+
+Both sessions send and receive exactly one OpenAI-JSON text item through the
+native generic session. Ranking and decision models must be cached and loaded
+before constructing a session. Session clones share the same underlying native
+session; drop every clone before calling `model.unload().await`.
+
+Dropping a `rank` or `decide` future signals cancellation through the generic
+`Session::process_request` mechanism. Queued work is skipped, but active native
+inference may finish before observing the signal and can temporarily keep
+`model.unload().await` from succeeding. Drain the session with a bounded
+follow-up request (preserving session reuse), drop every handle, and retry
+unload with a bounded wait rather than assuming cancellation makes unload
+immediate.
 
 Native integration tests discover cached packages by task. Set
 `FOUNDRY_TEST_CLM_MODEL` and `FOUNDRY_TEST_KEV_MODEL` to exact registered model

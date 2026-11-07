@@ -3,10 +3,11 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use foundry_local_sdk::{
-    DecisionQuestion, DecisionQuestionType, DecisionRequest, DecisionSession, FoundryLocalError,
-    Model, RankingRequest, RankingSession,
+    DecisionAnswerValue, DecisionQuestion, DecisionQuestionType, DecisionRequest, DecisionSession,
+    FoundryLocalError, Model, RankingRequest, RankingSession,
 };
 use serde_json::json;
 
@@ -99,6 +100,19 @@ fn missing_model(task: &str) {
     eprintln!("Skipping {task} integration test: no cached model available");
 }
 
+async fn unload_after_drain(model: &Model) {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            match model.unload().await {
+                Ok(()) => break,
+                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+    })
+    .await
+    .expect("model remained in use after all predictive session handles were dropped");
+}
+
 #[tokio::test]
 async fn ranking_session_round_trips_native_openai_json() {
     let Some(model) = cached_model("text-ranking", "FOUNDRY_TEST_CLM_MODEL").await else {
@@ -113,9 +127,11 @@ async fn ranking_session_round_trips_native_openai_json() {
     let session = RankingSession::new(&model)
         .await
         .expect("RankingSession::new failed");
+    let retained = session.clone();
+    drop(session);
     assert!(
         model.unload().await.is_err(),
-        "unload must reject an active ranking session"
+        "unload must reject a retained ranking session clone"
     );
     assert!(
         model.is_loaded().await.expect("model.is_loaded() failed"),
@@ -129,13 +145,29 @@ async fn ranking_session_round_trips_native_openai_json() {
         ],
     );
     request.context = json!({"weather": "heavy rain"});
-    let result = session.rank(&request).await.expect("rank failed");
+    let mut mismatched = request.clone();
+    mismatched.model = Some("not-the-bound-ranking-model:1".into());
+    assert!(
+        retained.rank(&mismatched).await.is_err(),
+        "explicit mismatched ranking model must be rejected"
+    );
+    request.model = Some(model.id().to_owned());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(1), retained.rank(&request))
+            .await
+            .is_err(),
+        "ranking inference unexpectedly completed before cancellation"
+    );
+    let result = tokio::time::timeout(Duration::from_secs(30), retained.rank(&request))
+        .await
+        .expect("canceled ranking request did not drain")
+        .expect("ranking session was not reusable after cancellation");
 
     assert_eq!(result.model, model.id());
     assert_eq!(result.ranked.len(), 2);
     assert_eq!(result.ranked[0].rank, 1);
-    drop(session);
-    model.unload().await.expect("ranking model.unload() failed");
+    drop(retained);
+    unload_after_drain(&model).await;
 }
 
 #[tokio::test]
@@ -150,36 +182,94 @@ async fn decision_session_round_trips_native_openai_json() {
         Err(FoundryLocalError::Validation { .. })
     ));
     let mut questions = BTreeMap::new();
-    let mut question = DecisionQuestion::new(DecisionQuestionType::Noul);
-    question.instructions = json!("Should I take an umbrella?");
-    questions.insert("umbrella".into(), question);
+    let mut noul = DecisionQuestion::new(DecisionQuestionType::Noul);
+    noul.instructions = json!("Should I take an umbrella?");
+    questions.insert("umbrella".into(), noul);
+    questions.insert(
+        "activity".into(),
+        DecisionQuestion::choice(BTreeMap::from([
+            ("indoors".into(), json!("Visit a museum")),
+            ("outdoors".into(), json!("Have a picnic")),
+        ])),
+    );
+    questions.insert(
+        "urgency".into(),
+        DecisionQuestion::score(vec![json!("low"), json!("medium"), json!("high")]),
+    );
     let mut request = DecisionRequest::new(questions);
-    request.state = json!({"weather": "heavy rain"});
+    request.state = json!({
+        "weather": "heavy rain",
+        "question": "Which activity is suitable and how urgent is the decision?"
+    });
     let session = DecisionSession::new(&model)
         .await
         .expect("DecisionSession::new failed");
+    let retained = session.clone();
+    drop(session);
     assert!(
         model.unload().await.is_err(),
-        "unload must reject an active decision session"
+        "unload must reject a retained decision session clone"
     );
     assert!(
         model.is_loaded().await.expect("model.is_loaded() failed"),
         "failed unload must preserve the loaded decision model"
     );
-    let result = session.decide(&request).await.expect("decide failed");
+    let mut mismatched = request.clone();
+    mismatched.model = Some("not-the-bound-decision-model:1".into());
+    assert!(
+        retained.decide(&mismatched).await.is_err(),
+        "explicit mismatched decision model must be rejected"
+    );
+    request.model = Some(model.id().to_owned());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(1), retained.decide(&request))
+            .await
+            .is_err(),
+        "decision inference unexpectedly completed before cancellation"
+    );
+    let result = tokio::time::timeout(Duration::from_secs(30), retained.decide(&request))
+        .await
+        .expect("canceled decision request did not drain")
+        .expect("decision session was not reusable after cancellation");
 
     assert_eq!(result.model, model.id());
-    let answer = result
-        .answers
-        .get("umbrella")
-        .expect("umbrella answer missing");
-    assert_eq!(answer.kind, DecisionQuestionType::Noul);
-    assert!(answer
-        .noul
-        .is_some_and(|value| (0.0..=1.0).contains(&value)));
-    drop(session);
-    model
-        .unload()
-        .await
-        .expect("decision model.unload() failed");
+    assert_eq!(result.usage.billing_units, 0);
+
+    let umbrella = &result.answers["umbrella"];
+    assert_eq!(umbrella.kind, DecisionQuestionType::Noul);
+    assert!(matches!(
+        umbrella.value(),
+        Some(DecisionAnswerValue::Noul(value)) if (0.0..=1.0).contains(&value)
+    ));
+
+    let activity = &result.answers["activity"];
+    assert_eq!(activity.kind, DecisionQuestionType::Choice);
+    assert!(matches!(
+        activity.value(),
+        Some(DecisionAnswerValue::Choice("indoors" | "outdoors"))
+    ));
+    assert!(activity
+        .probabilities
+        .iter()
+        .all(
+            |(key, value)| ["indoors", "outdoors"].contains(&key.as_str())
+                && (0.0..=1.0).contains(value)
+        ));
+    assert!(activity
+        .legend
+        .values()
+        .all(|key| ["indoors", "outdoors"].contains(&key.as_str())));
+
+    let urgency = &result.answers["urgency"];
+    assert_eq!(urgency.kind, DecisionQuestionType::Score);
+    assert!(matches!(
+        urgency.value(),
+        Some(DecisionAnswerValue::Score(value)) if (0.0..=2.0).contains(&value)
+    ));
+    assert!(result.answers.values().all(|answer| answer
+        .confidence
+        .is_none_or(|value| (0.0..=1.0).contains(&value))));
+
+    drop(retained);
+    unload_after_drain(&model).await;
 }

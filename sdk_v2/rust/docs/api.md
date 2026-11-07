@@ -38,6 +38,7 @@
   - [DecisionQuestion](#decisionquestion)
   - [DecisionRequest](#decisionrequest)
   - [DecisionAnswer](#decisionanswer)
+  - [DecisionAnswerValue](#decisionanswervalue)
   - [DecisionUsage](#decisionusage)
   - [DecisionResult](#decisionresult)
   - [EmbeddingsSession](#embeddingssession)
@@ -493,8 +494,10 @@ results use the same JSON contract as `POST /v1/rank`. Dereferences to
 
 Call `model.load().await` before construction. Clones share the underlying
 native session, so every clone must be dropped before `model.unload().await`.
-Dropping an in-progress `rank` future after native submission cancels it through
-the base session's cancel-on-future-drop mechanism.
+Dropping `rank` signals cancellation through the base session. Queued work is
+skipped; active native inference may finish before observing the signal and can
+temporarily block unload. Drain or reuse the session, drop every handle, and
+retry unload with a bounded wait.
 
 ```rust
 pub struct RankingSession { /* private fields */ }
@@ -514,19 +517,20 @@ pub struct RankingRequest {
     pub context: serde_json::Value,
     pub question: String,
     pub answers: Vec<String>,
-    pub model: String,
-    pub temperature: f32,
+    pub model: Option<String>,
+    pub temperature: Option<f32>,
 }
 ```
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `new` | `fn new(question: impl Into<String>, answers: Vec<String>) -> Self` | Create a request with null context, model `clm`, and temperature `1`. |
+| `new` | `fn new(question: impl Into<String>, answers: Vec<String>) -> Self` | Create a request with null context that inherits the bound model and temperature. |
 
 `answers` must be non-empty and contain only non-empty strings without embedded
-NUL bytes. `model` must be non-empty and `temperature` must be finite and in
-`(0, 100]`. Invalid requests return `FoundryLocalError::Validation` before
-native submission.
+NUL bytes. `None` model and temperature values are omitted from JSON. An
+explicit model must be non-empty and match the session's bound model; an
+explicit temperature must be finite and in `(0, 100]`. Invalid requests return
+`FoundryLocalError::Validation` before native submission.
 
 ### RankedCandidate
 
@@ -561,8 +565,10 @@ results use the same JSON contract as `POST /v1/systemone`. Dereferences to
 
 Call `model.load().await` before construction. Clones share the underlying
 native session, so every clone must be dropped before `model.unload().await`.
-Dropping an in-progress `decide` future after native submission cancels it
-through the base session's cancel-on-future-drop mechanism.
+Dropping `decide` signals cancellation through the base session. Queued work is
+skipped; active native inference may finish before observing the signal and can
+temporarily block unload. Drain or reuse the session, drop every handle, and
+retry unload with a bounded wait.
 
 ```rust
 pub struct DecisionSession { /* private fields */ }
@@ -600,6 +606,8 @@ pub struct DecisionQuestion {
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `new` | `fn new(kind: DecisionQuestionType) -> Self` | Create a question with null criteria and instructions. |
+| `choice` | `fn choice(criteria: BTreeMap<String, serde_json::Value>) -> Self` | Create a choice question with object-shaped criteria. |
+| `score` | `fn score(criteria: Vec<serde_json::Value>) -> Self` | Create a score question with array-shaped criteria. |
 
 The `kind` field maps to the endpoint's `type` JSON field.
 
@@ -609,20 +617,21 @@ The `kind` field maps to the endpoint's `type` JSON field.
 pub struct DecisionRequest {
     pub state: serde_json::Value,
     pub questions: BTreeMap<String, DecisionQuestion>,
-    pub model: String,
-    pub temperature: f32,
+    pub model: Option<String>,
+    pub temperature: Option<f32>,
 }
 ```
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `new` | `fn new(questions: BTreeMap<String, DecisionQuestion>) -> Self` | Create a request with null state, model `kev`, and temperature `1`. |
+| `new` | `fn new(questions: BTreeMap<String, DecisionQuestion>) -> Self` | Create a request with null state that inherits the bound model and temperature. |
 
 `questions` must be non-empty. Choice criteria must be an object and score
 criteria an array, each with 1–255 entries. Question IDs cannot contain embedded
-NUL bytes, `model` must be non-empty, and decision temperature must be exactly
-finite `1.0`. Invalid requests return `FoundryLocalError::Validation` before
-native submission.
+NUL bytes. `None` model and temperature values are omitted from JSON. An
+explicit model must be non-empty and match the session's bound model; an
+explicit decision temperature must be finite and exactly `1.0`. Invalid
+requests return `FoundryLocalError::Validation` before native submission.
 
 ### DecisionAnswer
 
@@ -640,6 +649,21 @@ pub struct DecisionAnswer {
 
 The `kind` field maps to the response's `type` JSON field. The result-specific
 field (`noul`, `choice`, or `score`) is populated according to that type.
+`value()` returns the matching `DecisionAnswerValue::{Noul, Choice, Score}`
+variant while preserving the metadata fields and JSON representation.
+
+### DecisionAnswerValue
+
+```rust
+pub enum DecisionAnswerValue<'a> {
+    Noul(f64),
+    Choice(&'a str),
+    Score(f64),
+}
+```
+
+The tagged value view returned by `DecisionAnswer::value`; callers do not need
+to interpret the three optional value fields manually.
 
 ### DecisionUsage
 

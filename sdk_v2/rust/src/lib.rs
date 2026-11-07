@@ -28,8 +28,9 @@ pub use self::item::{
 };
 pub use self::item_queue::ItemQueue;
 pub use self::non_generative::{
-    DecisionAnswer, DecisionQuestion, DecisionQuestionType, DecisionRequest, DecisionResult,
-    DecisionSession, DecisionUsage, RankedCandidate, RankingRequest, RankingResult, RankingSession,
+    DecisionAnswer, DecisionAnswerValue, DecisionQuestion, DecisionQuestionType, DecisionRequest,
+    DecisionResult, DecisionSession, DecisionUsage, RankedCandidate, RankingRequest, RankingResult,
+    RankingSession,
 };
 pub use self::request::{Request, RequestOptions, SearchOptions, ToolChoice};
 pub use self::response::{FinishReason, Response, Usage};

@@ -10,18 +10,6 @@ use crate::detail::model::Model;
 use crate::error::{FoundryLocalError, Result};
 use crate::{Item, Request, Session, TextKind};
 
-fn default_rank_model() -> String {
-    "clm".into()
-}
-
-fn default_decision_model() -> String {
-    "kev".into()
-}
-
-fn default_temperature() -> f32 {
-    1.0
-}
-
 /// Request accepted by `POST /v1/rank`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RankingRequest {
@@ -33,29 +21,28 @@ pub struct RankingRequest {
     pub question: String,
     /// Candidate answers.
     pub answers: Vec<String>,
-    /// HTTP-contract model name. The native session remains bound to its model.
-    #[serde(default = "default_rank_model")]
-    pub model: String,
-    /// Ranking temperature in `(0, 100]`.
-    #[serde(default = "default_temperature")]
-    pub temperature: f32,
+    /// Optional model identifier. When set, it must match the session's model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Optional ranking temperature override in `(0, 100]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
 }
 
 impl RankingRequest {
-    /// Create a request with the endpoint defaults (`model = "clm"`,
-    /// `temperature = 1`).
+    /// Create a request that inherits the bound model and its temperature.
     pub fn new(question: impl Into<String>, answers: Vec<String>) -> Self {
         Self {
             context: Value::Null,
             question: question.into(),
             answers,
-            model: default_rank_model(),
-            temperature: default_temperature(),
+            model: None,
+            temperature: None,
         }
     }
 
     fn validate(&self) -> Result<()> {
-        if self.model.is_empty() {
+        if self.model.as_ref().is_some_and(String::is_empty) {
             return validation_error("ranking model must not be empty");
         }
         if self.answers.is_empty()
@@ -69,8 +56,11 @@ impl RankingRequest {
             );
         }
         validate_structured_value(&self.context, "ranking context")?;
-        if !self.temperature.is_finite() || self.temperature <= 0.0 || self.temperature > 100.0 {
-            return validation_error("ranking temperature must be in (0, 100]");
+        if self
+            .temperature
+            .is_some_and(|value| !value.is_finite() || value <= 0.0 || value > 100.0)
+        {
+            return validation_error("ranking temperature override must be in (0, 100]");
         }
         Ok(())
     }
@@ -136,6 +126,24 @@ impl DecisionQuestion {
             instructions: Value::Null,
         }
     }
+
+    /// Create a choice question with object-shaped criteria.
+    pub fn choice(criteria: BTreeMap<String, Value>) -> Self {
+        Self {
+            kind: DecisionQuestionType::Choice,
+            criteria: Value::Object(criteria.into_iter().collect()),
+            instructions: Value::Null,
+        }
+    }
+
+    /// Create a score question with array-shaped criteria.
+    pub fn score(criteria: Vec<Value>) -> Self {
+        Self {
+            kind: DecisionQuestionType::Score,
+            criteria: Value::Array(criteria),
+            instructions: Value::Null,
+        }
+    }
 }
 
 /// Request accepted by `POST /v1/systemone`.
@@ -146,35 +154,37 @@ pub struct DecisionRequest {
     pub state: Value,
     /// Questions keyed by caller-defined identifier.
     pub questions: BTreeMap<String, DecisionQuestion>,
-    /// HTTP-contract model name. The native session remains bound to its model.
-    #[serde(default = "default_decision_model")]
-    pub model: String,
-    /// Decision temperature in `(0, 100]`.
-    #[serde(default = "default_temperature")]
-    pub temperature: f32,
+    /// Optional model identifier. When set, it must match the session's model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Optional decision temperature override, which must be finite and exactly `1.0`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
 }
 
 impl DecisionRequest {
-    /// Create a request with the endpoint defaults (`model = "kev"`,
-    /// `temperature = 1`).
+    /// Create a request that inherits the bound model and its temperature.
     pub fn new(questions: BTreeMap<String, DecisionQuestion>) -> Self {
         Self {
             state: Value::Null,
             questions,
-            model: default_decision_model(),
-            temperature: default_temperature(),
+            model: None,
+            temperature: None,
         }
     }
 
     fn validate(&self) -> Result<()> {
-        if self.model.is_empty() {
+        if self.model.as_ref().is_some_and(String::is_empty) {
             return validation_error("decision model must not be empty");
         }
         if self.questions.is_empty() {
             return validation_error("decision questions must not be empty");
         }
         validate_structured_value(&self.state, "decision state")?;
-        if !self.temperature.is_finite() || self.temperature != 1.0 {
+        if self
+            .temperature
+            .is_some_and(|value| !value.is_finite() || value != 1.0)
+        {
             return validation_error("decision temperature must be exactly 1.0");
         }
 
@@ -240,6 +250,31 @@ pub struct DecisionAnswer {
     /// Model-provided labels keyed by encoded choice.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub legend: BTreeMap<String, String>,
+}
+
+/// The answer value selected by a typed-decision model.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DecisionAnswerValue<'a> {
+    /// Probability returned for a `noul` question.
+    Noul(f64),
+    /// Key selected for a `choice` question.
+    Choice(&'a str),
+    /// Numeric value returned for a `score` question.
+    Score(f64),
+}
+
+impl DecisionAnswer {
+    /// Return the value corresponding to [`Self::kind`].
+    ///
+    /// Returns `None` when a manually constructed or deserialized answer does
+    /// not contain the value required by its discriminator.
+    pub fn value(&self) -> Option<DecisionAnswerValue<'_>> {
+        match self.kind {
+            DecisionQuestionType::Noul => self.noul.map(DecisionAnswerValue::Noul),
+            DecisionQuestionType::Choice => self.choice.as_deref().map(DecisionAnswerValue::Choice),
+            DecisionQuestionType::Score => self.score.map(DecisionAnswerValue::Score),
+        }
+    }
 }
 
 /// Usage returned by a typed-decision request.
@@ -447,8 +482,10 @@ impl RankingSession {
 
     /// Rank a typed request.
     ///
-    /// Dropping this future after native submission cancels the in-flight
-    /// request through [`Session::process_request`].
+    /// Dropping this future signals cancellation through
+    /// [`Session::process_request`]. Queued work is skipped; active inference
+    /// may finish before observing the signal and can temporarily block model
+    /// unload. Drain or reuse the session before retrying unload.
     pub async fn rank(&self, request: &RankingRequest) -> Result<RankingResult> {
         request.validate()?;
         let result: RankingResult = process_json(&self.session, request).await?;
@@ -490,8 +527,10 @@ impl DecisionSession {
 
     /// Evaluate a typed-decision request.
     ///
-    /// Dropping this future after native submission cancels the in-flight
-    /// request through [`Session::process_request`].
+    /// Dropping this future signals cancellation through
+    /// [`Session::process_request`]. Queued work is skipped; active inference
+    /// may finish before observing the signal and can temporarily block model
+    /// unload. Drain or reuse the session before retrying unload.
     pub async fn decide(&self, request: &DecisionRequest) -> Result<DecisionResult> {
         request.validate()?;
         let result: DecisionResult = process_json(&self.session, request).await?;
@@ -542,11 +581,18 @@ mod tests {
     }
 
     #[test]
-    fn ranking_contract_uses_endpoint_field_names() {
-        let request = RankingRequest::new("best?", vec!["a".into(), "b".into()]);
-        let json = serde_json::to_value(request).unwrap();
-        assert_eq!(json["model"], "clm");
-        assert_eq!(json["temperature"], 1.0);
+    fn ranking_contract_omits_inherited_fields_and_serializes_overrides() {
+        let mut request = RankingRequest::new("best?", vec!["a".into(), "b".into()]);
+        let json = serde_json::to_value(&request).unwrap();
+        assert!(json.get("model").is_none());
+        assert!(json.get("temperature").is_none());
+
+        request.model = Some("custom-ranker:7".into());
+        request.temperature = Some(0.5);
+        request.validate().unwrap();
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["model"], "custom-ranker:7");
+        assert_eq!(json["temperature"], 0.5);
 
         let result: RankingResult = serde_json::from_value(serde_json::json!({
             "model": "clm:1",
@@ -559,14 +605,14 @@ mod tests {
     #[test]
     fn ranking_request_validates_answers_and_temperature_boundaries() {
         let mut request = RankingRequest::new("best?", vec!["a".into()]);
-        request.temperature = 100.0;
+        request.temperature = Some(100.0);
         request.validate().unwrap();
 
-        request.temperature = 0.0;
+        request.temperature = Some(0.0);
         assert_validation_error(request.validate(), "temperature");
-        request.temperature = f32::NAN;
+        request.temperature = Some(f32::NAN);
         assert_validation_error(request.validate(), "temperature");
-        request.temperature = 1.0;
+        request.temperature = Some(1.0);
         request.answers = vec!["".into()];
         assert_validation_error(request.validate(), "answers");
         request.answers = vec!["a\0b".into()];
@@ -574,7 +620,7 @@ mod tests {
         request.answers.clear();
         assert_validation_error(request.validate(), "answers");
         request.answers.push("a".into());
-        request.model.clear();
+        request.model = Some(String::new());
         assert_validation_error(request.validate(), "model");
     }
 
@@ -630,6 +676,27 @@ mod tests {
         .unwrap();
         assert_eq!(result.answers["go"].kind, DecisionQuestionType::Noul);
         assert_eq!(result.answers["go"].noul, Some(0.8));
+        assert_eq!(
+            result.answers["go"].value(),
+            Some(DecisionAnswerValue::Noul(0.8))
+        );
+    }
+
+    #[test]
+    fn decision_question_constructors_require_kind_specific_shapes() {
+        let choice = DecisionQuestion::choice(BTreeMap::from([
+            ("indoors".into(), Value::String("Visit a museum".into())),
+            ("outdoors".into(), Value::String("Have a picnic".into())),
+        ]));
+        assert_eq!(choice.kind, DecisionQuestionType::Choice);
+        assert!(choice.criteria.is_object());
+
+        let score = DecisionQuestion::score(vec![
+            Value::String("low".into()),
+            Value::String("high".into()),
+        ]);
+        assert_eq!(score.kind, DecisionQuestionType::Score);
+        assert!(score.criteria.is_array());
     }
 
     #[test]
@@ -661,10 +728,30 @@ mod tests {
         request.questions.get_mut("choice").unwrap().criteria =
             Value::Array(vec![Value::Null; 256]);
         assert_validation_error(request.validate(), "1 to 255");
-        request.temperature = 2.0;
+        request.temperature = Some(2.0);
         assert_validation_error(request.validate(), "exactly 1.0");
-        request.temperature = f32::INFINITY;
+        request.temperature = Some(f32::INFINITY);
         assert_validation_error(request.validate(), "exactly 1.0");
+    }
+
+    #[test]
+    fn decision_contract_omits_inherited_fields_and_checks_overrides() {
+        let mut questions = BTreeMap::new();
+        questions.insert(
+            "go".into(),
+            DecisionQuestion::new(DecisionQuestionType::Noul),
+        );
+        let mut request = DecisionRequest::new(questions);
+        let json = serde_json::to_value(&request).unwrap();
+        assert!(json.get("model").is_none());
+        assert!(json.get("temperature").is_none());
+
+        request.model = Some("custom-kev:2".into());
+        request.temperature = Some(1.0);
+        request.validate().unwrap();
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["model"], "custom-kev:2");
+        assert_eq!(json["temperature"], 1.0);
     }
 
     #[test]
@@ -752,6 +839,14 @@ mod tests {
     fn decision_result_validates_keys_discriminants_and_required_fields() {
         let (request, mut result) = decision_fixture();
         result.validate(&request).unwrap();
+        assert_eq!(
+            result.answers["activity"].value(),
+            Some(DecisionAnswerValue::Choice("inside"))
+        );
+        assert_eq!(
+            result.answers["urgency"].value(),
+            Some(DecisionAnswerValue::Score(1.5))
+        );
 
         let missing = result.answers.remove("valid").unwrap();
         assert_invalid_response(result.validate(&request), "answer keys");
