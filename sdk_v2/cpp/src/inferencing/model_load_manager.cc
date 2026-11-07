@@ -138,6 +138,14 @@ void LoadedSelectionReservation::Commit() noexcept {
   }
 }
 
+ModelLoadManager::PredictiveRequestLease::PredictiveRequestLease(
+    PredictiveRequestLease&& other) noexcept
+    : manager_(std::exchange(other.manager_, nullptr)) {}
+
+ModelLoadManager::PredictiveRequestLease::~PredictiveRequestLease() {
+  if (manager_) manager_->ReleasePredictiveRequest();
+}
+
 // ---------------------------------------------------------------------------
 // Construction / Destruction
 // ---------------------------------------------------------------------------
@@ -169,6 +177,55 @@ bool ModelLoadManager::HasEP(const std::string& ep_name) const {
   }
 
   return false;
+}
+
+void ModelLoadManager::RegisterPredictiveSession(
+    void* identity, std::function<void()> cancel,
+    std::function<void()> release) {
+  std::lock_guard lock(predictive_mutex_);
+  if (shutdown_.load())
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "cannot create non-generative session during shutdown");
+  predictive_sessions_.insert_or_assign(
+      identity,
+      PredictiveSessionCallbacks{std::move(cancel), std::move(release)});
+}
+
+void ModelLoadManager::UnregisterPredictiveSession(void* identity) noexcept {
+  std::lock_guard lock(predictive_mutex_);
+  predictive_sessions_.erase(identity);
+}
+
+ModelLoadManager::PredictiveRequestLease
+ModelLoadManager::AcquirePredictiveRequest() {
+  std::lock_guard lock(predictive_mutex_);
+  if (shutdown_.load())
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "cannot process non-generative request during shutdown");
+  ++active_predictive_requests_;
+  return PredictiveRequestLease(*this);
+}
+
+void ModelLoadManager::ReleasePredictiveRequest() noexcept {
+  std::lock_guard lock(predictive_mutex_);
+  --active_predictive_requests_;
+  predictive_condition_.notify_all();
+}
+
+void ModelLoadManager::WaitForPredictiveRequests() {
+  std::unique_lock lock(predictive_mutex_);
+  predictive_condition_.wait(
+      lock, [&] { return active_predictive_requests_ == 0; });
+}
+
+void ModelLoadManager::ReleasePredictiveSessions() {
+  std::vector<std::function<void()>> releases;
+  {
+    std::lock_guard lock(predictive_mutex_);
+    for (const auto& entry : predictive_sessions_)
+      releases.push_back(entry.second.release);
+  }
+  for (const auto& release : releases) release();
 }
 
 void ModelLoadManager::RunWithUnloadedModelsInDirectory(std::string_view directory,
@@ -228,7 +285,8 @@ std::shared_ptr<void> ModelLoadManager::AcquireNonGenerativeRuntime(
              "package task does not match registered model task");
   const auto provider_name = package.execution_provider;
   const auto identity =
-      "non-generative|" + model.Id() + "|" + canonical + "|" + provider_name;
+      "non-generative|" + model.Id() + "|" + canonical + "|" +
+      provider_name + "|" + task;
   return AcquireManagedRuntime(
       identity, model.Id(), canonical, package.estimated_resident_bytes,
       provider_name.empty() ? "cpu" : provider_name,
@@ -248,6 +306,23 @@ std::shared_ptr<void> ModelLoadManager::AcquireNonGenerativeRuntime(
       },
       on_admitted,
       std::make_shared<GenAIConfig>(package.config));
+}
+
+std::shared_ptr<void>
+ModelLoadManager::AcquireLoadedNonGenerativeRuntime(Model& model) {
+  const auto model_path = NormalizeModelPath(model.GetPath());
+  std::lock_guard lock(mutex_);
+  const auto found = std::find_if(
+      loaded_runtimes_.begin(), loaded_runtimes_.end(),
+      [&](const auto& entry) {
+        return !entry.second->GenAI() &&
+               entry.second->ModelId() == model.Id() &&
+               ModelPathsEqual(entry.second->ModelPath(), model_path);
+      });
+  if (found == loaded_runtimes_.end())
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "model must be loaded before creating a session");
+  return found->second->Lease();
 }
 
 NonGenerativePackageMetadata
@@ -358,14 +433,7 @@ bool ModelLoadManager::UnloadNonGenerativeRuntime(Model& model) {
 }
 
 bool ModelLoadManager::IsModelLoaded(const Model& model) const {
-  const auto model_path = NormalizeModelPath(model.GetPath());
-  std::lock_guard lock(mutex_);
-  return std::any_of(
-      loaded_runtimes_.begin(), loaded_runtimes_.end(),
-      [&](const auto& entry) {
-        return entry.second->ModelId() == model.Id() &&
-               ModelPathsEqual(entry.second->ModelPath(), model_path);
-      });
+  return IsModelArtifactLoaded(model.Id(), model.GetPath());
 }
 
 bool ModelLoadManager::IsModelLoading(const Model& model) const {
@@ -586,9 +654,32 @@ bool ModelLoadManager::UnloadModel(std::string_view model_id, const std::string*
 
 void ModelLoadManager::RejectNewLoads() {
   shutdown_.store(true);
+  std::vector<std::function<void()>> cancellations;
+  {
+    std::lock_guard lock(predictive_mutex_);
+    for (const auto& entry : predictive_sessions_)
+      cancellations.push_back(entry.second.cancel);
+  }
+  for (const auto& cancel : cancellations) cancel();
 }
 
 void ModelLoadManager::UnloadAll(std::chrono::milliseconds timeout) {
+  using clock = std::chrono::steady_clock;
+  const auto deadline = clock::now() + timeout;
+  {
+    std::unique_lock lock(predictive_mutex_);
+    if (!predictive_condition_.wait_until(
+            lock, deadline,
+            [&] { return active_predictive_requests_ == 0; })) {
+      logger_.Log(
+          LogLevel::Warning,
+          fmt::format(
+              "Shutdown: {} non-generative request(s) remain active after "
+              "overall {}ms deadline",
+              active_predictive_requests_, timeout.count()));
+    }
+  }
+
   std::vector<std::pair<std::string, std::shared_ptr<ManagedModelRuntime>>>
       snapshot;
   {
@@ -613,14 +704,11 @@ void ModelLoadManager::UnloadAll(std::chrono::milliseconds timeout) {
   logger_.Log(LogLevel::Information,
               fmt::format("Shutdown: unloading {} model(s)", snapshot.size()));
 
-  using clock = std::chrono::steady_clock;
   constexpr auto kPollInterval = std::chrono::milliseconds(50);
 
   // Overall deadline shared across all models — shutdown must be bounded regardless of
   // how many models are loaded. A stuck caller on one model shouldn't extend total drain
   // time linearly with model count.
-  auto deadline = clock::now() + timeout;
-
   for (auto& [id, runtime] : snapshot) {
     while (runtime->SessionRefCount() > 0 && clock::now() < deadline) {
       std::this_thread::sleep_for(kPollInterval);

@@ -11,6 +11,7 @@ and output, see [Inference with the Foundry Local SDK](../INFERENCING.md).
 - **Model Management** – download, cache, load, and unload models
 - **Chat Completions** – streaming and non-streaming, with first-class tool calling
 - **Embeddings** – text embeddings via a typed tensor API
+- **Ranking and Typed Decisions** – typed wrappers over the native `/v1/rank` and `/v1/systemone` contracts
 - **Audio Transcription** – speech-to-text (offline and live streaming)
 - **Explicit EP Management** – discover, download, and register execution providers on demand
 - **Built-in Web Service** – optional HTTP endpoint for multi-process scenarios
@@ -438,6 +439,56 @@ with EmbeddingsSession(model) as session:
 
 model.unload()
 ```
+
+### Ranking and typed decisions
+
+`RankingSession` requires a loaded `text-ranking` model and `DecisionSession`
+requires a loaded `typed-decision` model. Their task payloads match
+`POST /catalogs/local/v1/rank` and
+`POST /catalogs/local/v1/systemone`. Both models must be registered in the
+local catalog, cached, and explicitly loaded before session creation. Reuse
+one session for multiple requests, close it, and then unload the model.
+
+```python
+from foundry_local_sdk import CatalogType, DecisionRequest, DecisionSession, RankingRequest, RankingSession
+
+local_catalog = manager.get_catalog(CatalogType.LOCAL)
+ranking_model = local_catalog.get_model("clm")
+decision_model = local_catalog.get_model("kev")
+if ranking_model is None or decision_model is None:
+    raise RuntimeError("Register the CLM and KEV packages in the local catalog first")
+if not ranking_model.is_cached or not decision_model.is_cached:
+    raise RuntimeError("Download and review the CLM and KEV packages first")
+
+ranking_model.load()
+decision_model.load()
+try:
+    with RankingSession(ranking_model) as session:
+        for weather in ("rain", "snow"):
+            ranking = session.rank(RankingRequest(
+                context={"weather": weather},
+                question="Which activity is better?",
+                answers=["picnic", "museum"],
+            ))
+            print(ranking.ranked)
+
+    with DecisionSession(decision_model) as session:
+        decision = session.decide(DecisionRequest(
+            state={"weather": "rain"},
+            questions={"umbrella": {"type": "noul", "instructions": "Take one?"}},
+        ))
+        print(decision.answers["umbrella"])
+finally:
+    ranking_model.unload()
+    decision_model.unload()
+```
+
+`RankingRequest` and `DecisionRequest` are typed payloads, not cancellation
+handles. To cancel in-flight work, create a lower-level `Request` containing
+the JSON text item and call
+`session.process_request(request, cancel_event=threading.Event())`.
+
+See [`examples/ranking_and_decision.py`](examples/ranking_and_decision.py) for reusable helper functions.
 
 ### Audio transcription
 
