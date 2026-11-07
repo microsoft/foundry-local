@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use foundry_local_sdk::{
-    DecisionQuestion, DecisionQuestionType, DecisionRequest, DecisionSession, Model,
-    RankingRequest, RankingSession,
+    DecisionQuestion, DecisionQuestionType, DecisionRequest, DecisionSession, FoundryLocalError,
+    Model, RankingRequest, RankingSession,
 };
 use serde_json::json;
 
@@ -37,6 +37,11 @@ async fn ranking_session_round_trips_native_openai_json() {
         eprintln!("Skipping ranking integration test: no cached CLM model available");
         return;
     };
+    model.load().await.expect("ranking model.load() failed");
+    assert!(matches!(
+        DecisionSession::new(&model).await,
+        Err(FoundryLocalError::Validation { .. })
+    ));
     let session = RankingSession::new(&model)
         .await
         .expect("RankingSession::new failed");
@@ -53,6 +58,8 @@ async fn ranking_session_round_trips_native_openai_json() {
     assert_eq!(result.model, model.id());
     assert_eq!(result.ranked.len(), 2);
     assert_eq!(result.ranked[0].rank, 1);
+    drop(session);
+    model.unload().await.expect("ranking model.unload() failed");
 }
 
 #[tokio::test]
@@ -61,6 +68,11 @@ async fn decision_session_round_trips_native_openai_json() {
         eprintln!("Skipping decision integration test: no cached KEV model available");
         return;
     };
+    model.load().await.expect("decision model.load() failed");
+    assert!(matches!(
+        RankingSession::new(&model).await,
+        Err(FoundryLocalError::Validation { .. })
+    ));
     let mut questions = BTreeMap::new();
     let mut question = DecisionQuestion::new(DecisionQuestionType::Noul);
     question.instructions = json!("Should I take an umbrella?");
@@ -81,4 +93,9 @@ async fn decision_session_round_trips_native_openai_json() {
     assert!(answer
         .noul
         .is_some_and(|value| (0.0..=1.0).contains(&value)));
+    drop(session);
+    model
+        .unload()
+        .await
+        .expect("decision model.unload() failed");
 }

@@ -222,6 +222,7 @@ use foundry_local_sdk::{RankingRequest, RankingSession};
 if !model.is_cached().await? {
     return Err("download and review the model before opening a session".into());
 }
+model.load().await?;
 let session = RankingSession::new(&model).await?;
 let request = RankingRequest::new(
     "Which activity is more suitable?",
@@ -229,13 +230,18 @@ let request = RankingRequest::new(
 );
 let result = session.rank(&request).await?;
 println!("best: {}", result.ranked[0].candidate);
+drop(session);
+model.unload().await?;
 ```
 
 Use `DecisionSession::decide` with `DecisionRequest` and keyed
 `DecisionQuestion` values for a model whose task is `typed-decision`. Both
 sessions send and receive exactly one OpenAI-JSON text item through the native
-generic session. Ranking and decision models must be cached, but callers do not
-explicitly load or unload them; the native session manages their runtime.
+generic session. Ranking and decision models must be cached and loaded before
+constructing a session. Session clones share the same underlying native session;
+drop every clone before calling `model.unload().await`. Dropping an in-progress
+`rank` or `decide` future after native submission cancels the request through
+the generic `Session::process_request` cancellation mechanism.
 
 Native integration tests discover cached packages by task. Set
 `FOUNDRY_TEST_CLM_MODEL` and `FOUNDRY_TEST_KEV_MODEL` to exact registered model

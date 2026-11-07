@@ -214,7 +214,7 @@ pub struct Model { /* private fields */ }
 | `download` | `async fn download<F>(&self, progress: Option<F>) -> Result<(), FoundryLocalError>` | Download the selected variant. `F: FnMut(f64) + Send + 'static` — receives progress as a percentage (0.0–100.0). |
 | `path` | `async fn path(&self) -> Result<PathBuf, FoundryLocalError>` | Local file-system path of the selected variant. |
 | `load` | `async fn load(&self) -> Result<(), FoundryLocalError>` | Load the selected variant into memory. |
-| `unload` | `async fn unload(&self) -> Result<(), FoundryLocalError>` | Unload the selected variant from memory. |
+| `unload` | `async fn unload(&self) -> Result<(), FoundryLocalError>` | Unload the selected variant from memory after dropping every session and session clone created from it. |
 | `remove_from_cache` | `async fn remove_from_cache(&self) -> Result<(), FoundryLocalError>` | Remove the selected variant from the local cache. |
 | `create_chat_client` | `fn create_chat_client(&self) -> ChatClient` | **Deprecated** — use `ChatSession::new(&model)`. Create a ChatClient bound to the selected variant. |
 | `create_audio_client` | `fn create_audio_client(&self) -> AudioClient` | **Deprecated** — use `AudioSession::new(&model)`. Create an AudioClient bound to the selected variant. |
@@ -487,9 +487,14 @@ once on the SDK's blocking worker.
 
 ### RankingSession
 
-A typed session for cached models whose task is `text-ranking`. Requests and
+A typed session for loaded models whose task is `text-ranking`. Requests and
 results use the same JSON contract as `POST /v1/rank`. Dereferences to
 [`Session`](#session).
+
+Call `model.load().await` before construction. Clones share the underlying
+native session, so every clone must be dropped before `model.unload().await`.
+Dropping an in-progress `rank` future after native submission cancels it through
+the base session's cancel-on-future-drop mechanism.
 
 ```rust
 pub struct RankingSession { /* private fields */ }
@@ -498,8 +503,8 @@ impl Deref for RankingSession { type Target = Session; }
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `new` | `async fn new(model: &Model) -> Result<RankingSession, FoundryLocalError>` | Open a ranking session on a cached `text-ranking` model. Returns `Validation` for any other task. |
-| `rank` | `async fn rank(&self, request: &RankingRequest) -> Result<RankingResult, FoundryLocalError>` | Rank the request's candidate answers. |
+| `new` | `async fn new(model: &Model) -> Result<RankingSession, FoundryLocalError>` | Open a ranking session on a loaded `text-ranking` model. Returns `Validation` for any other task. |
+| `rank` | `async fn rank(&self, request: &RankingRequest) -> Result<RankingResult, FoundryLocalError>` | Validate and rank the request's candidate answers; validates the native response before returning it. |
 | `into_session` | `fn into_session(self) -> Session` | Consume this handle, yielding the base session. |
 
 ### RankingRequest
@@ -517,6 +522,11 @@ pub struct RankingRequest {
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `new` | `fn new(question: impl Into<String>, answers: Vec<String>) -> Self` | Create a request with null context, model `clm`, and temperature `1`. |
+
+`answers` must be non-empty and contain only non-empty strings without embedded
+NUL bytes. `model` must be non-empty and `temperature` must be finite and in
+`(0, 100]`. Invalid requests return `FoundryLocalError::Validation` before
+native submission.
 
 ### RankedCandidate
 
@@ -541,9 +551,14 @@ pub struct RankingResult {
 
 ### DecisionSession
 
-A typed session for cached models whose task is `typed-decision`. Requests and
+A typed session for loaded models whose task is `typed-decision`. Requests and
 results use the same JSON contract as `POST /v1/systemone`. Dereferences to
 [`Session`](#session).
+
+Call `model.load().await` before construction. Clones share the underlying
+native session, so every clone must be dropped before `model.unload().await`.
+Dropping an in-progress `decide` future after native submission cancels it
+through the base session's cancel-on-future-drop mechanism.
 
 ```rust
 pub struct DecisionSession { /* private fields */ }
@@ -552,8 +567,8 @@ impl Deref for DecisionSession { type Target = Session; }
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `new` | `async fn new(model: &Model) -> Result<DecisionSession, FoundryLocalError>` | Open a decision session on a cached `typed-decision` model. Returns `Validation` for any other task. |
-| `decide` | `async fn decide(&self, request: &DecisionRequest) -> Result<DecisionResult, FoundryLocalError>` | Evaluate all keyed typed questions. |
+| `new` | `async fn new(model: &Model) -> Result<DecisionSession, FoundryLocalError>` | Open a decision session on a loaded `typed-decision` model. Returns `Validation` for any other task. |
+| `decide` | `async fn decide(&self, request: &DecisionRequest) -> Result<DecisionResult, FoundryLocalError>` | Validate and evaluate all keyed typed questions; validates the native response before returning it. |
 | `into_session` | `fn into_session(self) -> Session` | Consume this handle, yielding the base session. |
 
 ### DecisionQuestionType
@@ -598,6 +613,12 @@ pub struct DecisionRequest {
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `new` | `fn new(questions: BTreeMap<String, DecisionQuestion>) -> Self` | Create a request with null state, model `kev`, and temperature `1`. |
+
+`questions` must be non-empty. Choice criteria must be an object and score
+criteria an array, each with 1–255 entries. Question IDs cannot contain embedded
+NUL bytes, `model` must be non-empty, and decision temperature must be exactly
+finite `1.0`. Invalid requests return `FoundryLocalError::Validation` before
+native submission.
 
 ### DecisionAnswer
 
