@@ -237,49 +237,78 @@ The typed sessions use the same request and response contracts as `POST /v1/rank
 `POST /v1/systemone`. Structured context, state, criteria, and instructions are `JsonElement`
 values so their JSON shape is preserved.
 
+Discover predictive models from the local catalog after registering their already-cached package
+directories (see [Bring your own model](#bring-your-own-model)). Registration records the package
+source path without copying or downloading it:
+
 ```csharp
 using System.Text.Json;
 
-await rankingModel.LoadAsync();
-using (var ranking = new RankingSession(rankingModel))
-{
-    var ranked = await ranking.RankAsync(new RankingRequest
-    {
-        Model = rankingModel.Info.Id,
-        Context = JsonSerializer.SerializeToElement(new { weather = "heavy rain" }),
-        Question = "Which activity is more suitable?",
-        Answers = ["Have a picnic outdoors", "Visit an indoor museum"],
-    });
-    Console.WriteLine(ranked.Ranked[0].Candidate);
-}
-await rankingModel.UnloadAsync();
+var localCatalog = await FoundryLocalManager.Instance.GetCatalogAsync(CatalogType.Local);
+var rankingModel = await localCatalog.GetModelAsync("clm")
+    ?? throw new InvalidOperationException("Register a cached CLM package with alias 'clm'.");
 
-await decisionModel.LoadAsync();
-using (var decisions = new DecisionSession(decisionModel))
+await rankingModel.LoadAsync();
+try
 {
+    // Reuse a session for multiple requests to the same loaded model.
+    using var ranking = new RankingSession(rankingModel);
+    foreach (var weather in new[] { "heavy rain", "sunshine" })
+    {
+        var ranked = await ranking.RankAsync(new RankingRequest
+        {
+            Context = JsonSerializer.SerializeToElement(new { weather }),
+            Question = "Which activity is more suitable?",
+            Answers = ["Have a picnic outdoors", "Visit an indoor museum"],
+        });
+        Console.WriteLine(ranked.Ranked.OrderBy(candidate => candidate.Rank).First().Candidate);
+    }
+}
+finally
+{
+    await rankingModel.UnloadAsync();
+}
+
+var decisionModel = await localCatalog.GetModelAsync("kev")
+    ?? throw new InvalidOperationException("Register a cached KEV package with alias 'kev'.");
+await decisionModel.LoadAsync();
+try
+{
+    using var decisions = new DecisionSession(decisionModel);
     var result = await decisions.DecideAsync(new DecisionRequest
     {
-        Model = decisionModel.Info.Id,
         State = JsonSerializer.SerializeToElement(new { weather = "heavy rain" }),
         Questions = new Dictionary<string, DecisionQuestion>
         {
-            ["umbrella"] = new()
-            {
-                Type = "noul",
-                Instructions = JsonSerializer.SerializeToElement("Should I take an umbrella?"),
-            },
+            ["umbrella"] = DecisionQuestion.Noul(
+                JsonSerializer.SerializeToElement("Should I take an umbrella?")),
         },
     });
     Console.WriteLine(result.Answers["umbrella"].Noul);
 }
-await decisionModel.UnloadAsync();
+finally
+{
+    await decisionModel.UnloadAsync();
+}
 ```
 
 `RankingSession` requires a loaded model with task `text-ranking`; `DecisionSession` requires a
 loaded model with task `typed-decision`. The caller owns the model: call `LoadAsync` before creating
-a session, dispose every session before `UnloadAsync`, and then unload in a `finally` block in
-production code. Requests and native results are validated at the SDK boundary.
-Each call sends exactly one `TextItem.OpenAIJson` and expects exactly one such item in response.
+a session, dispose every session before `UnloadAsync`, and unload in a `finally` block. Requests
+omit `Model` and `Temperature` by default so the bound model and session options apply; set either
+property only for an explicit compatible override.
+
+Use `DecisionQuestion.Noul`, `Choice`, and `Score` (or the constants in `DecisionQuestionKind`) to
+construct supported questions. `noul` is a binary likelihood in `[0, 1]` and has no criteria.
+`choice` criteria are an object whose keys identify the choices. `score` criteria are an ordered,
+non-empty array: the result uses zero-based positions, can be fractional because it is a
+probability-weighted score, and ranges from zero through `criteria.Length - 1`. Optional
+`Confidence` and `Probabilities` are values in `[0, 1]`; `Legend` maps returned identifiers to
+display text. Ranking probabilities are relative to the submitted candidates, and `Rank` gives
+the result order (starting at one), independent of the original zero-based `Index`.
+
+Requests and native results are validated at the SDK boundary. Each call sends exactly one
+`TextItem.OpenAIJson` containing Foundry task JSON and expects exactly one such item in response.
 
 ### Chat Completions
 

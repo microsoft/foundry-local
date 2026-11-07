@@ -22,10 +22,10 @@ public sealed record RankingRequest
     public required IReadOnlyList<string> Answers { get; init; }
 
     [JsonPropertyName("model")]
-    public string Model { get; init; } = "clm";
+    public string? Model { get; init; }
 
     [JsonPropertyName("temperature")]
-    public float Temperature { get; init; } = 1.0f;
+    public float? Temperature { get; init; }
 }
 
 /// <summary>A ranked candidate returned by a ranking model.</summary>
@@ -69,6 +69,26 @@ public sealed record DecisionQuestion
 
     [JsonPropertyName("instructions")]
     public JsonElement? Instructions { get; init; }
+
+    /// <summary>Creates a binary likelihood question with no criteria.</summary>
+    public static DecisionQuestion Noul(JsonElement? instructions = null) =>
+        new() { Type = DecisionQuestionKind.Noul, Instructions = instructions };
+
+    /// <summary>Creates a question that selects one key from an object of choices.</summary>
+    public static DecisionQuestion Choice(JsonElement criteria, JsonElement? instructions = null) =>
+        new() { Type = DecisionQuestionKind.Choice, Criteria = criteria, Instructions = instructions };
+
+    /// <summary>Creates a question scored against an ordered array of levels.</summary>
+    public static DecisionQuestion Score(JsonElement criteria, JsonElement? instructions = null) =>
+        new() { Type = DecisionQuestionKind.Score, Criteria = criteria, Instructions = instructions };
+}
+
+/// <summary>Supported <see cref="DecisionQuestion"/> kinds.</summary>
+public static class DecisionQuestionKind
+{
+    public const string Noul = "noul";
+    public const string Choice = "choice";
+    public const string Score = "score";
 }
 
 /// <summary>A request matching the JSON contract accepted by <c>POST /v1/systemone</c>.</summary>
@@ -81,10 +101,10 @@ public sealed record DecisionRequest
     public required IReadOnlyDictionary<string, DecisionQuestion> Questions { get; init; }
 
     [JsonPropertyName("model")]
-    public string Model { get; init; } = "kev";
+    public string? Model { get; init; }
 
     [JsonPropertyName("temperature")]
-    public float Temperature { get; init; } = 1.0f;
+    public float? Temperature { get; init; }
 }
 
 /// <summary>A single typed-decision answer.</summary>

@@ -108,13 +108,13 @@ internal sealed class NonGenerativeSessionTests
     }
 
     [Test]
-    public async Task RankingSession_RejectsSuccessfulResponseAfterCancellation()
+    public async Task RankingSession_ReturnsSuccessfulResponseAfterCancellation()
     {
-        var admitted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var admitted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var session = new RankingSession(async (_, _) =>
         {
-            admitted.SetResult();
+            admitted.SetResult(true);
             await release.Task;
             return /*lang=json*/ """
                 {"model":"clm-test:1","ranked":[
@@ -129,9 +129,88 @@ internal sealed class NonGenerativeSessionTests
             cts.Token);
         await admitted.Task;
         cts.Cancel();
-        release.SetResult();
+        release.SetResult(true);
 
-        await Assert.That(async () => await pending).Throws<OperationCanceledException>();
+        var result = await pending;
+        await Assert.That(result.Ranked[0].Candidate).IsEqualTo("one");
+    }
+
+    [Test]
+    public async Task TypedSessions_OmitOptionalModelAndTemperature()
+    {
+        string? rankingJson = null;
+        string? decisionJson = null;
+        using var ranking = new RankingSession((json, _) =>
+        {
+            rankingJson = json;
+            return Task.FromResult(
+                """{"model":"bound-clm","ranked":[{"rank":1,"id":"0","index":0,"candidate":"one","prob":1.0}]}""");
+        });
+        using var decision = new DecisionSession((json, _) =>
+        {
+            decisionJson = json;
+            return Task.FromResult(
+                """{"model":"bound-kev","answers":{"q":{"type":"noul","noul":0.5}},"usage":{"billing_units":0}}""");
+        });
+
+        await ranking.RankAsync(new RankingRequest { Question = "Choose", Answers = ["one"] });
+        await decision.DecideAsync(new DecisionRequest
+        {
+            Questions = new Dictionary<string, DecisionQuestion>
+            {
+                ["q"] = DecisionQuestion.Noul(),
+            },
+        });
+
+        using var rankingPayload = JsonDocument.Parse(rankingJson!);
+        using var decisionPayload = JsonDocument.Parse(decisionJson!);
+        await Assert.That(rankingPayload.RootElement.TryGetProperty("model", out _)).IsFalse();
+        await Assert.That(rankingPayload.RootElement.TryGetProperty("temperature", out _)).IsFalse();
+        await Assert.That(decisionPayload.RootElement.TryGetProperty("model", out _)).IsFalse();
+        await Assert.That(decisionPayload.RootElement.TryGetProperty("temperature", out _)).IsFalse();
+    }
+
+    [Test]
+    public async Task RankingSession_SnapshotsAnswersBeforeDispatch()
+    {
+        var answers = new List<string> { "one" };
+        using var session = new RankingSession((_, _) =>
+        {
+            answers[0] = "changed";
+            answers.Add("two");
+            return Task.FromResult(
+                """{"model":"clm","ranked":[{"rank":1,"id":"0","index":0,"candidate":"one","prob":1.0}]}""");
+        });
+
+        var result = await session.RankAsync(new RankingRequest
+        {
+            Question = "Choose",
+            Answers = answers,
+        });
+
+        await Assert.That(result.Ranked[0].Candidate).IsEqualTo("one");
+    }
+
+    [Test]
+    public async Task DecisionSession_SnapshotsQuestionsBeforeDispatch()
+    {
+        using var criteriaDocument = JsonDocument.Parse("""{"a":"First","b":"Second"}""");
+        var questions = new Dictionary<string, DecisionQuestion>
+        {
+            ["q"] = DecisionQuestion.Choice(criteriaDocument.RootElement),
+        };
+        using var session = new DecisionSession((_, _) =>
+        {
+            criteriaDocument.Dispose();
+            questions.Clear();
+            questions["changed"] = DecisionQuestion.Noul();
+            return Task.FromResult(
+                """{"model":"kev","answers":{"q":{"type":"choice","choice":"a"}},"usage":{"billing_units":0}}""");
+        });
+
+        var result = await session.DecideAsync(new DecisionRequest { Questions = questions });
+
+        await Assert.That(result.Answers["q"].Choice).IsEqualTo("a");
     }
 
     [Test]
@@ -160,7 +239,32 @@ internal sealed class NonGenerativeSessionTests
             Answers = ["candidate"],
             Temperature = float.NaN,
         })).Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => session.RankAsync(new RankingRequest
+        {
+            Question = "Choose",
+            Answers = [""],
+        })).Throws<ArgumentException>();
+        await Assert.That(() => session.RankAsync(new RankingRequest
+        {
+            Question = "Choose",
+            Answers = ["before\0after"],
+        })).Throws<ArgumentException>();
         await Assert.That(calls).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task RankingSession_AllowsWhitespaceOnlyAnswers()
+    {
+        using var session = new RankingSession((_, _) => Task.FromResult(
+            """{"model":"clm","ranked":[{"rank":1,"id":"0","index":0,"candidate":"   ","prob":1.0}]}"""));
+
+        var result = await session.RankAsync(new RankingRequest
+        {
+            Question = "Choose",
+            Answers = ["   "],
+        });
+
+        await Assert.That(result.Ranked[0].Candidate).IsEqualTo("   ");
     }
 
     [Test]
@@ -235,6 +339,36 @@ internal sealed class NonGenerativeSessionTests
         });
 
         await Assert.That(result.Answers["q"].Score).IsEqualTo(1.5);
+    }
+
+    [Test]
+    public async Task DecisionSession_TreatsJsonNullNoulCriteriaAsOmitted()
+    {
+        using var session = new DecisionSession((_, _) => Task.FromResult(
+            """{"model":"kev","answers":{"q":{"type":"noul","noul":0.5}},"usage":{"billing_units":0}}"""));
+
+        var result = await session.DecideAsync(new DecisionRequest
+        {
+            Questions = new Dictionary<string, DecisionQuestion>
+            {
+                ["q"] = DecisionQuestion.Noul(JsonSerializer.SerializeToElement("Decide"))
+                    with
+                { Criteria = JsonSerializer.SerializeToElement<object?>(null) },
+            },
+        });
+
+        await Assert.That(result.Answers["q"].Noul).IsEqualTo(0.5);
+    }
+
+    [Test]
+    public async Task DecisionQuestion_FactoriesUseNamedKinds()
+    {
+        var choices = JsonSerializer.SerializeToElement(new Dictionary<string, string> { ["a"] = "A" });
+        var scores = JsonSerializer.SerializeToElement(new[] { "low", "high" });
+
+        await Assert.That(DecisionQuestion.Noul().Type).IsEqualTo(DecisionQuestionKind.Noul);
+        await Assert.That(DecisionQuestion.Choice(choices).Type).IsEqualTo(DecisionQuestionKind.Choice);
+        await Assert.That(DecisionQuestion.Score(scores).Type).IsEqualTo(DecisionQuestionKind.Score);
     }
 
     [Test]

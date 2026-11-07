@@ -1,6 +1,7 @@
 using System.Text.Json;
 
 using Microsoft.AI.Foundry.Local;
+using Microsoft.Extensions.Logging.Abstractions;
 
 static async Task RankAsync(IModel model)
 {
@@ -38,11 +39,8 @@ static async Task DecideAsync(IModel model)
             State = JsonSerializer.SerializeToElement(new { weather = "heavy rain" }),
             Questions = new Dictionary<string, DecisionQuestion>
             {
-                ["umbrella"] = new()
-                {
-                    Type = "noul",
-                    Instructions = JsonSerializer.SerializeToElement("Should I take an umbrella?"),
-                },
+                ["umbrella"] = DecisionQuestion.Noul(
+                    JsonSerializer.SerializeToElement("Should I take an umbrella?")),
             },
         });
         Console.WriteLine($"Umbrella: {result.Answers["umbrella"].Noul:P1}");
@@ -53,7 +51,13 @@ static async Task DecideAsync(IModel model)
     }
 }
 
-var catalog = await FoundryLocalManager.Instance.GetCatalogAsync(CatalogType.Local);
+var configuration = new Configuration { AppName = "FoundryLocalRankingAndDecision" };
+await FoundryLocalManager.CreateAsync(configuration, NullLogger.Instance);
+using var manager = FoundryLocalManager.Instance;
+
+// These aliases come from predictive packages previously registered in the local catalog.
+// Registration points at the package's cached model directory; it does not download the model.
+var catalog = await manager.GetCatalogAsync(CatalogType.Local);
 var rankingModel = await catalog.GetModelAsync("clm")
     ?? throw new InvalidOperationException("Register a cached CLM model with alias 'clm'.");
 var decisionModel = await catalog.GetModelAsync("kev")

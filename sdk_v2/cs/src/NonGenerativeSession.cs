@@ -12,7 +12,7 @@ using System.Text.Json.Serialization.Metadata;
 using Microsoft.AI.Foundry.Local.Detail;
 
 /// <summary>
-/// Base class for typed non-generative sessions that exchange one OpenAI-compatible JSON item.
+/// Base class for typed non-generative sessions that exchange one Foundry task JSON item.
 /// </summary>
 public abstract class NonGenerativeSession : Session
 {
@@ -40,7 +40,6 @@ public abstract class NonGenerativeSession : Session
         var responseJson = _testTransport == null
             ? await ProcessNativeJsonAsync(requestJson, ct).ConfigureAwait(false)
             : await _testTransport(requestJson, ct).ConfigureAwait(false);
-        ct.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
         try
@@ -61,9 +60,7 @@ public abstract class NonGenerativeSession : Session
         using var request = new Request();
         request.AddItem(TextItem.OpenAIJson(requestJson));
 #pragma warning restore CA2000
-
         using var response = await ProcessRequestAsync(request, ct).ConfigureAwait(false);
-        ct.ThrowIfCancellationRequested();
         if (response.ItemCount != 1)
         {
             throw new FoundryLocalException(

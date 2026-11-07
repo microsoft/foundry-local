@@ -27,12 +27,13 @@ public sealed class RankingSession : NonGenerativeSession
     public async Task<RankingResult> RankAsync(RankingRequest request, CancellationToken ct = default)
     {
         ValidateRequest(request);
+        var answers = request.Answers.ToArray();
         var result = await ProcessAsync(
             request,
             JsonSerializationContext.Default.RankingRequest,
             JsonSerializationContext.Default.RankingResult,
             ct).ConfigureAwait(false);
-        ValidateResult(request, result);
+        ValidateResult(answers, result);
         return result;
     }
 
@@ -60,15 +61,19 @@ public sealed class RankingSession : NonGenerativeSession
         {
             throw new ArgumentException("Ranking answers must be a non-empty collection.", nameof(request));
         }
-        if (request.Answers.Any(string.IsNullOrWhiteSpace))
+        if (request.Answers.Any(answer =>
+                answer == null || answer.Length == 0 || HasEmbeddedNul(answer)))
         {
-            throw new ArgumentException("Ranking answers must contain only non-empty strings.", nameof(request));
+            throw new ArgumentException(
+                "Ranking answers must contain only non-empty strings without embedded NUL characters.",
+                nameof(request));
         }
-        if (string.IsNullOrWhiteSpace(request.Model))
+        if (request.Model != null && string.IsNullOrWhiteSpace(request.Model))
         {
             throw new ArgumentException("Ranking model must be a non-empty string.", nameof(request));
         }
-        if (!float.IsFinite(request.Temperature) || request.Temperature <= 0 || request.Temperature > 100)
+        if (request.Temperature is float temperature &&
+            (!NonGenerativeValidation.IsFinite(temperature) || temperature <= 0 || temperature > 100))
         {
             throw new ArgumentOutOfRangeException(
                 nameof(request), "Ranking temperature must be finite and in the range (0, 100].");
@@ -76,11 +81,11 @@ public sealed class RankingSession : NonGenerativeSession
         NonGenerativeValidation.ValidateJson(request.Context, "Ranking context");
     }
 
-    private static void ValidateResult(RankingRequest request, RankingResult result)
+    private static void ValidateResult(string[] answers, RankingResult result)
     {
         if (string.IsNullOrWhiteSpace(result.Model) ||
             result.Ranked == null ||
-            result.Ranked.Count != request.Answers.Count)
+            result.Ranked.Count != answers.Length)
         {
             throw InvalidResult("model and one ranked item per submitted answer are required");
         }
@@ -90,17 +95,31 @@ public sealed class RankingSession : NonGenerativeSession
         foreach (var item in result.Ranked)
         {
             if (item == null ||
-                item.Rank < 1 || item.Rank > request.Answers.Count || !ranks.Add(item.Rank) ||
-                item.Index < 0 || item.Index >= request.Answers.Count || !indexes.Add(item.Index) ||
+                item.Rank < 1 || item.Rank > answers.Length || !ranks.Add(item.Rank) ||
+                item.Index < 0 || item.Index >= answers.Length || !indexes.Add(item.Index) ||
                 string.IsNullOrEmpty(item.Id) || item.Id != item.Index.ToString(System.Globalization.CultureInfo.InvariantCulture) ||
-                item.Candidate != request.Answers[item.Index] ||
-                !double.IsFinite(item.Probability) || item.Probability < 0 || item.Probability > 1)
+                item.Candidate != answers[item.Index] ||
+                !NonGenerativeValidation.IsFinite(item.Probability) ||
+                item.Probability < 0 || item.Probability > 1)
             {
                 throw InvalidResult(
                     "ranks and indexes must be unique and in range, candidates must match their indexes, " +
                     "IDs must equal indexes, and probabilities must be finite values in [0, 1]");
             }
         }
+    }
+
+    private static bool HasEmbeddedNul(string value)
+    {
+        foreach (var character in value)
+        {
+            if (character == '\0')
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static FoundryLocalException InvalidResult(string detail) =>

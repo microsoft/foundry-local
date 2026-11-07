@@ -44,7 +44,7 @@ internal static class NonGenerativeValidation
                 break;
             case JsonValueKind.Number:
                 if (!value.TryGetInt64(out _) &&
-                    (!value.TryGetDouble(out var number) || !double.IsFinite(number)))
+                    (!value.TryGetDouble(out var number) || !IsFinite(number)))
                 {
                     throw new ArgumentException($"{name} numbers must be finite and JSON-compatible.");
                 }
@@ -69,4 +69,10 @@ internal static class NonGenerativeValidation
         }
         return count;
     }
+
+    internal static bool IsFinite(float value) =>
+        !float.IsNaN(value) && !float.IsInfinity(value);
+
+    internal static bool IsFinite(double value) =>
+        !double.IsNaN(value) && !double.IsInfinity(value);
 }
