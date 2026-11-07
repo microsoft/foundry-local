@@ -162,6 +162,7 @@ stages:
       env:
         TF_BUILD: 'true'
         FOUNDRY_TEST_DATA_DIR: '$(Build.SourcesDirectory)/test-data-shared'
+        FOUNDRY_REQUIRE_NON_GENERATIVE_MODELS: 'true'
 
 # ====================================================================
 # Test — Linux ARM64

@@ -105,8 +105,21 @@ internal sealed class NonGenerativeIntegrationTests
     private static async Task<IModel> GetRequiredModelAsync(string modelId)
     {
         var catalog = await FoundryLocalManager.Instance.GetCatalogAsync(CatalogType.Local);
-        return await catalog.GetModelVariantAsync(modelId) ??
-            throw new SkipTestException(
-                $"Required model '{modelId}' was not found under FOUNDRY_TEST_DATA_DIR.");
+        var model = await catalog.GetModelVariantAsync(modelId);
+        if (model != null)
+        {
+            return model;
+        }
+
+        var message = $"Required model '{modelId}' was not found under FOUNDRY_TEST_DATA_DIR.";
+        if (string.Equals(
+                Environment.GetEnvironmentVariable("FOUNDRY_REQUIRE_NON_GENERATIVE_MODELS"),
+                "true",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(message);
+        }
+
+        throw new SkipTestException(message);
     }
 }
