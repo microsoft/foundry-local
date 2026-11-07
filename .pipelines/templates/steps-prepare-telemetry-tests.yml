@@ -8,11 +8,11 @@ steps:
     script: |
       $ErrorActionPreference = 'Stop'
       $source = "$(Build.BinariesDirectory)/telemetry-source"
-      git -c core.autocrlf=false clone --depth 1 --branch v3.10.281.1 https://github.com/microsoft/cpp_client_telemetry.git $source
+      git -c core.autocrlf=false clone --depth 1 --branch v3.10.309.1 https://github.com/microsoft/cpp_client_telemetry.git $source
       if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch telemetry regression sources' }
       $commit = git -C $source rev-parse HEAD
-      if ($commit -ne '29d0083644f6450fec037f8afc1ad8d8a3b3c830') { throw "Unexpected telemetry source: $commit" }
-      foreach ($patch in @('apple-system-libraries.patch', 'sdk-version-lifetime.patch')) {
+      if ($commit -ne '114a2c5469f898f970e85eac6f5d82595a550588') { throw "Unexpected telemetry source: $commit" }
+      foreach ($patch in @('apple-system-libraries.patch', 'sdk-version-lifetime.patch', 'apple-delegate-namespace.patch')) {
         git -C $source apply --ignore-whitespace "$(Build.SourcesDirectory)/sdk_v2/cpp/ports/cpp-client-telemetry/$patch"
         if ($LASTEXITCODE -ne 0) { throw "Cannot apply $patch" }
       }
