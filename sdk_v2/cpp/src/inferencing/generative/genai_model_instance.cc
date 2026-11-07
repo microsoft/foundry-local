@@ -159,20 +159,20 @@ std::optional<HarmonyProtocol> QualifyHarmonyProtocol(std::string_view model_typ
   }
   constexpr const char* probe = R"([
     {"role":"user","content":"probe"},
-    {"role":"assistant","content":"probe-visible","thinking":"probe-private","tool_calls":[
+    {"role":"assistant","content":"","thinking":"probe-private","tool_calls":[
       {"function":{"name":"probe_function","arguments":{},"arguments_json":"__probe_arguments__"}}
     ]},
     {"role":"tool","name":"probe_function","content":"","content_json":"__probe_result__"}
   ])";
   const auto rendered = preprocessor.ApplyChatTemplate(probe, nullptr, true);
   if (!ContainsInOrder(rendered, {"<|channel|>analysis<|message|>probe-private<|end|>",
-                                  "<|channel|>commentary<|message|>probe-visible<|end|>",
                                   "<|start|>assistant to=functions.probe_function<|channel|>commentary json"
                                   "<|message|>__probe_arguments__<|call|>",
                                   "<|start|>functions.probe_function to=assistant<|channel|>commentary"
                                   "<|message|>__probe_result__<|end|>"}) ||
       !rendered.ends_with(HarmonyProtocol::kAssistantPrefix)) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "GPT-OSS requires the qualified protected Harmony transcript template");
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "GPT-OSS requires the qualified protected Harmony transcript template");
   }
   constexpr const char* custom_probe = R"([
     {"role":"user","content":"probe"},
@@ -393,9 +393,6 @@ GenAIModelInstance::GenAIModelInstance(std::string model_id,
                                            tag_info.bor_str, tag_info.eor_str);
   capabilities_.harmony = QualifyHarmonyProtocol(model_type_, *preprocessor_);
   if (capabilities_.harmony) {
-    if (genai_config_.GetChatBackendKind() != ChatBackendKind::kEngine) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Qualified Harmony generation requires the Engine backend");
-    }
     capabilities_.supports_tool_calling = true;
     capabilities_.supports_reasoning_history = true;
     capabilities_.positional_tool_results = true;
