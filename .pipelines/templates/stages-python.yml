@@ -109,6 +109,7 @@ stages:
       parameters:
         nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-linux-x64'
         rid: 'linux-x64'
+        useSystemPython: true
         outputDir: '$(Build.ArtifactStagingDirectory)/python-sdk'
 
 - stage: python_build_linux_arm64

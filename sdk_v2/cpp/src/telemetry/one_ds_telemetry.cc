@@ -9,6 +9,7 @@
 #include "telemetry/telemetry_environment.h"
 #include "telemetry/telemetry_redaction.h"
 #include "telemetry/telemetry_sampling.h"
+#include "util/process_shutdown.h"
 
 #include <fmt/format.h>
 
@@ -130,8 +131,8 @@ std::string GetCertificateAuthorityBundlePath() {
 }
 #endif
 
-void SetCommonContext(MatILogger* mat_logger, const TelemetryMetadata& m) {
-  mat_logger->SetContext("AppName", TelemetryInternal::SanitizeCommonContextValue(m.app_name));
+void SetCommonContext(MatILogger* mat_logger, const TelemetryMetadata& m, std::string_view hashed_device_id) {
+  TelemetryInternal::SetCommonEventIdentity(*mat_logger, m.app_name, hashed_device_id);
   mat_logger->SetContext("AppVersion", TelemetryInternal::SanitizeCommonContextValue(m.app_version));
   mat_logger->SetContext("FoundryLocalVersion", TelemetryInternal::SanitizeCommonContextValue(m.version));
   mat_logger->SetContext("AppSessionGuid", TelemetryInternal::SanitizeCommonContextValue(m.app_session_guid));
@@ -209,8 +210,9 @@ OneDsTelemetry::OneDsTelemetry(const std::string& app_name,
                                bool disable_nonessential_telemetry)
     : local_log_(app_name, logger),
       metadata_(BuildTelemetryMetadata(app_name)),
+      hard_disabled_(TelemetryEnvironment::IsCiEnvironment()),
       logger_(logger) {
-  if (TelemetryEnvironment::IsCiEnvironment()) {
+  if (hard_disabled_) {
     logger_.Log(LogLevel::Information,
                 "[Telemetry] CI environment detected; 1DS upload disabled (events still logged locally)");
     return;
@@ -222,7 +224,7 @@ OneDsTelemetry::OneDsTelemetry(const std::string& app_name,
   }
   if (disabled_by_environment) {
     logger_.Log(LogLevel::Information,
-                "[Telemetry] Disabled via ORT_TELEMETRY_DISABLED; non-essential 1DS upload disabled "
+                "[Telemetry] Disabled via ORT_DISABLE_TELEMETRY; non-essential 1DS upload disabled "
                 "(ProcessInfo still uploads)");
   } else if (disable_nonessential_telemetry) {
     logger_.Log(LogLevel::Information,
@@ -284,20 +286,16 @@ OneDsTelemetry::OneDsTelemetry(const std::string& app_name,
                   "[Telemetry] ILogManager::GetLogger returned null; 1DS upload disabled");
       return;
     }
+    const auto hashed_device_id = TelemetryDeviceId::HashForTelemetry(TelemetryDeviceId::Instance().GetValue());
     if (auto* semantic_context = impl_->logger->GetSemanticContext(); semantic_context != nullptr) {
       TelemetryInternal::SuppressUnneededCommonContext(*semantic_context);
       TelemetryInternal::SetApplicationNameFromProcessName(
-          *semantic_context,
-          TelemetryInternal::SanitizeCommonContextValue(
-              BuildProcessInfo(metadata_, /*include_device_id_status=*/false).process_name));
-      if (!disable_nonessential_telemetry) {
-        const auto hashed_device_id = TelemetryDeviceId::HashForTelemetry(TelemetryDeviceId::Instance().GetValue());
-        if (!hashed_device_id.empty()) {
-          semantic_context->SetDeviceId(hashed_device_id);
-        }
+          *semantic_context, TelemetryInternal::SanitizeCommonContextValue(metadata_.process_name));
+      if (!hashed_device_id.empty()) {
+        semantic_context->SetDeviceId(hashed_device_id);
       }
     }
-    SetCommonContext(impl_->logger, metadata_);
+    SetCommonContext(impl_->logger, metadata_, hashed_device_id);
     logger_.Log(LogLevel::Information,
                 fmt::format("[Telemetry] 1DS initialized; AppName={} AppVersion={} Version={} Os={} {} Arch={}",
                             TelemetryInternal::SanitizeCommonContextValue(metadata_.app_name),
@@ -331,6 +329,12 @@ OneDsTelemetry::OneDsTelemetry(const std::string& app_name,
 }
 
 OneDsTelemetry::~OneDsTelemetry() {
+  // During DLL process detach, locks may belong to terminated threads and uploader callbacks cannot drain.
+  if (IsDllShutdownInProgress()) {
+    (void)impl_.release();
+    return;
+  }
+
   std::unique_lock<std::shared_mutex> lock(mutex_);
   if (!initialized_.load(std::memory_order_acquire) || !impl_ || impl_->log_manager == nullptr) {
     return;
@@ -526,7 +530,8 @@ void OneDsTelemetry::RecordCatalogFetch(const CatalogFetchInfo& info) {
   SafeLog(impl_->logger, ev);
 }
 
-void OneDsTelemetry::RecordProcessInfo(const ProcessInfo& info) {
+void OneDsTelemetry::RecordProcessInfo(const Configuration& configuration) {
+  const auto info = BuildProcessInfo(metadata_, configuration, /*include_device_id_status=*/!hard_disabled_);
   local_log_.RecordProcessInfo(info);
   auto lock = LockForLogging(/*require_upload=*/false);
   if (!lock.owns_lock()) {
@@ -534,7 +539,7 @@ void OneDsTelemetry::RecordProcessInfo(const ProcessInfo& info) {
   }
   auto ev = MakeEvent("ProcessInfo");
   ev.SetProperty("appVersion", info.app_version);
-  ev.SetProperty("appName", info.app_name);
+  ev.SetProperty("publisher", info.publisher);
   ev.SetProperty("osName", info.os_name);
   ev.SetProperty("osVersion", info.os_version);
   ev.SetProperty("architecture", info.cpu_arch);
@@ -550,6 +555,12 @@ void OneDsTelemetry::RecordProcessInfo(const ProcessInfo& info) {
   ev.SetProperty("deviceIdScope", info.device_id_scope);
   ev.SetProperty("cpuCount", static_cast<int64_t>(info.cpu_count));
   ev.SetProperty("totalMemoryMB", info.total_memory_mb);
+  ev.SetProperty("appDataDir", info.app_data_dir);
+  ev.SetProperty("modelCacheDir", info.model_cache_dir);
+  ev.SetProperty("logsDir", info.logs_dir);
+  ev.SetProperty("logLevel", static_cast<int64_t>(info.log_level));
+  ev.SetProperty("webServiceUrlCount", info.web_service_url_count);
+  ev.SetProperty("externalUrlCount", info.external_url_count);
   SafeLog(impl_->logger, ev);
 }
 

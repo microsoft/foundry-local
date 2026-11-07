@@ -41,7 +41,7 @@ describe.skipIf(!haveTestModelCache)("ChatClient (real model, V1 OpenAI-JSON pas
   let client: ChatClient | undefined;
 
   beforeAll(async () => {
-    fixture = await setupRealModelManager();
+    fixture = await setupRealModelManager({ namePreference: "qwen2.5-0.5b-instruct-generic-cpu:4" });
   }, 5 * 60_000);
 
   afterAll(() => {
@@ -57,6 +57,42 @@ describe.skipIf(!haveTestModelCache)("ChatClient (real model, V1 OpenAI-JSON pas
     client?.dispose();
     client = undefined;
   });
+
+  it.each([false, true])(
+    "completeChat permits reuse after cancellation or native completion (pre-aborted=%s)",
+    async (cancelBeforeStart) => {
+      if (client === undefined) throw new Error("client missing");
+      client.settings.maxTokens = 256;
+      client.settings.temperature = 0;
+      const controller = new AbortController();
+      if (cancelBeforeStart) controller.abort();
+      const timer = cancelBeforeStart ? undefined : setTimeout(() => controller.abort(), 100);
+      try {
+        await client
+          .completeChat(
+            [{ role: "user", content: "Count from 1 to 10000, writing every integer on its own line." }],
+            undefined,
+            { signal: controller.signal },
+          )
+          .then(
+            (result) => {
+              // A short answer can finish before the abort timer, even with a large maximum token budget.
+              expect(cancelBeforeStart).toBe(false);
+              expect(result.choices.length).toBeGreaterThan(0);
+            },
+            (error: unknown) => {
+              expect(error).toMatchObject({ name: "AbortError" });
+            },
+          );
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+      client.settings.maxTokens = 8;
+      const result = await client.completeChat([{ role: "user", content: "Say hello." }]);
+      expect(result.choices.length).toBeGreaterThan(0);
+    },
+    2 * 60_000,
+  );
 
   it(
     "completeChat returns an OpenAI Chat Completion shape and answers the prompt",
@@ -111,9 +147,7 @@ describe.skipIf(!haveTestModelCache)("ChatClient (real model, V1 OpenAI-JSON pas
       if (client === undefined) throw new Error("client missing");
       client.settings.temperature = 0;
       client.settings.maxTokens = 32;
-      const result = await client.completeChat([
-        { role: "user", content: "Say 'ok' and nothing else." },
-      ]);
+      const result = await client.completeChat([{ role: "user", content: "Say 'ok' and nothing else." }]);
       const text = chatChoiceText(result).toLowerCase();
       expect(text.length).toBeGreaterThan(0);
       // maxTokens=32 is a smoke check: completion_tokens should not blow past it by much.

@@ -356,6 +356,51 @@ TEST(ResponseCreateParamsTest, ToolChoiceString) {
   EXPECT_EQ(*s, "required");
 }
 
+TEST(ResponseCreateParamsTest, OrderedRequestPreservesFlatAndNestedToolSchemas) {
+  const auto schema = nlohmann::ordered_json::parse(R"({
+    "type":"object",
+    "properties":{
+      "zebra":{"type":"object","properties":{"second":{"type":"integer"},"first":{"type":"string"}}},
+      "alpha":{"type":"string"}
+    },
+    "required":["zebra"]
+  })");
+  nlohmann::ordered_json request = {
+      {"model", "m"}, {"input", "x"},
+      {"tools", nlohmann::ordered_json::array({
+                    {{"type", "custom"}, {"name", "raw"}},
+                    {{"type", "function"}, {"name", "flat"}, {"parameters", schema}},
+                    {{"type", "function"}, {"function", {{"name", "nested"}, {"parameters", schema}}}},
+                    {{"type", "function"}, {"name", "absent"}},
+                    {{"type", "function"}, {"name", "null"}, {"parameters", nullptr}},
+                })},
+  };
+  const auto params = request.get<ResponseCreateParams>();
+
+  ASSERT_TRUE(params.tools.has_value());
+  ASSERT_EQ(params.tools->size(), 5u);
+  EXPECT_TRUE(params.tools->at(0).IsCustom());
+  for (const size_t index : {1u, 2u}) {
+    ASSERT_TRUE(params.tools->at(index).function.parameters_json.has_value());
+    EXPECT_EQ(*params.tools->at(index).function.parameters_json, schema.dump());
+  }
+
+  EXPECT_FALSE(params.tools->at(3).function.parameters_present);
+  EXPECT_FALSE(params.tools->at(3).function.parameters_json.has_value());
+  EXPECT_TRUE(params.tools->at(4).function.parameters_present);
+  EXPECT_FALSE(params.tools->at(4).function.parameters_json.has_value());
+}
+
+TEST(ResponseCreateParamsTest, RejectsNonBooleanParallelToolCalls) {
+  auto j = json::parse(R"({
+    "model": "m",
+    "input": "x",
+    "parallel_tool_calls": "false"
+  })");
+
+  EXPECT_THROW((void)j.get<ResponseCreateParams>(), json::type_error);
+}
+
 // ========================================================================
 // to_json — Output content types
 // ========================================================================

@@ -186,20 +186,32 @@ void from_json(const nlohmann::json& j, ChatCompletionToolCall& tc) {
 
 void from_json(const nlohmann::json& j, ChatCompletionMessage& m) {
   m.role = j.at("role").get<std::string>();
+  m.content.reset();
+  m.content_parts.clear();
 
   // content can be null (for assistant messages with tool_calls)
   if (j.contains("content") && !j["content"].is_null()) {
     if (j["content"].is_string()) {
       m.content = j["content"].get<std::string>();
     } else {
-      // Array of content parts — extract text parts
+      // Keep the flattened text for text-only consumers and the original part order for media rendering.
       std::string text;
       if (j["content"].is_array()) {
         for (const auto& part : j["content"]) {
           if (part.is_object()) {
             std::string part_type = part.value("type", "");
             if (part_type == "text" || part_type == "input_text") {
-              text += part.value("text", "");
+              auto fragment = part.value("text", "");
+              text += fragment;
+              m.content_parts.push_back({ChatCompletionContentPart::Kind::kText, std::move(fragment)});
+            } else if (part_type == "image_url") {
+              const auto& image = RequiredObject(part, "image_url", "content part");
+              const auto url = image.find("url");
+              if (url == image.end() || !url->is_string() || url->get_ref<const std::string&>().empty()) {
+                FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "image_url.url must be a non-empty string");
+              }
+
+              m.content_parts.push_back({ChatCompletionContentPart::Kind::kImageUrl, url->get<std::string>()});
             }
           }
         }
@@ -339,7 +351,7 @@ void from_json(const nlohmann::json& j, ChatCompletionRequest& r) {
   opt_int(j, "seed", r.seed);
   opt_bool(j, "logprobs", r.logprobs);
   opt_int(j, "top_logprobs", r.top_logprobs);
-  opt_bool(j, "parallel_tool_calls", r.parallel_tool_calls);
+  opt(j, "parallel_tool_calls", r.parallel_tool_calls);
   opt_str(j, "user", r.user);
   opt_str(j, "reasoning_effort", r.reasoning_effort);
 
@@ -379,6 +391,18 @@ void from_json(const nlohmann::json& j, ChatCompletionRequest& r) {
 // ========================================================================
 // Request serialization (to_json) - for getting tools JSON to pass to GenAI
 // ========================================================================
+
+void from_json(const nlohmann::ordered_json& j, ChatCompletionRequest& r) {
+  from_json(nlohmann::json(j), r);
+  if (r.tools) {
+    for (size_t i = 0; i < r.tools->size(); ++i) {
+      auto& tool = r.tools->at(i);
+      if (!tool.IsCustom() && tool.function.parameters) {
+        tool.function.parameters = j.at("tools").at(i).at("function").at("parameters");
+      }
+    }
+  }
+}
 
 void to_json(nlohmann::json& j, const ChatCompletionFunctionDef& f) {
   j = nlohmann::json{

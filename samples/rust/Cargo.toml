@@ -1,16 +1,11 @@
 [workspace]
 members = [
-    "foundry-local-webserver",
-    "foundry-local-webserver-responses-vision",
-    "tool-calling-foundry-local",
-    "native-chat-completions",
-    "audio-transcription-example",
-    "live-audio-transcription",
+    "hello-world",
+    "realtime-transcription",
     "embeddings",
-    "tutorial-chat-assistant",
-    "tutorial-document-summarizer",
-    "tutorial-tool-calling",
-    "tutorial-voice-to-text",
-    "verify-winml",
+    "tool-calling",
+    "web-server",
+    "vision",
+    "byom",
 ]
 resolver = "2"

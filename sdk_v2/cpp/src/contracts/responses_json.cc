@@ -558,7 +558,7 @@ void from_json(const nlohmann::json& j, ResponseCreateParams& p) {
     p.allowed_tools = j["allowed_tools"].get<std::vector<std::string>>();
   }
 
-  opt_bool(j, "parallel_tool_calls", p.parallel_tool_calls);
+  opt(j, "parallel_tool_calls", p.parallel_tool_calls);
 
   // Reasoning
   if (j.contains("reasoning") && j["reasoning"].is_object()) {
@@ -584,6 +584,20 @@ void from_json(const nlohmann::json& j, ResponseCreateParams& p) {
   // extra_json: preserve any unrecognized fields
   if (j.contains("extra") && !j["extra"].is_null()) {
     p.extra_json = j["extra"].dump();
+  }
+}
+
+void from_json(const nlohmann::ordered_json& j, ResponseCreateParams& p) {
+  from_json(nlohmann::json(j), p);
+  if (p.tools) {
+    for (size_t i = 0; i < p.tools->size(); ++i) {
+      auto& tool = p.tools->at(i);
+      if (!tool.IsCustom() && tool.function.parameters_json) {
+        const auto& declaration = j.at("tools").at(i);
+        const auto& function = declaration.contains("name") ? declaration : declaration.at("function");
+        tool.function.parameters_json = function.at("parameters").dump();
+      }
+    }
   }
 }
 

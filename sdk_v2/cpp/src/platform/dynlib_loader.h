@@ -14,6 +14,10 @@ namespace fl::platform {
 #ifdef _WIN32
 /// Set the directory used for subsequent bare-name dynamic library loads.
 bool SetDynamicLibrarySearchDirectory(const std::filesystem::path& directory, ILogger& logger);
+
+/// Load a CUDA library using configured DLL directories, then standard Windows search if a dependency is missing.
+/// The fallback follows the application's OS search policy, including PATH and the current directory.
+std::shared_ptr<void> LoadSharedLibraryWithPathFallback(const std::filesystem::path& path, ILogger& logger);
 #endif
 
 /// Load one shared library and keep it resident for the lifetime of the returned handle.

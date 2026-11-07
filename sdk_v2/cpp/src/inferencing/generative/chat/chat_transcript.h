@@ -279,8 +279,17 @@ enum class TextDisposition {
 /// Each generated reply starts a new assistant turn. Calls in supplied history do not close its visible text.
 class AssistantTurnGuard {
  public:
-  /// Record that the turn issued a tool call. Every later visible text event is now unrepresentable.
-  void RecordToolCall() noexcept { calls_issued_ = true; }
+  explicit AssistantTurnGuard(bool parallel_tool_calls = true) noexcept
+      : parallel_tool_calls_(parallel_tool_calls) {}
+
+  bool RecordToolCall() noexcept {
+    if (ended_) {
+      return false;
+    }
+    calls_issued_ = true;
+    ended_ = !parallel_tool_calls_;
+    return true;
+  }
 
   /// Decide what to do with one visible-text event. Reports kEndTurn exactly once per turn.
   TextDisposition OfferVisibleText(std::string_view text) noexcept {
@@ -300,11 +309,11 @@ class AssistantTurnGuard {
     return TextDisposition::kEndTurn;
   }
 
-  /// True once the turn has been ended by post-call text. Generation must stop and the cached generator is no longer
-  /// a usable basis for the next turn: the sequence was cut short with no turn terminator.
+  /// True once post-call text or a serial call ends the turn. The truncated sequence cannot be retained.
   bool TurnEnded() const noexcept { return ended_; }
 
  private:
+  bool parallel_tool_calls_ = true;
   bool calls_issued_ = false;
   bool ended_ = false;
 };

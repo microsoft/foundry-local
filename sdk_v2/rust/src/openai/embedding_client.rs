@@ -5,8 +5,6 @@ use async_openai::types::embeddings::CreateEmbeddingResponse;
 use serde_json::{json, Value};
 
 use crate::detail::native::NativeModel;
-use crate::detail::session::NativeSession;
-use crate::detail::task::spawn_blocking;
 use crate::error::{FoundryLocalError, Result};
 
 /// Client for OpenAI-compatible embedding generation backed by a local model.
@@ -53,11 +51,7 @@ impl EmbeddingClient {
         let request_json = serde_json::to_string(&request)?;
         let model = self.model.clone();
 
-        let raw = spawn_blocking(move || {
-            let session = NativeSession::create(&model)?;
-            session.run_openai_json(&request_json)
-        })
-        .await?;
+        let raw = crate::detail::session::run_openai_json(model, request_json).await?;
 
         // Patch the response to add fields required by async_openai types
         // that the server doesn't return (object on each item, usage)

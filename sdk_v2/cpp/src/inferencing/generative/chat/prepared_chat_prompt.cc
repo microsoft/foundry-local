@@ -7,10 +7,13 @@
 #include "inferencing/generative/chat/onnx_chat_generator.h"
 #include "inferencing/generative/genai_model_instance.h"
 #include "inferencing/generative/toolcalling/tool_call_context.h"
+#include "inferencing/generative/toolcalling/tool_call_utils.h"
 #include "items/audio_item.h"
 #include "items/image_item.h"
 
 #include <ort_genai.h>
+
+#include <unordered_map>
 
 namespace fl {
 
@@ -27,6 +30,63 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
   }
 
   PreparedChatPrompt prepared;
+  if (tool_ctx.tool_plan && !tool_ctx.HasForcedRawEnvelope()) {
+    const auto original = BuildChatMessagesJson(messages.Messages(), tool_ctx.supports_reasoning_history);
+    std::string prefix;
+    do {
+      prefix = "__foundry_literal_" + GenerateToolCallId() + "_";
+    } while (original.find(prefix) != std::string::npos || tool_ctx.tools_json.find(prefix) != std::string::npos ||
+             tool_ctx.template_kwargs_json.find(prefix) != std::string::npos);
+
+    std::unordered_map<std::string, std::string> literals;
+    const auto projected = BuildCanonicalToolMessagesJson(
+        messages.Messages(), tool_ctx, [&](std::string text) {
+          if (text.empty()) {
+            return text;
+          }
+          auto marker = prefix + std::to_string(literals.size()) + "__";
+          literals.emplace(marker, std::move(text));
+          return marker;
+        });
+    auto& preprocessor = model.GetPreprocessor();
+    const auto* kwargs = tool_ctx.template_kwargs_json.empty() ? nullptr : tool_ctx.template_kwargs_json.c_str();
+    const auto rendered =
+        preprocessor.ApplyChatTemplateWithOptions(projected.c_str(), nullptr, kwargs, true);
+    const auto append = [&](const std::string& text, bool literal) {
+      if (text.empty()) {
+        return;
+      }
+      auto sequences = literal ? preprocessor.EncodeLiteral(text.c_str()) : preprocessor.Encode(text.c_str());
+      const auto* data = sequences->SequenceData(0);
+      prepared.token_ids.insert(prepared.token_ids.end(), data, data + sequences->SequenceCount(0));
+      prepared.prompt += text;
+    };
+    size_t cursor = 0;
+    for (;;) {
+      const auto next = rendered.find(prefix, cursor);
+      if (next == std::string::npos) {
+        append(rendered.substr(cursor), false);
+        break;
+      }
+
+      const auto end = rendered.find("__", next + prefix.size());
+      if (end == std::string::npos) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "chat template truncated a literal prompt fragment");
+      }
+      const auto found = literals.find(rendered.substr(next, end + 2 - next));
+      if (found == literals.end()) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "chat template changed a literal prompt fragment");
+      }
+
+      append(rendered.substr(cursor, next - cursor), false);
+      append(found->second, true);
+      cursor = end + 2;
+    }
+
+    prepared.prompt_token_count = static_cast<int64_t>(prepared.token_ids.size());
+    return prepared;
+  }
+
   prepared.prompt = BuildChatPrompt(messages, model, tool_ctx);
   auto sequences = EncodePrompt(prepared.prompt, model);
   const auto count = sequences->SequenceCount(0);

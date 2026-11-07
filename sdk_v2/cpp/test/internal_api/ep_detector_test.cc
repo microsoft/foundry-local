@@ -49,6 +49,9 @@ class MockEpBootstrapper : public IEpBootstrapper {
       ILogger& /*logger*/,
       bool* downloaded = nullptr) override {
     download_called_ = true;
+    if (call_order_ != nullptr) {
+      call_order_->push_back(name_);
+    }
     if (downloaded) {
       *downloaded = downloaded_on_register_;
     }
@@ -76,6 +79,7 @@ class MockEpBootstrapper : public IEpBootstrapper {
   bool prepare_succeeds_ = true;
   bool downloaded_on_register_ = true;
   bool ignore_terminal_cancellation_ = false;
+  std::vector<std::string>* call_order_ = nullptr;
 
  private:
   std::string name_;
@@ -372,30 +376,73 @@ TEST_F(EpDetectorTest, DownloadFiltered_AllNamesUnknown_SucceedsWithNothing) {
 // name must also auto-register the CUDA EP (when a CUDA bootstrapper is present).
 TEST_F(EpDetectorTest, DownloadFiltered_TrtRtxAlsoRegistersCuda) {
   std::vector<MockEpBootstrapper*> mocks;
-  auto detector = MakeDetector(mocks, {{"NvTensorRTRTXExecutionProvider", true},
+  auto detector = MakeDetector(mocks, {{"NvTensorRtRtxExecutionProvider", true},
                                        {"CUDAExecutionProvider", true}});
+  std::vector<std::string> call_order;
+  mocks[0]->call_order_ = &call_order;
+  mocks[1]->call_order_ = &call_order;
 
-  std::vector<std::string> names = {"NvTensorRTRTXExecutionProvider"};
+  std::vector<std::string> names = {"NvTensorRtRtxExecutionProvider"};
   auto result = detector->DownloadAndRegisterEps(&names, nullptr);
 
   EXPECT_TRUE(result.success);
   EXPECT_TRUE(mocks[0]->download_called_);
   EXPECT_TRUE(mocks[1]->download_called_);
+  EXPECT_EQ(call_order, (std::vector<std::string>{"CUDAExecutionProvider", "NvTensorRtRtxExecutionProvider"}));
   EXPECT_NE(std::find(result.registered_eps.begin(), result.registered_eps.end(), "CUDAExecutionProvider"),
             result.registered_eps.end());
 }
 
+TEST_F(EpDetectorTest, DownloadAll_RegistersCudaBeforeTrtRtxWithoutReorderingOtherProviders) {
+  std::vector<MockEpBootstrapper*> mocks;
+  auto detector = MakeDetector(mocks, {{"QNNExecutionProvider", true},
+                                       {"NvTensorRtRtxExecutionProvider", true},
+                                       {"WebGpuExecutionProvider", true},
+                                       {"CUDAExecutionProvider", true},
+                                       {"VitisAIExecutionProvider", true}});
+  std::vector<std::string> call_order;
+  for (auto* mock : mocks) {
+    mock->call_order_ = &call_order;
+  }
+
+  auto result = detector->DownloadAndRegisterEps(nullptr, nullptr);
+
+  EXPECT_TRUE(result.success);
+  EXPECT_EQ(call_order, (std::vector<std::string>{"QNNExecutionProvider",
+                                                  "CUDAExecutionProvider",
+                                                  "WebGpuExecutionProvider",
+                                                  "NvTensorRtRtxExecutionProvider",
+                                                  "VitisAIExecutionProvider"}));
+}
+
+TEST_F(EpDetectorTest, DownloadFiltered_CudaFailureStillAttemptsTrtRtxAndReportsBothOutcomes) {
+  std::vector<MockEpBootstrapper*> mocks;
+  auto detector = MakeDetector(mocks, {{"NvTensorRtRtxExecutionProvider", true},
+                                       {"CUDAExecutionProvider", false}});
+  std::vector<std::string> call_order;
+  mocks[0]->call_order_ = &call_order;
+  mocks[1]->call_order_ = &call_order;
+
+  std::vector<std::string> names = {"NvTensorRtRtxExecutionProvider"};
+  auto result = detector->DownloadAndRegisterEps(&names, nullptr);
+
+  EXPECT_FALSE(result.success);
+  EXPECT_EQ(call_order, (std::vector<std::string>{"CUDAExecutionProvider", "NvTensorRtRtxExecutionProvider"}));
+  EXPECT_EQ(result.failed_eps, (std::vector<std::string>{"CUDAExecutionProvider"}));
+  EXPECT_EQ(result.registered_eps, (std::vector<std::string>{"NvTensorRtRtxExecutionProvider"}));
+}
+
 TEST_F(EpDetectorTest, DownloadFiltered_TrtRtxWithoutCudaReportsFailure) {
   std::vector<MockEpBootstrapper*> mocks;
-  auto detector = MakeDetector(mocks, {{"NvTensorRTRTXExecutionProvider", true}});
+  auto detector = MakeDetector(mocks, {{"NvTensorRtRtxExecutionProvider", true}});
 
-  std::vector<std::string> names = {"NvTensorRTRTXExecutionProvider"};
+  std::vector<std::string> names = {"NvTensorRtRtxExecutionProvider"};
   auto result = detector->DownloadAndRegisterEps(&names, nullptr);
 
   EXPECT_FALSE(result.success);
   EXPECT_TRUE(result.registered_eps.empty());
   ASSERT_EQ(result.failed_eps.size(), 1u);
-  EXPECT_EQ(result.failed_eps[0], "NvTensorRTRTXExecutionProvider");
+  EXPECT_EQ(result.failed_eps[0], "NvTensorRtRtxExecutionProvider");
   EXPECT_FALSE(mocks[0]->download_called_);
 }
 

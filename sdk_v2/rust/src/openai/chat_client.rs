@@ -220,11 +220,7 @@ impl ChatClient {
         let request_json = serde_json::to_string(&request)?;
         let model = self.model.clone();
 
-        let raw = spawn_blocking(move || {
-            let session = NativeSession::create(&model)?;
-            session.run_openai_json(&request_json)
-        })
-        .await?;
+        let raw = crate::detail::session::run_openai_json(model, request_json).await?;
 
         let parsed: CreateChatCompletionResponse = serde_json::from_str(&raw)?;
         Ok(parsed)
@@ -250,8 +246,9 @@ impl ChatClient {
         let model = self.model.clone();
 
         let session = spawn_blocking(move || NativeSession::create(&model)).await?;
-        let rx = run_openai_json_streaming(session, request_json, Box::new(normalize_chat_chunk));
-        Ok(ChatCompletionStream::new(rx))
+        let (rx, cancel_guard) =
+            run_openai_json_streaming(session, request_json, Box::new(normalize_chat_chunk))?;
+        Ok(ChatCompletionStream::new(rx, cancel_guard))
     }
 
     fn build_request(

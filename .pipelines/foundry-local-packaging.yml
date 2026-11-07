@@ -9,7 +9,7 @@
 # this expensive pipeline on every dev branch push.
 #
 # TODO: This prevents auto-run on all pushes but doesn't trigger commits to `main` and `release`
-#       branches. Re-enable when triggering is fixed. 
+#       branches. Re-enable when triggering is fixed.
 # trigger:
 #   branches:
 #     include:
@@ -38,14 +38,20 @@ parameters:
 
 variables:
 - group: FoundryLocal-ESRP-Signing
+- name: AGENT_USE_NODE24
+  value: 'true'
+# .NET 10.0.13 validates TMPDIR when creating Unix named mutexes.
+# Shared macOS agents may export an empty value (dotnet/android#13136).
+- name: TMPDIR
+  value: '$(Agent.TempDirectory)'
 # C++ SDK (sdk_v2/cpp) native dependency versions. Must match the stable pins
 # in sdk_v2/deps_versions.json.
 - name: cppOrtVersion
-  value: '1.30.0'
+  value: '1.31.0'
 - name: cppGenaiVersion
-  value: '0.17.1'
+  value: '0.19.0'
 - name: cppWinmlVersion
-  value: '2.4.89'
+  value: '2.5.96'
 - name: cppBuildConfig
   value: 'RelWithDebInfo'
 
@@ -60,7 +66,7 @@ extends:
   template: v1/1ES.Official.PipelineTemplate.yml@1ESPipelineTemplates
   parameters:
     settings:
-      networkIsolationPolicy: Permissive
+      networkIsolationPolicy: Permissive,CFSClean,CFSClean2,CFSClean3
     pool:
       # default all windows jobs, individual jobs override
       name: onnxruntime-Win-CPU-2022

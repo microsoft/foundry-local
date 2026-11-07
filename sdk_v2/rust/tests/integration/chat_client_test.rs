@@ -153,7 +153,7 @@ async fn should_perform_tool_calling_chat_completion_non_streaming() {
     let tools = vec![common::get_multiply_tool()];
     let mut messages = vec![
         system_message("You are a math assistant. Use the multiply tool to answer."),
-        user_message("What is 6 times 7?"),
+        user_message(r#"What is 6 times 7? Call multiply with arguments {"a":6,"b":7}."#),
     ];
 
     let response = client
@@ -186,9 +186,14 @@ async fn should_perform_tool_calling_chat_completion_non_streaming() {
 
     let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
         .expect("Failed to parse tool call arguments");
-    let a = args["a"].as_f64().unwrap_or(0.0);
-    let b = args["b"].as_f64().unwrap_or(0.0);
+    let a = args["a"]
+        .as_f64()
+        .expect("multiply argument 'a' should be numeric");
+    let b = args["b"]
+        .as_f64()
+        .expect("multiply argument 'b' should be numeric");
     let product = (a * b) as i64;
+    assert_eq!(product, 42, "multiply arguments should produce 42");
 
     let tool_call_id = &tool_call.id;
     let assistant_msg: ChatCompletionRequestMessage = serde_json::from_value(json!({
@@ -253,7 +258,7 @@ async fn should_perform_tool_calling_chat_completion_streaming() {
     let tools = vec![common::get_multiply_tool()];
     let mut messages = vec![
         system_message("You are a math assistant. Use the multiply tool to answer."),
-        user_message("What is 6 times 7?"),
+        user_message(r#"What is 6 times 7? Call multiply with arguments {"a":6,"b":7}."#),
     ];
 
     let mut streamed_tool_calls = BTreeMap::<u32, StreamedToolCall>::new();
