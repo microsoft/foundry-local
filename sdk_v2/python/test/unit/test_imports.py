@@ -3,6 +3,7 @@
 # Licensed under the MIT License.
 # --------------------------------------------------------------------------
 """Smoke tests asserting the public import surface stays intact."""
+
 from __future__ import annotations
 
 import importlib
@@ -47,6 +48,16 @@ PUBLIC_NAMES = [
     "MessageRole",
     "TensorDataType",
     "FinishReason",
+    "JSONValue",
+    "DecisionQuestion",
+    "DecisionQuestionType",
+    "DecisionAnswer",
+    "DecisionUsage",
+    "RankingRequest",
+    "RankedCandidate",
+    "RankingResult",
+    "DecisionRequest",
+    "DecisionResult",
     "TokenUsage",
     "SearchOptions",
     "RequestOptions",
@@ -58,6 +69,8 @@ PUBLIC_NAMES = [
     "ChatSession",
     "AudioSession",
     "EmbeddingsSession",
+    "RankingSession",
+    "DecisionSession",
 ]
 
 
@@ -74,6 +87,7 @@ def test_all_matches_documented_surface():
 
 def test_model_is_alias_for_imodel():
     from foundry_local_sdk import IModel, Model
+
     assert Model is IModel
 
 
@@ -106,6 +120,7 @@ class TestOpenAiImportGuard:
         from foundry_local_sdk.openai.chat_client import ChatClient
         from foundry_local_sdk.openai.audio_client import AudioClient
         from foundry_local_sdk.openai.embedding_client import EmbeddingClient
+
         assert ChatClient is not None
         assert AudioClient is not None
         assert EmbeddingClient is not None

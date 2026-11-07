@@ -6,6 +6,7 @@
 #include "hosting/bootstrap_descriptor.h"
 #include "hosting/host_profile.h"
 #include "hosting/host_coordinator.h"
+#include "hosting/host_lifetime.h"
 #include "hosting/host_process.h"
 #include "hosting/runtime_assets.h"
 #include "hosting/sdk_connection.h"
@@ -620,10 +621,22 @@ TEST_F(BootstrapDescriptorTest, CoordinatorStartsOnceSharesOwnersReconnectsAndRe
   ProcessWatch predecessor(*record->process);
   EXPECT_EQ(owner_a->Call(Operation::Observe, Json::object()).at("owners"), 2);
   owner_a->Close();
-  EXPECT_EQ(owner_b->Call(Operation::Observe, Json::object()).at("state"), 1);
+  // Closing one transport does not synchronize the other peer's server-side owner removal.
+  auto remaining = owner_b->Call(Operation::Observe, Json::object());
+  const auto removal_deadline = Clock::now() + 5s;
+  while (remaining.at("owners") != 1 && Clock::now() < removal_deadline) {
+    std::this_thread::sleep_for(10ms);
+    remaining = owner_b->Call(Operation::Observe, Json::object());
+  }
+
+  ASSERT_EQ(remaining.at("owners"), 1);
+  EXPECT_EQ(remaining.at("state"), static_cast<int>(HostLifetime::State::kAccepting));
   owner_b->Close();
   reconnected = first.Connect(true);
-  EXPECT_EQ(first.Store().Read()->process, record->process);
+  ASSERT_TRUE(reconnected);
+  const auto reconnected_record = first.Store().Read();
+  ASSERT_TRUE(reconnected_record && reconnected_record->process);
+  EXPECT_EQ(reconnected_record->process, record->process);
   EXPECT_FALSE(predecessor.IsExited());
   reconnected->Close();
   ASSERT_TRUE(predecessor.WaitUntil(Clock::now() + 15s));
