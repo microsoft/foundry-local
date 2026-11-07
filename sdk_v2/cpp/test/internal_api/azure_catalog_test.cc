@@ -278,8 +278,8 @@ TEST(AzureCatalogClientTest, LegacyTagOverridesBypassDefaultAllowlistAcrossCatal
       }
       std::sort(actual_ids.begin(), actual_ids.end());
       const std::vector<std::string> expected_ids = query == "list"
-                                                       ? std::vector<std::string>{"matching:3"}
-                                                       : std::vector<std::string>{"legacy:1", "matching:3"};
+                                                        ? std::vector<std::string>{"matching:3"}
+                                                        : std::vector<std::string>{"legacy:1", "matching:3"};
       EXPECT_EQ(actual_ids, expected_ids);
     }
   }
@@ -562,6 +562,116 @@ TEST(AzureCatalogClientTest, ParsesToolCallingCapabilityFromHistoricalTag) {
   EXPECT_FALSE(model_infos[0].string_properties.contains(FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR));
   EXPECT_FALSE(model_infos[0].string_properties.contains(FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR));
   EXPECT_EQ(model_infos[1].int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT), 0);
+}
+
+TEST(AzureCatalogClientTest, PreservesContextLengthAndCapabilitiesFromCatalogTags) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  const char* response = R"({
+    "value": [{
+      "assetId": "azureml://registries/azureml/models/gemma-4-e2b-it-generic-cpu/versions/3",
+      "annotations": {
+        "tags": {
+          "alias": "gemma-4-e2b-it", "foundryLocal": "",
+          "contextLength": "131072", "capabilities": "reasoning,tool-calling"
+        },
+        "systemCatalogData": {"textContextWindow": null, "modelCapabilities": null}
+      },
+      "properties": {
+        "name": "gemma-4-e2b-it-generic-cpu", "version": 3,
+        "variantInfo": {"variantMetadata": {"modelType": "ONNX", "device": "cpu"}}
+      }
+    }]
+  })";
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string&) { return MakeOkResponse(response); });
+
+  const auto model_infos = client.FetchAllModelInfos();
+  ASSERT_EQ(model_infos.size(), 1u);
+  const auto& info = model_infos.front();
+  const foundry_local::ModelInfo public_info(*AsHandle<flModelInfo>(&info));
+  EXPECT_EQ(public_info.GetIntProperty(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, -1), 131072);
+  EXPECT_EQ(public_info.GetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR), "reasoning,tool-calling");
+  EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT), 1);
+  EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT), 1);
+}
+
+TEST(AzureCatalogClientTest, StructuredMetadataTakesPrecedenceOverCatalogTags) {
+  auto record = nlohmann::json::parse(R"({
+    "assetId": "azureml://registries/azureml/models/test-model/versions/1",
+    "annotations": {
+      "tags": {"contextLength": "131072", "capabilities": "reasoning,tool-calling"},
+      "systemCatalogData": {
+        "textContextWindow": 4096, "modelCapabilities": ["embedding"],
+        "supportsToolCalling": false, "supportsReasoning": false
+      }
+    },
+    "properties": {"name": "test-model", "version": 1, "variantInfo": {}}
+  })");
+
+  auto converted = CatalogModelToModelInfo(record.get<CatalogLocalModel>());
+  ASSERT_TRUE(converted.has_value());
+  EXPECT_EQ(converted->int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT), 4096);
+  EXPECT_EQ(converted->string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR), "embedding");
+  EXPECT_EQ(converted->int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT), 0);
+  EXPECT_EQ(converted->int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT), 0);
+
+  auto& system_data = record["annotations"]["systemCatalogData"];
+  system_data.erase("textContextWindow");
+  system_data["modelLimits"]["textLimits"]["inputContextWindow"] = 8192;
+  system_data["modelCapabilities"] = nlohmann::json::array();
+  converted = CatalogModelToModelInfo(record.get<CatalogLocalModel>());
+  ASSERT_TRUE(converted.has_value());
+  EXPECT_EQ(converted->int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT), 8192);
+  EXPECT_FALSE(converted->string_properties.contains(FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR));
+
+  system_data.erase("modelCapabilities");
+  converted = CatalogModelToModelInfo(record.get<CatalogLocalModel>());
+  ASSERT_TRUE(converted.has_value());
+  EXPECT_EQ(converted->string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR), "reasoning,tool-calling");
+  EXPECT_EQ(converted->int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT), 0);
+  EXPECT_EQ(converted->int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT), 0);
+
+  system_data["textContextWindow"] = 0;
+  converted = CatalogModelToModelInfo(record.get<CatalogLocalModel>());
+  ASSERT_TRUE(converted.has_value());
+  EXPECT_EQ(converted->int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT), 8192);
+}
+
+TEST(AzureCatalogClientTest, HandlesOptionalCatalogTagsWithoutDroppingModels) {
+  auto record = nlohmann::json::parse(R"({
+    "assetId": "azureml://registries/azureml/models/test-model/versions/1",
+    "annotations": {"tags": {}, "systemCatalogData": {}},
+    "properties": {"name": "test-model", "version": 1, "variantInfo": {}}
+  })");
+  auto& tags = record["annotations"]["tags"];
+  tags["capabilities"] = " reasoning, , tool-calling, ";
+  for (const auto& value : {nlohmann::json("4294967296"), nlohmann::json("9223372036854775807"),
+                            nlohmann::json(4096)}) {
+    tags["contextLength"] = value;
+    const auto converted = CatalogModelToModelInfo(record.get<CatalogLocalModel>());
+    ASSERT_TRUE(converted.has_value()) << value;
+    const auto expected = value.is_string() ? std::stoll(value.get<std::string>()) : value.get<int64_t>();
+    EXPECT_EQ(converted->int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT), expected);
+  }
+
+  for (const auto& value : {nlohmann::json(), nlohmann::json(""), nlohmann::json("0"), nlohmann::json("-1"),
+                            nlohmann::json("4096tokens"), nlohmann::json("9223372036854775808")}) {
+    tags["contextLength"] = value;
+    const auto converted = CatalogModelToModelInfo(record.get<CatalogLocalModel>());
+    ASSERT_TRUE(converted.has_value()) << value;
+    EXPECT_FALSE(converted->int_properties.contains(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT)) << value;
+    EXPECT_EQ(converted->string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR), "reasoning,tool-calling");
+  }
+
+  tags.erase("contextLength");
+  for (const auto& value : {nlohmann::json(), nlohmann::json(""), nlohmann::json(4096)}) {
+    tags["capabilities"] = value;
+    const auto converted = CatalogModelToModelInfo(record.get<CatalogLocalModel>());
+    ASSERT_TRUE(converted.has_value()) << value;
+    EXPECT_FALSE(converted->int_properties.contains(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT));
+    EXPECT_FALSE(converted->string_properties.contains(FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR));
+  }
 }
 
 TEST(AzureCatalogClientTest, PreservesMinFlVersionForCatalogLevelFiltering) {
