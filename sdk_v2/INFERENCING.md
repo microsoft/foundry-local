@@ -122,6 +122,115 @@ A **tool call** is a request from the model to your application, not an automati
 executed function. Your application runs the tool and sends a tool-result item, with
 the matching call ID, in the next request. See the [tool-calling example](cpp/examples/tool_calling/main.cc).
 
+### Image input
+
+Use an image-capable model, such as a catalog model with task `vision-language-chat`.
+Both Chat Completions and Responses accept inline images; you do not need to switch
+endpoints for vision. Typed SDK requests can carry image-file bytes directly.
+
+#### OpenAI-compatible JSON
+
+For inline JSON input, base64-encode the complete image file and prepend
+`data:<mime-type>;base64,`. For example, this Python fragment reads a PNG:
+
+```python
+import base64
+from pathlib import Path
+
+image_bytes = Path("image.png").read_bytes()
+image_url = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
+```
+
+Use the resulting `image_url` string in the appropriate request shape below.
+The placeholder represents the base64-encoded file contents, not a file path.
+Use the MIME type matching the file, such as `image/png` or `image/jpeg`.
+Do not pass raw base64 without the data URL prefix in `image_url`.
+
+For `POST /v1/chat/completions`, `image_url` is an object containing `url`:
+
+```json
+{
+  "model": "<vision-model-id>",
+  "messages": [{
+    "role": "user",
+    "content": [
+      {"type": "text", "text": "Describe this image."},
+      {"type": "image_url", "image_url": {"url": "data:image/png;base64,<base64-image-bytes>"}}
+    ]
+  }]
+}
+```
+
+For `POST /v1/responses`, `image_url` is a string in an `input_image` part:
+
+```json
+{
+  "model": "<vision-model-id>",
+  "input": [{
+    "role": "user",
+    "content": [
+      {"type": "input_text", "text": "Describe this image."},
+      {"type": "input_image", "image_url": "data:image/png;base64,<base64-image-bytes>"}
+    ]
+  }]
+}
+```
+
+Include multiple image parts in the same `content` array to send multiple images.
+
+Responses also accepts `image_data` (raw base64) with `media_type` as a Foundry Local
+extension; prefer `image_url` data URLs for OpenAI-compatible requests. Responses
+additionally accepts an absolute local path or `file://` URI in `image_url`. These
+refer to files on the **service machine**, not the HTTP caller's machine, and are
+not portable OpenAI request representations. Chat Completions accepts only data URLs
+for images.
+
+#### Typed SDK bytes or local files
+
+For native SDK requests, use an image item inside a user message alongside text.
+Pass the complete encoded PNG/JPEG file bytes, **not** base64 text or an unencoded
+pixel buffer. The format hint is a codec name such as `"png"` or `"jpeg"`, rather
+than the JSON MIME type.
+
+This Python fragment assumes `model` is an already loaded image-capable model:
+
+```python
+from pathlib import Path
+from foundry_local_sdk import (
+    ChatSession, ImageItem, MessageItem, Request, TextItem, TextItemType,
+)
+
+image_bytes = Path("image.png").read_bytes()
+with ChatSession(model) as session, Request() as request:
+    request.add_item(MessageItem.user([
+        TextItem("Describe this image."),
+        ImageItem("png", image_bytes),
+    ]))
+    with session.process_request(request) as response:
+        for item in response:
+            if isinstance(item, MessageItem):
+                print("".join(
+                    part.text for part in item.parts
+                    if isinstance(part, TextItem) and part.type is TextItemType.DEFAULT
+                ))
+```
+
+To read a local file instead, replace `ImageItem("png", image_bytes)` with
+`ImageItem.from_uri(str(Path("image.png").resolve()))`. The file must be readable by
+the application running the SDK. Typed URI input is a local-file reference, not a
+remote-image downloader.
+
+For complete setup and inference examples, see the native vision samples:
+[C++](../samples/cpp/vision/main.cc), [C#](../samples/cs/vision/Program.cs),
+[Python](../samples/python/vision/), [JavaScript](../samples/js/vision/), and
+[Rust](../samples/rust/vision/).
+
+#### Current limitations
+
+Remote HTTP(S) image fetching and image `file_id` references are not supported.
+Image input is restricted to the first conversation turn and cannot be combined
+with tool definitions. Start a new conversation to submit another image turn.
+
 ## Run a request, then stream a follow-up
 
 The examples below perform the same two-turn conversation. The first request returns

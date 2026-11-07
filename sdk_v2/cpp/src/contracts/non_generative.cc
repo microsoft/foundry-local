@@ -99,9 +99,15 @@ void from_json(const nlohmann::ordered_json& json, RankingRequest& request) {
   request.temperature = json.value("temperature", 1.0f);
   if (request.answers.empty() ||
       std::any_of(request.answers.begin(), request.answers.end(),
-                  [](const auto& answer) { return answer.empty(); })) {
+                  [](const auto& answer) {
+                    return answer.empty() ||
+                           answer.find('\0') != std::string::npos;
+                  })) {
     throw nlohmann::json::other_error::create(
-        501, "answers must be a non-empty array of non-empty strings", &json);
+        501,
+        "answers must be a non-empty array of non-empty strings without "
+        "embedded NUL bytes",
+        &json);
   }
   if (request.model.empty()) {
     throw nlohmann::json::other_error::create(501, "model must not be empty", &json);

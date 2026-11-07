@@ -17,6 +17,12 @@
 #error "foundry_local_cpp.h requires C++17 or later."
 #endif
 
+#ifdef GetMessage
+// Win32 maps GetMessage to GetMessageA/GetMessageW. The Foundry C++ API owns
+// this name and must remain independent of the consumer's Windows include order.
+#undef GetMessage
+#endif
+
 #include "foundry_local/foundry_local_c.h"
 
 #include <cassert>
@@ -1183,6 +1189,20 @@ class EmbeddingsSession : public Session {
 
   /// Convenience helper: generate L2-normalized embedding vectors for a batch of inputs.
   std::vector<std::vector<float>> Embed(const std::vector<std::string>& inputs);
+};
+
+/// Typed-decision and ranking sessions use the same JSON contracts as the
+/// corresponding Foundry Local HTTP endpoints.
+class RankingSession : public Session {
+ public:
+  explicit RankingSession(IModel& model);
+  std::string RankJson(const std::string& request_json);
+};
+
+class DecisionSession : public Session {
+ public:
+  explicit DecisionSession(IModel& model);
+  std::string DecideJson(const std::string& request_json);
 };
 
 // ===========================================================================

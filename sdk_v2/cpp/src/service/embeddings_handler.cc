@@ -124,11 +124,7 @@ class EmbeddingsHandler : public HttpRequestHandler {
         output.data.push_back(std::move(entry));
       }
 
-      // Token usage reporting is not implemented for embeddings — local inference has no
-      // token budget, and counting would require a redundant tokenizer pass per input.
-      // Clients that depend on these fields should treat zero as "not reported".
-      output.usage.prompt_tokens = 0;
-      output.usage.total_tokens = 0;
+      output.usage = EmbeddingUsage{session_response.usage.prompt_tokens, session_response.usage.total_tokens};
 
       tracker.SetStatus(ActionStatus::kSuccess);
       return JsonResponse(Status::CODE_200, nlohmann::json(output));

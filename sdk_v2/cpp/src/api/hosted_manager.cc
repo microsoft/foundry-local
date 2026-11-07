@@ -301,9 +301,19 @@ class HostedModel final : public ModelBackend {
   }
 
   std::unique_ptr<SessionBackend> CreateSession() const override {
-    const auto payload = Payload(true);
+    state_.RefreshCatalog(catalog_);
+    std::unique_ptr<LoadedSelectionReservation> reservation;
+    Json payload;
+    {
+      std::lock_guard lock(state_.selection_mutex);
+      const auto selected =
+          state_.metadata->CaptureModel(source_, &reservation);
+      payload = {{"model", EncodeModelSelection(catalog_, *selected)}};
+    }
     const auto context = state_.Connect(true);
-    const auto identity = DecodeObjectIdentity(context->Call(Operation::CreateSession, payload));
+    const auto identity = DecodeObjectIdentity(
+        context->Call(Operation::CreateSession, payload));
+    reservation->Commit();
     return CreateHostedSession(context, identity, state_.metadata);
   }
 

@@ -48,9 +48,10 @@ int64_t ParseIso8601ToUnix(const std::string& iso_str) {
   return t == static_cast<time_t>(-1) ? 0 : static_cast<int64_t>(t);
 }
 
-/// Parse a numeric string field (e.g. the catalog's string-typed "version"). Returns
+/// Parse a nonnegative integer string field (e.g. "version" or a "contextLength" tag). Returns
 /// nullopt on absence or malformed input.
-std::optional<int> ParseIntString(const std::optional<std::string>& value) {
+template <typename T>
+std::optional<T> ParseIntString(const std::optional<std::string>& value) {
   if (!value || value->empty() ||
       !std::all_of(value->begin(), value->end(), [](char character) {
         return character >= '0' && character <= '9';
@@ -58,7 +59,7 @@ std::optional<int> ParseIntString(const std::optional<std::string>& value) {
     return std::nullopt;
   }
 
-  int parsed = 0;
+  T parsed = 0;
   const auto [end, error] = std::from_chars(value->data(), value->data() + value->size(), parsed);
   if (error != std::errc{} || end != value->data() + value->size()) {
     return std::nullopt;
@@ -263,6 +264,15 @@ void from_json(const nlohmann::json& j, CatalogLocalModel& m) {
     }
     if (system_data.contains("modelCapabilities") && system_data["modelCapabilities"].is_array()) {
       m.model_capabilities = system_data["modelCapabilities"].get<std::vector<std::string>>();
+    } else if (tags.contains("capabilities") && tags["capabilities"].is_string()) {
+      std::istringstream capabilities(tags["capabilities"].get<std::string>());
+      std::string capability;
+      while (std::getline(capabilities, capability, ',')) {
+        capability = Trim(capability);
+        if (!capability.empty()) {
+          m.model_capabilities.push_back(std::move(capability));
+        }
+      }
     }
     if (system_data.contains("deploymentOptions") && system_data["deploymentOptions"].is_array()) {
       m.deployment_options = system_data["deploymentOptions"].get<std::vector<std::string>>();
@@ -398,7 +408,7 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
     return std::nullopt;
   }
 
-  const auto version = ParseIntString(cm.version);
+  const auto version = ParseIntString<int>(cm.version);
   if (!version) {
     return std::nullopt;
   }
