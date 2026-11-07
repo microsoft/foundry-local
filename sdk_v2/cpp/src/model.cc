@@ -143,8 +143,6 @@ Model::Model(Model&& other) noexcept
       local_path_(std::move(other.local_path_)),
       published_paths_(std::move(other.published_paths_)),
       external_registration_(other.external_registration_),
-      external_runtime_loaded_(other.external_runtime_loaded_.load()),
-      external_session_count_(other.external_session_count_.load()),
       download_manager_(other.download_manager_),
       model_load_manager_(other.model_load_manager_),
       variants_(std::move(other.variants_)),
@@ -169,8 +167,6 @@ Model& Model::operator=(Model&& other) noexcept {
     local_path_ = std::move(other.local_path_);
     published_paths_.splice_after(published_paths_.before_begin(), other.published_paths_);
     external_registration_ = other.external_registration_;
-    external_runtime_loaded_.store(other.external_runtime_loaded_.load());
-    external_session_count_.store(other.external_session_count_.load());
     download_manager_ = other.download_manager_;
     model_load_manager_ = other.model_load_manager_;
     variants_ = std::move(other.variants_);
