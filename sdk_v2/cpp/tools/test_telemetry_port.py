@@ -131,6 +131,9 @@ include("{portfile}")
             root = Path(temporary)
             (root / "lib").mkdir()
             (root / "lib" / "delegate.cc").write_text("", encoding="utf-8")
+            # Reproduce Darwin initialization shadowing the APPLE cache entry on every host.
+            platform_init = root / "platform-initialize.cmake"
+            platform_init.write_text("set(APPLE 1)\n", encoding="utf-8")
             (root / "lib" / "CMakeLists.txt").write_text(
                 """set(SRCS delegate.cc)
 if(BUILD_SHARED_LIBS)
@@ -152,6 +155,7 @@ file(WRITE "${CMAKE_BINARY_DIR}/definitions.txt" "${private_definitions}\\n${pub
             (root / "CMakeLists.txt").write_text(
                 """cmake_minimum_required(VERSION 3.18)
 project(TelemetryDelegateTest LANGUAGES CXX)
+set(APPLE "${TEST_APPLE}")
 add_library(matsdk_build_options INTERFACE)
 add_library(matsdk_internal_config INTERFACE)
 add_subdirectory(lib)
@@ -184,7 +188,8 @@ add_subdirectory(lib)
                             str(root),
                             "-B",
                             str(build),
-                            f"-DAPPLE={apple}",
+                            f"-DTEST_APPLE={apple}",
+                            f"-DCMAKE_PROJECT_INCLUDE={platform_init.as_posix()}",
                         ],
                         capture_output=True,
                         text=True,
