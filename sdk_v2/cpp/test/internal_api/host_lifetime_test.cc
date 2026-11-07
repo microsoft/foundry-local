@@ -271,11 +271,11 @@ TEST_F(HostLifetimeTest, ReattachmentAtOrAfterGraceDeadlineCommitsWithoutPriorPo
     ASSERT_TRUE(host.AddOwner(1, kStart));
     ASSERT_TRUE(host.RemoveOwner(1, kStart));
     EXPECT_FALSE(host.AddOwner(2, kStart + HostLifetime::kReconnectGrace + delay));
+    EXPECT_FALSE(host.AddOwner(3, kStart + 1s));
     const auto snapshot = host.Poll(kStart + HostLifetime::kReconnectGrace + delay);
     EXPECT_EQ(snapshot.state, State::kShutdownCommitted);
     EXPECT_EQ(snapshot.owner_count, 0u);
     EXPECT_FALSE(snapshot.deadline);
-    EXPECT_FALSE(host.AddOwner(3, kStart + 1s));
     EXPECT_FALSE(host.TryAdmitIpcWork(3, kStart + 1h));
     EXPECT_FALSE(host.TryAdmitHttpWork(kStart + 1h));
     EXPECT_FALSE(host.RemoveOwner(1, kStart + 1h));
