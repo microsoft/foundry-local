@@ -92,6 +92,7 @@ include(cmake/Sanitizers.cmake)
 # Dependencies via vcpkg (manifest mode)
 # --------------------------------------------------------------------------
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(jsoncons CONFIG REQUIRED)
 find_package(azure-storage-blobs-cpp CONFIG REQUIRED)
 find_package(semver CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
@@ -115,21 +116,21 @@ find_package(OnnxRuntime REQUIRED)
 
 include(CheckCXXSourceCompiles)
 set(CMAKE_REQUIRED_INCLUDES "${ORT_GENAI_HEADER_DIR}")
+set(CMAKE_REQUIRED_LIBRARIES OnnxRuntimeGenAI::OnnxRuntimeGenAI)
+unset(FOUNDRY_LOCAL_HAS_REQUIRED_NON_GENERATIVE_ORT_GENAI CACHE)
 check_cxx_source_compiles(
     "#include <ort_genai_c.h>
      int main() {
-       OgaRankingSessionHandle* ranking = nullptr;
-       OgaDecisionSessionHandle* decision = nullptr;
-       return ranking == nullptr && decision == nullptr ? 0 : 1;
+       OgaNonGenerativeSession* session = nullptr;
+       return OgaCreateNonGenerativeSession(nullptr, &session) != nullptr;
      }"
-    FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
+    FOUNDRY_LOCAL_HAS_REQUIRED_NON_GENERATIVE_ORT_GENAI
 )
 unset(CMAKE_REQUIRED_INCLUDES)
-if(FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI)
-    add_compile_definitions(FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI=1)
-    message(STATUS "ORT GenAI non-generative runtime APIs: enabled")
-else()
-    message(STATUS "ORT GenAI non-generative runtime APIs: unavailable; routes and runtime disabled")
+unset(CMAKE_REQUIRED_LIBRARIES)
+if(NOT FOUNDRY_LOCAL_HAS_REQUIRED_NON_GENERATIVE_ORT_GENAI)
+    message(FATAL_ERROR
+        "The configured ONNX Runtime GenAI headers/library do not provide the required NonGenerativeSession ABI")
 endif()
 
 # WinML EP Catalog — Windows-only, for hardware EP discovery and download. The
@@ -202,11 +203,12 @@ if(WinMLEpCatalog_FOUND)
     )
 endif()
 
-string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" FOUNDRY_LOCAL_SYSTEM_PROCESSOR)
+# CUDA/WebGPU EP bootstrappers are compiled on every non-Android platform.
+# Per-platform IsSupportedPlatform() gates runtime instantiation, so on
+# platforms without a published bundle (e.g. exotic Linux archs) the code is
+# present but inert.
 set(FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS ON)
-if(ANDROID OR
-   (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
-    NOT FOUNDRY_LOCAL_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$"))
+if(ANDROID)
     set(FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS OFF)
 endif()
 
@@ -226,6 +228,16 @@ endif()
 
 set(FOUNDRY_LOCAL_SOURCES
     src/c_api.cc
+    src/api/embedded_backend.cc
+    src/api/manager_root.cc
+    src/api/request_admission.cc
+    src/hosting/host_lifetime.cc
+    src/hosting/host_objects.cc
+    src/hosting/host_profile.cc
+    src/hosting/child_host_role.cc
+    src/hosting/bootstrap_descriptor.cc
+    src/hosting/item_codec.cc
+    src/hosting/sdk_values.cc
     src/items/item.cc
     src/items/image_item.cc
     src/items/message_item.cc
@@ -282,6 +294,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/contracts/reasoning_options.cc
     src/inferencing/generative/toolcalling/qwen_xml_tool_call_decoder.cc
     src/inferencing/generative/toolcalling/tool_call_utils.cc
+    src/inferencing/generative/toolcalling/tool_call_plan.cc
     src/inferencing/generative/toolcalling/grammar.cc
     src/inferencing/generative/chat/search_options.cc
     src/inferencing/generative/chat/stop_strings.cc
@@ -298,6 +311,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/service/embeddings_handler.cc
     src/service/chat_completions_handler.cc
     src/service/models_handlers.cc
+    src/service/request_lifetime.cc
     src/service/responses_handler.cc
     src/service/web_service.cc
     src/telemetry/telemetry.cc
@@ -330,9 +344,45 @@ if(FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI)
 endif()
 
 list(APPEND FOUNDRY_LOCAL_SOURCES
+    src/inferencing/predictive/non_generative_admission.cc
+    src/inferencing/predictive/non_generative_session.cc
+    src/inferencing/predictive/non_generative_runtime.cc
+    src/service/non_generative_handlers.cc
+)
+
+list(APPEND FOUNDRY_LOCAL_SOURCES
     src/inferencing/generative/chat/onnx_chat_engine.cc
     src/inferencing/generative/chat/onnx_engine_chat_stream.cc
 )
+
+set(FOUNDRY_LOCAL_HAS_SHARED_HOST OFF)
+set(FOUNDRY_LOCAL_HOST_RIDS win-x64 win-arm64 linux-x64 linux-arm64 osx-arm64)
+if(NOT ANDROID AND NOT IOS AND _ORT_PLATFORM IN_LIST FOUNDRY_LOCAL_HOST_RIDS)
+    set(FOUNDRY_LOCAL_HAS_SHARED_HOST ON)
+    list(APPEND FOUNDRY_LOCAL_SOURCES
+        src/api/hosted_backend.cc
+        src/api/hosted_manager.cc
+        src/hosting/ipc_channel.cc
+        src/hosting/sdk_connection.cc
+        src/hosting/host_server.cc
+        src/hosting/resident_module.cc
+        src/hosting/runtime_assets.cc
+        src/hosting/host_state.cc
+        src/hosting/host_process.cc
+        src/hosting/host_coordinator.cc
+        src/hosting/manager_dispatcher.cc
+        src/hosting/model_dispatcher.cc
+        src/hosting/session_dispatcher.cc
+    )
+    if(WIN32)
+        set(FOUNDRY_LOCAL_PROCESS_WATCH_SOURCE src/hosting/process_watch_windows.cc)
+        list(APPEND FOUNDRY_LOCAL_SOURCES src/hosting/ipc_channel_windows.cc)
+    else()
+        set(FOUNDRY_LOCAL_PROCESS_WATCH_SOURCE src/hosting/process_watch_posix.cc)
+        list(APPEND FOUNDRY_LOCAL_SOURCES src/hosting/ipc_channel_posix.cc)
+    endif()
+    list(APPEND FOUNDRY_LOCAL_SOURCES ${FOUNDRY_LOCAL_PROCESS_WATCH_SOURCE})
+endif()
 
 # 1DS bridge — always compiled for Foundry Local Core.
 list(APPEND FOUNDRY_LOCAL_SOURCES src/telemetry/one_ds_telemetry.cc)
@@ -351,6 +401,8 @@ list(APPEND FOUNDRY_LOCAL_SOURCES ${FOUNDRY_LOCAL_PUBLIC_HEADERS})
 # --------------------------------------------------------------------------
 function(foundry_local_configure_target TARGET LINK_SCOPE)
     target_compile_options(${TARGET} PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+    target_compile_definitions(${TARGET} ${LINK_SCOPE}
+        FOUNDRY_LOCAL_HAS_SHARED_HOST=$<BOOL:${FOUNDRY_LOCAL_HAS_SHARED_HOST}>)
 
     target_include_directories(${TARGET}
         PUBLIC
@@ -364,6 +416,7 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
     target_link_libraries(${TARGET}
         ${LINK_SCOPE}
             nlohmann_json::nlohmann_json
+            jsoncons::jsoncons
             Azure::azure-core
             Azure::azure-storage-blobs
             semver::semver
@@ -432,6 +485,9 @@ endfunction()
 # Generate version header from CMake project version (single source of truth)
 # --------------------------------------------------------------------------
 include(cmake/FoundryLocalVersion.cmake)
+
+include(cmake/NativeBuildIdentity.cmake)
+foundry_local_refresh_native_build_id("${CMAKE_CURRENT_SOURCE_DIR}")
 
 set(FOUNDRY_LOCAL_ORT_GENAI_VERSION "${ORT_GENAI_VERSION}")
 if(NOT FOUNDRY_LOCAL_ORT_GENAI_VERSION)
@@ -539,6 +595,43 @@ endif()
 add_library(foundry_local_static STATIC)
 target_link_libraries(foundry_local_static PUBLIC foundry_local_objects)
 target_compile_definitions(foundry_local_static PUBLIC FL_STATIC_LIBRARY=1)
+
+if(FOUNDRY_LOCAL_HAS_SHARED_HOST)
+    find_package(Threads REQUIRED)
+    add_executable(foundry-local-host
+        tools/foundry-local-host.cc
+        src/hosting/bootstrap_descriptor.cc
+        src/hosting/child_host_role.cc
+        src/hosting/host_state.cc
+        ${FOUNDRY_LOCAL_PROCESS_WATCH_SOURCE}
+        src/util/sha256.cc
+        src/exception.cc
+    )
+    target_include_directories(foundry-local-host PRIVATE include src "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    target_compile_options(foundry-local-host PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+    target_link_libraries(foundry-local-host PRIVATE nlohmann_json::nlohmann_json Threads::Threads ${CMAKE_DL_LIBS})
+    if(WIN32)
+        target_sources(foundry-local-host PRIVATE src/util/stacktrace_windows.cc)
+        target_link_libraries(foundry-local-host PRIVATE bcrypt dbghelp advapi32 shell32 ole32)
+        if(MSVC)
+            target_link_options(foundry-local-host PRIVATE /guard:cf /DYNAMICBASE)
+        endif()
+    else()
+        target_sources(foundry-local-host PRIVATE src/util/stacktrace_posix.cc)
+        target_link_libraries(foundry-local-host PRIVATE OpenSSL::Crypto)
+    endif()
+    add_custom_target(foundry-local-runtime-manifest ALL
+        COMMAND ${CMAKE_COMMAND}
+            "-DNATIVE_FILE=$<TARGET_FILE:foundry_local>"
+            "-DHOST_FILE=$<TARGET_FILE:foundry-local-host>"
+            "-DNATIVE_BUILD=${FOUNDRY_LOCAL_NATIVE_BUILD_ID}"
+            "-DRID=${_ORT_PLATFORM}"
+            "-DOUTPUT_FILE=$<TARGET_FILE_DIR:foundry_local>/foundry-local-runtime.json"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/WriteHostManifest.cmake"
+        DEPENDS foundry_local foundry-local-host
+        VERBATIM
+    )
+endif()
 
 # --------------------------------------------------------------------------
 # Copy ORT and ORT GenAI runtime libraries to the output directory.
@@ -682,10 +775,8 @@ if(FOUNDRY_LOCAL_BUILD_EXAMPLES)
     set_target_properties(tool_calling_example PROPERTIES FOLDER "Examples")
     set_target_properties(realtime_audio_example PROPERTIES FOLDER "Examples")
     set_target_properties(embeddings_example PROPERTIES FOLDER "Examples")
-    if(FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI)
-        add_subdirectory(examples/kev_decision)
-        set_target_properties(kev_decision_example PROPERTIES FOLDER "Examples")
-    endif()
+    add_subdirectory(examples/kev_decision)
+    set_target_properties(kev_decision_example PROPERTIES FOLDER "Examples")
 
     # On Linux, GenAI does dlopen("libonnxruntime.so") internally. Modern GCC
     # emits RUNPATH which doesn't propagate to transitive dlopen calls.
@@ -695,8 +786,6 @@ if(FOUNDRY_LOCAL_BUILD_EXAMPLES)
         target_link_options(tool_calling_example PRIVATE -Wl,--disable-new-dtags)
         target_link_options(realtime_audio_example PRIVATE -Wl,--disable-new-dtags)
         target_link_options(embeddings_example PRIVATE -Wl,--disable-new-dtags)
-        if(FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI)
-            target_link_options(kev_decision_example PRIVATE -Wl,--disable-new-dtags)
-        endif()
+        target_link_options(kev_decision_example PRIVATE -Wl,--disable-new-dtags)
     endif()
 endif()

@@ -8,7 +8,7 @@ use std::io::{self, Write};
 
 use foundry_local_sdk::{
     ChatSession, FoundryLocalConfig, FoundryLocalError, FoundryLocalManager, Item, MessageRole,
-    Request,
+    Request, TextKind,
 };
 use tokio_stream::StreamExt;
 
@@ -50,7 +50,21 @@ async fn main() -> Result<()> {
 
     println!("\n--- Synchronous request ---");
     let response = session.process_request(request).await?;
-    println!("Assistant: {}", response.text());
+    print!("Assistant: ");
+    for item in &response.items {
+        if let Item::Message(message) = item {
+            for part in &message.content {
+                if let Item::Text {
+                    text,
+                    kind: TextKind::Default,
+                } = part
+                {
+                    print!("{text}");
+                }
+            }
+        }
+    }
+    println!();
     println!(
         "(finish: {:?}, tokens: {} prompt + {} completion)",
         response.finish_reason, response.usage.prompt_tokens, response.usage.completion_tokens
@@ -66,7 +80,11 @@ async fn main() -> Result<()> {
     print!("Assistant: ");
     let mut stream = session.process_streaming_request(streaming);
     while let Some(item) = stream.next().await {
-        if let Some(text) = item?.as_text() {
+        if let Item::Text {
+            text,
+            kind: TextKind::Default,
+        } = item?
+        {
             print!("{text}");
             io::stdout().flush().ok();
         }

@@ -1,19 +1,36 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
 
-  <!-- Transitive version: ensures consuming apps (not just the direct reference) also
-       get the foundry_local native binary copied to their output directory. -->
+  <!-- Transitive version: preserves consuming apps' RID selection. Portable projects use
+       NuGet's runtimes/<rid>/native layout; explicit RIDs copy assets to the root. -->
 
-  <PropertyGroup Condition="'$(RuntimeIdentifier)' == ''">
-    <RuntimeIdentifier>$(NETCoreSdkRuntimeIdentifier)</RuntimeIdentifier>
+  <PropertyGroup>
+    <FoundryLocalRuntimePath Condition="'$(FoundryLocalRuntimePath)' == ''">$(MSBuildThisFileDirectory)..\runtimes</FoundryLocalRuntimePath>
   </PropertyGroup>
 
   <ItemGroup Condition="Exists('$(FoundryLocalRuntimePath)\$(RuntimeIdentifier)\native')">
-    <Content Include="$(FoundryLocalRuntimePath)\$(RuntimeIdentifier)\native\*.*">
+    <Content Include="$(FoundryLocalRuntimePath)\$(RuntimeIdentifier)\native\*">
       <Link>%(Filename)%(Extension)</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
       <Visible>false</Visible>
     </Content>
   </ItemGroup>
+
+  <Target Name="MakeFoundryLocalHostExecutable"
+          AfterTargets="CopyFilesToOutputDirectory;Publish"
+          Condition="'$(OS)' != 'Windows_NT'">
+    <ItemGroup>
+      <_FoundryLocalHostExecutable Include="$(TargetDir)foundry-local-host"
+                                  Condition="Exists('$(TargetDir)foundry-local-host')" />
+      <_FoundryLocalHostExecutable Include="$(TargetDir)runtimes/*/native/foundry-local-host" />
+      <_FoundryLocalHostExecutable Include="$(PublishDir)foundry-local-host"
+                                  Condition="'$(PublishDir)' != '' and Exists('$(PublishDir)foundry-local-host')" />
+      <_FoundryLocalHostExecutable Include="$(PublishDir)runtimes/*/native/foundry-local-host"
+                                  Condition="'$(PublishDir)' != ''" />
+    </ItemGroup>
+    <Exec Command="chmod u+x &quot;%(_FoundryLocalHostExecutable.Identity)&quot;"
+          Condition="'@(_FoundryLocalHostExecutable)' != ''" />
+  </Target>
 
 </Project>

@@ -52,6 +52,20 @@ TEST(ModelIOInfoTest, ChatCompletion_ReturnsMessageAndOpenAIJsonOutputs) {
   EXPECT_EQ(static_cast<const TextItem*>(io.outputs[1])->text_type, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON);
 }
 
+TEST(ModelIOInfoTest, Coding_ReturnsTextChatInputsAndOutputs) {
+  auto model = MakeModelWithTask("coding");
+  const auto io = model.GetInputOutputInfo();
+
+  ASSERT_EQ(io.num_inputs, 2u);
+  EXPECT_EQ(io.inputs[0]->type, FOUNDRY_LOCAL_ITEM_MESSAGE);
+  EXPECT_EQ(io.inputs[1]->type, FOUNDRY_LOCAL_ITEM_TEXT);
+  EXPECT_EQ(static_cast<const TextItem*>(io.inputs[1])->text_type, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON);
+  ASSERT_EQ(io.num_outputs, 2u);
+  EXPECT_EQ(io.outputs[0]->type, FOUNDRY_LOCAL_ITEM_MESSAGE);
+  EXPECT_EQ(io.outputs[1]->type, FOUNDRY_LOCAL_ITEM_TEXT);
+  EXPECT_EQ(static_cast<const TextItem*>(io.outputs[1])->text_type, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON);
+}
+
 // ========================================================================
 // Vision-language-chat task
 // ========================================================================

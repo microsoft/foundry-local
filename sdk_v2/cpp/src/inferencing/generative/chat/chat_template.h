@@ -6,6 +6,7 @@
 #include "items/message_item.h"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -93,6 +94,10 @@ std::string RenderMessageForPrompt(const MessageItem& msg);
 /// the events actually happened in.
 std::string BuildChatMessagesJson(const std::vector<TranscriptMessage>& messages,
                                   bool preserve_reasoning_history = false);
+
+std::string BuildCanonicalToolMessagesJson(const std::vector<TranscriptMessage>& messages,
+                                           const ToolCallContext& tool_ctx,
+                                           const std::function<std::string(std::string)>& protect_literal = {});
 
 /// Build a chat prompt string from the transcript messages of a conversation.
 /// Uses the tokenizer's built-in chat template (via GenAIModelInstance::ApplyChatTemplate).

@@ -1,51 +1,37 @@
-# 🚀 Foundry Local JavaScript Samples
+# Foundry Local JavaScript samples
 
-These samples demonstrate how to use the Foundry Local JavaScript SDK (`foundry-local-sdk`) with Node.js.
+These seven samples use the published `foundry-local-sdk` **2.2.1** package and run on Node.js 20 or later.
+
+| Sample | What it demonstrates |
+| --- | --- |
+| [hello-world](hello-world/) | Discover execution providers, select/download/load a model, and run native `ChatSession` inference. |
+| [realtime-transcription](realtime-transcription/) | Stream raw PCM audio through `ItemQueue` to a native `AudioSession`. |
+| [embeddings](embeddings/) | Generate native text embeddings with `EmbeddingsSession`. |
+| [tool-calling](tool-calling/) | Register a native chat tool, execute a returned `ToolCallItem`, and submit a `ToolResultItem`. |
+| [web-server](web-server/) | Start the built-in server, discover its URL, and call its OpenAI-compatible endpoint. |
+| [vision](vision/) | Send text and a local image to a native `ChatSession`. |
+| [byom](byom/) | Register existing model assets in the local catalog and run native chat. |
+
+> [!IMPORTANT]
+> Every sample pins [`foundry-local-sdk` from npm](https://www.npmjs.com/package/foundry-local-sdk/v/2.2.1) to 2.2.1.
+> Installation supplies the native runtime; no local SDK source build is required. See the
+> [get-started documentation](https://learn.microsoft.com/en-us/azure/foundry-local/get-started) for versioned setup
+> guidance and additional examples.
 
 ## Prerequisites
 
-- [Node.js](https://nodejs.org/) (v18 or later recommended)
+- Node.js 20 or later
+- Native Foundry Local prerequisites for your platform
+- Network access for execution-provider and model downloads when they are not already cached
 
-## Samples
+Install and run any sample:
 
-| Sample | Description |
-|--------|-------------|
-| [native-chat-completions](native-chat-completions/) | Initialize the SDK, download a model, and run non-streaming and streaming chat completions. |
-| [embeddings](embeddings/) | Generate single and batch text embeddings using the Foundry Local SDK. |
-| [audio-transcription-example](audio-transcription-example/) | Transcribe audio files using the Whisper model with streaming output. |
-| [chat-and-audio-foundry-local](chat-and-audio-foundry-local/) | Unified sample demonstrating both chat and audio transcription in one application. |
-| [electron-chat-application](electron-chat-application/) | Full-featured Electron desktop chat app with voice transcription and model management. |
-| [copilot-sdk-foundry-local](copilot-sdk-foundry-local/) | GitHub Copilot SDK integration with Foundry Local for agentic AI workflows. |
-| [langchain-integration-example](langchain-integration-example/) | LangChain.js integration for building text generation chains. |
-| [tool-calling-foundry-local](tool-calling-foundry-local/) | Tool calling with custom function definitions and streaming responses. |
-| [web-server-example](web-server-example/) | Start a local OpenAI-compatible web server and call it with the OpenAI SDK. |
-| [web-server-responses-vision-example](web-server-responses-vision-example/) | Stream a vision (image understanding) response from the local web server using the Responses API. |
-| [tutorial-chat-assistant](tutorial-chat-assistant/) | Build an interactive multi-turn chat assistant (tutorial). |
-| [tutorial-document-summarizer](tutorial-document-summarizer/) | Summarize documents with AI (tutorial). |
-| [tutorial-tool-calling](tutorial-tool-calling/) | Create a tool-calling assistant (tutorial). |
-| [tutorial-voice-to-text](tutorial-voice-to-text/) | Transcribe and summarize audio (tutorial). |
+```bash
+cd samples/js/hello-world
+npm install
+npm start
+```
 
-## Running a Sample
-
-1. Clone the repository:
-
-   ```bash
-   git clone https://github.com/microsoft/Foundry-Local.git
-   cd Foundry-Local/samples/js
-   ```
-
-1. Navigate to a sample and install dependencies:
-
-   ```bash
-   cd native-chat-completions
-   npm install
-   ```
-
-1. Run the sample:
-
-   ```bash
-   npm start
-   ```
-
-> [!TIP]
-> Each sample's `package.json` includes the single `foundry-local-sdk` package. On **Windows**, it bundles WinML hardware acceleration automatically. Just run `npm install` — no separate package or flag is needed.
+Samples that accept an optional model alias document it in their own README. The tool-calling sample intentionally
+uses `qwen2.5-0.5b`, whose current catalog variants publish the metadata required by structured tool calling. The
+non-web samples invoke the native in-process session APIs; only `web-server` starts the built-in HTTP service.

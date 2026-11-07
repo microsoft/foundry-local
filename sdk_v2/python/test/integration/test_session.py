@@ -46,6 +46,28 @@ def _short_request() -> Request:
 
 
 class TestProcessRequest:
+    @pytest.mark.parametrize("cancel_before_start", [False, True])
+    def test_cancellation_event_stops_inference_and_allows_request_reuse(
+        self, chat_session, cancel_before_start, cancel_on_native_processing
+    ):
+        from foundry_local_sdk.exception import FoundryLocalException
+
+        event = cancel_on_native_processing
+        with Request() as request:
+            request.add_item(MessageItem.user("Count from 1 to 10000, writing every integer on its own line."))
+            request.set_options(RequestOptions(search=SearchOptions(max_output_tokens=256, temperature=0)))
+            if cancel_before_start:
+                event.set()
+            turns_before = chat_session.turn_count
+            with pytest.raises(FoundryLocalException) as error:
+                chat_session.process_request(request, cancel_event=event)
+            assert error.value.error_code == 5
+            assert chat_session.turn_count == turns_before
+
+            request.set_options(RequestOptions(search=SearchOptions(max_output_tokens=8, temperature=0)))
+            with chat_session.process_request(request) as response:
+                assert response.get_usage().completion_tokens > 0
+
     def test_returns_response(self, chat_session):
         resp = chat_session.process_request(_short_request())
         assert isinstance(resp, Response)

@@ -2,10 +2,20 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "telemetry/telemetry_redaction.h"
+
 #include <array>
 #include <string>
+#include <string_view>
 
 namespace fl::TelemetryInternal {
+
+template <typename Logger>
+void SetCommonEventIdentity(Logger& logger, std::string_view app_name, std::string_view hashed_device_id) {
+  logger.SetContext("AppName", SanitizeTelemetryValue(app_name));
+  logger.SetContext("deviceId", hashed_device_id.empty() ? std::string{"Unavailable"}
+                                                         : SanitizeTelemetryValue(hashed_device_id));
+}
 
 inline constexpr std::array<const char*, 4> kSuppressedCommonContextFields{
     "AppInfo.Language",

@@ -31,7 +31,6 @@ struct RankingRequest {
   float temperature{1.0f};
 };
 
-void from_json(const nlohmann::ordered_json& json, NonGenerativeQuestion& question);
 void from_json(const nlohmann::ordered_json& json, NonGenerativeRequest& request);
 void from_json(const nlohmann::ordered_json& json, RankingRequest& request);
 

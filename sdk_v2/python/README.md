@@ -2,6 +2,9 @@
 
 The Foundry Local Python SDK is a native Python binding for the Foundry Local C++ SDK. It lets you discover, download, load, and run inference against local AI models — chat completions (streaming and non-streaming), tool calling, embeddings, and audio transcription — directly in-process via a [cffi](https://cffi.readthedocs.io/) binding to the Foundry Local native library. No separate service, no HTTP hop.
 
+For an introduction to models, sessions, requests, responses, items, and streaming input
+and output, see [Inference with the Foundry Local SDK](../INFERENCING.md).
+
 ## Features
 
 - **Model Catalog and BYOM** – browse the public catalog or register existing local model assets without copying them
@@ -69,7 +72,8 @@ foundry-local-install
 ## Requirements
 
 - Python 3.11 or newer (single `cp311-abi3` wheel works on every CPython ≥ 3.11)
-- Windows (x64), Linux (x64), or macOS (arm64)
+- Windows (x64), Linux (x64 or ARM64), or macOS (arm64)
+- Linux: glibc 2.28 or newer on x64; glibc 2.34 or newer on ARM64, including CPU-only usage
 
 ## Quick start
 
@@ -144,6 +148,25 @@ FoundryLocalManager.initialize(config)
 manager = FoundryLocalManager.instance
 ```
 
+### Native shared hosting
+
+Set `use_shared_host=True` on `Configuration` to route existing model/session APIs through the native host included
+in the wheel. The default remains in-process. Metadata, discovery and model downloads do not start the host;
+execution, cache removal, EP download/registration or `manager.start_web_service()` starts or joins it. Clients must
+match the Foundry native build, IPC protocol, platform and effective catalog, data/cache, provider, web, logs
+directory/level, telemetry and additional settings other than `UserAgent`. Dependency hashes and packaging paths do
+not split hosts; the first starter's verified runtime serves all clients. Shared hosting cannot be combined with
+`web.external_url`, and never silently falls back to in-process execution.
+
+`manager.close()` releases only this client. After the final owner, the host drains admitted work, allows a
+five-second reconnect grace and exits normally. Keep the manager alive while using its HTTP endpoint; HTTP
+connections are not owners. Explicit model unload stays shared and rejects in-use models. Web-service Stop rejects
+other owners or active HTTP work.
+
+The read-only `manager.urls` property observes listeners without starting the service and rejects access after
+`close()`. See the [shared-host requirements](../cpp/README.md#quick-start) for inherited environment/cwd and Linux
+prerequisites.
+
 ### Discovering models
 
 ```python
@@ -168,7 +191,10 @@ loaded = catalog.get_loaded_models()
 Use the local catalog to register an existing ONNX Runtime GenAI model directory. Registration does not copy,
 download, or take ownership of the model assets. The directory must contain `genai_config.json`, and the model ID
 must use the canonical `<name>:<version>` format. The `task` metadata property is required and must be one of
-`chat-completion`, `vision-language-chat`, `embeddings`, or `automatic-speech-recognition`.
+`chat-completion`, `coding`, `vision-language-chat`, `embeddings`, or `automatic-speech-recognition`.
+
+`coding` models use the existing text-only `ChatSession` interface. See
+[coding models](../INFERENCING.md#coding-models) for capability and compatibility details.
 
 ```python
 from foundry_local_sdk import CatalogType, ModelInfoBuilder
@@ -178,7 +204,6 @@ local_catalog = manager.get_catalog(CatalogType.LOCAL)
 with ModelInfoBuilder() as metadata:
     metadata.set_string_property("task", "chat-completion")
     metadata.set_string_property("display_name", "My Local Model")
-    metadata.set_int_property("context_length", 4096)
     model = local_catalog.register_model(
         model_path="/path/to/model-directory",
         model_id="my-model-generic-cpu:1",
@@ -416,7 +441,9 @@ model.unload()
 
 ### Audio transcription
 
-`AudioSession` accepts `AudioItem` input (PCM bytes + sample rate / channels) and produces `TextItem` output. See [`samples/python/audio-transcription/`](https://github.com/microsoft/Foundry-Local/tree/main/samples/python/audio-transcription) and [`live-audio-transcription/`](https://github.com/microsoft/Foundry-Local/tree/main/samples/python/live-audio-transcription) for runnable end-to-end examples covering offline files and live PCM streaming through an `ItemQueue`.
+`AudioSession` accepts `AudioItem` input (PCM bytes + sample rate / channels) and produces `TextItem` output. See
+[`samples/python/realtime-transcription/`](https://github.com/microsoft/Foundry-Local/tree/main/samples/python/realtime-transcription)
+for a runnable live PCM streaming example.
 
 ### Web service (optional)
 
@@ -455,16 +482,25 @@ All sessions wrap a native `flSession*` and are context managers. Closing a sess
 | Class | Description |
 |---|---|
 | `Session` | Abstract base class. Provides `process_request`, `process_streaming_request`, `set_options`, `set_streaming`, and the context-manager / `_close` lifecycle. |
-| `ChatSession` | For `chat-completion` and `vision-language-chat` models. Adds function/custom tool registration, removal, `turn_count`, and `undo_turns`. |
+| `ChatSession` | For `chat-completion`, `coding`, and `vision-language-chat` models. Adds function/custom tool registration, removal, `turn_count`, and `undo_turns`. |
 | `EmbeddingsSession` | For `embeddings` models. Stateless — accepts `TextItem` inputs, returns one `TensorItem` per input. |
 | `AudioSession` | For `automatic-speech-recognition` models. Accepts `AudioItem` input (and `ItemQueue` for live streaming), returns `TextItem`. |
 
 Common session methods:
 
-- `process_request(request) -> Response` — run synchronously, return the full response.
-- `process_streaming_request(request) -> Iterator[Item]` — yield items as the model produces them. Requires `set_streaming(True)` first. Abandoning the iterator (`break`, exception, `gen.close()`) automatically cancels the request and joins the worker thread.
+- `process_request(request, *, cancel_event=None) -> Response` — run synchronously, return the full response.
+- `process_streaming_request(request, *, cancel_event=None) -> StreamingResponse` — yield items as the model produces them. Requires `set_streaming(True)` first. Abandoning the iterator (`break`, exception, `gen.close()`) automatically cancels the request and joins the worker thread.
 - `set_options(RequestOptions)` — apply session-level inference parameters (typed `SearchOptions` for sampling, optional `tool_choice`, and `additional_options` for passthrough).
 - `set_streaming(enabled)` — install or remove the native streaming callback.
+
+Pass a `threading.Event` as `cancel_event` and set it from another thread to cancel inference. A pre-set event
+prevents submission. Cancellation also interrupts waits for a busy session or request without canceling its current
+owner. Cancellation raises `FoundryLocalException` with `error_code == 5`; native completion may win the race and
+return normally. The compatibility chat, audio, and embedding methods accept the same keyword argument.
+Cancellation helpers stop before the call returns, so the request can be reused without a late cancellation.
+Cancellation is cooperative: native generator construction and an individual embedding forward pass may not be
+interruptible. Cancellation and cleanup (including closing a stream or session) wait for native processing to exit;
+the event is not a hard execution deadline.
 
 ### Requests and responses
 

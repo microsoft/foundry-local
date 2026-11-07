@@ -7,8 +7,11 @@
 #include <filesystem>
 #include <functional>
 #include <mutex>
+#include <string_view>
 
 namespace fl {
+
+struct GenAIConfig;
 
 /// Mutable, persistent catalog for models registered from arbitrary local directories.
 class LocalModelCatalog final : public BaseModelCatalog {
@@ -32,7 +35,8 @@ class LocalModelCatalog final : public BaseModelCatalog {
 
  private:
   ModelInfo ResolveMetadata(const ModelInfo& metadata, const std::string& model_id,
-                            const std::string& name, int version) const;
+                            const std::string& name, int version, const GenAIConfig& genai_config,
+                            std::string_view alias_override) const;
   std::vector<Registration> LoadRegistrations() const;
   void SaveRegistrations(const std::vector<Registration>& registrations) const;
   Model CreateModel(const Registration& registration) const;

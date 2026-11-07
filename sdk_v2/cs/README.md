@@ -2,6 +2,9 @@
 
 The Foundry Local C# SDK provides a .NET interface for running AI models locally via the Foundry Local Core. Discover, download, load, and run inference entirely on your own machine — no cloud required.
 
+For the v2 inference concepts and typed, stateful session examples, see
+[Inference with the Foundry Local SDK](../INFERENCING.md).
+
 ## Features
 
 - **Model catalog** — browse and search all available models; filter by cached or loaded state
@@ -193,6 +196,9 @@ await localCatalog.UnregisterModelAsync(model.Id);
 ```
 
 Calling `GetCatalogAsync()` without a `CatalogType` remains equivalent to requesting `CatalogType.Public`.
+
+Models registered with task `coding` use the existing text-only `ChatSession` interface. See
+[coding models](../INFERENCING.md#coding-models) for capability and compatibility details.
 
 ### Model Lifecycle
 
@@ -440,7 +446,33 @@ await FoundryLocalManager.Instance.StopWebServiceAsync();
 | `LogsDir` | `string?` | `{AppDataDir}/logs` | Log output directory |
 | `LogLevel` | `LogLevel` | `Warning` | `Verbose`, `Debug`, `Information`, `Warning`, `Error`, `Fatal` |
 | `Web` | `WebService?` | `null` | Web service configuration (see below) |
+| `UseSharedHost` | `bool` | `false` | Route existing model/session APIs through the packaged native shared host |
 | `AdditionalSettings` | `IDictionary<string, string>?` | `null` | Extra key-value settings passed to Core |
+
+With `UseSharedHost = true`, execution, cache removal, EP download/registration or web-service Start lazily starts
+or joins a compatible host; metadata, discovery and model downloads do not start it. Clients must match the Foundry
+native build, IPC protocol, platform and effective catalog, data/cache, provider, web, logs directory/level, telemetry
+and additional settings other than `UserAgent`. Dependency hashes and packaging paths do not split hosts; the first
+starter's verified runtime serves all clients. Hosted mode does not fall back to in-process execution and cannot be
+combined with an external web-service URL.
+
+Manager shutdown/disposal releases only this client. After the final owner, the host drains admitted work, allows
+a five-second reconnect grace and exits normally. Retain the manager while using HTTP: a connection pool is not an
+owner. Explicit model unload is shared and rejects in-use models. Web-service Stop rejects other owners or HTTP work.
+
+`Urls` observes listeners without starting the service, returns `null` when none are running, and throws
+`ObjectDisposedException` after disposal. See the [shared-host requirements](../cpp/README.md#quick-start) for inherited
+environment/cwd and Linux prerequisites.
+
+**Logging**
+
+The `ILogger` passed to `FoundryLocalManager.CreateAsync` controls managed SDK diagnostics,
+including native library resolution. Successful library loads are logged at `Debug`; failed
+preload attempts are logged at `Warning`. Use `NullLogger.Instance` to discard managed SDK
+logs. The SDK does not write these diagnostics directly to the console or `Trace`.
+
+`Configuration.LogLevel` and `LogsDir` separately control the native Core log level and log
+directory; they do not configure the supplied `ILogger`.
 
 **`Configuration.WebService`**
 

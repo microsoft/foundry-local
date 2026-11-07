@@ -35,6 +35,7 @@ const PLATFORM_MAP = {
 
 const DEFAULT_FEEDS = [
   "https://api.nuget.org/v3/index.json",
+  "https://packagefeedproxy.microsoft.io/nuget/v3/index.json",
   "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json",
 ];
 
@@ -625,6 +626,7 @@ module.exports = {
   // http mode
   downloadWithRetryAndRedirects,
   nativeEntriesForRid,
+  runHttpMode,
   // dotnet mode
   generateRestoreProjectXml,
   buildDotnetRestoreArgs,

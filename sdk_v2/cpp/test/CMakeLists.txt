@@ -1,7 +1,30 @@
 # Copyright (c) Microsoft. All rights reserved.
 
-if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+include("${CMAKE_CURRENT_SOURCE_DIR}/telemetry-shutdown-tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/nanoarrow-consumer-tests.cmake")
+
+if(NOT CMAKE_CROSSCOMPILING AND NOT ANDROID AND NOT IOS)
+    add_executable(sdk-dependency-probe ../tools/sdk-dependency-probe.cc)
+    target_include_directories(sdk-dependency-probe PRIVATE ../include)
+    target_compile_options(sdk-dependency-probe PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+    target_link_libraries(sdk-dependency-probe PRIVATE ${CMAKE_DL_LIBS})
+
+    add_executable(cpp-api-v2-compatibility cpp-api-v2-compatibility.cc)
+    target_include_directories(cpp-api-v2-compatibility PRIVATE ../include)
+    target_compile_definitions(cpp-api-v2-compatibility PRIVATE FL_STATIC_LIBRARY)
+    target_compile_options(cpp-api-v2-compatibility PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+    set_target_properties(cpp-api-v2-compatibility PROPERTIES CXX_STANDARD 17)
+    add_test(NAME cpp-api-v2-compatibility COMMAND cpp-api-v2-compatibility)
+endif()
+
+if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux" OR
+   (NOT CMAKE_CROSSCOMPILING AND NOT ANDROID AND NOT IOS))
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+endif()
+
+if(NOT CMAKE_CROSSCOMPILING AND NOT ANDROID AND NOT IOS)
+    add_test(NAME TelemetryPortPolicy
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../tools/test_telemetry_port.py)
 endif()
 
 if(APPLE)
@@ -63,6 +86,8 @@ endif()
 # ==========================================================================
 add_executable(foundry_local_tests
     test_main.cc
+    internal_api/api_backend_test.cc
+    internal_api/request_admission_test.cc
     internal_api/audio/audio_session_test.cc
     internal_api/audio/audio_transcription_contract_test.cc
     internal_api/audio/pcm_utils_test.cc
@@ -98,7 +123,11 @@ add_executable(foundry_local_tests
     internal_api/http_ca_bundle_test.cc
     internal_api/http_download_test.cc
     internal_api/http_retry_test.cc
+    internal_api/host_lifetime_test.cc
+    internal_api/host_profile_test.cc
     internal_api/item_test.cc
+    internal_api/item_codec_test.cc
+    internal_api/sdk_values_test.cc
     internal_api/local_model_catalog_test.cc
     internal_api/local_model_scanner_test.cc
     internal_api/model_info_test.cc
@@ -128,6 +157,9 @@ add_executable(foundry_local_tests
     internal_api/toolcalling/tool_call_stream_accumulator_test.cc
     internal_api/toolcalling/raw_envelope_detector_test.cc
     internal_api/toolcalling/tool_call_utils_test.cc
+    internal_api/toolcalling/tool_call_plan_test.cc
+    internal_api/toolcalling/json_tool_call_payload_parser_test.cc
+    internal_api/toolcalling/tool_call_recovery_checkpoint_test.cc
     internal_api/toolcalling/custom_tools_chat_test.cc
     internal_api/toolcalling/custom_tools_responses_test.cc
     internal_api/toolcalling/tool_definition_abi_test.cc
@@ -140,10 +172,15 @@ add_executable(foundry_local_tests
     internal_api/zip_extract_test.cc
 )
 
-if(FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI AND FOUNDRY_LOCAL_BUILD_SERVICE)
+if(FOUNDRY_LOCAL_BUILD_SERVICE)
     target_sources(foundry_local_tests PRIVATE
         internal_api/non_generative_runtime_test.cc
     )
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    target_sources(foundry_local_tests PRIVATE internal_api/telemetry_test.rc)
+    target_compile_definitions(foundry_local_tests PRIVATE FOUNDRY_LOCAL_TEST_HOST_VERSION_RESOURCE=1)
 endif()
 
 if(FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS)
@@ -155,11 +192,42 @@ if(FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS)
     )
 endif()
 
+if(FOUNDRY_LOCAL_HAS_SHARED_HOST)
+    target_sources(foundry_local_tests PRIVATE
+        internal_api/host_server_test.cc
+        internal_api/host_state_test.cc
+        internal_api/child_host_role_test.cc
+        internal_api/bootstrap_descriptor_test.cc
+        internal_api/ipc_channel_test.cc
+        internal_api/process_watch_test.cc
+        internal_api/sdk_connection_test.cc
+        internal_api/sdk_session_test.cc
+    )
+    add_executable(hosting_process_fixture
+        hosting_process_fixture.cc
+        "${PROJECT_SOURCE_DIR}/${FOUNDRY_LOCAL_PROCESS_WATCH_SOURCE}"
+    )
+    target_include_directories(hosting_process_fixture PRIVATE ../src)
+    target_compile_options(hosting_process_fixture PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+    target_compile_definitions(foundry_local_tests PRIVATE
+        FOUNDRY_PROCESS_FIXTURE_PATH="$<TARGET_FILE:hosting_process_fixture>"
+    )
+    set_source_files_properties(internal_api/bootstrap_descriptor_test.cc PROPERTIES COMPILE_DEFINITIONS
+        "FOUNDRY_HOST_EXECUTABLE=\"$<TARGET_FILE:foundry-local-host>\";FOUNDRY_NATIVE_RUNTIME_DIR=\"$<TARGET_FILE_DIR:foundry_local>\"")
+    add_dependencies(foundry_local_tests hosting_process_fixture foundry-local-runtime-manifest)
+endif()
+
 target_sources(foundry_local_tests PRIVATE
     internal_api/chat/dynamic_engine_chat_test.cc
 )
 
 target_compile_options(foundry_local_tests PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+target_compile_definitions(foundry_local_tests PRIVATE
+    FOUNDRY_LOCAL_TEST_SCRATCH_DIR="${PROJECT_SOURCE_DIR}/build/TestResults"
+)
+if(MSVC)
+    target_compile_options(foundry_local_tests PRIVATE /bigobj)
+endif()
 
 target_link_libraries(foundry_local_tests
     PRIVATE
@@ -193,6 +261,14 @@ target_include_directories(foundry_local_tests
         ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
+if(NOT CMAKE_CROSSCOMPILING)
+    add_executable(benchmark-download ../tools/benchmark-download.cc)
+    target_include_directories(benchmark-download PRIVATE ../src)
+    target_compile_options(benchmark-download PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+    target_link_libraries(benchmark-download PRIVATE foundry_local_static)
+    add_dependencies(benchmark-download foundry_local)
+endif()
+
 add_custom_command(TARGET foundry_local_tests POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_CURRENT_SOURCE_DIR}/testdata
@@ -214,15 +290,76 @@ else()
 endif()
 
 include(GoogleTest)
+if(WIN32)
+    # Real DLL imports exercise Windows' dependency search and handle lifetime without CUDA or a GPU.
+    add_library(loader-test-dependency SHARED windows_loader/dependency.cc)
+    set_target_properties(loader-test-dependency PROPERTIES
+        OUTPUT_NAME foundry_loader_test_dependency
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/loader-fixtures/dependency")
+    add_library(loader-test-library SHARED windows_loader/library.cc)
+    target_link_libraries(loader-test-library PRIVATE loader-test-dependency)
+    set_target_properties(loader-test-library PROPERTIES
+        OUTPUT_NAME foundry_loader_test_library
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/loader-fixtures/library")
+
+    add_executable(windows-dynlib-loader-tests
+        internal_api/windows_dynlib_loader_test.cc
+        ../src/platform/windows/dynlib_loader.cc)
+    target_include_directories(windows-dynlib-loader-tests PRIVATE ../src .)
+    target_compile_options(windows-dynlib-loader-tests PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+    target_link_libraries(windows-dynlib-loader-tests PRIVATE GTest::gtest_main fmt::fmt)
+    target_compile_definitions(windows-dynlib-loader-tests PRIVATE
+        FOUNDRY_TEST_LOADER_LIBRARY="$<TARGET_FILE:loader-test-library>"
+        FOUNDRY_TEST_LOADER_DEPENDENCY="$<TARGET_FILE:loader-test-dependency>")
+    add_dependencies(windows-dynlib-loader-tests loader-test-library)
+    gtest_discover_tests(windows-dynlib-loader-tests
+        DISCOVERY_MODE PRE_TEST
+        PROPERTIES RUN_SERIAL TRUE)
+endif()
+
+# Only these in-memory suites may overlap. Model, host, filesystem, and newly
+# added suites remain serial even when CI sets CTEST_PARALLEL_LEVEL.
+set(foundry_parallel_suites
+    RawEnvelopeDetectorTest
+    QwenXmlToolCallAccumulatorTest
+    ToolCallStreamAccumulatorTest
+    ReasoningStreamSplitterTest
+    PromptOpensReasoningTest
+    ResolveMarkerTokenIdsTest
+)
+list(TRANSFORM foundry_parallel_suites APPEND ".*")
+list(JOIN foundry_parallel_suites ":" foundry_parallel_filter)
+
 # DISCOVERY_TIMEOUT defaults to 5s, which is not enough for the Windows build:
 # foundry_local.dll links against Microsoft.Windows.AI.MachineLearning.dll
 # (delay-loaded) plus standalone ORT, and process startup + gtest enumeration
 # can exceed 5s on cold caches or slow CI agents. Bump to 60s for headroom.
-gtest_discover_tests(foundry_local_tests
-    WORKING_DIRECTORY $<TARGET_FILE_DIR:foundry_local_tests>
-    DISCOVERY_MODE PRE_TEST
-    DISCOVERY_TIMEOUT 60
-)
+if(CMAKE_VERSION VERSION_LESS 3.22)
+    # TEST_FILTER was added in 3.22. Keep one unfiltered, serial discovery on older CMake.
+    set(foundry_parallel_filter "")
+    gtest_discover_tests(foundry_local_tests
+        WORKING_DIRECTORY $<TARGET_FILE_DIR:foundry_local_tests>
+        DISCOVERY_MODE PRE_TEST
+        DISCOVERY_TIMEOUT 60
+        PROPERTIES RUN_SERIAL TRUE
+    )
+else()
+    gtest_discover_tests(foundry_local_tests
+        WORKING_DIRECTORY $<TARGET_FILE_DIR:foundry_local_tests>
+        DISCOVERY_MODE PRE_TEST
+        DISCOVERY_TIMEOUT 60
+        TEST_FILTER "${foundry_parallel_filter}"
+        TEST_LIST foundry_parallel_tests
+    )
+    gtest_discover_tests(foundry_local_tests
+        WORKING_DIRECTORY $<TARGET_FILE_DIR:foundry_local_tests>
+        DISCOVERY_MODE PRE_TEST
+        DISCOVERY_TIMEOUT 60
+        TEST_FILTER "-${foundry_parallel_filter}"
+        TEST_LIST foundry_serial_tests
+        PROPERTIES RUN_SERIAL TRUE
+    )
+endif()
 
 add_test(
     NAME FoundryLocalVersionConfigureTwice
@@ -230,6 +367,15 @@ add_test(
         -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/cmake/version_configure_twice
         -DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/version_configure_twice
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/version_configure_twice.cmake
+)
+
+add_test(
+    NAME NativeBuildIdentityIncremental
+    COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/cmake/native_build_identity
+        -DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/native_build_identity
+        "-DGENERATOR=${CMAKE_GENERATOR}"
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/native_build_identity.cmake
 )
 
 # ==========================================================================
@@ -281,8 +427,23 @@ target_link_libraries(sdk_integration_tests
         ${FOUNDRY_LOCAL_HTTPLIB_LIBS}
 )
 
+add_executable(non_generative_sdk_tests
+    test_main.cc
+    sdk_api/non_generative_test.cc
+)
+set_target_properties(non_generative_sdk_tests PROPERTIES CXX_STANDARD 17)
+target_compile_options(non_generative_sdk_tests PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+target_include_directories(non_generative_sdk_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(non_generative_sdk_tests
+    PRIVATE
+        foundry_local_cpp
+        GTest::gtest
+        nlohmann_json::nlohmann_json
+)
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_options(sdk_integration_tests PRIVATE -Wl,--disable-new-dtags)
+    target_link_options(non_generative_sdk_tests PRIVATE -Wl,--disable-new-dtags)
 endif()
 
 # On Android the ORT/GenAI prebuilts statically link libc++ but export its symbols WEAK.
@@ -290,6 +451,7 @@ endif()
 # exported GLOBAL and interpose the prebuilts' weak copies.
 if(ANDROID)
     target_link_options(sdk_integration_tests PRIVATE -Wl,--exclude-libs,ALL)
+    target_link_options(non_generative_sdk_tests PRIVATE -Wl,--exclude-libs,ALL)
 endif()
 
 add_custom_command(TARGET sdk_integration_tests POST_BUILD
@@ -324,6 +486,14 @@ add_test(
 # The integration suite loads models in SharedTestEnv (slow on CPU) and runs
 # dozens of inference tests. The default CTest --timeout (600s) is not enough.
 set_tests_properties(sdk_integration_tests PROPERTIES TIMEOUT 1200)
+
+add_test(
+    NAME non_generative_sdk_tests
+    COMMAND non_generative_sdk_tests
+            --gtest_filter=-NonGenerativeSdkTest.Required*
+    WORKING_DIRECTORY $<TARGET_FILE_DIR:non_generative_sdk_tests>
+)
+set_tests_properties(non_generative_sdk_tests PROPERTIES TIMEOUT 600)
 
 # ==========================================================================
 # Cache-only mode tests — tests external_service_url / cache-only catalog
@@ -375,4 +545,20 @@ gtest_discover_tests(cache_only_tests
     WORKING_DIRECTORY $<TARGET_FILE_DIR:cache_only_tests>
     DISCOVERY_MODE PRE_TEST
     DISCOVERY_TIMEOUT 60
+    PROPERTIES RUN_SERIAL TRUE
 )
+
+if(NOT CMAKE_CROSSCOMPILING AND NOT ANDROID AND NOT IOS)
+    add_test(NAME CTestSchedulingPolicy
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ctest-scheduling-test.py
+            --ctest ${CMAKE_CTEST_COMMAND}
+            --build-dir ${PROJECT_BINARY_DIR}
+            --config $<CONFIG>
+            --unit-binary $<TARGET_FILE:foundry_local_tests>
+            "--parallel-filter=${foundry_parallel_filter}")
+endif()
+
+# Discovered Google Tests are registered at test time; the tests available
+# here are explicit add_test entries, including the single integration process.
+get_property(foundry_explicit_tests DIRECTORY PROPERTY TESTS)
+set_tests_properties(${foundry_explicit_tests} PROPERTIES RUN_SERIAL TRUE)

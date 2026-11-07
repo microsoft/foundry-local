@@ -157,11 +157,12 @@ impl Session {
             .map(RequestOptions::to_pairs)
             .unwrap_or_default();
         let input_queue = input_queue.map(ItemQueue::into_native);
-        let (rx, response_rx) =
+        let (rx, response_rx, cancel_guard) =
             run_item_streaming(Arc::clone(&self.inner), items, input_queue, option_pairs);
         ItemStream {
             rx,
             response_rx: Some(response_rx),
+            _cancel_guard: cancel_guard,
         }
     }
 
@@ -225,14 +226,17 @@ fn populate_native_request(
 /// `Request_Cancel` so generation stops promptly instead of running to
 /// completion on the detached worker. Disarmed once the worker completes
 /// normally.
-struct CancelGuard {
+pub(crate) struct CancelGuard {
     state: Arc<CancelState>,
     cancellation_retry: Sender<Arc<CancelState>>,
     armed: bool,
 }
 
 impl CancelGuard {
-    fn new(state: Arc<CancelState>, cancellation_retry: Sender<Arc<CancelState>>) -> Self {
+    pub(crate) fn new(
+        state: Arc<CancelState>,
+        cancellation_retry: Sender<Arc<CancelState>>,
+    ) -> Self {
         Self {
             state,
             cancellation_retry,
@@ -240,14 +244,14 @@ impl CancelGuard {
         }
     }
 
-    fn disarm(mut self) {
+    pub(crate) fn disarm(mut self) {
         self.armed = false;
     }
 }
 
 impl Drop for CancelGuard {
     fn drop(&mut self) {
-        if self.armed {
+        if self.armed && !self.state.worker_finished.load(Ordering::Acquire) {
             self.state.cancel_requested.store(true, Ordering::Release);
             self.state.native.cancel();
             let _ = self.cancellation_retry.send(Arc::clone(&self.state));
@@ -255,14 +259,14 @@ impl Drop for CancelGuard {
     }
 }
 
-struct CancelState {
+pub(crate) struct CancelState {
     native: Arc<NativeRequest>,
-    cancel_requested: AtomicBool,
+    pub(crate) cancel_requested: AtomicBool,
     worker_finished: AtomicBool,
 }
 
 impl CancelState {
-    fn new(native: Arc<NativeRequest>) -> Self {
+    pub(crate) fn new(native: Arc<NativeRequest>) -> Self {
         Self {
             native,
             cancel_requested: AtomicBool::new(false),
@@ -275,12 +279,12 @@ impl CancelState {
     }
 }
 
-struct WorkerCompletion {
+pub(crate) struct WorkerCompletion {
     state: Arc<CancelState>,
 }
 
 impl WorkerCompletion {
-    fn new(state: Arc<CancelState>) -> Self {
+    pub(crate) fn new(state: Arc<CancelState>) -> Self {
         Self { state }
     }
 }
@@ -291,7 +295,7 @@ impl Drop for WorkerCompletion {
     }
 }
 
-fn cancellation_retry_sender() -> Result<Sender<Arc<CancelState>>> {
+pub(crate) fn cancellation_retry_sender() -> Result<Sender<Arc<CancelState>>> {
     static DISPATCHER: OnceLock<std::result::Result<Sender<Arc<CancelState>>, String>> =
         OnceLock::new();
     match DISPATCHER.get_or_init(|| {
@@ -349,6 +353,7 @@ fn worker_ended_without_response() -> FoundryLocalError {
 pub struct ItemStream {
     rx: UnboundedReceiver<Result<Item>>,
     response_rx: Option<oneshot::Receiver<Result<Response>>>,
+    _cancel_guard: Option<CancelGuard>,
 }
 
 impl ItemStream {
@@ -518,12 +523,12 @@ impl ChatSession {
     /// Open a chat session on a loaded model.
     ///
     /// Returns [`FoundryLocalError::Validation`] if the model's task is not
-    /// `"chat-completion"` or `"vision-language-chat"`.
+    /// `"chat-completion"`, `"coding"`, or `"vision-language-chat"`.
     pub async fn new(model: &Model) -> Result<ChatSession> {
         validate_session_task(
             model,
             "ChatSession",
-            &["chat-completion", "vision-language-chat"],
+            &["chat-completion", "coding", "vision-language-chat"],
         )?;
 
         Ok(ChatSession {
@@ -821,6 +826,7 @@ mod tests {
         let mut stream = ItemStream {
             rx,
             response_rx: Some(response_rx),
+            _cancel_guard: None,
         };
 
         assert_eq!(stream.response().await.unwrap(), expected);
@@ -838,6 +844,7 @@ mod tests {
         let mut stream = ItemStream {
             rx,
             response_rx: Some(response_rx),
+            _cancel_guard: None,
         };
 
         let mut response = Box::pin(stream.response());
@@ -864,18 +871,11 @@ mod tests {
 
     #[test]
     fn check_task_accepts_allowed_tasks() {
-        assert!(check_task(
-            Some("chat-completion"),
-            "ChatSession",
-            &["chat-completion", "vision-language-chat"]
-        )
-        .is_ok());
-        assert!(check_task(
-            Some("vision-language-chat"),
-            "ChatSession",
-            &["chat-completion", "vision-language-chat"]
-        )
-        .is_ok());
+        let chat_tasks = ["chat-completion", "coding", "vision-language-chat"];
+        for task in chat_tasks {
+            assert!(check_task(Some(task), "ChatSession", &chat_tasks).is_ok());
+        }
+
         assert!(check_task(Some("embeddings"), "EmbeddingsSession", &["embeddings"]).is_ok());
     }
 

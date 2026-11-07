@@ -5,8 +5,10 @@
 #include "catalog/catalog_cache.h"
 #include "catalog/catalog_client.h"
 #include "internal_api/test_helpers.h"
+#include "internal_api/test_model_cache.h"
 #include "model.h"
 #include "model_info.h"
+#include "util/scope_guard.h"
 #include "utils/temp_path.h"
 
 #include <foundry_local/foundry_local_c.h>
@@ -14,6 +16,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -126,6 +129,24 @@ class RecordingCatalogTelemetry final : public TelemetryLogger {
   std::vector<CatalogFetchInfo> calls;
 };
 
+class RecordingCatalogLogger final : public ILogger {
+ public:
+  void Log(LogLevel level, std::string_view message) override { messages.emplace_back(level, message); }
+
+  std::vector<std::pair<LogLevel, std::string>> messages;
+};
+
+class CountingCatalogEpDetector final : public IEpDetector {
+ public:
+  std::map<std::string, std::vector<std::string>> GetAvailableDevicesToEPs() const override {
+    ++calls;
+    return devices;
+  }
+
+  mutable int calls = 0;
+  std::map<std::string, std::vector<std::string>> devices{{"CPU", {"CPUExecutionProvider"}}};
+};
+
 ModelInfo MakeModelInfo(const std::string& model_id,
                         const std::string& name,
                         int version,
@@ -219,7 +240,8 @@ class AzureModelCatalogTest : public ::testing::Test {
 
   std::unique_ptr<AzureModelCatalog> CreateCatalog(
       std::vector<std::pair<std::string, std::optional<std::string>>> catalog_urls,
-      bool cache_only = false) {
+      bool cache_only = false,
+      const IEpDetector* ep_detector = nullptr) {
     auto model_factory = [this](ModelInfo info, std::string local_path) {
       ++model_handle_factory_calls_;
       return Model::FromModelInfo(std::move(info), std::move(local_path), services_.download_manager,
@@ -236,17 +258,64 @@ class AzureModelCatalogTest : public ::testing::Test {
     };
 
     return std::make_unique<TestAzureModelCatalog>(std::move(catalog_urls), cache_directory_.string(),
-                                                   std::move(model_factory), services_.ep_detector, services_.logger,
+                                                   std::move(model_factory),
+                                                   ep_detector ? *ep_detector : services_.ep_detector, catalog_logger_,
                                                    cache_only, telemetry_, std::move(client_factory));
   }
 
   fl::test::TempPath cache_directory_ = fl::test::TempPath::CreateTempDir("fl_azure_model_catalog_");
   fl::test::FakeServiceBindings services_;
   RecordingCatalogTelemetry telemetry_;
+  RecordingCatalogLogger catalog_logger_;
   std::unordered_map<std::string, std::shared_ptr<CatalogBehavior>> behaviors_;
   int factory_calls_ = 0;
   int model_handle_factory_calls_ = 0;
 };
+
+TEST(AzureModelCatalogRuntimeTest, HostedDeviceChangesInvalidateMetadataWithoutChangingLocalProviderAvailability) {
+  static std::atomic<uint64_t> sequence{0};
+  const auto scratch = fs::path(FOUNDRY_LOCAL_TEST_SCRATCH_DIR);
+  ASSERT_TRUE(scratch.is_absolute());
+  fs::create_directories(scratch);
+  ASSERT_FALSE(fs::is_symlink(scratch));
+  fs::path root;
+  do {
+    root = scratch / ("catalog-devices-" + std::to_string(test::CurrentPid()) + "-" + std::to_string(sequence++));
+  } while (!fs::create_directory(root));
+
+  ScopeGuard cleanup([&]() noexcept {
+    std::error_code error;
+    fs::remove_all(root, error);
+  });
+  test::FakeServiceBindings services;
+  RecordingCatalogTelemetry telemetry;
+  auto behavior = std::make_shared<CatalogBehavior>();
+  behavior->all_models = {MakeModelInfo("cpu:1", "cpu", 1, "cpu", "test")};
+  TestAzureModelCatalog catalog(
+      {{"https://catalog.example", std::nullopt}}, root.string(),
+      [&](ModelInfo info, std::string path) {
+        return Model::FromModelInfo(std::move(info), std::move(path), services.download_manager,
+                                    services.model_load_manager);
+      },
+      services.ep_detector, services.logger, false, telemetry,
+      [&](const auto&, const auto&) { return std::make_unique<FakeCatalogClient>(behavior); });
+  EXPECT_NE(FindVariant(catalog.ListModels(), "cpu:1"), nullptr);
+  EXPECT_EQ(behavior->fetch_all_calls, 1);
+  const auto local_devices = services.ep_detector.GetAvailableDevicesToEPs();
+  const std::map<std::string, std::vector<std::string>> hosted_devices{
+      {"CPU", {"CPUExecutionProvider"}}, {"GPU", {"host-only-provider"}}};
+  catalog.SetRuntimeDevices(hosted_devices);
+  behavior->all_models = {MakeModelInfo("gpu:1", "gpu", 1, "gpu", "test")};
+  EXPECT_NE(FindVariant(catalog.ListModels(), "gpu:1"), nullptr);
+  EXPECT_EQ(behavior->fetch_all_calls, 2);
+  catalog.SetRuntimeDevices(hosted_devices);
+  static_cast<void>(catalog.ListModels());
+  EXPECT_EQ(behavior->fetch_all_calls, 2);
+  catalog.SetRuntimeDevices(local_devices);
+  static_cast<void>(catalog.ListModels());
+  EXPECT_EQ(behavior->fetch_all_calls, 3);
+  EXPECT_EQ(services.ep_detector.GetAvailableDevicesToEPs(), local_devices);
+}
 
 TEST_F(AzureModelCatalogTest, LiveFetchBucketsConfiguredCatalogsAsCustom) {
   const std::string azure_url = "https://ai.azure.com/api/eastus/ux/v1.0?token=private";
@@ -332,6 +401,612 @@ TEST_F(AzureModelCatalogTest, CachedModelLookupSharesRefreshCorrelation) {
   EXPECT_EQ(telemetry_.calls[1].status, ActionStatus::kSuccess);
   EXPECT_EQ(telemetry_.calls[1].model_count, 1);
   EXPECT_EQ(telemetry_.calls[1].correlation_id, telemetry_.calls[0].correlation_id);
+}
+
+TEST_F(AzureModelCatalogTest, UnavailableCachedEpRemainsVisibleWithoutOverridingCompatibleDefault) {
+  const std::string url = "https://catalog.test";
+  auto cuda = MakeModelInfo("model-cuda-gpu:1", "model-cuda-gpu", 1, "model", "Azure");
+  cuda.execution_provider = "CUDAExecutionProvider";
+  auto webgpu = MakeModelInfo("model-generic-gpu:1", "model-generic-gpu", 1, "model", "Azure");
+  webgpu.execution_provider = "WebGPUExecutionProvider";
+  auto behavior = AddBehavior(url);
+  behavior->all_models = {webgpu};
+  behavior->models_by_id = {cuda};
+  const auto cuda_path = AddLocalModel(cuda.model_id, "cuda");
+  auto catalog = CreateCatalog({{url, std::nullopt}});
+  catalog->SetRuntimeDevices({{"CPU", {"CPUExecutionProvider"}}, {"GPU", {"WebGpuExecutionProvider"}}});
+
+  auto* model = catalog->GetModel("model");
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->Id(), webgpu.model_id);
+  EXPECT_FALSE(model->IsCached());
+  auto* cached_variant = FindVariant(catalog->ListModels(), cuda.model_id);
+  ASSERT_NE(cached_variant, nullptr);
+  EXPECT_TRUE(cached_variant->IsCached());
+  EXPECT_EQ(cached_variant->LocalPath(), cuda_path.string());
+  EXPECT_EQ(FindVariant(catalog->GetCachedModels(), cuda.model_id), cached_variant);
+  EXPECT_TRUE(fs::exists(cuda_path / "genai_config.json"));
+  EXPECT_TRUE(std::any_of(catalog_logger_.messages.begin(), catalog_logger_.messages.end(), [&](const auto& entry) {
+    return entry.first == LogLevel::Information && entry.second.find("skipping variant '" + cuda.model_id + "'") != std::string::npos &&
+           entry.second.find("CUDAExecutionProvider") != std::string::npos;
+  }));
+  EXPECT_TRUE(std::any_of(catalog_logger_.messages.begin(), catalog_logger_.messages.end(), [&](const auto& entry) {
+    return entry.first == LogLevel::Information &&
+           entry.second.find("selected default variant '" + webgpu.model_id + "'") != std::string::npos;
+  }));
+
+  CatalogCache persisted_cache(cache_directory_.string(), services_.logger);
+  persisted_cache.Load();
+  const auto persisted_models = persisted_cache.GetCachedModels();
+  ASSERT_TRUE(persisted_models.has_value());
+  EXPECT_EQ(persisted_models->size(), 2u);
+
+  auto* explicit_variant = catalog->GetModelVariant(cuda.model_id);
+  ASSERT_NE(explicit_variant, nullptr);
+  EXPECT_EQ(explicit_variant->LocalPath(), cuda_path.string());
+  EXPECT_THROW(explicit_variant->Load(), std::exception);
+  EXPECT_EQ(model->Id(), webgpu.model_id);
+  model->SelectVariant(*explicit_variant);
+  EXPECT_EQ(model->Id(), cuda.model_id);
+}
+
+TEST_F(AzureModelCatalogTest, SnapshotFallbackPreservesUnavailableCachedVariantsButSelectsCompatibleDefault) {
+  auto cuda = MakeModelInfo("model-cuda-gpu:1", "model-cuda-gpu", 1, "model", "Azure");
+  cuda.execution_provider = "CUDAExecutionProvider";
+  auto cpu = MakeModelInfo("model-generic-cpu:1", "model-generic-cpu", 1, "model", "Azure");
+  cpu.execution_provider = "CPUExecutionProvider";
+  auto unavailable = cuda;
+  unavailable.model_id = "unavailable-cuda-gpu:1";
+  unavailable.name = "unavailable-cuda-gpu";
+  unavailable.alias = "unavailable";
+  WriteSnapshot({cuda, cpu, unavailable});
+  AddLocalModel(cuda.model_id, "cuda");
+  AddLocalModel(cpu.model_id, "cpu");
+  AddLocalModel(unavailable.model_id, "unavailable");
+  AddBehavior("https://catalog.test", true);
+
+  for (bool cache_only : {false, true}) {
+    SCOPED_TRACE(cache_only);
+    auto catalog = CreateCatalog({{"https://catalog.test", std::nullopt}}, cache_only);
+    auto* model = catalog->GetModel("model");
+    ASSERT_NE(model, nullptr);
+    EXPECT_EQ(model->Id(), cpu.model_id);
+    EXPECT_TRUE(model->IsCached());
+    EXPECT_EQ(catalog->GetModel("unavailable"), nullptr);
+    EXPECT_NE(FindVariant(catalog->ListModels(), unavailable.model_id), nullptr);
+    EXPECT_NE(FindVariant(catalog->GetCachedModels(), unavailable.model_id), nullptr);
+    EXPECT_NE(FindVariant(catalog->GetCachedModels(), cuda.model_id), nullptr);
+    EXPECT_NE(catalog->GetModelVariant(unavailable.model_id), nullptr);
+  }
+
+  auto catalog = CreateCatalog({{"https://catalog.test", std::nullopt}}, true);
+  catalog->SetRuntimeDevices({{"CPU", {"CPUExecutionProvider"}}, {"GPU", {"CUDAExecutionProvider"}}});
+  auto* model = catalog->GetModel("model");
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->Id(), cuda.model_id);
+  EXPECT_TRUE(model->IsCached());
+}
+
+TEST_F(AzureModelCatalogTest, MissingProviderUsesCachedConfigBeforeModelIdFallback) {
+  auto cpu = MakeModelInfo("model-generic-cpu:1", "model-generic-cpu", 1, "model", "Azure");
+  auto gpu = MakeModelInfo("model-cuda-gpu:1", "model-cuda-gpu", 1, "model", "Azure");
+  auto configured = MakeModelInfo("configured:1", "configured", 1, "configured", "Azure");
+  WriteSnapshot({cpu, gpu, configured});
+  const auto gpu_path = AddLocalModel(gpu.model_id, "gpu");
+  const auto configured_path = AddLocalModel(configured.model_id, "configured");
+  const auto write_provider = [](const fs::path& path, const std::string& provider) {
+    nlohmann::json contents;
+    contents["model"]["decoder"]["session_options"]["provider_options"] =
+        nlohmann::json::array({{{provider, nlohmann::json::object()}}});
+    std::ofstream config(path / "genai_config.json");
+    config << contents;
+  };
+  write_provider(configured_path, "CUDA");
+
+  auto catalog = CreateCatalog({{"https://catalog.test", std::nullopt}}, true);
+  auto* model = catalog->GetModel("model");
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->Id(), cpu.model_id);
+  EXPECT_EQ(catalog->GetModel("configured"), nullptr);
+  EXPECT_NE(catalog->GetModelVariant(configured.model_id), nullptr);
+  EXPECT_NE(FindVariant(catalog->GetCachedModels(), gpu.model_id), nullptr);
+
+  catalog->SetRuntimeDevices({{"CPU", {"CPUExecutionProvider"}}, {"GPU", {"CUDAExecutionProvider"}}});
+  EXPECT_EQ(catalog->GetModel("model"), model);
+  EXPECT_EQ(model->Id(), gpu.model_id);
+  EXPECT_NE(catalog->GetModel("configured"), nullptr);
+
+  // An explicit CPU config takes precedence over the CUDA hint in the ID, just as in the loader.
+  write_provider(gpu_path, "cpu");
+  catalog->SetRuntimeDevices({{"CPU", {"CPUExecutionProvider"}}});
+  EXPECT_EQ(catalog->GetModel("model"), model);
+  EXPECT_EQ(model->Id(), gpu.model_id);
+}
+
+TEST_F(AzureModelCatalogTest, ProviderAliasesMatchCanonicalRegistrations) {
+  for (const auto& [provider, registration] :
+       std::vector<std::pair<std::string, std::string>>{{"cpu", "CPUExecutionProvider"},
+                                                        {"CUDA", "CUDAExecutionProvider"},
+                                                        {"dml", "DmlExecutionProvider"},
+                                                        {"WebGPU", "WebGpuExecutionProvider"},
+                                                        {"openvino", "OpenVINOExecutionProvider"},
+                                                        {"qnn", "QNNExecutionProvider"}}) {
+    SCOPED_TRACE(provider);
+    auto info = MakeModelInfo("model:1", "model", 1, "model", "Azure");
+    info.execution_provider = provider;
+    WriteSnapshot({info});
+    auto catalog = CreateCatalog({{"https://catalog.test", std::nullopt}}, true);
+    catalog->SetRuntimeDevices({{"device", {registration}}});
+    EXPECT_NE(catalog->GetModel("model"), nullptr);
+  }
+}
+
+TEST_F(AzureModelCatalogTest, GenericGpuSnapshotCanUseAvailableAlternativeRegardlessOfMetadata) {
+  auto gpu = MakeModelInfo("model-generic-gpu:1", "model-generic-gpu", 1, "model", "Azure");
+  AddLocalModel(gpu.model_id, "gpu");
+
+  for (const auto* metadata : {"DmlExecutionProvider", "WebGPUExecutionProvider", "CUDAExecutionProvider", ""}) {
+    SCOPED_TRACE(metadata);
+    gpu.execution_provider = metadata;
+    WriteSnapshot({gpu});
+    for (const auto* provider : {"CUDAExecutionProvider", "WebGpuExecutionProvider"}) {
+      SCOPED_TRACE(provider);
+      auto catalog = CreateCatalog({{"https://catalog.test", std::nullopt}}, true);
+      catalog->SetRuntimeDevices({{"CPU", {"CPUExecutionProvider"}}, {"GPU", {provider}}});
+      auto* model = catalog->GetModel("model");
+      ASSERT_NE(model, nullptr);
+      EXPECT_EQ(model->Id(), gpu.model_id);
+      EXPECT_TRUE(model->IsCached());
+    }
+  }
+
+  gpu.execution_provider = "DmlExecutionProvider";
+  WriteSnapshot({gpu});
+  auto catalog = CreateCatalog({{"https://catalog.test", std::nullopt}}, true);
+  catalog->SetRuntimeDevices({{"CPU", {"CPUExecutionProvider"}}, {"GPU", {"DmlExecutionProvider"}}});
+  EXPECT_NE(catalog->GetModel("model"), nullptr);
+  catalog->SetRuntimeDevices({{"CPU", {"CPUExecutionProvider"}}});
+  EXPECT_EQ(catalog->GetModel("model"), nullptr);
+  EXPECT_NE(FindVariant(catalog->GetCachedModels(), gpu.model_id), nullptr);
+  EXPECT_TRUE(std::any_of(catalog_logger_.messages.begin(), catalog_logger_.messages.end(), [](const auto& entry) {
+    return entry.first == LogLevel::Information &&
+           entry.second.find("no variant for alias 'model' has an available execution provider") != std::string::npos;
+  }));
+}
+
+TEST_F(AzureModelCatalogTest, ProviderChangesRefreshImplicitDefaultsWithoutReplacingExplicitSelection) {
+  auto cuda = MakeModelInfo("model-cuda-gpu:1", "model-cuda-gpu", 1, "model", "Azure");
+  cuda.execution_provider = "CUDAExecutionProvider";
+  auto cpu = MakeModelInfo("model-generic-cpu:1", "model-generic-cpu", 1, "model", "Azure");
+  cpu.execution_provider = "CPUExecutionProvider";
+  WriteSnapshot({cuda, cpu});
+  AddLocalModel(cuda.model_id, "cuda");
+  auto catalog = CreateCatalog({{"https://catalog.test", std::nullopt}}, true);
+  auto* model = catalog->GetModel("model");
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->Id(), cpu.model_id);
+
+  catalog->SetRuntimeDevices({{"CPU", {"CPUExecutionProvider"}}, {"GPU", {"CUDAExecutionProvider"}}});
+  EXPECT_EQ(catalog->GetModel("model"), model);
+  EXPECT_EQ(model->Id(), cuda.model_id);
+
+  catalog->SetRuntimeDevices({{"CPU", {"CPUExecutionProvider"}}});
+  EXPECT_EQ(catalog->GetModel("model"), model);
+  EXPECT_EQ(model->Id(), cpu.model_id);
+
+  auto* explicit_variant = catalog->GetModelVariant(cuda.model_id);
+  ASSERT_NE(explicit_variant, nullptr);
+  model->SelectVariant(*explicit_variant);
+  catalog->InvalidateCache();
+  catalog->ListModels();
+  EXPECT_EQ(model->Id(), cuda.model_id);
+  EXPECT_TRUE(explicit_variant->IsCached());
+}
+
+TEST_F(AzureModelCatalogTest, RetainedHandleRefreshesBeforeDownloadAndExecutionCapture) {
+  auto cpu = MakeModelInfo("model-generic-cpu:1", "model-generic-cpu", 1, "model", "Azure");
+  cpu.execution_provider = "cpu";
+  auto cuda = MakeModelInfo("model-cuda-gpu:1", "model-cuda-gpu", 1, "model", "Azure");
+  cuda.execution_provider = "CUDA";
+  WriteSnapshot({cpu, cuda});
+  AddLocalModel(cpu.model_id, "cpu");
+  AddLocalModel(cuda.model_id, "cuda");
+  auto catalog = CreateCatalog({{"https://catalog.test", std::nullopt}}, true);
+  auto* model = catalog->GetModel("model");
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->Id(), cpu.model_id);
+
+  catalog->SetRuntimeDevices({{"CPU", {"CPUExecutionProvider"}}, {"GPU", {"CUDAExecutionProvider"}}});
+  float progress = 0;
+  model->Download([&](float percent) {
+    progress = percent;
+    return 0;
+  });
+  EXPECT_EQ(progress, 100);
+  EXPECT_EQ(model->Id(), cuda.model_id);
+
+  catalog->SetRuntimeDevices({{"CPU", {"CPUExecutionProvider"}}});
+  EXPECT_EQ(model->CaptureExecutionModel().Id(), cpu.model_id);
+  EXPECT_EQ(model->Id(), cpu.model_id);
+}
+
+TEST_F(AzureModelCatalogTest, RetainedHandleRejectsImplicitDownloadWhenNoProviderRemains) {
+  auto cuda = MakeModelInfo("model-cuda-gpu:1", "model-cuda-gpu", 1, "model", "Azure");
+  cuda.execution_provider = "CUDA";
+  WriteSnapshot({cuda});
+  AddLocalModel(cuda.model_id, "cuda");
+  auto catalog = CreateCatalog({{"https://catalog.test", std::nullopt}}, true);
+  catalog->SetRuntimeDevices({{"GPU", {"CUDAExecutionProvider"}}});
+  auto* model = catalog->GetModel("model");
+  ASSERT_NE(model, nullptr);
+
+  catalog->SetRuntimeDevices({{"CPU", {"CPUExecutionProvider"}}});
+  EXPECT_THROW(model->Download(), std::exception);
+  auto* variant = model->Variants().front();
+  model->SelectVariant(*variant);
+  EXPECT_NO_THROW(model->Download());
+  EXPECT_EQ(catalog->GetModel("model"), nullptr);
+
+  catalog->SetRuntimeDevices({{"GPU", {"CUDAExecutionProvider"}}});
+  EXPECT_EQ(catalog->GetModel("model"), model);
+  EXPECT_EQ(model->Id(), cuda.model_id);
+}
+
+TEST_F(AzureModelCatalogTest, ProviderRefreshPreservesLoadedArtifactUntilItIsUnloaded) {
+  auto cpu = MakeModelInfo("model-generic-cpu:1", "model-generic-cpu", 1, "model", "Azure");
+  cpu.execution_provider = "cpu";
+  auto cuda = MakeModelInfo("model-cuda-gpu:1", "model-cuda-gpu", 1, "model", "Azure");
+  cuda.execution_provider = "CUDA";
+  WriteSnapshot({cpu, cuda});
+  const auto path = fl::test::GetTestDataPath("tiny-paged-attention");
+  ASSERT_TRUE(fs::exists(path / "genai_config.json"));
+  for (int release = 0; release < 3; ++release) {
+    SCOPED_TRACE(release);
+    AzureModelCatalog catalog(
+        {{"https://catalog.test", std::nullopt}}, cache_directory_.string(),
+        [&](ModelInfo info, std::string) {
+          return Model::FromModelInfo(std::move(info), path.string(), services_.download_manager,
+                                      services_.model_load_manager);
+        },
+        services_.ep_detector, catalog_logger_, true, telemetry_);
+    catalog.SetRuntimeDevices({{"CPU", {"CPUExecutionProvider"}}, {"GPU", {"CUDAExecutionProvider"}}});
+    auto* model = catalog.GetModel("model");
+    auto* variant = catalog.GetModelVariant(cuda.model_id);
+    ASSERT_NE(model, nullptr);
+    ASSERT_NE(variant, nullptr);
+    auto captured = variant->CaptureExecutionModel();
+    model->Load(ExecutionProvider::kCPU);
+    ASSERT_TRUE(model->IsLoaded());
+    ASSERT_EQ(model->Id(), cuda.model_id);
+
+    catalog.SetRuntimeDevices({{"CPU", {"CPUExecutionProvider"}}});
+    EXPECT_EQ(catalog.GetModel("model"), model);
+    EXPECT_EQ(model->Id(), cuda.model_id);
+    EXPECT_TRUE(model->IsLoaded());
+    (release == 0 ? model : release == 1 ? variant
+                                         : &captured)
+        ->Unload();
+    EXPECT_EQ(services_.model_load_manager.GetLoadedModel(cuda.model_id), nullptr);
+
+    if (release == 0) {
+      model->Load(ExecutionProvider::kCPU);
+      EXPECT_TRUE(model->IsLoaded());
+      model->Unload();
+    } else {
+      model->Download();
+    }
+    EXPECT_EQ(model->Id(), cpu.model_id);
+  }
+}
+
+TEST_F(AzureModelCatalogTest, EligibilityUsesOneProviderSnapshotAndLookupReusesTheResult) {
+  auto cpu = MakeModelInfo("model-generic-cpu:1", "model-generic-cpu", 1, "model", "Azure");
+  cpu.execution_provider = "cpu";
+  auto cuda = MakeModelInfo("model-cuda-gpu:1", "model-cuda-gpu", 1, "model", "Azure");
+  cuda.execution_provider = "CUDA";
+  auto unavailable = cuda;
+  unavailable.model_id = "unavailable-cuda-gpu:1";
+  unavailable.name = "unavailable-cuda-gpu";
+  unavailable.alias = "unavailable";
+  WriteSnapshot({cpu, cuda, unavailable});
+  CountingCatalogEpDetector detector;
+  auto catalog = CreateCatalog({{"https://catalog.test", std::nullopt}}, true, &detector);
+  auto* model = catalog->GetModel("model");
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->Id(), cpu.model_id);
+  EXPECT_EQ(catalog->GetModel("unavailable"), nullptr);
+  EXPECT_EQ(catalog->GetModel("model"), model);
+  EXPECT_EQ(detector.calls, 1);
+
+  detector.devices["GPU"] = {"CUDAExecutionProvider"};
+  catalog->InvalidateCache();
+  EXPECT_EQ(catalog->GetModel("model"), model);
+  EXPECT_EQ(model->Id(), cuda.model_id);
+  EXPECT_NE(catalog->GetModel("unavailable"), nullptr);
+  EXPECT_EQ(detector.calls, 2);
+}
+
+TEST(AzureModelCatalogRuntimeTest, ReconciliationPreservesLoadedImplicitSelectionWithoutMakingItExplicit) {
+  fl::test::FakeServiceBindings bindings;
+  const auto path = fl::test::GetTestDataPath("tiny-paged-attention").string();
+  auto cpu = MakeModelInfo("model-generic-cpu:1", "model-generic-cpu", 1, "model", "Azure");
+  auto cuda = MakeModelInfo("model-cuda-gpu:1", "model-cuda-gpu", 1, "model", "Azure");
+  auto make_model = [&](const ModelInfo& info) {
+    return Model::FromModelInfo(info, path, bindings.download_manager, bindings.model_load_manager);
+  };
+  auto model = Model::MakeContainer(make_model(cpu));
+  model.Load();
+  auto incoming = Model::MakeContainer(make_model(cpu));
+  incoming.AddVariant(make_model(cuda));
+
+  ASSERT_TRUE(model.TryReconcileVariants(incoming));
+  EXPECT_EQ(model.Id(), cpu.model_id);
+  EXPECT_TRUE(model.IsLoaded());
+  model.Unload();
+  model.SelectDefaultVariant({}, /*preserve_explicit_selection=*/true);
+  EXPECT_EQ(model.Id(), cuda.model_id);
+}
+
+TEST_F(AzureModelCatalogTest, HostedLoadPinPreservesMetadataWithoutLoadingWeightsLocally) {
+  auto cpu = MakeModelInfo("model-generic-cpu:1", "model-generic-cpu", 1, "model", "Azure");
+  cpu.execution_provider = "cpu";
+  auto cuda = MakeModelInfo("model-cuda-gpu:1", "model-cuda-gpu", 1, "model", "Azure");
+  cuda.execution_provider = "CUDA";
+  WriteSnapshot({cpu, cuda});
+  AddLocalModel(cpu.model_id, "cpu");
+  AddLocalModel(cuda.model_id, "cuda");
+  for (int release = 0; release < 3; ++release) {
+    SCOPED_TRACE(release);
+    auto catalog = CreateCatalog({{"https://catalog.test", std::nullopt}}, true);
+    catalog->SetRuntimeDevices({{"CPU", {"CPUExecutionProvider"}}, {"GPU", {"CUDAExecutionProvider"}}});
+    auto* model = catalog->GetModel("model");
+    auto* variant = catalog->GetModelVariant(cuda.model_id);
+    ASSERT_NE(model, nullptr);
+    ASSERT_NE(variant, nullptr);
+    auto captured = variant->CaptureExecutionModel();
+    EXPECT_FALSE(model->PreserveLoadedSelection(true));
+    EXPECT_FALSE(model->IsLoaded());
+
+    catalog->SetRuntimeDevices({{"CPU", {"CPUExecutionProvider"}}});
+    model->Download();
+    EXPECT_EQ(model->Id(), cuda.model_id);
+    EXPECT_TRUE((release == 0 ? model : release == 1 ? variant
+                                                     : &captured)
+                    ->PreserveLoadedSelection(false));
+    model->Download();
+    EXPECT_EQ(model->Id(), cpu.model_id);
+  }
+}
+
+TEST_F(AzureModelCatalogTest, ProviderRefreshDuringDownloadKeepsTheArtifactThatBecomesCached) {
+  auto cpu = MakeModelInfo("model-generic-cpu:1", "model-generic-cpu", 1, "model", "Azure");
+  cpu.execution_provider = "CPU";
+  cpu.string_properties[FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR] = "Microsoft";
+  auto cuda = MakeModelInfo("model-cuda-gpu:1", "model-cuda-gpu", 1, "model", "Azure");
+  cuda.execution_provider = "CUDA";
+  WriteSnapshot({cpu, cuda});
+  services_.download_manager.SetCacheDirectory(cache_directory_.string());
+  auto catalog = CreateCatalog({{"https://catalog.test", std::nullopt}}, true);
+  auto* model = catalog->GetModel("model");
+  ASSERT_NE(model, nullptr);
+  ASSERT_FALSE(model->IsCached());
+  ASSERT_EQ(model->Id(), cpu.model_id);
+
+  const auto path = AddLocalModel(cpu.model_id, "model-generic-cpu-1");
+  fs::copy(test::GetTestDataPath("tiny-paged-attention"), path,
+           fs::copy_options::recursive | fs::copy_options::overwrite_existing);
+  std::ofstream(path / "inference_model.json") << nlohmann::json({{"Name", cpu.model_id}}).dump();
+  ASSERT_EQ(services_.download_manager.GetCompletedModelCachePath(cpu), path.string());
+  bool refreshed = false;
+  model->Download([&](float) {
+    catalog->SetRuntimeDevices({{"CPU", {"CPUExecutionProvider"}}, {"GPU", {"CUDAExecutionProvider"}}});
+    EXPECT_EQ(catalog->GetModel("model"), model);
+    EXPECT_EQ(model->Id(), cpu.model_id);
+    refreshed = true;
+    return 0;
+  });
+  EXPECT_TRUE(refreshed);
+  EXPECT_NO_THROW(model->Load(ExecutionProvider::kCPU));
+  EXPECT_EQ(model->Id(), cpu.model_id);
+  EXPECT_TRUE(model->IsLoaded());
+  model->Unload();
+}
+
+TEST_F(AzureModelCatalogTest, ConfigEligibilityIsReusedUntilRefreshAndThenSeesEdits) {
+  auto configured = MakeModelInfo("configured:1", "configured", 1, "configured", "Azure");
+  WriteSnapshot({configured});
+  const auto path = AddLocalModel(configured.model_id, "configured");
+  auto catalog = CreateCatalog({{"https://catalog.test", std::nullopt}}, true);
+  auto* model = catalog->GetModel("configured");
+  ASSERT_NE(model, nullptr);
+  {
+    std::ofstream config(path / "genai_config.json");
+    config << "{";
+  }
+
+  EXPECT_EQ(catalog->GetModel("configured"), model);
+  catalog->InvalidateCache();
+  EXPECT_EQ(catalog->GetModel("configured"), nullptr);
+  {
+    std::ofstream config(path / "genai_config.json");
+    config << "{}";
+  }
+
+  catalog->InvalidateCache();
+  EXPECT_EQ(catalog->GetModel("configured"), model);
+}
+
+TEST_F(AzureModelCatalogTest, ProviderRefreshAddsNewCachedVariantsToExistingAliasWithoutReplacingHandles) {
+  const std::string url = "https://catalog.test";
+  auto cpu = MakeModelInfo("model-generic-cpu:1", "model-generic-cpu", 1, "model", "Azure");
+  cpu.execution_provider = "cpu";
+  auto cuda = MakeModelInfo("model-cuda-gpu:1", "model-cuda-gpu", 1, "model", "Azure");
+  cuda.execution_provider = "CUDA";
+  auto behavior = AddBehavior(url);
+  behavior->all_models = {cpu};
+  auto catalog = CreateCatalog({{url, std::nullopt}});
+  auto* model = catalog->GetModel("model");
+  ASSERT_NE(model, nullptr);
+  auto* cpu_variant = catalog->GetModelVariant(cpu.model_id);
+  ASSERT_NE(cpu_variant, nullptr);
+
+  behavior->all_models = {cpu, cuda};
+  AddLocalModel(cuda.model_id, "cuda");
+  catalog->SetRuntimeDevices({{"CPU", {"CPUExecutionProvider"}}, {"GPU", {"CUDAExecutionProvider"}}});
+  EXPECT_EQ(catalog->GetModel("model"), model);
+  EXPECT_EQ(catalog->GetModelVariant(cpu.model_id), cpu_variant);
+  EXPECT_EQ(model->Variants().size(), 2u);
+  EXPECT_EQ(model->Id(), cuda.model_id);
+  EXPECT_NE(FindVariant(catalog->GetCachedModels(), cuda.model_id), nullptr);
+}
+
+TEST_F(AzureModelCatalogTest, RefreshUpdatesAnExistingVariantWhenAnotherProcessCachesIt) {
+  auto cpu = MakeModelInfo("model-generic-cpu:1", "model-generic-cpu", 1, "model", "Azure");
+  cpu.execution_provider = "CPU";
+  auto cuda = MakeModelInfo("model-cuda-gpu:1", "model-cuda-gpu", 1, "model", "Azure");
+  cuda.execution_provider = "CUDA";
+  WriteSnapshot({cpu, cuda});
+  AddLocalModel(cpu.model_id, "cpu");
+  auto catalog = CreateCatalog({{"https://catalog.test", std::nullopt}}, true);
+  catalog->SetRuntimeDevices({{"CPU", {"CPUExecutionProvider"}}, {"GPU", {"CUDAExecutionProvider"}}});
+  auto* model = catalog->GetModel("model");
+  auto* cuda_variant = catalog->GetModelVariant(cuda.model_id);
+  ASSERT_NE(model, nullptr);
+  ASSERT_NE(cuda_variant, nullptr);
+  EXPECT_EQ(model->Id(), cpu.model_id);
+  EXPECT_FALSE(cuda_variant->IsCached());
+
+  const auto path = AddLocalModel(cuda.model_id, "cuda");
+  catalog->InvalidateCache();
+  EXPECT_EQ(catalog->GetModel("model"), model);
+  EXPECT_EQ(catalog->GetModelVariant(cuda.model_id), cuda_variant);
+  EXPECT_EQ(model->Id(), cuda.model_id);
+  EXPECT_TRUE(cuda_variant->IsCached());
+  EXPECT_EQ(cuda_variant->LocalPathSnapshot(), path.string());
+}
+
+TEST_F(AzureModelCatalogTest, RefreshUpdatesExistingCachePathsAndForgetsRemovedEntries) {
+  auto cpu = MakeModelInfo("model-generic-cpu:1", "model-generic-cpu", 1, "model", "Azure");
+  cpu.execution_provider = "CPU";
+  auto cuda = MakeModelInfo("model-cuda-gpu:1", "model-cuda-gpu", 1, "model", "Azure");
+  cuda.execution_provider = "CUDA";
+  WriteSnapshot({cpu, cuda});
+  AddLocalModel(cpu.model_id, "cpu");
+  const auto original_path = AddLocalModel(cuda.model_id, "cuda");
+  auto catalog = CreateCatalog({{"https://catalog.test", std::nullopt}}, true);
+  catalog->SetRuntimeDevices({{"CPU", {"CPUExecutionProvider"}}, {"GPU", {"CUDAExecutionProvider"}}});
+  auto* model = catalog->GetModel("model");
+  auto* cuda_variant = catalog->GetModelVariant(cuda.model_id);
+  ASSERT_NE(model, nullptr);
+  ASSERT_NE(cuda_variant, nullptr);
+  ASSERT_EQ(model->Id(), cuda.model_id);
+  const auto* borrowed_original = cuda_variant->GetPath().c_str();
+  catalog->InvalidateCache();
+  catalog->ListModels();
+  EXPECT_EQ(cuda_variant->GetPath().c_str(), borrowed_original);
+
+  const auto moved_path = original_path.parent_path() / "moved-cuda";
+  fs::rename(original_path, moved_path);
+  catalog->InvalidateCache();
+  EXPECT_EQ(catalog->GetModel("model"), model);
+  EXPECT_EQ(catalog->GetModelVariant(cuda.model_id), cuda_variant);
+  EXPECT_EQ(cuda_variant->LocalPathSnapshot(), moved_path.string());
+  EXPECT_TRUE(cuda_variant->IsCached());
+  EXPECT_EQ(model->Id(), cuda.model_id);
+  EXPECT_STREQ(borrowed_original, original_path.string().c_str());
+  const auto* borrowed_moved = cuda_variant->GetPath().c_str();
+
+  fs::remove(moved_path / "genai_config.json");
+  catalog->InvalidateCache();
+  EXPECT_EQ(catalog->GetModel("model"), model);
+  EXPECT_EQ(catalog->GetModelVariant(cuda.model_id), cuda_variant);
+  EXPECT_FALSE(cuda_variant->IsCached());
+  EXPECT_TRUE(cuda_variant->LocalPathSnapshot().empty());
+  EXPECT_EQ(model->Id(), cpu.model_id);
+  EXPECT_EQ(FindVariant(catalog->GetCachedModels(), cuda.model_id), nullptr);
+  EXPECT_STREQ(borrowed_original, original_path.string().c_str());
+  EXPECT_STREQ(borrowed_moved, moved_path.string().c_str());
+}
+
+TEST_F(AzureModelCatalogTest, RefreshReconcilesOlderIdsMissingFromLiveMetadataAgainstTheDiskInventory) {
+  const std::string url = "https://catalog.test";
+  auto cpu = MakeModelInfo("model-generic-cpu:1", "model-generic-cpu", 1, "model", "Azure");
+  cpu.execution_provider = "CPU";
+  auto old_cuda = MakeModelInfo("model-cuda-gpu:1", "model-cuda-gpu", 1, "model", "Azure");
+  old_cuda.execution_provider = "CUDA";
+  auto new_cuda = old_cuda;
+  new_cuda.model_id = "model-cuda-gpu:2";
+  new_cuda.version = 2;
+  auto behavior = AddBehavior(url);
+  behavior->all_models = {cpu, old_cuda};
+  AddLocalModel(cpu.model_id, "cpu");
+  const auto old_path = AddLocalModel(old_cuda.model_id, "old-cuda");
+  auto catalog = CreateCatalog({{url, std::nullopt}});
+  catalog->SetRuntimeDevices({{"CPU", {"CPUExecutionProvider"}}, {"GPU", {"CUDAExecutionProvider"}}});
+  auto* model = catalog->GetModel("model");
+  auto* old_variant = catalog->GetModelVariant(old_cuda.model_id);
+  ASSERT_NE(model, nullptr);
+  ASSERT_NE(old_variant, nullptr);
+  ASSERT_EQ(model->Id(), old_cuda.model_id);
+
+  behavior->all_models = {cpu, new_cuda};
+  catalog->InvalidateCache();
+  EXPECT_EQ(catalog->GetModel("model"), model);
+  EXPECT_TRUE(old_variant->IsCached());
+  EXPECT_EQ(model->Id(), old_cuda.model_id);
+  EXPECT_EQ(behavior->last_requested_ids, std::vector<std::string>{old_cuda.model_id});
+
+  fs::remove(old_path / "genai_config.json");
+  catalog->InvalidateCache();
+  EXPECT_EQ(catalog->GetModel("model"), model);
+  EXPECT_EQ(catalog->GetModelVariant(old_cuda.model_id), old_variant);
+  EXPECT_FALSE(old_variant->IsCached());
+  EXPECT_TRUE(old_variant->GetPath().empty());
+  EXPECT_EQ(model->Id(), cpu.model_id);
+  EXPECT_EQ(FindVariant(catalog->GetCachedModels(), old_cuda.model_id), nullptr);
+}
+
+TEST_F(AzureModelCatalogTest, RefreshForgetsRemovedCacheForAnEntirelyOmittedAliasWithoutDroppingItsHandles) {
+  const std::string url = "https://catalog.test";
+  auto info = MakeModelInfo("old-generic-cpu:1", "old-generic-cpu", 1, "old", "Azure");
+  auto behavior = AddBehavior(url);
+  behavior->all_models = {info};
+  const auto path = AddLocalModel(info.model_id, "old");
+  auto catalog = CreateCatalog({{url, std::nullopt}});
+  auto* model = catalog->GetModel("old");
+  auto* variant = catalog->GetModelVariant(info.model_id);
+  ASSERT_NE(model, nullptr);
+  ASSERT_NE(variant, nullptr);
+  ASSERT_TRUE(variant->IsCached());
+
+  behavior->all_models.clear();
+  fs::remove(path / "genai_config.json");
+  catalog->InvalidateCache();
+  EXPECT_EQ(catalog->GetModel("old"), model);
+  EXPECT_EQ(catalog->GetModelVariant(info.model_id), variant);
+  EXPECT_FALSE(variant->IsCached());
+  EXPECT_TRUE(catalog->GetCachedModels().empty());
+}
+
+TEST_F(AzureModelCatalogTest, DirectIdLookupDoesNotMakeUnavailableAliasEligible) {
+  const std::string url = "https://catalog.test";
+  auto cuda = MakeModelInfo("model-cuda-gpu:1", "model-cuda-gpu", 1, "model", "Azure");
+  cuda.execution_provider = "CUDA";
+  auto behavior = AddBehavior(url);
+  behavior->models_by_id = {cuda};
+  auto catalog = CreateCatalog({{url, std::nullopt}});
+  EXPECT_EQ(catalog->GetModel("model"), nullptr);
+  EXPECT_NE(catalog->GetModelVariant(cuda.model_id), nullptr);
+  EXPECT_EQ(catalog->GetModel("model"), nullptr);
+  EXPECT_NE(FindVariant(catalog->ListModels(), cuda.model_id), nullptr);
+
+  auto cpu = MakeModelInfo("model-generic-cpu:1", "model-generic-cpu", 1, "model", "Azure");
+  cpu.execution_provider = "cpu";
+  behavior->models_by_id.push_back(cpu);
+  EXPECT_NE(catalog->GetModelVariant(cpu.model_id), nullptr);
+  auto* model = catalog->GetModel("model");
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->Id(), cpu.model_id);
 }
 
 TEST_F(AzureModelCatalogTest, AllUrlsFailUsesSnapshotMetadataAndScannedPathsWithoutRewritingSnapshot) {

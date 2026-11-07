@@ -9,7 +9,9 @@
 #include "exception.h"
 #include "inferencing/generative/chat/chat_template.h"
 #include "inferencing/generative/chat/chat_transcript.h"
+#include "inferencing/generative/chat/media_input.h"
 #include "inferencing/generative/chat/stop_strings.h"
+#include "items/image_item.h"
 #include "items/message_item.h"
 #include "items/text_item.h"
 #include "items/tool_call_item.h"
@@ -54,6 +56,107 @@ TEST(ChatCompletionsConverterTest, GenerateCompletionId_UniqueAcrossCalls) {
   std::string id1 = GenerateCompletionId();
   std::string id2 = GenerateCompletionId();
   EXPECT_NE(id1, id2);
+}
+
+TEST(ChatCompletionsConverterTest, MapRequestParameters_ParallelToolCallsPreservesExplicitChoice) {
+  ChatCompletionRequest request;
+  Request session_request;
+  MapRequestParameters(request, session_request);
+  EXPECT_EQ(session_request.options.Find("parallel_tool_calls"), nullptr);
+
+  request.parallel_tool_calls = false;
+  MapRequestParameters(request, session_request);
+  ASSERT_NE(session_request.options.Find("parallel_tool_calls"), nullptr);
+  EXPECT_STREQ(session_request.options.Find("parallel_tool_calls"), "false");
+
+  request.parallel_tool_calls = true;
+  MapRequestParameters(request, session_request);
+  EXPECT_STREQ(session_request.options.Find("parallel_tool_calls"), "true");
+}
+
+TEST(ChatCompletionsConverterTest, ImageUrlPartsReachTheMediaPipeline) {
+  const auto body = json::parse(R"({
+    "model": "vision",
+    "messages": [{"role": "user", "content": [
+      {"type": "text", "text": "Describe this: "},
+      {"type": "image_url", "image_url": {"url": "data:image/png;base64,AQIDBA==", "detail": "low"}},
+      {"type": "text", "text": "and this"},
+      {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,BQYHCA=="}},
+      {"type": "text", "text": "Compare them"}
+    ]}]
+  })");
+  Request request;
+  BuildRequestItems(body.get<ChatCompletionRequest>(), request);
+
+  const auto media = CollectMediaInput(request);
+  ASSERT_EQ(media.images.size(), 2u);
+  EXPECT_EQ(media.images[0]->ReadBytes(), (std::vector<std::uint8_t>{1, 2, 3, 4}));
+  EXPECT_EQ(media.images[0]->format, "image/png");
+  EXPECT_EQ(media.images[1]->ReadBytes(), (std::vector<std::uint8_t>{5, 6, 7, 8}));
+  EXPECT_EQ(media.images[1]->format, "image/jpeg");
+  ASSERT_EQ(media.messages.size(), 1u);
+  const auto& parts = media.messages[0].content;
+  ASSERT_EQ(parts.size(), 5u);
+  ASSERT_EQ(parts[0].view->type, FOUNDRY_LOCAL_ITEM_TEXT);
+  EXPECT_EQ(static_cast<const TextItem&>(*parts[0].view).text, "Describe this: ");
+  ASSERT_EQ(parts[1].view->type, FOUNDRY_LOCAL_ITEM_IMAGE);
+  ASSERT_EQ(parts[2].view->type, FOUNDRY_LOCAL_ITEM_TEXT);
+  EXPECT_EQ(static_cast<const TextItem&>(*parts[2].view).text, "and this");
+  ASSERT_EQ(parts[3].view->type, FOUNDRY_LOCAL_ITEM_IMAGE);
+  ASSERT_EQ(parts[4].view->type, FOUNDRY_LOCAL_ITEM_TEXT);
+  EXPECT_EQ(static_cast<const TextItem&>(*parts[4].view).text, "Compare them");
+}
+
+TEST(ChatCompletionsConverterTest, ImageOnlyMessageIsNotDiscarded) {
+  const auto body = json::parse(R"({
+    "model": "vision",
+    "messages": [{"role": "user", "content": [
+      {"type": "image_url", "image_url": {"url": "data:image/png;base64,AQIDBA=="}}
+    ]}]
+  })");
+  Request request;
+  BuildRequestItems(body.get<ChatCompletionRequest>(), request);
+
+  const auto media = CollectMediaInput(request);
+  ASSERT_EQ(media.images.size(), 1u);
+  ASSERT_EQ(media.messages.size(), 1u);
+  ASSERT_EQ(media.messages[0].content.back().view->type, FOUNDRY_LOCAL_ITEM_TEXT);
+  EXPECT_FALSE(static_cast<const TextItem&>(*media.messages[0].content.back().view).text.empty());
+}
+
+TEST(ChatCompletionsConverterTest, MalformedImageUrlsAreRejectedInsteadOfIgnored) {
+  for (const auto& source : {json(), json("data:image/png;base64,AQIDBA=="), json::object(), json{{"url", ""}},
+                             json{{"url", "data:image/png;base64,"}}, json{{"url", "data:image/png;base64,!!!!"}}}) {
+    SCOPED_TRACE(source.dump());
+    const json body = {
+        {"model", "vision"},
+        {"messages", json::array({{{"role", "user"},
+                                   {"content", json::array({{{"type", "text"}, {"text", "Describe"}},
+                                                            {{"type", "image_url"}, {"image_url", source}}})}}})},
+    };
+    ExpectInvalidArgument(
+        [&] {
+          Request request;
+          BuildRequestItems(body.get<ChatCompletionRequest>(), request);
+        },
+        "image_url");
+  }
+}
+
+TEST(ChatCompletionsConverterTest, RemoteImageUrlsAreRejectedInsteadOfIgnored) {
+  const auto body = json::parse(R"({
+    "model": "vision",
+    "messages": [{"role": "user", "content": [
+      {"type": "image_url", "image_url": {"url": "https://example.com/image.png"}}
+    ]}]
+  })");
+  try {
+    Request request;
+    BuildRequestItems(body.get<ChatCompletionRequest>(), request);
+    FAIL() << "Expected unsupported remote image URL to be rejected";
+  } catch (const fl::Exception& e) {
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  }
 }
 
 // ========================================================================
@@ -213,6 +316,57 @@ TEST(ChatCompletionsConverterTest, ApplyCatalogDefaults_InvalidOverriddenSetting
   EXPECT_NO_THROW(ApplyCatalogDefaults(req, settings));
   EXPECT_FLOAT_EQ(*req.top_p, 0.8f);
   EXPECT_FALSE(req.max_tokens.has_value());
+}
+
+TEST(ChatCompletionsConverterTest, TypedCatalogDefaultsMatchJsonDefaults) {
+  KeyValuePairs settings;
+  settings.Add("temperature", "0.6");
+  settings.Add("top_p", "0.95");
+  settings.Add("top_k", "20");
+  settings.Add("random_seed", "42");
+  settings.Add("max_tokens", "512");
+  settings.Add("unrecognized_setting", "not-an-option");
+
+  KeyValuePairs options;
+  ApplyCatalogDefaults(options, settings);
+
+  ChatCompletionRequest json_request;
+  ApplyCatalogDefaults(json_request, settings);
+  Request mapped_request;
+  MapRequestParameters(json_request, mapped_request);
+
+  EXPECT_EQ(options.size(), 5u);
+  for (const auto& [key, value] : options) {
+    ASSERT_NE(mapped_request.options.Find(key.c_str()), nullptr) << key;
+    if (key == "temperature" || key == "top_p") {
+      EXPECT_FLOAT_EQ(std::stof(value), std::stof(mapped_request.options.Find(key.c_str()))) << key;
+    } else {
+      EXPECT_EQ(value, mapped_request.options.Find(key.c_str())) << key;
+    }
+  }
+}
+
+TEST(ChatCompletionsConverterTest, TypedCatalogDefaultsPreserveOverridesAndRejectInvalidDefaults) {
+  for (const auto& [key, option] : {std::pair{"temperature", "temperature"}, std::pair{"top_p", "top_p"},
+                                    std::pair{"top_k", "top_k"}, std::pair{"random_seed", "seed"},
+                                    std::pair{"max_tokens", "max_output_tokens"}}) {
+    KeyValuePairs settings;
+    settings.Add(key, "invalid");
+    KeyValuePairs options;
+    options.Add(option, "1");
+
+    EXPECT_NO_THROW(ApplyCatalogDefaults(options, settings));
+    EXPECT_STREQ(options.Find(option), "1");
+
+    options.Remove(option);
+    try {
+      ApplyCatalogDefaults(options, settings);
+      FAIL() << "Expected an error for catalog setting " << key;
+    } catch (const fl::Exception& ex) {
+      EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INTERNAL) << key;
+      EXPECT_NE(std::string(ex.what()).find(key), std::string::npos) << ex.what();
+    }
+  }
 }
 
 // ========================================================================

@@ -38,6 +38,7 @@ std::mutex kLocalCatalogMutationMutex;
 const std::unordered_set<std::string> kSupportedTasks = {
     "automatic-speech-recognition",
     "chat-completion",
+    "coding",
     "embeddings",
     "text-ranking",
     "typed-decision",
@@ -52,6 +53,38 @@ struct ParsedModelId {
   std::string name;
   int version;
 };
+
+void ApplyTaskDefaults(ModelInfo& info) {
+  if (info.task == "chat-completion" || info.task == "coding") {
+    if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR)) {
+      info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, "text");
+    }
+    if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR)) {
+      info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, "text");
+    }
+  } else if (info.task == "vision-language-chat") {
+    if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR)) {
+      info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, "text,image");
+    }
+    if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR)) {
+      info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, "text");
+    }
+  } else if (info.task == "automatic-speech-recognition") {
+    if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR)) {
+      info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, "audio");
+    }
+    if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR)) {
+      info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, "text");
+    }
+  } else if (info.task == "embeddings") {
+    if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR)) {
+      info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, "text");
+    }
+    if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR)) {
+      info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, "embeddings");
+    }
+  }
+}
 
 ParsedModelId ParseModelId(const std::string& model_id) {
   const auto separator = model_id.find(':');
@@ -119,6 +152,17 @@ void RemoveLegacyRegistrationProperties(ModelInfo& info) {
   info.int_properties.erase(kLegacyAliasProperty);
   info.int_properties.erase(kLegacyRegistrationIdProperty);
   info.int_properties.erase(kLegacyVersionProperty);
+}
+
+void RemoveCallerContextLength(ModelInfo& info) {
+  if (const auto string_property = info.string_properties.find(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT);
+      string_property != info.string_properties.end()) {
+    info.string_properties.erase(string_property);
+  }
+  if (const auto int_property = info.int_properties.find(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT);
+      int_property != info.int_properties.end()) {
+    info.int_properties.erase(int_property);
+  }
 }
 
 bool IsLegacyIntegerProperty(std::string_view key) {
@@ -217,31 +261,36 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
   const auto model_path = std::filesystem::absolute(supplied_path).lexically_normal();
   const auto config_path = model_path / "genai_config.json";
   auto resolved_input_metadata = metadata;
+  std::string package_alias;
+  GenAIConfig genai_config;
   try {
     const auto package = ReadNonGenerativePackage(model_path);
     if (package) {
-      if (package->model_id != model_id) {
-        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-                 "inference_model.json Name must match model_id");
-      }
       const auto* task = metadata.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR);
-      if (!task || *task != package->task) {
+      if (!task ||
+          (*task != "text-ranking" && *task != "typed-decision")) {
         FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-                 "registration task must match inference_model.json Task");
+                 "multi-component registration requires text-ranking or typed-decision task");
       }
-      resolved_input_metadata.alias = package->alias;
+      if (!package->task.empty() && package->task != *task) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                 "package task does not match registered model task");
+      }
       resolved_input_metadata.execution_provider = package->execution_provider;
       resolved_input_metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR,
                                              package->execution_provider);
-      std::string capabilities;
-      for (const auto& capability : package->capabilities) {
-        if (!capabilities.empty()) capabilities += ",";
-        capabilities += capability;
+      package_alias = package->alias;
+      genai_config = GenAIConfig::LoadFromFile(config_path.string());
+    } else if (!DeclaresNonGenerativePackage(model_path) &&
+               std::filesystem::is_regular_file(config_path, ec)) {
+      const auto* task =
+          metadata.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR);
+      if (task &&
+          (*task == "text-ranking" || *task == "typed-decision")) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                 "non-generative registration requires component_manifest.json");
       }
-      resolved_input_metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR,
-                                             std::move(capabilities));
-    } else if (std::filesystem::is_regular_file(config_path, ec)) {
-      GenAIConfig::LoadFromFile(config_path.string());
+      genai_config = GenAIConfig::LoadFromFile(config_path.string());
     } else {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
                "model_path must contain genai_config.json or multi-component package metadata");
@@ -252,7 +301,6 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
              "invalid multi-component package: " + std::string(error.what()));
   }
-
   ListModels();
   Registration registration;
   {
@@ -266,9 +314,10 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_id is already registered: " + model_id);
     }
 
-    registration = {ResolveMetadata(resolved_input_metadata, model_id, parsed_id.name,
-                                    parsed_id.version),
-                    model_path.string()};
+    registration = {
+        ResolveMetadata(resolved_input_metadata, model_id, parsed_id.name, parsed_id.version, genai_config,
+                        package_alias),
+        model_path.string()};
 
     registrations.push_back(registration);
     SaveRegistrations(registrations);
@@ -352,21 +401,34 @@ void LocalModelCatalog::UnregisterModel(const std::string& alias_or_model_id) {
 }
 
 ModelInfo LocalModelCatalog::ResolveMetadata(const ModelInfo& metadata, const std::string& model_id,
-                                             const std::string& name, int version) const {
+                                             const std::string& name, int version,
+                                             const GenAIConfig& genai_config,
+                                             std::string_view alias_override) const {
   auto resolved = metadata;
   RemoveLegacyRegistrationProperties(resolved);
+  RemoveCallerContextLength(resolved);
 
-  resolved.alias = metadata.alias.empty() ? DeriveAlias(name) : metadata.alias;
+  resolved.alias = alias_override.empty() ? DeriveAlias(name) : std::string(alias_override);
   resolved.name = name;
   resolved.version = version;
   resolved.model_id = model_id;
   resolved.uri.clear();
+  if (!resolved.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_DISPLAY_NAME_STR)) {
+    resolved.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_DISPLAY_NAME_STR, name);
+  }
   if (!resolved.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR)) {
     resolved.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR, "local");
   }
+  ApplyTaskDefaults(resolved);
   resolved.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR, "LocalRegistration");
   resolved.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_ENTITY_TYPE_STR, "Model");
   resolved.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR, "ONNX");
+
+  if (genai_config.model && genai_config.model->context_length > 0) {
+    resolved.SetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, genai_config.model->context_length);
+  } else if (genai_config.search && genai_config.search->max_length > 0) {
+    resolved.SetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, genai_config.search->max_length);
+  }
 
   const auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
   resolved.SetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, now);
@@ -443,7 +505,10 @@ std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistration
       model_path = std::filesystem::absolute(model_path).lexically_normal();
 
       RemoveLegacyRegistrationProperties(info);
-      if (info.alias.empty()) info.alias = DeriveAlias(parsed_id.name);
+      const bool typed_registration =
+          info.task == "text-ranking" || info.task == "typed-decision";
+      if (!typed_registration || info.alias.empty())
+        info.alias = DeriveAlias(parsed_id.name);
       info.name = parsed_id.name;
       info.version = parsed_id.version;
       info.model_id = model_id;

@@ -12,6 +12,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
+from foundry_local_sdk.request import _cancellable_lock
+
 if TYPE_CHECKING:
     from foundry_local_sdk.imodel import IModel
     from foundry_local_sdk.items import Item
@@ -19,10 +21,8 @@ if TYPE_CHECKING:
     from foundry_local_sdk.response import Response
     from foundry_local_sdk.session_types import RequestOptions, RequestPreflightResult
 
-# Stamped on every versioned struct this module builds. Must match the version requested from
-# FoundryLocalGetApi (see _native/api.py): a tool definition carrying `kind` is only read as such
-# by a runtime that supports version 2.
-_API_VERSION = 2  # FOUNDRY_LOCAL_API_VERSION
+# Payload schemas stay at v2 independently of newer function-table versions.
+_API_VERSION = 2
 
 # flToolKind values.
 _TOOL_KIND_FUNCTION = 0
@@ -67,7 +67,9 @@ class StreamingResponse:
     The wrapper can be iterated at most once; a second ``iter()`` raises.
     """
 
-    def __init__(self, session: "Session", request: "Request") -> None:
+    def __init__(
+        self, session: "Session", request: "Request", cancel_event: threading.Event | None = None
+    ) -> None:
         from foundry_local_sdk._native import ffi
         from foundry_local_sdk._native.api import api
 
@@ -85,17 +87,24 @@ class StreamingResponse:
         self._lock_released = False
         self._thread: threading.Thread | None = None
 
-        session._stream_queue = self._queue
         worker_started = threading.Event()
 
         def _run() -> None:
             try:
-                with session._native_lifetime() as ptr:
-                    worker_started.set()
-                    out = ffi.new("flResponse**")
-                    api.check_status(
-                        api.inference.Session_ProcessRequest(ptr, request._ptr, out)
-                    )
+                with (
+                    session._native_lifetime(cancel_event) as ptr,
+                    request._native_lifetime(cancel_event) as request_ptr,
+                    request._cancellation(cancel_event),
+                ):
+                    session._stream_queue = self._queue
+                    try:
+                        worker_started.set()
+                        out = ffi.new("flResponse**")
+                        api.check_status(
+                            api.inference.Session_ProcessRequest(ptr, request_ptr, out)
+                        )
+                    finally:
+                        session._stream_queue = None
                 from foundry_local_sdk.response import Response
 
                 # Response takes ownership of out[0]; wrapper releases it.
@@ -105,7 +114,6 @@ class StreamingResponse:
                 self._error = exc
                 self._queue.put(_StreamError(exc))
             finally:
-                session._stream_queue = None
                 self._queue.put(_DONE)
 
         t = threading.Thread(target=_run, daemon=True)
@@ -301,8 +309,8 @@ class Session(abc.ABC):
             )
 
     @contextmanager
-    def _native_lifetime(self) -> Iterator[object]:
-        with self._operation_lock:
+    def _native_lifetime(self, cancel_event: threading.Event | None = None) -> Iterator[object]:
+        with self._operation_lock if cancel_event is None else _cancellable_lock(self._operation_lock, cancel_event):
             self._check_open()
             state = self._native_call_state
             state.depth = getattr(state, "depth", 0) + 1
@@ -391,6 +399,8 @@ class Session(abc.ABC):
     def process_streaming_request(
         self,
         request: "Request",
+        *,
+        cancel_event: threading.Event | None = None,
     ) -> "StreamingResponse":
         """Run a request and stream the items produced by the model.
 
@@ -415,6 +425,10 @@ class Session(abc.ABC):
         automatically calls ``request.cancel()`` and joins the worker so
         the session is ready for the next request. Use ``with`` on the
         returned wrapper to guarantee cleanup of the terminal Response.
+
+        Setting ``cancel_event`` cancels admission waits or native processing without requiring another output item.
+        An event already set before processing starts rejects without submitting inference. Native completion can win
+        a cancellation race. Native non-interruptible stages can delay cancellation and cleanup.
 
         Requires ``set_streaming(True)`` to have been called first.
 
@@ -441,20 +455,31 @@ class Session(abc.ABC):
             )
 
         try:
-            return StreamingResponse(self, request)
+            return StreamingResponse(self, request, cancel_event)
         except BaseException:
             self._streaming_in_flight.release()
             raise
 
-    def process_request(self, request: "Request") -> "Response":
-        """Run the request synchronously and return the complete response."""
+    def process_request(
+        self, request: "Request", *, cancel_event: threading.Event | None = None
+    ) -> "Response":
+        """Run synchronously; setting ``cancel_event`` from another thread cancels native processing.
+
+        Cancellation also interrupts waits for the session or request to become available. An event already set rejects
+        without submitting inference. Native completion can win a cancellation race, and native non-interruptible
+        stages can delay cancellation and cleanup.
+        """
         from foundry_local_sdk._native import ffi
         from foundry_local_sdk._native.api import api
         from foundry_local_sdk.response import Response
 
-        with self._native_lifetime() as ptr:
+        with (
+            self._native_lifetime(cancel_event) as ptr,
+            request._native_lifetime(cancel_event) as request_ptr,
+            request._cancellation(cancel_event),
+        ):
             out = ffi.new("flResponse**")
-            api.check_status(api.inference.Session_ProcessRequest(ptr, request._ptr, out))
+            api.check_status(api.inference.Session_ProcessRequest(ptr, request_ptr, out))
             return Response(out[0])
 
     def _close(self) -> None:
@@ -473,13 +498,14 @@ class Session(abc.ABC):
         t = getattr(self, "_stream_thread", None)
         if t is not None and t.is_alive():
             req = getattr(self, "_stream_request", None)
-            if req is not None:
-                try:
-                    req.cancel()
-                except Exception:
-                    pass
             # Session_Release and the manager lease must wait until native processing exits.
-            t.join()
+            while t.is_alive():
+                if req is not None:
+                    try:
+                        req.cancel()
+                    except Exception:
+                        pass
+                t.join(timeout=0.01)
 
         with self._operation_lock:
             if self._closed or self._ptr is None:
@@ -514,19 +540,19 @@ class Session(abc.ABC):
 
 
 class ChatSession(Session):
-    """Inference session for chat-completion and vision-language-chat models.
+    """Inference session for chat-completion, coding, and vision-language-chat models.
 
     Validates the model task at construction time. Supports tool definitions,
     turn count inspection, and turn undo.
     """
 
-    _SUPPORTED_TASKS = frozenset({"chat-completion", "vision-language-chat"})
+    _SUPPORTED_TASKS = frozenset({"chat-completion", "coding", "vision-language-chat"})
 
     def __init__(self, model: "IModel") -> None:
         task = model.info.task
         if task not in self._SUPPORTED_TASKS:
             raise ValueError(
-                f"ChatSession requires a model with task 'chat-completion' or "
+                f"ChatSession requires a model with task 'chat-completion', 'coding', or "
                 f"'vision-language-chat', but got {task!r}."
             )
         super().__init__(model)

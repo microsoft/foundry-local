@@ -1,7 +1,9 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "exception.h"
+#include "configuration.h"
 #include "logger.h"
+#include "manager.h"
 #include "platform/telemetry_device_id.h"
 #include "telemetry/telemetry_action_tracker.h"
 #include "telemetry/download_tracker.h"
@@ -16,6 +18,7 @@
 #include "telemetry/telemetry_redaction.h"
 #include "telemetry/telemetry_request_metrics.h"
 #include "telemetry/telemetry_sampling.h"
+#include "util/scope_guard.h"
 
 #include <gtest/gtest.h>
 
@@ -89,6 +92,20 @@ class ScopedEnvVar {
   std::string original_;
   bool had_original_ = false;
 };
+
+#ifdef _WIN32
+TEST(TelemetryEnvironmentTest, WindowsManagerStartupSuppressesOrtTelemetry) {
+  for (const char* initial_value : {static_cast<const char*>(nullptr), "0"}) {
+    ScopedEnvVar ort_telemetry("ORT_DISABLE_TELEMETRY", initial_value);
+    Configuration config;
+    config.app_name = "ort-telemetry-workaround-test";
+    config.app_data_dir = (std::filesystem::current_path() / "ort-telemetry-workaround-test").string();
+    Manager::Create(config);
+    ScopeGuard cleanup([]() noexcept { Manager::Destroy(); });
+    EXPECT_EQ(TelemetryEnvironment::GetEnv("ORT_DISABLE_TELEMETRY"), "1");
+  }
+}
+#endif
 
 struct LogEntry {
   LogLevel level;
@@ -166,7 +183,7 @@ TEST(TelemetryEnvironmentTest, DetectsCiEnvironmentFlag) {
 }
 
 TEST(TelemetryEnvironmentTest, DetectsSharedOrtTelemetryOptOut) {
-  ScopedEnvVar disabled("ORT_TELEMETRY_DISABLED", "true");
+  ScopedEnvVar disabled("ORT_DISABLE_TELEMETRY", "true");
   EXPECT_TRUE(TelemetryEnvironment::IsTelemetryDisabledByEnvVar());
 }
 
@@ -234,7 +251,7 @@ TEST(TelemetryEnvironmentTest, ClassifiesEmulatorAndUndetectedHostWithoutClaimin
 
 TEST(OneDsTelemetryTest, DisableNonessentialTelemetrySuppressesUpload) {
   constexpr std::array<const char*, 14> environment_variables = {
-      "ORT_TELEMETRY_DISABLED",
+      "ORT_DISABLE_TELEMETRY",
       "CI",
       "TF_BUILD",
       "GITHUB_ACTIONS",
@@ -291,13 +308,13 @@ TEST(OneDsTelemetryTest, OrtEnvironmentVariableSuppressesOnlyNonessentialUpload)
   for (const auto* name : ci_environment_variables) {
     unset_variables.push_back(std::make_unique<ScopedEnvVar>(name, nullptr));
   }
-  ScopedEnvVar disabled("ORT_TELEMETRY_DISABLED", "true");
+  ScopedEnvVar disabled("ORT_DISABLE_TELEMETRY", "true");
 
   RecordingLogger logger;
   OneDsTelemetry telemetry("TestApp", logger);
 
   constexpr std::string_view expected_diagnostic =
-      "[Telemetry] Disabled via ORT_TELEMETRY_DISABLED; non-essential 1DS upload disabled "
+      "[Telemetry] Disabled via ORT_DISABLE_TELEMETRY; non-essential 1DS upload disabled "
       "(ProcessInfo still uploads)";
   const auto diagnostic =
       std::find_if(logger.entries.begin(), logger.entries.end(), [expected_diagnostic](const auto& entry) {
@@ -305,6 +322,36 @@ TEST(OneDsTelemetryTest, OrtEnvironmentVariableSuppressesOnlyNonessentialUpload)
       });
   EXPECT_NE(diagnostic, logger.entries.end());
   EXPECT_FALSE(telemetry.IsUploadEnabled());
+}
+
+TEST(OneDsTelemetryTest, RecordProcessInfoUsesCachedIdentityAndResolvedConfiguration) {
+  ScopedEnvVar ci("CI", "true");
+  RecordingLogger logger;
+  OneDsTelemetry telemetry("cached-app", logger);
+  ASSERT_FALSE(telemetry.IsUploadEnabled());
+  logger.entries.clear();
+
+  Configuration configuration;
+  configuration.app_name = "different-config-app";
+  configuration.app_data_dir = "private-app-data";
+  configuration.log_level = LogLevel::Debug;
+  configuration.web_service_endpoints = {"http://127.0.0.1:0", "http://localhost:0"};
+  configuration.external_service_url = "https://private.example.invalid?token=secret";
+  configuration.Validate();
+  {
+    ScopedEnvVar changed_ci("CI", nullptr);
+    telemetry.RecordProcessInfo(configuration);
+  }
+
+  ASSERT_EQ(logger.entries.size(), 1u);
+  const auto& message = logger.entries.front().message;
+  EXPECT_NE(message.find("ProcessInfo AppName=cached-app "), std::string::npos);
+  EXPECT_NE(message.find("DeviceIdStatus=Disabled"), std::string::npos);
+  EXPECT_NE(message.find("AppDataDir=[path] ModelCacheDir=[path] LogsDir=[path]"), std::string::npos);
+  EXPECT_NE(message.find("LogLevel=1 WebServiceUrlCount=2 ExternalUrlCount=1"), std::string::npos);
+  EXPECT_EQ(message.find(configuration.app_name), std::string::npos);
+  EXPECT_EQ(message.find("private"), std::string::npos);
+  EXPECT_EQ(message.find("secret"), std::string::npos);
 }
 
 TEST(TelemetryActionTest, EpActionNamesMatchEventNames) {
@@ -434,8 +481,8 @@ TEST(TelemetryLoggerTest, RecordProcessInfoIncludesStartupMetadata) {
   TelemetryLogger telemetry("foundry-local", logger);
 
   ProcessInfo info;
-  info.app_name = "foundry-local";
   info.app_version = "4.5.6";
+  info.publisher = "Example Publisher";
   info.os_name = "Windows";
   info.os_version = "10.0.26100";
   info.cpu_arch = "amd64";
@@ -450,12 +497,19 @@ TEST(TelemetryLoggerTest, RecordProcessInfoIncludesStartupMetadata) {
   info.device_id_scope = "container";
   info.cpu_count = 8;
   info.total_memory_mb = 32768;
+  info.app_data_dir = "private-app-data";
+  info.model_cache_dir = "../private-model-cache";
+  info.logs_dir = "C:\\Users\\sample-user\\private-logs";
+  info.log_level = LogLevel::Debug;
+  info.web_service_url_count = 2;
+  info.external_url_count = 1;
 
   telemetry.RecordProcessInfo(info);
 
   ASSERT_EQ(logger.entries.size(), 1u);
   EXPECT_NE(logger.entries[0].message.find("ProcessInfo"), std::string::npos);
   EXPECT_NE(logger.entries[0].message.find("AppVersion=4.5.6"), std::string::npos);
+  EXPECT_NE(logger.entries[0].message.find("Publisher=Example Publisher"), std::string::npos);
   EXPECT_NE(logger.entries[0].message.find("ProcessName=foundry_local_test.exe"), std::string::npos);
   EXPECT_NE(logger.entries[0].message.find("DeviceIdStatus=Existing"), std::string::npos);
   EXPECT_NE(logger.entries[0].message.find("ContainerType=kubernetes"), std::string::npos);
@@ -465,6 +519,9 @@ TEST(TelemetryLoggerTest, RecordProcessInfoIncludesStartupMetadata) {
   EXPECT_NE(logger.entries[0].message.find("DeviceIdScope=container"), std::string::npos);
   EXPECT_NE(logger.entries[0].message.find("CpuCount=8"), std::string::npos);
   EXPECT_NE(logger.entries[0].message.find("TotalMemoryMB=32768"), std::string::npos);
+  EXPECT_NE(logger.entries[0].message.find("AppDataDir=[path] ModelCacheDir=[path] LogsDir=[path]"), std::string::npos);
+  EXPECT_NE(logger.entries[0].message.find("LogLevel=1 WebServiceUrlCount=2 ExternalUrlCount=1"), std::string::npos);
+  EXPECT_EQ(logger.entries[0].message.find("private-"), std::string::npos);
 }
 
 TEST(TelemetryLoggerTest, RecordExceptionRedactsPaths) {
@@ -570,6 +627,56 @@ TEST(TelemetryMetadataTest, HostAppVersionIsAlwaysPopulated) {
 
   EXPECT_FALSE(metadata.app_version.empty());
   EXPECT_FALSE(metadata.version.empty());
+  EXPECT_FALSE(metadata.process_name.empty());
+}
+
+TEST(TelemetryMetadataTest, HostPublisherUsesExecutableCompanyNameWhenAvailable) {
+  const auto metadata = BuildTelemetryMetadata("not-the-publisher");
+  const auto process = BuildProcessInfo(metadata, {}, false);
+
+#ifdef FOUNDRY_LOCAL_TEST_HOST_VERSION_RESOURCE
+  EXPECT_EQ(metadata.publisher, "Foundry Telemetry Test Publisher");
+  EXPECT_EQ(metadata.app_version, "7.8.9");
+#else
+  EXPECT_TRUE(metadata.publisher.empty());
+#endif
+  EXPECT_EQ(process.publisher, metadata.publisher);
+}
+
+TEST(TelemetryMetadataTest, PublisherIsOptionalAndSanitizedBeforeRetention) {
+  TelemetryMetadata metadata;
+  EXPECT_TRUE(BuildProcessInfo(metadata, {}, false).publisher.empty());
+
+  metadata.publisher = "Example Publisher C:\\Users\\Alice\\private";
+  const auto process = BuildProcessInfo(metadata, {}, false);
+  EXPECT_EQ(process.publisher, "Example Publisher [path]");
+
+  RecordingLogger logger;
+  TelemetryLogger telemetry("test-app", logger);
+  ProcessInfo unsanitized;
+  unsanitized.publisher = metadata.publisher;
+  telemetry.RecordProcessInfo(unsanitized);
+  ASSERT_EQ(logger.entries.size(), 1u);
+  EXPECT_NE(logger.entries[0].message.find("Publisher=Example Publisher [path]"), std::string::npos);
+  EXPECT_EQ(logger.entries[0].message.find("Alice"), std::string::npos);
+}
+
+TEST(TelemetryMetadataTest, ProcessInfoReusesCachedProcessMetadata) {
+  TelemetryMetadata metadata;
+  metadata.app_version = "cached-version";
+  metadata.os_name = "cached-os";
+  metadata.os_version = "cached-os-version";
+  metadata.cpu_arch = "cached-architecture";
+  metadata.process_name = "cached-process.exe";
+
+  const auto info = BuildProcessInfo(metadata, {}, false);
+
+  EXPECT_EQ(info.app_version, metadata.app_version);
+  EXPECT_EQ(info.os_name, metadata.os_name);
+  EXPECT_EQ(info.os_version, metadata.os_version);
+  EXPECT_EQ(info.cpu_arch, metadata.cpu_arch);
+  EXPECT_EQ(info.process_name, metadata.process_name);
+  EXPECT_EQ(info.device_id_status, "Disabled");
 }
 
 #ifdef _WIN32
@@ -655,7 +762,7 @@ TEST(TelemetryDeviceIdPlatformTest, ExistingDeviceIdIsHardenedBeforeReuse) {
 
 #ifdef _WIN32
 TEST(TelemetryMetadataTest, ProcessNamePreservesExecutableExtensionOnWindows) {
-  auto info = BuildProcessInfo(BuildTelemetryMetadata("foundry-local-test"), /*include_device_id_status=*/false);
+  auto info = BuildProcessInfo(BuildTelemetryMetadata("foundry-local-test"), {}, /*include_device_id_status=*/false);
 
   EXPECT_TRUE(info.process_name.ends_with(".exe")) << info.process_name;
 }
@@ -692,6 +799,126 @@ TEST(TelemetryContextTest, SuppressesUnneededCommonContextWithoutChangingExplici
   EXPECT_EQ(context.fields.at("DeviceInfo.Id"), "device-id");
   for (const auto* field : TelemetryInternal::kSuppressedCommonContextFields) {
     EXPECT_TRUE(context.fields.at(field).empty()) << field;
+  }
+}
+
+TEST(TelemetryContextTest, CommonEventIdentityIncludesConfiguredAppNameAndHashedDeviceId) {
+  struct RecordingContext {
+    std::map<std::string, std::string> fields;
+    void SetContext(const char* name, const std::string& value) { fields[name] = value; }
+  } context;
+  const auto hashed = TelemetryDeviceId::HashForTelemetry("01234567-89ab-4def-8123-456789abcdef");
+
+  TelemetryInternal::SetCommonEventIdentity(context, "configured-app", hashed);
+
+  EXPECT_EQ(context.fields.size(), 2u);
+  EXPECT_EQ(context.fields.at("AppName"), "configured-app");
+  EXPECT_FALSE(context.fields.contains("appName"));
+  EXPECT_EQ(context.fields.at("deviceId"), hashed);
+  EXPECT_NE(context.fields.at("deviceId"), "01234567-89ab-4def-8123-456789abcdef");
+
+  TelemetryInternal::SetCommonEventIdentity(context, "app /private", {});
+  EXPECT_EQ(context.fields.size(), 2u);
+  EXPECT_EQ(context.fields.at("AppName"), "app [path]");
+  EXPECT_FALSE(context.fields.contains("appName"));
+  EXPECT_EQ(context.fields.at("deviceId"), "Unavailable");
+}
+
+TEST(TelemetryMetadataTest, ProcessInfoIncludesResolvedRedactedConfiguration) {
+  Configuration configuration;
+  configuration.app_name = "configured-app";
+  configuration.app_data_dir = "private-app-data";
+  configuration.model_cache_dir = "{appdata}/private-models";
+  configuration.logs_dir = "{appdata}/private-logs";
+  configuration.log_level = LogLevel::Debug;
+  configuration.web_service_endpoints = {"http://127.0.0.1:0", "http://localhost:0"};
+  configuration.external_service_url = "https://private.example.invalid?token=secret";
+  configuration.Validate();
+  const auto original = configuration;
+  const auto info = BuildProcessInfo(BuildTelemetryMetadata(configuration.app_name), configuration, false);
+
+  EXPECT_EQ(info.app_data_dir, "[path]");
+  EXPECT_EQ(info.model_cache_dir, "[path]");
+  EXPECT_EQ(info.logs_dir, "[path]");
+  EXPECT_EQ(info.log_level, LogLevel::Debug);
+  EXPECT_EQ(info.web_service_url_count, 2);
+  EXPECT_EQ(info.external_url_count, 1);
+  EXPECT_EQ(configuration.app_data_dir, original.app_data_dir);
+  EXPECT_EQ(configuration.model_cache_dir, original.model_cache_dir);
+  EXPECT_EQ(configuration.logs_dir, original.logs_dir);
+  EXPECT_EQ(configuration.web_service_endpoints, original.web_service_endpoints);
+  EXPECT_EQ(configuration.external_service_url, original.external_service_url);
+}
+
+TEST(TelemetryMetadataTest, ProcessInfoConfigurationDefaultsAndEmptyPaths) {
+  Configuration configuration;
+  configuration.app_name = "configured-app";
+  const auto metadata = BuildTelemetryMetadata(configuration.app_name);
+  const auto unset = BuildProcessInfo(metadata, configuration, false);
+  EXPECT_TRUE(unset.app_data_dir.empty());
+  EXPECT_TRUE(unset.model_cache_dir.empty());
+  EXPECT_TRUE(unset.logs_dir.empty());
+  EXPECT_EQ(unset.log_level, LogLevel::Warning);
+  EXPECT_EQ(unset.web_service_url_count, 0);
+  EXPECT_EQ(unset.external_url_count, 0);
+
+  configuration.app_data_dir = "private-app-data";
+  configuration.Validate();
+  const auto resolved = BuildProcessInfo(metadata, configuration, false);
+  EXPECT_EQ(resolved.app_data_dir, "[path]");
+  EXPECT_EQ(resolved.model_cache_dir, "[path]");
+  EXPECT_EQ(resolved.logs_dir, "[path]");
+
+  configuration.app_data_dir = "";
+  configuration.model_cache_dir = "";
+  configuration.logs_dir = "";
+  const auto empty = BuildProcessInfo(metadata, configuration, false);
+  EXPECT_TRUE(empty.app_data_dir.empty());
+  EXPECT_TRUE(empty.model_cache_dir.empty());
+  EXPECT_TRUE(empty.logs_dir.empty());
+}
+
+TEST(TelemetryMetadataTest, ProcessInfoPreservesEveryLogLevelAndCountsConfiguredUrls) {
+  Configuration configuration;
+  configuration.app_name = "configured-app";
+  const auto metadata = BuildTelemetryMetadata(configuration.app_name);
+  for (const auto level : {LogLevel::Verbose, LogLevel::Debug, LogLevel::Information,
+                           LogLevel::Warning, LogLevel::Error, LogLevel::Fatal}) {
+    configuration.log_level = level;
+    EXPECT_EQ(BuildProcessInfo(metadata, configuration, false).log_level, level);
+  }
+
+  configuration.web_service_endpoints = {"http://127.0.0.1:0"};
+  EXPECT_EQ(BuildProcessInfo(metadata, configuration, false).web_service_url_count, 1);
+  configuration.external_service_url = "https://private.example.invalid";
+  const auto external = BuildProcessInfo(metadata, configuration, false);
+  EXPECT_EQ(external.web_service_url_count, 1);
+  EXPECT_EQ(external.external_url_count, 1);
+  configuration.web_service_endpoints.clear();
+  const auto external_only = BuildProcessInfo(metadata, configuration, false);
+  EXPECT_EQ(external_only.web_service_url_count, 0);
+  EXPECT_EQ(external_only.external_url_count, 1);
+}
+
+TEST(OneDsTelemetryTest, ConfigurationPathsAreAlwaysRedactedBeforeCopiesAndAtFinalBoundary) {
+  using namespace ::Microsoft::Applications::Events;
+  const std::string paths[] = {"C:\\Users\\sample-user\\data", "/home/sample-user/data", "../data", "private-data",
+                               ".", "\\\\server\\private-share", std::string(1024 * 1024, 'x')};
+  for (const char* name : {"appDataDir", "modelCacheDir", "logsDir"}) {
+    for (const auto& path : paths) {
+      TelemetryInternal::BoundedEventProperties bounded("ProcessInfo");
+      bounded.SetProperty(name, path);
+      EXPECT_STREQ(bounded.GetProperties(DataCategory_PartC).at(name).as_string, "[path]") << name;
+
+      EventProperties event("ProcessInfo");
+      event.SetProperty(name, path);
+      TelemetryInternal::SanitizeEventProperties(event);
+      EXPECT_STREQ(event.GetProperties(DataCategory_PartC).at(name).as_string, "[path]") << name;
+    }
+
+    TelemetryInternal::BoundedEventProperties empty("ProcessInfo");
+    empty.SetProperty(name, "");
+    EXPECT_STREQ(empty.GetProperties(DataCategory_PartC).at(name).as_string, "");
   }
 }
 
@@ -827,7 +1054,7 @@ TEST(OneDsTelemetryTest, BoundsEveryStringDimensionBeforeEventPropertyCopies) {
       "ExceptionMessage",
       "ErrorMessage",
       "appVersion",
-      "appName",
+      "AppName",
       "osName",
       "osVersion",
       "architecture",
@@ -1176,15 +1403,18 @@ TEST(TelemetryMetadataTest, BoundsMetadataBeforeRetentionAndProcessInfoCopies) {
   EXPECT_EQ(metadata.app_name.size(), 1024u);
   metadata.app_name = input;
   metadata.app_version = input;
+  metadata.publisher = input;
   metadata.os_name = input;
   metadata.os_version = input;
   metadata.cpu_arch = input;
-  const auto process = BuildProcessInfo(metadata, false);
-  EXPECT_EQ(process.app_name.size(), 1024u);
+  metadata.process_name = input;
+  const auto process = BuildProcessInfo(metadata, {}, false);
   EXPECT_EQ(process.app_version.size(), 1024u);
+  EXPECT_EQ(process.publisher.size(), 1024u);
   EXPECT_EQ(process.os_name.size(), 1024u);
   EXPECT_EQ(process.os_version.size(), 1024u);
   EXPECT_EQ(process.cpu_arch.size(), 1024u);
+  EXPECT_EQ(process.process_name.size(), 1024u);
   EXPECT_EQ(metadata.app_name, input);
 }
 
@@ -1213,7 +1443,7 @@ TEST(TelemetryEnvironmentTest, DistinguishesUnsetAndEmptyFromRejectedValues) {
 TEST(TelemetryEnvironmentTest, RejectsOversizedFunctionalValuesAndFailsClosedForGatingFlags) {
   const std::string input(kMaxTelemetryEnvironmentLength + 1, 'x');
   ScopedEnvVar variable("FOUNDRY_TELEMETRY_LIMIT_TEST", input.c_str());
-  ScopedEnvVar disabled("ORT_TELEMETRY_DISABLED", input.c_str());
+  ScopedEnvVar disabled("ORT_DISABLE_TELEMETRY", input.c_str());
   ScopedEnvVar ci("CI", input.c_str());
   EXPECT_TRUE(TelemetryEnvironment::GetEnv("FOUNDRY_TELEMETRY_LIMIT_TEST").empty());
   EXPECT_FALSE(TelemetryEnvironment::TryGetEnv("FOUNDRY_TELEMETRY_LIMIT_TEST").has_value());
@@ -1385,7 +1615,8 @@ TEST(TelemetryLoggerTest, BoundsEveryEventStringBeforeFormatting) {
   catalog.error_message = catalog.user_agent = catalog.correlation_id = input;
   telemetry.RecordCatalogFetch(catalog);
   ProcessInfo process;
-  process.app_name = process.app_version = process.os_name = process.os_version = process.cpu_arch = input;
+  process.publisher = input;
+  process.app_version = process.os_name = process.os_version = process.cpu_arch = input;
   process.process_name = process.device_id_status = process.container_type = process.virtualization_type = input;
   process.host_environment = process.environment_detection_confidence = process.device_id_scope = input;
   telemetry.RecordProcessInfo(process);

@@ -73,8 +73,10 @@ class MockCatalog : public ICatalog {
   std::vector<Model*> GetLoadedModels() const override {
     std::vector<Model*> result;
     for (auto& m : models_) {
-      if (m.IsLoaded()) {
-        result.push_back(&m);
+      for (auto* variant : m.Variants()) {
+        if (variant->IsLoaded()) {
+          result.push_back(variant);
+        }
       }
     }
     return result;

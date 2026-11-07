@@ -9,7 +9,7 @@ use tokio_stream::StreamExt;
 
 use foundry_local_sdk::{
     ChatSession, FoundryLocalConfig, FoundryLocalError, FoundryLocalManager, Item, Request,
-    RequestOptions, SearchOptions, ToolChoice, ToolDefinition,
+    RequestOptions, SearchOptions, TextKind, ToolChoice, ToolDefinition,
 };
 
 /// Convenience alias matching the SDK's internal Result type.
@@ -108,7 +108,11 @@ async fn main() -> Result<()> {
             let result = invoke_tool(&call.name, &args)?;
             println!("Tool result: {result}");
             tool_results.push(Item::tool_result(call.call_id.clone(), result));
-        } else if let Some(text) = item.as_text() {
+        } else if let Item::Text {
+            text,
+            kind: TextKind::Default,
+        } = item
+        {
             print!("{text}");
             io::stdout().flush().ok();
         }
@@ -138,7 +142,11 @@ async fn main() -> Result<()> {
     print!("Assistant: ");
     let mut stream = session.process_streaming_request(follow_up);
     while let Some(item) = stream.next().await {
-        if let Some(text) = item?.as_text() {
+        if let Item::Text {
+            text,
+            kind: TextKind::Default,
+        } = item?
+        {
             print!("{text}");
             io::stdout().flush().ok();
         }
