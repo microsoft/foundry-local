@@ -5,12 +5,17 @@
 #include "log_level.h"
 
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace fl {
+
+namespace http {
+class ModelHttpTransport;
+}
 
 /// Validates that a catalog URL is non-empty and does not target the legacy Azure catalog endpoint.
 /// Throws fl::Exception on failure.
@@ -60,6 +65,9 @@ struct Configuration {
 
   /// Additional/undocumented options passed through to the core.
   std::map<std::string, std::string> additional_options;
+
+  /// Process-local only. Configuration copies and active operations share one retained callback context.
+  std::shared_ptr<http::ModelHttpTransport> model_http_transport;
 
   /// Validates the configuration and resolves defaults.
   /// Expands `{home}` placeholders and sets default cache directory.

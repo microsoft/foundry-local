@@ -5,6 +5,7 @@
 #include "catalog/catalog_cache.h"
 #include "catalog/catalog_client.h"
 #include "catalog/local_model_scanner.h"
+#include "http/model_http_transport.h"
 #include "inferencing/execution_provider.h"
 #include "inferencing/generative/genai_config.h"
 #include "model.h"
@@ -180,7 +181,8 @@ AzureModelCatalog::AzureModelCatalog(std::vector<std::pair<std::string, std::opt
                                      const IEpDetector& ep_detector,
                                      ILogger& logger,
                                      bool cache_only,
-                                     ITelemetry& telemetry)
+                                     ITelemetry& telemetry,
+                                     std::shared_ptr<http::ModelHttpTransport> model_http_transport)
     : BaseModelCatalog(catalog_urls.empty() ? kDefaultCatalogUrl : catalog_urls.front().first, logger),
       catalog_urls_(std::move(catalog_urls)),
       cache_dir_(std::move(cache_dir)),
@@ -188,7 +190,8 @@ AzureModelCatalog::AzureModelCatalog(std::vector<std::pair<std::string, std::opt
       catalog_devices_(std::make_unique<CatalogDevices>(ep_detector)),
       logger_(logger),
       cache_only_(cache_only),
-      telemetry_(telemetry) {
+      telemetry_(telemetry),
+      model_http_transport_(std::move(model_http_transport)) {
   if (catalog_urls_.empty()) {
     catalog_urls_.emplace_back(kDefaultCatalogUrl, std::optional<std::string>(kDefaultCatalogFilter));
   }
@@ -258,6 +261,12 @@ BaseModelCatalog::VariantEligibility AzureModelCatalog::MakeVariantEligibility()
 
 std::unique_ptr<ICatalogClient> AzureModelCatalog::CreateCatalogClient(const std::string& url,
                                                                        const std::string& filter) const {
+  if (model_http_transport_) {
+    return std::make_unique<AzureCatalogClient>(url, filter, *catalog_devices_, logger_,
+                                                AzureCatalogClient::HttpPostResponseFn{}, http::RetryConfig{},
+                                                model_http_transport_);
+  }
+
   return MakeCatalogClient(url, filter, *catalog_devices_, logger_, cache_dir_);
 }
 

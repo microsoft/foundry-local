@@ -10,6 +10,7 @@
 #include "c_api_types.h"
 #include "catalog.h"
 #include "exception.h"
+#include "http/model_http_transport.h"
 #include "version.h"
 #include "util/string_utils.h"
 #include "items/audio_item.h"
@@ -183,6 +184,12 @@ static const char* FL_API_CALL Status_GetErrorMessageImpl(const flStatus* status
   return status ? status->message.c_str() : "";
 }
 
+flErrorCode fl::http::ConsumeModelHttpStatus(flStatus& status) noexcept {
+  const auto code = Status_GetErrorCodeImpl(&status);
+  Status_ReleaseImpl(&status);
+  return code;
+}
+
 // ========================================================================
 // Configuration API
 // ========================================================================
@@ -323,6 +330,19 @@ FL_API_STATUS_IMPL(SetUseSharedHostImpl, flConfiguration* config, bool enabled) 
   API_IMPL_END
 }
 
+FL_API_STATUS_IMPL(SetModelHttpTransportImpl, flConfiguration* config, const flHttpTransport* transport) {
+  API_IMPL_BEGIN
+  if (!config) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "config must not be null");
+  }
+
+  // Construct before assignment: failed validation leaves the previous transport intact.
+  AsImpl(config)->model_http_transport =
+      transport ? std::make_shared<fl::http::ModelHttpTransport>(*transport) : nullptr;
+  return nullptr;
+  API_IMPL_END
+}
+
 static const flConfigurationApi g_configuration_api = {
     Configuration_CreateImpl,
     Configuration_ReleaseImpl,
@@ -336,12 +356,21 @@ static const flConfigurationApi g_configuration_api = {
     SetExternalServiceUrlImpl,
     SetAdditionalOptionsImpl,
     SetUseSharedHostImpl,
+    nullptr,  // The pre-v4 negotiation path must not expose the new setter.
 };
+
+static const flConfigurationApi g_configuration_api_v4 = [] {
+  auto api = g_configuration_api;
+  api.SetModelHttpTransport = SetModelHttpTransportImpl;
+  return api;
+}();
 
 static_assert(offsetof(flConfigurationApi, SetAdditionalOptions) / sizeof(void*) == 10,
               "Size of version 1 Configuration API cannot change");
 static_assert(offsetof(flConfigurationApi, SetUseSharedHost) / sizeof(void*) == 11,
               "Size of version 3 Configuration API cannot change");
+static_assert(offsetof(flConfigurationApi, SetModelHttpTransport) / sizeof(void*) == 12,
+              "Version 4 Configuration API must append after the version 3 prefix");
 
 // ========================================================================
 // Manager API
@@ -2020,6 +2049,10 @@ static const flConfigurationApi* FL_API_CALL GetConfigurationApiImpl() FL_NO_EXC
   return &g_configuration_api;
 }
 
+static const flConfigurationApi* FL_API_CALL GetConfigurationApiV4Impl() FL_NO_EXCEPTION {
+  return &g_configuration_api_v4;
+}
+
 static const flItemApi* FL_API_CALL GetItemApiImpl() FL_NO_EXCEPTION {
   return &g_item_api;
 }
@@ -2070,6 +2103,12 @@ static_assert(offsetof(flApi, Manager_IsShutdownRequested) / sizeof(void*) == 28
 static_assert(offsetof(flApi, Manager_GetCatalogByType) / sizeof(void*) == 29,
               "Size of version 2 API cannot change");
 
+static const flApi g_api_v4 = [] {
+  auto api = g_api;
+  api.GetConfigurationApi = GetConfigurationApiV4Impl;
+  return api;
+}();
+
 // ========================================================================
 // Exported symbols — the ONLY symbols the library exports
 // ========================================================================
@@ -2077,8 +2116,12 @@ static_assert(offsetof(flApi, Manager_GetCatalogByType) / sizeof(void*) == 29,
 extern "C" {
 
 FL_EXPORT const flApi* FL_API_CALL FoundryLocalGetApi(uint32_t version) FL_NO_EXCEPTION {
-  if (version <= FOUNDRY_LOCAL_API_VERSION) {
+  if (version < 4) {
     return &g_api;
+  }
+
+  if (version == FOUNDRY_LOCAL_API_VERSION) {
+    return &g_api_v4;
   }
 
   return nullptr;

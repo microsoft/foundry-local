@@ -35,6 +35,9 @@ and streaming across languages, see [Inference with the Foundry Local SDK](../IN
 Models with task `coding` use `ChatSession`. See [coding models](../INFERENCING.md#coding-models) for
 capabilities, registration, and compatibility considerations.
 
+For custom model acquisition clients, see [Custom model HTTP transports](docs/model-http-transport.md).
+The guide describes the native callback contract and proposed adapters for Rust, JavaScript, C#, and Python.
+
 ## Install From NuGet
 
 **You do not need to build Foundry Local from source.** Restore the published

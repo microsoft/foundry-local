@@ -33,7 +33,8 @@ class AzureModelCatalog : public BaseModelCatalog {
                     const IEpDetector& ep_detector,
                     ILogger& logger,
                     bool cache_only,
-                    ITelemetry& telemetry);
+                    ITelemetry& telemetry,
+                    std::shared_ptr<http::ModelHttpTransport> model_http_transport = nullptr);
   ~AzureModelCatalog() override;
 
   // Metadata-only override for hosted clients; never changes the native runtime's registered providers.
@@ -79,6 +80,7 @@ class AzureModelCatalog : public BaseModelCatalog {
   ILogger& logger_;
   bool cache_only_;
   ITelemetry& telemetry_;
+  std::shared_ptr<http::ModelHttpTransport> model_http_transport_;
 };
 
 }  // namespace fl

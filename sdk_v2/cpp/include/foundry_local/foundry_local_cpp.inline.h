@@ -193,6 +193,16 @@ inline Configuration& Configuration::SetUseSharedHost(bool enabled) {
   return *this;
 }
 
+inline Configuration& Configuration::SetModelHttpTransport(const flHttpTransport* transport) {
+  if (detail::api_version() < 4) {
+    throw Error("custom model HTTP transport requires an API v4 Foundry Local runtime",
+                FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED);
+  }
+
+  Check(detail::config_api()->SetModelHttpTransport(handle_.get_mutable(), transport));
+  return *this;
+}
+
 inline Configuration& Configuration::SetCatalogRegion(const std::string& region) {
   Check(detail::config_api()->SetCatalogRegion(handle_.get_mutable(), region.c_str()));
   return *this;
