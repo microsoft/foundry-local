@@ -155,7 +155,7 @@ std::optional<TurnGuidanceOptions> ResolveTurnGuidanceOptions(const ToolCallCont
 
   const bool tool_call_only = tool_ctx.tool_output && !tool_ctx.text_output;
   if (!guidance_type.empty() && !guidance_data.empty() &&
-      (user_specified_guidance || tool_call_only || tool_ctx.tool_plan)) {
+      (user_specified_guidance || tool_call_only || tool_ctx.tool_plan || tool_ctx.harmony)) {
     return TurnGuidanceOptions{
         std::move(guidance_type),
         std::move(guidance_data),
@@ -248,8 +248,8 @@ EngineTurnOptionsPlan BuildEngineTurnOptionsPlan(const SearchOptions& options,
     plan.seed = *options.seed;
   }
 
-  // Native stops see hidden MESSAGE framing too; framed turns instead match ordinary visible text on the host.
-  if (ShouldForwardStopSequencesToEngine(backend_kind) && !tool_ctx.UsesAssistantTextFraming()) {
+  // Backend stops also see hidden framing and reasoning; protocol-aware turns match only visible text on the host.
+  if (ShouldForwardStopSequencesToEngine(backend_kind) && !tool_ctx.UsesAssistantTextFraming() && !tool_ctx.harmony) {
     plan.stop_sequences = options.stop_sequences;
   }
 

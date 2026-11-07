@@ -10,8 +10,8 @@
 #include <ort_genai.h>
 
 #include <fmt/format.h>
-
 #include <algorithm>
+#include <set>
 
 namespace fl {
 namespace {
@@ -120,6 +120,86 @@ std::vector<DelimitedRegion> FindDelimitedRegions(std::string_view text,
     offset = end + closing.size();
   }
   return regions;
+}
+
+std::optional<HarmonyProtocol> QualifyHarmonyProtocol(std::string_view model_type, Preprocessor& preprocessor) {
+  if (model_type != "gptoss") return std::nullopt;
+#if !FOUNDRY_LOCAL_OGA_HAS_TERMINAL_TOKEN
+  (void)preprocessor;
+  FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+           "GPT-OSS Harmony requires an ORT GenAI runtime exposing sampled Engine terminal-token identity");
+#else
+  const auto resolve = [&](const char* spelling) {
+    const auto encoded = preprocessor.Encode(spelling);
+    const auto literal = preprocessor.EncodeLiteral(spelling);
+    if (encoded->SequenceCount(0) != 1 || encoded->SequenceData(0)[0] < 0 ||
+        (literal->SequenceCount(0) == 1 && literal->SequenceData(0)[0] == encoded->SequenceData(0)[0])) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+               "Harmony control must have distinct literal/control encoding: ", spelling);
+    }
+    return encoded->SequenceData(0)[0];
+  };
+  HarmonyProtocol protocol{
+      resolve("<|start|>"),
+      resolve("<|channel|>"),
+      resolve("<|message|>"),
+      resolve("<|end|>"),
+      resolve("<|call|>"),
+      resolve("<|return|>"),
+      resolve("<|constrain|>"),
+      {},
+  };
+  const std::set<int32_t> controls{protocol.start, protocol.channel, protocol.message, protocol.end,
+                                   protocol.handoff, protocol.answer, protocol.format};
+  const auto& eos = preprocessor.GetEosTokenIds();
+  if (controls.size() != 7 || std::find(eos.begin(), eos.end(), protocol.handoff) == eos.end() ||
+      std::find(eos.begin(), eos.end(), protocol.answer) == eos.end() ||
+      std::find(eos.begin(), eos.end(), protocol.end) != eos.end()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Invalid Harmony control-token or EOS configuration");
+  }
+  constexpr const char* probe = R"([
+    {"role":"user","content":"probe"},
+    {"role":"assistant","content":"probe-visible","thinking":"probe-private","tool_calls":[
+      {"function":{"name":"probe_function","arguments":{},"arguments_json":"__probe_arguments__"}}
+    ]},
+    {"role":"tool","name":"probe_function","content":"","content_json":"__probe_result__"}
+  ])";
+  const auto rendered = preprocessor.ApplyChatTemplate(probe, nullptr, true);
+  if (!ContainsInOrder(rendered, {"<|channel|>analysis<|message|>probe-private<|end|>",
+                                  "<|channel|>commentary<|message|>probe-visible<|end|>",
+                                  "<|start|>assistant to=functions.probe_function<|channel|>commentary json"
+                                  "<|message|>__probe_arguments__<|call|>",
+                                  "<|start|>functions.probe_function to=assistant<|channel|>commentary"
+                                  "<|message|>__probe_result__<|end|>"}) ||
+      !rendered.ends_with(HarmonyProtocol::kAssistantPrefix)) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "GPT-OSS requires the qualified protected Harmony transcript template");
+  }
+  constexpr const char* custom_probe = R"([
+    {"role":"user","content":"probe"},
+    {"role":"assistant","content":"","tool_calls":[
+      {"function":{"name":"probe_custom","native_freeform":true,
+                   "arguments":{},"arguments_json":"__probe_raw_input__"}}
+    ]},
+    {"role":"tool","name":"probe_custom","content":"","content_json":"__probe_custom_result__"}
+  ])";
+  constexpr const char* custom_tools = R"([
+    {"type":"function","function":{"name":"probe_custom","description":"probe",
+                                  "native_freeform":true,"parameters":{}}}
+  ])";
+  const auto custom_rendered = preprocessor.ApplyChatTemplate(custom_probe, custom_tools, true);
+  if (!ContainsInOrder(custom_rendered, {"type probe_custom = (_: FREEFORM) => any;",
+                                         "<|start|>assistant to=functions.probe_custom<|channel|>commentary"
+                                         "<|message|>__probe_raw_input__<|call|>",
+                                         "<|start|>functions.probe_custom to=assistant<|channel|>commentary"
+                                         "<|message|>__probe_custom_result__<|end|>"}) ||
+      !custom_rendered.ends_with(HarmonyProtocol::kAssistantPrefix)) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "GPT-OSS requires protected native custom-tool declarations and history");
+  }
+  const auto prefix = preprocessor.Encode(HarmonyProtocol::kAssistantPrefix);
+  protocol.assistant_prefix_tokens.assign(prefix->SequenceData(0), prefix->SequenceData(0) + prefix->SequenceCount(0));
+  return protocol;
+#endif
 }
 
 ModelCapabilities ResolveModelCapabilities(std::string_view model_type, Preprocessor& preprocessor,
@@ -311,6 +391,16 @@ GenAIModelInstance::GenAIModelInstance(std::string model_id,
   capabilities_ = ResolveModelCapabilities(model_type_, *preprocessor_,
                                            tag_info.bot_str, tag_info.eot_str,
                                            tag_info.bor_str, tag_info.eor_str);
+  capabilities_.harmony = QualifyHarmonyProtocol(model_type_, *preprocessor_);
+  if (capabilities_.harmony) {
+    if (genai_config_.GetChatBackendKind() != ChatBackendKind::kEngine) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Qualified Harmony generation requires the Engine backend");
+    }
+    capabilities_.supports_tool_calling = true;
+    capabilities_.supports_reasoning_history = true;
+    capabilities_.positional_tool_results = true;
+    capabilities_.supports_reasoning_controls = true;
+  }
 
   if (IsMultiModal() && genai_config_.GetChatBackendKind() == ChatBackendKind::kEngine) {
     FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,

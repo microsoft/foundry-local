@@ -14,6 +14,7 @@
 #include <ort_genai.h>
 
 #include <unordered_map>
+#include <algorithm>
 
 namespace fl {
 
@@ -30,7 +31,7 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
   }
 
   PreparedChatPrompt prepared;
-  if (tool_ctx.tool_plan && !tool_ctx.HasForcedRawEnvelope()) {
+  if (tool_ctx.harmony || (tool_ctx.tool_plan && !tool_ctx.HasForcedRawEnvelope())) {
     const auto original = BuildChatMessagesJson(messages.Messages(), tool_ctx.supports_reasoning_history);
     std::string prefix;
     do {
@@ -39,19 +40,25 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
              tool_ctx.template_kwargs_json.find(prefix) != std::string::npos);
 
     std::unordered_map<std::string, std::string> literals;
-    const auto projected = BuildCanonicalToolMessagesJson(
-        messages.Messages(), tool_ctx, [&](std::string text) {
-          if (text.empty()) {
-            return text;
-          }
-          auto marker = prefix + std::to_string(literals.size()) + "__";
-          literals.emplace(marker, std::move(text));
-          return marker;
-        });
+    const auto protect = [&](std::string text) {
+      if (text.empty()) {
+        return text;
+      }
+      auto marker = prefix + std::to_string(literals.size()) + "__";
+      literals.emplace(marker, std::move(text));
+      return marker;
+    };
+    const auto native = tool_ctx.harmony
+                            ? BuildHarmonyPromptProjection(messages.Messages(), tool_ctx, protect)
+                            : HarmonyPromptProjection{};
+    const auto projected = tool_ctx.harmony ? native.messages_json
+                                            : BuildCanonicalToolMessagesJson(messages.Messages(), tool_ctx, protect);
     auto& preprocessor = model.GetPreprocessor();
     const auto* kwargs = tool_ctx.template_kwargs_json.empty() ? nullptr : tool_ctx.template_kwargs_json.c_str();
     const auto rendered =
-        preprocessor.ApplyChatTemplateWithOptions(projected.c_str(), nullptr, kwargs, true);
+        preprocessor.ApplyChatTemplateWithOptions(projected.c_str(),
+                                                  native.tools_json.empty() ? nullptr : native.tools_json.c_str(),
+                                                  kwargs, true);
     const auto append = [&](const std::string& text, bool literal) {
       if (text.empty()) {
         return;
@@ -84,6 +91,15 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
     }
 
     prepared.prompt_token_count = static_cast<int64_t>(prepared.token_ids.size());
+    if (tool_ctx.harmony) {
+      const auto& prefix = tool_ctx.harmony->assistant_prefix_tokens;
+      if (!rendered.ends_with(HarmonyProtocol::kAssistantPrefix) || prepared.token_ids.size() < prefix.size() ||
+          !std::equal(prefix.rbegin(), prefix.rend(), prepared.token_ids.rbegin())) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Harmony template produced an unqualified generation continuation");
+      }
+      prepared.harmony_continuation = HarmonyContinuation{
+          "assistant", prefix.size(), std::char_traits<char>::length(HarmonyProtocol::kAssistantPrefix)};
+    }
     return prepared;
   }
 

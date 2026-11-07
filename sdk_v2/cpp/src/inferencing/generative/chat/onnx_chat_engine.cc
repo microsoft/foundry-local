@@ -447,6 +447,9 @@ void OnnxChatEngine::RouteEvents() {
         conversation->result.generated_tokens = usage.GeneratedTokens();
         conversation->result.cached_prompt_tokens = usage.CachedPromptTokens();
         conversation->result.finish_reason = event->FinishReason();
+#if FOUNDRY_LOCAL_OGA_HAS_TERMINAL_TOKEN
+        conversation->result.terminal_token_id = event->TerminalTokenId();
+#endif
         conversation->turn_finished = true;
       }
       if ((flags & OgaEngineEventFlag_Failed) != 0) {

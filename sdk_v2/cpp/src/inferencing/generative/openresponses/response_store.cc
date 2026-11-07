@@ -50,13 +50,25 @@ void ResponseStore::Store(const std::string& response_id,
                           nlohmann::json response,
                           nlohmann::json input_items,
                           std::string model_id,
-                          std::unordered_set<std::string> raw_envelope_call_ids) {
+                          ToolCallEncodings call_encodings) {
   std::lock_guard<std::mutex> lock(mutex_);
   auto state =
       PrepareStoreLocked({response_id, std::move(model_id), std::move(response), std::move(input_items),
-                          std::move(raw_envelope_call_ids)});
+                          std::move(call_encodings)});
   DropEvictedArtifactsLocked(state);
   CommitStoreLocked(std::move(state));
+}
+
+void ResponseStore::Store(const std::string& response_id,
+                          nlohmann::json response,
+                          nlohmann::json input_items,
+                          std::string model_id,
+                          std::unordered_set<std::string> raw_envelope_call_ids) {
+  ToolCallEncodings encodings;
+  for (const auto& id : raw_envelope_call_ids) {
+    encodings.emplace(id, GeneratedCallEncoding::kRawEnvelope);
+  }
+  Store(response_id, std::move(response), std::move(input_items), std::move(model_id), std::move(encodings));
 }
 
 ResponseStore::MetadataState ResponseStore::PrepareStoreLocked(
@@ -116,7 +128,7 @@ void ResponseStore::StoreLocked(StoredResponse response, MetadataState& state) {
                                  .model_id = std::move(response.model_id),
                                  .response = std::move(response.response),
                                  .input_items = std::move(response.input_items),
-                                 .raw_envelope_call_ids = std::move(response.raw_envelope_call_ids),
+                                 .call_encodings = std::move(response.call_encodings),
                                  .replay_prefix = std::move(replay_prefix),
                                  .insertion_sequence = state.next_insertion_sequence++});
   state.index[response.id] = state.entries.begin();
@@ -597,7 +609,7 @@ ResponseChainHop ResponseStore::ToReplayHop(const Entry& entry) {
   if (output != entry.response.end() && output->is_array()) {
     replay.output_items = *output;
   }
-  replay.raw_envelope_call_ids = entry.raw_envelope_call_ids;
+  replay.call_encodings = entry.call_encodings;
 
   return replay;
 }

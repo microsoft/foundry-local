@@ -4,6 +4,7 @@
 
 #include "inferencing/execution_provider.h"
 #include "inferencing/generative/genai_config.h"
+#include "inferencing/generative/chat/harmony_protocol.h"
 #include "inferencing/generative/preprocessor.h"
 #include "logger.h"
 
@@ -33,6 +34,7 @@ struct ModelCapabilities {
   bool supports_reasoning_history = false;
   bool supports_preserve_thinking = false;
   bool supports_reasoning_controls = false;
+  std::optional<HarmonyProtocol> harmony = std::nullopt;
 };
 
 namespace model_capabilities_internal {
@@ -73,6 +75,7 @@ class GenAIModelInstance {
   bool SupportsReasoningHistory() const { return capabilities_.supports_reasoning_history; }
   bool SupportsPreserveThinking() const { return capabilities_.supports_preserve_thinking; }
   bool SupportsReasoningControls() const { return capabilities_.supports_reasoning_controls; }
+  const std::optional<HarmonyProtocol>& GetHarmonyProtocol() const { return capabilities_.harmony; }
 
   /// Cached tag token IDs and decoded strings for tool/reasoning detection.
   /// Populated once on first access using OGA tokenizer APIs.
