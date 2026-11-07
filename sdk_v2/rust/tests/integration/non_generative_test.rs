@@ -1,6 +1,7 @@
 //! Opt-in native integration coverage for ranking and typed-decision sessions.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::Arc;
 
 use foundry_local_sdk::{
@@ -15,20 +16,78 @@ async fn cached_model(task: &str, environment: &str) -> Option<Arc<Model>> {
     let manager = common::get_test_manager();
     let catalog = manager.catalog();
     if let Ok(model_id) = std::env::var(environment) {
-        let model = catalog.get_model_variant(&model_id).await.ok()?;
+        let model = match catalog.get_model_variant(&model_id).await {
+            Ok(model) => model,
+            Err(_) => manager
+                .local_catalog()
+                .ok()?
+                .get_model_variant(&model_id)
+                .await
+                .ok()?,
+        };
         if model.is_cached().await.ok()? {
             return Some(model);
         }
         return None;
     }
     let models = catalog.get_cached_models().await.ok()?;
-    models.into_iter().find(|model| {
+    if let Some(model) = models.into_iter().find(|model| {
         model
             .info()
             .ok()
             .and_then(|info| info.task)
             .is_some_and(|value| value == task)
-    })
+    }) {
+        return Some(model);
+    }
+
+    register_staged_model(task).await
+}
+
+async fn register_staged_model(task: &str) -> Option<Arc<Model>> {
+    let (directory, model_id) = match task {
+        "text-ranking" => (
+            "clm-v0.1-8b-mixed-generic-cpu-1",
+            "clm-v0.1-8b-mixed-generic-cpu:1",
+        ),
+        "typed-decision" => (
+            "kev-0.8b-mixed-generic-cpu-1",
+            "kev-0.8b-mixed-generic-cpu:1",
+        ),
+        _ => return None,
+    };
+    let root = std::env::var("FOUNDRY_TEST_DATA_DIR").ok()?;
+    let package = Path::new(&root).join("Microsoft").join(directory);
+    if !package.is_dir() {
+        return None;
+    }
+
+    let manager = common::get_test_manager();
+    let catalog = manager
+        .local_catalog()
+        .expect("get local catalog for staged predictive model");
+    if let Ok(model) = catalog.get_model_variant(model_id).await {
+        return Some(model);
+    }
+
+    let mut metadata = catalog
+        .create_model_info()
+        .expect("create staged predictive model metadata");
+    metadata
+        .set_string_property("task", task)
+        .expect("set staged predictive model task");
+    Some(
+        catalog
+            .register_model(
+                package
+                    .to_str()
+                    .expect("staged predictive model path must be UTF-8"),
+                model_id,
+                metadata,
+            )
+            .await
+            .expect("register staged predictive model"),
+    )
 }
 
 fn missing_model(task: &str) {
