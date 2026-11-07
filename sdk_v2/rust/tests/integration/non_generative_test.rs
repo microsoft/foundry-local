@@ -54,6 +54,14 @@ async fn ranking_session_round_trips_native_openai_json() {
     let session = RankingSession::new(&model)
         .await
         .expect("RankingSession::new failed");
+    assert!(
+        model.unload().await.is_err(),
+        "unload must reject an active ranking session"
+    );
+    assert!(
+        model.is_loaded().await.expect("model.is_loaded() failed"),
+        "failed unload must preserve the loaded ranking model"
+    );
     let mut request = RankingRequest::new(
         "Which activity is more suitable?",
         vec![
@@ -91,6 +99,14 @@ async fn decision_session_round_trips_native_openai_json() {
     let session = DecisionSession::new(&model)
         .await
         .expect("DecisionSession::new failed");
+    assert!(
+        model.unload().await.is_err(),
+        "unload must reject an active decision session"
+    );
+    assert!(
+        model.is_loaded().await.expect("model.is_loaded() failed"),
+        "failed unload must preserve the loaded decision model"
+    );
     let result = session.decide(&request).await.expect("decide failed");
 
     assert_eq!(result.model, model.id());
