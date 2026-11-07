@@ -13,6 +13,8 @@
 
 #include <ort_genai.h>
 
+#include <algorithm>
+#include <functional>
 #include <unordered_map>
 #include <algorithm>
 
@@ -40,7 +42,7 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
              tool_ctx.template_kwargs_json.find(prefix) != std::string::npos);
 
     std::unordered_map<std::string, std::string> literals;
-    const auto protect = [&](std::string text) {
+    const auto protect_literal = [&](std::string text) {
       if (text.empty()) {
         return text;
       }
@@ -48,17 +50,91 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
       literals.emplace(marker, std::move(text));
       return marker;
     };
-    const auto native = tool_ctx.harmony
-                            ? BuildHarmonyPromptProjection(messages.Messages(), tool_ctx, protect)
-                            : HarmonyPromptProjection{};
-    const auto projected = tool_ctx.harmony ? native.messages_json
-                                            : BuildCanonicalToolMessagesJson(messages.Messages(), tool_ctx, protect);
+    std::string projected;
+    std::string projected_tools;
+    if (tool_ctx.harmony) {
+      auto native = BuildHarmonyPromptProjection(messages.Messages(), tool_ctx, protect_literal);
+      projected = std::move(native.messages_json);
+      projected_tools = std::move(native.tools_json);
+    } else if (tool_ctx.native_qwen_xml_tool_calls || tool_ctx.native_tagged_json_tool_calls) {
+      auto projected_json =
+          nlohmann::ordered_json::parse(BuildChatMessagesJson(messages.Messages(),
+                                                              tool_ctx.supports_reasoning_history));
+      struct HistoricalCall {
+        std::string name;
+        std::string arguments;
+      };
+      std::vector<HistoricalCall> completed_calls;
+      completed_calls.reserve(tool_ctx.completed_tool_calls.size());
+      for (const auto& [name, arguments] : tool_ctx.completed_tool_calls) {
+        completed_calls.push_back({name, arguments});
+      }
+      std::string state =
+          "Use a tool only when the user's request requires it. For serial work, emit only calls whose "
+          "prerequisites are already available; do not wait or deliberate about later calls.";
+      if (!tool_ctx.automatic_retry_instruction.empty()) {
+        state += "\n" + tool_ctx.automatic_retry_instruction;
+      }
+      if (!completed_calls.empty()) {
+        state +=
+            "\nTool calls with results already present in this conversation are complete. "
+            "Do not repeat any exact call listed below:\n";
+        for (const auto& call : completed_calls) {
+          state += "- " + call.name + "(" + call.arguments + ")\n";
+        }
+        state +=
+            "A call to the same function with different arguments is new work, not a repeated call. "
+            "Continue only the user's remaining requested work. If remaining work requires a tool, emit that "
+            "tool call now without describing or simulating its result. If all requested calls are complete, "
+            "answer from their actual results without calling another tool.";
+      }
+      if (!projected_json.empty() && projected_json.front().value("role", "") == "system") {
+        auto content = projected_json.front().value("content", "");
+        projected_json.front()["content"] = content.empty() ? state : content + "\n\n" + state;
+      } else {
+        projected_json.insert(projected_json.begin(),
+                              nlohmann::ordered_json{{"role", "system"}, {"content", state}});
+      }
+      const auto json_string_contents = [](const std::string& value) {
+        auto encoded = nlohmann::json(value).dump();
+        return encoded.substr(1, encoded.size() - 2);
+      };
+      std::function<void(nlohmann::ordered_json&, bool)> protect_json_strings =
+          [&](nlohmann::ordered_json& value, bool json_escaped) {
+            if (value.is_string()) {
+              auto literal = value.get<std::string>();
+              value = protect_literal(json_escaped ? json_string_contents(literal) : std::move(literal));
+            } else if (value.is_array()) {
+              for (auto& item : value) {
+                protect_json_strings(item, json_escaped);
+              }
+            } else if (value.is_object()) {
+              for (auto& [key, item] : value.items()) {
+                protect_json_strings(item, json_escaped);
+              }
+            }
+          };
+      for (auto& message : projected_json) {
+        for (const auto* field : {"content", "reasoning_content"}) {
+          if (message.contains(field)) {
+            protect_json_strings(message[field], false);
+          }
+        }
+        if (message.contains("tool_calls")) {
+          protect_json_strings(message["tool_calls"], true);
+        }
+      }
+      auto tools = nlohmann::ordered_json::parse(tool_ctx.tools_json);
+      protect_json_strings(tools, true);
+      projected = projected_json.dump();
+      projected_tools = tools.dump();
+    } else {
+      projected = BuildCanonicalToolMessagesJson(messages.Messages(), tool_ctx, protect_literal);
+    }
     auto& preprocessor = model.GetPreprocessor();
     const auto* kwargs = tool_ctx.template_kwargs_json.empty() ? nullptr : tool_ctx.template_kwargs_json.c_str();
-    const auto rendered =
-        preprocessor.ApplyChatTemplateWithOptions(projected.c_str(),
-                                                  native.tools_json.empty() ? nullptr : native.tools_json.c_str(),
-                                                  kwargs, true);
+    const auto* tools = projected_tools.empty() ? nullptr : projected_tools.c_str();
+    const auto rendered = preprocessor.ApplyChatTemplateWithOptions(projected.c_str(), tools, kwargs, true);
     const auto append = [&](const std::string& text, bool literal) {
       if (text.empty()) {
         return;

@@ -281,7 +281,8 @@ int ApplySearchOptions(const SearchOptions& options,
                        OgaGeneratorParams& gen_params,
                        ExecutionProvider ep,
                        bool use_full_context,
-                       int default_max_output_tokens) {
+                       int default_max_output_tokens,
+                       bool supports_external_prefill_chunking) {
   ValidatePenalties(options);
 
   const int model_max_length = GetModelMaxContextLength(config);
@@ -336,7 +337,7 @@ int ApplySearchOptions(const SearchOptions& options,
 
   // Preserve a positive model setting. ORT GenAI reports both an absent setting and explicit zero as zero; Foundry
   // Local intentionally treats both as unset. ORT GenAI decides whether the model consumes the resulting option.
-  if (gen_params.GetSearchNumber("chunk_size") <= 0) {
+  if (supports_external_prefill_chunking && gen_params.GetSearchNumber("chunk_size") <= 0) {
     // The model's resolved EP is kDefault for the common load path, so use the provider declared in
     // genai_config.json. An empty provider means ORT's CPU fallback.
     ExecutionProvider effective_ep = ep;

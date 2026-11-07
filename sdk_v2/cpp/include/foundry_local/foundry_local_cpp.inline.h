@@ -1397,6 +1397,59 @@ inline std::vector<std::vector<float>> EmbeddingsSession::Embed(const std::vecto
   return results;
 }
 
+namespace detail {
+
+inline IModel& RequireTask(IModel& model, std::string_view expected) {
+  if (model.GetInfo().Task() != expected)
+    throw std::invalid_argument("Model is not designed for " +
+                                std::string(expected) + " tasks");
+  return model;
+}
+
+inline void ValidateNonGenerativeJsonInput(
+    const std::string& request_json) {
+  if (request_json.find('\0') != std::string::npos) {
+    throw std::invalid_argument(
+        "non-generative JSON requests cannot contain embedded NUL bytes");
+  }
+}
+
+inline std::string ProcessNonGenerativeJson(
+    Session& session, const std::string& request_json) {
+  ValidateNonGenerativeJsonInput(request_json);
+  Request request(Item::Text(request_json));
+  auto response = session.ProcessRequest(request);
+  if (response.GetItems().size() != 1 ||
+      response.GetItems().front().GetType() != FOUNDRY_LOCAL_ITEM_TEXT) {
+    throw Error("non-generative session returned an invalid response",
+                FOUNDRY_LOCAL_ERROR_INTERNAL);
+  }
+  const auto content = response.GetItems().front().GetText();
+  if (content.type != FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON) {
+    throw Error("non-generative session returned a non-JSON response",
+                FOUNDRY_LOCAL_ERROR_INTERNAL);
+  }
+  return std::string(content.text);
+}
+
+}  // namespace detail
+
+inline RankingSession::RankingSession(IModel& model)
+    : Session(detail::RequireTask(model, "text-ranking")) {}
+
+inline std::string RankingSession::RankJson(
+    const std::string& request_json) {
+  return detail::ProcessNonGenerativeJson(*this, request_json);
+}
+
+inline DecisionSession::DecisionSession(IModel& model)
+    : Session(detail::RequireTask(model, "typed-decision")) {}
+
+inline std::string DecisionSession::DecideJson(
+    const std::string& request_json) {
+  return detail::ProcessNonGenerativeJson(*this, request_json);
+}
+
 // ===========================================================================
 // RequestOptions — build a KeyValuePairs for the C ABI
 // ===========================================================================

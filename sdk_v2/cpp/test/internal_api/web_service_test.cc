@@ -12,6 +12,7 @@
 #include "inferencing/generative/chat/chat_session.h"
 #include "inferencing/generative/genai_model_instance.h"
 #include "inferencing/model_load_manager.h"
+#include "inferencing/predictive/non_generative_session.h"
 #include "inferencing/session/session_manager.h"
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
@@ -31,6 +32,7 @@
 
 #include <foundry_local/foundry_local_c.h>
 #include <ort_genai_c.h>
+#include <foundry_local/foundry_local_cpp.h>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -1230,6 +1232,14 @@ TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCpuPackagesWhenConfi
       "", std::chrono::minutes(3)));
   ASSERT_EQ(ranking.at("ranked").size(), 2u);
   EXPECT_EQ(ranking.at("model"), clm_metadata.model_id);
+  auto* shared_clm = local_catalog_->GetModelVariant(clm_metadata.model_id);
+  ASSERT_NE(shared_clm, nullptr);
+  ASSERT_TRUE(shared_clm->IsLoaded());
+  {
+    fl::NonGenerativeSession sdk_session(
+        *shared_clm, *model_load_manager_, *logger_, *telemetry_);
+  }
+  EXPECT_TRUE(shared_clm->IsLoaded());
   const auto load = json::parse(
       TestHttpGet(base_url_ + "/catalogs/local/models/load/" +
                   clm_metadata.model_id));

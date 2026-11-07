@@ -30,6 +30,7 @@ class OnnxChatEngine;
 struct ModelCapabilities {
   bool supports_tool_calling = false;
   bool native_qwen_xml_tool_calls = false;
+  bool native_tagged_json_tool_calls = false;
   bool positional_tool_results = false;
   bool supports_reasoning_history = false;
   bool supports_preserve_thinking = false;
@@ -71,6 +72,7 @@ class GenAIModelInstance {
   const std::string& ModelType() const { return model_type_; }
   bool SupportsToolCalling() const { return capabilities_.supports_tool_calling; }
   bool HasNativeQwenXmlToolCalls() const { return capabilities_.native_qwen_xml_tool_calls; }
+  bool HasNativeTaggedJsonToolCalls() const { return capabilities_.native_tagged_json_tool_calls; }
   bool HasPositionalToolResults() const { return capabilities_.positional_tool_results; }
   bool SupportsReasoningHistory() const { return capabilities_.supports_reasoning_history; }
   bool SupportsPreserveThinking() const { return capabilities_.supports_preserve_thinking; }

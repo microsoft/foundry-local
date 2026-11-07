@@ -424,16 +424,33 @@ class SharedTestEnv : public ::testing::Environment {
     }
 
     // ---- Embeddings model ----
-    // Always use CPU; embeddings are not compute-intensive and CPU avoids
-    // a GPU dependency in CI.
-    embeddings_model_ = FindSmallestModelByTask(*model_list_, "embeddings", FOUNDRY_LOCAL_DEVICE_CPU);
+    // Default to CPU so CI does not require a GPU. An explicit variant can use an existing CPU or GPU cache.
+    const auto embedding_override = fl::test::SafeGetEnv("FOUNDRY_TEST_EMBEDDING_MODEL");
+    if (embedding_override.empty()) {
+      embeddings_model_ = FindSmallestModelByTask(*model_list_, "embeddings", FOUNDRY_LOCAL_DEVICE_CPU);
+    } else {
+      for (const auto& model : *model_list_) {
+        for (const auto& variant : model->GetVariants()) {
+          auto info = variant->GetInfo();
+          if (info.Id() == embedding_override && info.Task() == "embeddings") {
+            model->SelectVariant(*variant);
+            embeddings_model_ = model.get();
+            break;
+          }
+        }
+
+        if (embeddings_model_) {
+          break;
+        }
+      }
+    }
 
     if (embeddings_model_) {
       embeddings_model_id_ = std::string(embeddings_model_->GetInfo().Id());
       std::cout << "SharedTestEnv: embeddings_model selected="
                 << embeddings_model_->GetInfo().Name() << "\n";
     } else {
-      std::cout << "SharedTestEnv: no CPU embeddings model in catalog\n";
+      std::cout << "SharedTestEnv: no matching embeddings model in catalog\n";
     }
 
     // Resolve test audio file path.

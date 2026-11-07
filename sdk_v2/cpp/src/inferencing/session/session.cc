@@ -6,6 +6,7 @@
 #include "inferencing/generative/audio/audio_session.h"
 #include "inferencing/generative/chat/chat_session.h"
 #include "inferencing/generative/embeddings/embeddings_session.h"
+#include "inferencing/predictive/non_generative_session.h"
 #include "inferencing/model_load_manager.h"
 #include "inferencing/session/session_manager.h"
 #include "items/message_item.h"
@@ -73,7 +74,7 @@ uint64_t CountTypedRequestMessages(const Request& request) {
 
 Session::Session(const fl::Model& catalog_model, ILogger& logger, ITelemetry& telemetry,
                  bool allow_concurrent_requests)
-    : catalog_model_(catalog_model),
+    : catalog_model_(&catalog_model),
       logger_(logger),
       telemetry_(telemetry),
       allow_concurrent_requests_(allow_concurrent_requests) {
@@ -94,18 +95,23 @@ std::unique_ptr<Session> Session::Create(const fl::Model& model) {
                        "cannot create session during shutdown");
     }
 
+    const auto& info = model.Info();
+    const bool non_generative =
+        info.task == "text-ranking" || info.task == "typed-decision";
     if (!model.IsLoaded()) {
       FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model must be loaded before creating a session");
     }
 
-    auto loaded = mgr.GetModelLoadManager().AcquireSessionModel(model.Id(), model.GetPath());
-    if (!loaded) {
+    ModelLoadManager::SessionModelReference loaded;
+    if (!non_generative)
+      loaded = mgr.GetModelLoadManager().AcquireSessionModel(
+          model.Id(), model.GetPath());
+    if (!non_generative && !loaded) {
       FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model must be loaded before creating a session");
     }
 
     tracker.SetModelId(model.Id());
 
-    const auto& info = model.Info();
     if (info.task == "chat-completion" || info.task == "coding" || info.task == "vision-language-chat") {
       auto session = std::make_unique<ChatSession>(model, *loaded, logger, telemetry);
       tracker.SetStatus(ActionStatus::kSuccess);
@@ -120,6 +126,14 @@ std::unique_ptr<Session> Session::Create(const fl::Model& model) {
 
     if (info.task == "embeddings") {
       auto session = std::make_unique<EmbeddingsSession>(model, *loaded, logger, telemetry);
+      tracker.SetStatus(ActionStatus::kSuccess);
+      return session;
+    }
+
+    if (non_generative) {
+      auto session =
+          std::make_unique<NonGenerativeSession>(
+              model, mgr.GetModelLoadManager(), logger, telemetry);
       tracker.SetStatus(ActionStatus::kSuccess);
       return session;
     }
@@ -173,13 +187,13 @@ void Session::AddToolDefinition(ToolDefinition tool_def) {
 void Session::ValidateRequestItems(const Request& request) const {
   // Only chat tasks are validated: other tasks either have no IO descriptor (embeddings) or accept
   // transport items that the descriptor does not advertise (the ASR streaming QUEUE item).
-  const auto& task = catalog_model_.Info().task;
+  const auto& task = catalog_model_->Info().task;
   if (task != "chat-completion" && task != "coding" && task != "vision-language-chat") {
     return;
   }
 
   // The model's task metadata is the source of truth for which input modalities are accepted.
-  const auto io_info = catalog_model_.GetInputOutputInfo();
+  const auto io_info = catalog_model_->GetInputOutputInfo();
 
   // An item type is accepted only if it matches one of the advertised inputs.
   auto check = [&](flItemType type) {
@@ -188,7 +202,7 @@ void Session::ValidateRequestItems(const Request& request) const {
     if (!supported) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
                fmt::format("{} input is not supported by model task '{}'",
-                           Item::TypeName(type), catalog_model_.Info().task));
+                           Item::TypeName(type), catalog_model_->Info().task));
     }
   };
 
@@ -220,6 +234,7 @@ void Session::ValidateRequestItems(const Request& request) const {
 
 size_t Session::ProcessRequest(const Request& request, Response& response,
                                std::optional<StreamingCallback> callback) {
+  auto request_lifetime = AcquireRequestLifetime();
   // Serialize requests unless the derived class opted into concurrency.
   std::unique_lock<std::mutex> lock(*request_mutex_, std::defer_lock);
   if (!allow_concurrent_requests_) {
