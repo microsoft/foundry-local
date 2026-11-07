@@ -104,6 +104,7 @@ steps:
     env:
       VCPKG_ROOT: $(Build.BinariesDirectory)\vcpkg
       VCPKG_DOWNLOADS: $(Build.BinariesDirectory)\vcpkg-downloads
+      VCPKG_MAX_CONCURRENCY: '1'
       PKG_CONFIG: $(Build.BinariesDirectory)\tools\pkg-config.bat
 
 - ${{ if eq(parameters.arch, 'arm64') }}:
@@ -119,6 +120,7 @@ steps:
     env:
       VCPKG_ROOT: $(Build.BinariesDirectory)\vcpkg
       VCPKG_DOWNLOADS: $(Build.BinariesDirectory)\vcpkg-downloads
+      VCPKG_MAX_CONCURRENCY: '1'
       PKG_CONFIG: $(Build.BinariesDirectory)\tools\pkg-config.bat
 
 - ${{ if eq(parameters.arch, 'x64') }}:

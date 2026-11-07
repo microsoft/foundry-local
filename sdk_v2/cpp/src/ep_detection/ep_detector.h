@@ -16,6 +16,7 @@
 
 #include "ep_detection/ep_types.h"
 #include "ep_detection/ep_bootstrapper.h"
+#include "catalog/capacity_compatibility.h"
 
 // Forward declarations — avoid pulling onnxruntime_c_api.h into this header.
 struct OrtApi;
@@ -34,6 +35,8 @@ class IEpDetector {
   /// Returns a map of device name → available execution providers.
   /// Example: { "CPU" → ["CPUExecutionProvider"], "GPU" → ["CudaExecutionProvider"] }
   virtual std::map<std::string, std::vector<std::string>> GetAvailableDevicesToEPs() const = 0;
+
+  virtual std::map<std::string, std::vector<DeviceCapacity>> GetDeviceCapacities() const { return {}; }
 
   /// Returns metadata for all discoverable EPs (those with bootstrappers).
   /// Default: empty — no discoverable EPs beyond what's already registered.
@@ -86,6 +89,7 @@ class EpDetector : public IEpDetector {
   EpDetector& operator=(const EpDetector&) = delete;
 
   std::map<std::string, std::vector<std::string>> GetAvailableDevicesToEPs() const override;
+  std::map<std::string, std::vector<DeviceCapacity>> GetDeviceCapacities() const override;
   const std::vector<EpInfo>& GetDiscoverableEps() const override;
   std::span<const flEpInfo> GetDiscoverableEpsCApi() const override;
   EpDownloadResult DownloadAndRegisterEps(const std::vector<std::string>* names,

@@ -104,6 +104,7 @@ class Model {
                             bool preserve_explicit_selection = false) const;
   bool HasEligibleDefaultVariant() const;
   void SetDefaultVariantRefresh(std::function<void()> refresh);
+  void UpdateVariantVisibility(const std::function<bool(const Model&)>& is_visible);
   /// Hosted loads pin the selected artifact without loading weights into the metadata manager.
   /// Matching ID/path handles share the pin so any of them can release it.
   bool PreserveLoadedSelection(bool preserve);
@@ -124,7 +125,8 @@ class Model {
   const ModelInfo& Info() const;
 
   /// Returns the variants within this model. For a leaf, returns {this}.
-  /// For a container, returns pointers to all contained variants.
+  /// For a container, returns catalog-visible variants. Internal inventory and reconciliation callers
+  /// may include hidden leaves to preserve cached/loaded access and stable handles across refreshes.
   ///
   /// Returned by value because the underlying variants_ vector could change during catalog refresh.
   ///
@@ -132,7 +134,7 @@ class Model {
   /// SelectVariant). The returned variants are themselves mutable (Download, Load, etc.) —
   /// the const_cast in the implementation is intentional and mirrors the
   /// `std::unique_ptr<T>::get() const → T*` idiom.
-  std::vector<Model*> Variants() const;
+  std::vector<Model*> Variants(bool include_hidden = false) const;
 
   // --- Query methods ---
 
@@ -242,6 +244,7 @@ class Model {
   // stable across vector growth/reordering.
   std::vector<std::unique_ptr<Model>> variants_;
   std::vector<std::unique_ptr<Model>> retired_variants_;
+  std::atomic<bool> catalog_visible_{true};
   mutable std::atomic<Model*> selected_variant_{nullptr};                  // non-null = this is a container
   mutable bool selection_is_explicit_ = false;                             // guarded by state_mutex_
   mutable bool has_eligible_default_variant_ = true;                       // guarded by state_mutex_

@@ -129,6 +129,39 @@ std::map<std::string, std::vector<std::string>> EpDetector::GetAvailableDevicesT
   return devices;
 }
 
+std::map<std::string, std::vector<DeviceCapacity>> EpDetector::GetDeviceCapacities() const {
+  std::map<std::string, std::vector<DeviceCapacity>> capacities;
+#if defined(FOUNDRY_LOCAL_HAS_EP_DEVICE_MEMORY_CAPACITY)
+  const OrtEpDevice* const* devices = nullptr;
+  size_t count = 0;
+  if (auto* status = ort_api_.GetEpDevices(&ort_env_, &devices, &count)) {
+    logger_.Log(LogLevel::Warning, "Cannot enumerate devices for catalog capacity checks");
+    ort_api_.ReleaseStatus(status);
+    return capacities;
+  }
+  for (size_t index = 0; index < count; ++index) {
+    const auto* device = devices[index];
+    if (ort_api_.HardwareDevice_Type(ort_api_.EpDevice_Device(device)) != OrtHardwareDeviceType_GPU) {
+      continue;
+    }
+    const auto* provider = ort_api_.EpDevice_EpName(device);
+    if (!provider) {
+      continue;
+    }
+    DeviceCapacity capacity;
+    uint64_t total = 0;
+    if (auto* status = ort_api_.EpDevice_GetMemoryCapacity(device, OrtDeviceMemoryType_DEFAULT, &total, nullptr)) {
+      logger_.Log(LogLevel::Debug, std::string("GPU total capacity unavailable for ") + provider);
+      ort_api_.ReleaseStatus(status);
+    } else {
+      capacity.total_vram_bytes = total;
+    }
+    capacities[provider].push_back(capacity);
+  }
+#endif
+  return capacities;
+}
+
 const std::vector<EpInfo>& EpDetector::GetDiscoverableEps() const {
   // Take the cache lock for strict correctness of the is_registered field reads.
   // Vector size and element addresses are immutable after construction; only

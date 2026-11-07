@@ -143,6 +143,61 @@ class EpDetectorTest : public ::testing::Test {
 // can't be called safely in integration tests (would download real binaries).
 // ========================================================================
 
+#if defined(FOUNDRY_LOCAL_HAS_EP_DEVICE_MEMORY_CAPACITY)
+TEST_F(EpDetectorTest, CapacityQueryUsesOnlyGpuTotalAndPreservesUnknown) {
+  struct FakeDevice {
+    OrtHardwareDeviceType type;
+    const char* provider;
+    bool supported;
+  };
+  static const FakeDevice fake_devices[] = {
+      {OrtHardwareDeviceType_GPU, "CUDAExecutionProvider", true},
+      {OrtHardwareDeviceType_GPU, "CUDAExecutionProvider", false},
+      {OrtHardwareDeviceType_CPU, "CPUExecutionProvider", true},
+  };
+  static const OrtEpDevice* devices[] = {
+      reinterpret_cast<const OrtEpDevice*>(&fake_devices[0]),
+      reinterpret_cast<const OrtEpDevice*>(&fake_devices[1]),
+      reinterpret_cast<const OrtEpDevice*>(&fake_devices[2]),
+  };
+  OrtApi api = *ort_api_;
+  api.GetEpDevices = [](const OrtEnv*, const OrtEpDevice* const** output, size_t* count) noexcept -> OrtStatus* {
+    *output = devices;
+    *count = 3;
+    return nullptr;
+  };
+  api.EpDevice_Device = [](const OrtEpDevice* device) -> const OrtHardwareDevice* {
+    return reinterpret_cast<const OrtHardwareDevice*>(device);
+  };
+  api.HardwareDevice_Type = [](const OrtHardwareDevice* device) {
+    return reinterpret_cast<const FakeDevice*>(device)->type;
+  };
+  api.EpDevice_EpName = [](const OrtEpDevice* device) {
+    return reinterpret_cast<const FakeDevice*>(device)->provider;
+  };
+  api.EpDevice_GetMemoryCapacity = [](const OrtEpDevice* device, OrtDeviceMemoryType memory_type,
+                                      uint64_t* total, uint64_t* available) noexcept -> OrtStatus* {
+    EXPECT_EQ(memory_type, OrtDeviceMemoryType_DEFAULT);
+    EXPECT_NE(total, nullptr);
+    EXPECT_EQ(available, nullptr);
+    const auto* fake = reinterpret_cast<const FakeDevice*>(device);
+    EXPECT_EQ(fake->type, OrtHardwareDeviceType_GPU);
+    if (!fake->supported) {
+      return OrtGetApiBase()->GetApi(ORT_API_VERSION)->CreateStatus(ORT_NOT_IMPLEMENTED, "unsupported");
+    }
+    *total = 16;
+    return nullptr;
+  };
+  EpDetector detector(api, *ort_env_, {}, logger_, fl::test::TestTelemetrySink());
+  const auto capacities = detector.GetDeviceCapacities();
+  ASSERT_EQ(capacities.size(), 1u);
+  const auto& cuda = capacities.at("CUDAExecutionProvider");
+  ASSERT_EQ(cuda.size(), 2u);
+  EXPECT_EQ(cuda[0].total_vram_bytes, 16u);
+  EXPECT_FALSE(cuda[1].total_vram_bytes.has_value());
+}
+#endif
+
 TEST_F(EpDetectorTest, GetAvailableDevices_AlwaysIncludesCpu) {
   std::vector<MockEpBootstrapper*> mocks;
   auto detector = MakeDetector(mocks, {{"CUDAExecutionProvider", true}});

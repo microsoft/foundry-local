@@ -115,6 +115,64 @@ required runtime directories when using it. It is not needed solely for the x64 
 Foundry Local leaves runtime dependency loading to ORT and GenAI. On Linux, use the
 system loader configuration or `LD_LIBRARY_PATH`.
 
+## Catalog GPU Memory Compatibility
+
+Native catalog filtering interprets an explicit `variantMetadata.vRamFootprintBytes` as the variant's minimum
+total GPU memory requirement, in bytes. It is retained as the optional integer property `min_vram_bytes`.
+Only variants explicitly marked as GPU are checked. CPU and NPU compatibility rules are unchanged.
+Model file size is not used as a memory requirement. Missing, null, malformed, negative, or out-of-range
+requirements are unknown, not zero.
+
+A variant is excluded only when every candidate device for its execution provider has known total VRAM below
+the requirement. Multiple devices are not summed. A fitting device, an unknown capacity, an unsupported query,
+or a query failure leaves capacity compatibility undecided and does not exclude the variant. An alias remains
+visible when a compatible variant remains. Full metadata snapshots are saved before capacity filtering so
+offline catalogs can be reevaluated on different hardware. Previously returned handles remain stable across
+refreshes; memory-incompatible retained variants are hidden from discovery and cannot become automatic defaults.
+They remain accessible by ID and in cached/loaded inventory, and become visible again if capacity permits.
+
+Capacity queries use ORT's device-memory total only, never current available VRAM. This is not a guarantee
+that loading will succeed. CPU RAM and unified-memory checks are deliberately not implemented and require
+separate metadata and measurement contracts.
+
+The query requires the actual `EpDevice_GetMemoryCapacity` API and matching CUDA provider built with
+[ORT PR #33447](https://github.com/microsoft/onnxruntime/pull/33447). An API 32 version alone is insufficient:
+pre-merge 1.32 nightlies lack the member. CMake checks the member and warns if capacity filtering is inactive.
+The pinned 1.31 runtime and CUDA bundles predate the API; builds using them treat capacity as unknown.
+Updating default distribution requires both a post-merge runtime package and matching CUDA bundles.
+Until those are published, use a source-built ORT with matching headers in `<ort-install>/include` and runtime
+libraries in `<ort-install>/lib`, and require the API at configure time:
+
+```bash
+python sdk_v2/cpp/build.py --configure --build --ort_home <ort-install> \
+  --cmake_extra_defines FOUNDRY_LOCAL_REQUIRE_DEVICE_MEMORY_CAPACITY=ON
+```
+
+Register the matching CUDA provider before refreshing the catalog. Do not mix provider and runtime builds.
+Hosted device metadata currently carries only provider names, so hosted clients also treat capacity as unknown
+rather than using the client's local GPU.
+
+### Real-GPU catalog end-to-end test
+
+`AzureModelCatalogCapacityEndToEndTest.RealCudaCapacityFiltersParsedCatalogAndOfflineSnapshot` uses the real
+ORT environment, registered CUDA provider, EP detector, Azure catalog parser, selection logic, and disk snapshot.
+Only the catalog HTTP response is replaced with controlled metadata; no model downloads or inference are required.
+Requirements are derived from the detected devices, covering exact total-capacity fit, oversized GPU rejection,
+CPU fallback, aliases with no fitting variants, missing requirements, explicit zero, and offline snapshot reuse.
+
+Build with the capacity-enabled ORT described above and run from the repository root on Linux:
+
+```bash
+FOUNDRY_LOCAL_TEST_CUDA_EP_LIBRARY=/absolute/path/to/libonnxruntime_providers_cuda.so \
+  sdk_v2/cpp/build/Linux/Release/bin/foundry_local_tests \
+  --gtest_filter='AzureModelCatalogCapacityEndToEndTest.*'
+```
+
+The provider must match the ORT runtime used to build the tests. Configure CUDA and cuDNN library search paths
+as for normal CUDA usage. The test skips when built without the capacity API or when the provider path is unset.
+Once the provider path is set, registration failures, missing visible GPUs, and failed capacity queries fail
+the test. Set `CUDA_VISIBLE_DEVICES=7,2` (or another valid subset) to verify reordered device visibility.
+
 ## Clearing a Model Cache
 
 Use `Model::RemoveFromCache()` to clear a completed, interrupted, or corrupted download.

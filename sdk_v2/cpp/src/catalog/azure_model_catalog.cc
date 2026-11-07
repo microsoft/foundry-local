@@ -158,6 +158,11 @@ class AzureModelCatalog::CatalogDevices final : public IEpDetector {
     return hosted_ ? *hosted_ : local_.GetAvailableDevicesToEPs();
   }
 
+  std::map<std::string, std::vector<DeviceCapacity>> GetDeviceCapacities() const override {
+    std::lock_guard lock(mutex_);
+    return hosted_ ? std::map<std::string, std::vector<DeviceCapacity>>{} : local_.GetDeviceCapacities();
+  }
+
   bool Set(Devices devices) {
     std::lock_guard lock(mutex_);
     if (hosted_ && *hosted_ == devices) {
@@ -207,6 +212,23 @@ void AzureModelCatalog::SetRuntimeDevices(std::map<std::string, std::vector<std:
 }
 
 BaseModelCatalog::VariantEligibility AzureModelCatalog::MakeVariantEligibility() const {
+  return MakeCompatibilityPredicate(false);
+}
+
+BaseModelCatalog::VariantEligibility AzureModelCatalog::MakeVariantVisibility() const {
+  return [this, compatible = VariantEligibility{}](const Model& variant) mutable {
+    if (variant.Info().device_type != DeviceType::kGPU ||
+        !variant.Info().GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_MIN_VRAM_BYTES_INT)) {
+      return true;
+    }
+    if (!compatible) {
+      compatible = MakeCompatibilityPredicate(true);
+    }
+    return compatible(variant);
+  };
+}
+
+BaseModelCatalog::VariantEligibility AzureModelCatalog::MakeCompatibilityPredicate(bool capacity_only) const {
   std::unordered_set<std::string> providers;
   for (const auto& [device, eps] : catalog_devices_->GetAvailableDevicesToEPs()) {
     for (const auto& ep : eps) {
@@ -214,14 +236,33 @@ BaseModelCatalog::VariantEligibility AzureModelCatalog::MakeVariantEligibility()
     }
   }
 
+  std::unordered_map<std::string, std::vector<DeviceCapacity>> capacities;
+  for (auto& [provider, devices] : catalog_devices_->GetDeviceCapacities()) {
+    auto& target = capacities[ToLower(EPUtils::NormalizeRegistrationName(provider))];
+    target.insert(target.end(), devices.begin(), devices.end());
+  }
+
   // Cache config requirements only within this pass so artifact edits and provider changes are seen on refresh.
-  return [this, providers = std::move(providers),
+  return [this, capacity_only, providers = std::move(providers), capacities = std::move(capacities),
           configured_providers = std::unordered_map<std::string, std::optional<std::string>>{}](
              const Model& variant) mutable {
     const auto& info = variant.Info();
+    ModelCapacityRequirements requirements;
+    if (const auto* bytes = info.GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_MIN_VRAM_BYTES_INT); bytes && *bytes >= 0) {
+      requirements.minimum_vram_bytes = static_cast<uint64_t>(*bytes);
+    }
+    if (capacity_only && (info.device_type != DeviceType::kGPU || !requirements.minimum_vram_bytes)) {
+      return true;
+    }
+    const auto meets_capacity = [&](const std::string& provider) {
+      const auto found = capacities.find(provider);
+      return MeetsCapacityRequirements(info.device_type == DeviceType::kGPU, requirements,
+                                       found == capacities.end() ? std::span<const DeviceCapacity>{} : found->second);
+    };
     if (info.model_id.find("generic-gpu") != std::string::npos &&
         (providers.contains("cudaexecutionprovider") || providers.contains("webgpuexecutionprovider"))) {
-      return true;
+      return (providers.contains("cudaexecutionprovider") && meets_capacity("cudaexecutionprovider")) ||
+             (providers.contains("webgpuexecutionprovider") && meets_capacity("webgpuexecutionprovider"));
     }
 
     auto provider = info.execution_provider;
@@ -240,7 +281,7 @@ BaseModelCatalog::VariantEligibility AzureModelCatalog::MakeVariantEligibility()
         }
 
         if (!entry->second) {
-          return false;
+          return capacity_only;
         }
 
         provider = *entry->second;
@@ -252,8 +293,29 @@ BaseModelCatalog::VariantEligibility AzureModelCatalog::MakeVariantEligibility()
     }
 
     provider = ToLower(EPUtils::NormalizeRegistrationName(provider));
-    return provider.empty() || provider == "cpuexecutionprovider" || providers.contains(provider);
+    return (capacity_only || provider.empty() || provider == "cpuexecutionprovider" || providers.contains(provider)) &&
+           meets_capacity(provider);
   };
+}
+
+void AzureModelCatalog::FilterCapacityIncompatibleModels(std::vector<Model>& models) const {
+  const bool has_requirements = std::any_of(models.begin(), models.end(), [](const Model& model) {
+    return model.Info().device_type == DeviceType::kGPU &&
+           model.Info().GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_MIN_VRAM_BYTES_INT) != nullptr;
+  });
+  if (!has_requirements) {
+    return;
+  }
+  auto compatible = MakeCompatibilityPredicate(true);
+  std::erase_if(models, [&](const Model& model) {
+    if (compatible(model)) {
+      return false;
+    }
+    logger_.Log(LogLevel::Information,
+                fmt::format("Catalog: filtering variant '{}' because its minimum total GPU VRAM exceeds capacity.",
+                            model.Info().model_id));
+    return true;
+  });
 }
 
 std::unique_ptr<ICatalogClient> AzureModelCatalog::CreateCatalogClient(const std::string& url,
@@ -384,6 +446,7 @@ std::vector<Model> AzureModelCatalog::FetchModelVersions(
     out.push_back(model_factory_(std::move(info), /*local_path=*/""));
   }
 
+  FilterCapacityIncompatibleModels(out);
   logger_.Log(LogLevel::Information,
               fmt::format("FetchModelVersions('{}') returned {} variant(s).",
                           model_alias, out.size()));
