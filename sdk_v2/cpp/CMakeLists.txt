@@ -126,6 +126,15 @@ check_cxx_source_compiles(
      }"
     FOUNDRY_LOCAL_HAS_REQUIRED_NON_GENERATIVE_ORT_GENAI
 )
+unset(FOUNDRY_LOCAL_OGA_HAS_TERMINAL_TOKEN CACHE)
+check_cxx_source_compiles(
+    "#include <ort_genai_c.h>
+     int main() {
+       int32_t token = -1;
+       return OgaEngineEventGetTerminalTokenId(nullptr, &token) != nullptr;
+     }"
+    FOUNDRY_LOCAL_OGA_HAS_TERMINAL_TOKEN
+)
 unset(CMAKE_REQUIRED_INCLUDES)
 unset(CMAKE_REQUIRED_LIBRARIES)
 if(NOT FOUNDRY_LOCAL_HAS_REQUIRED_NON_GENERATIVE_ORT_GENAI)
@@ -262,6 +271,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/inferencing/session/session_manager.cc
     src/inferencing/session/tool_registry.cc
     src/inferencing/generative/chat/chat_session.cc
+    src/inferencing/generative/chat/harmony_decoder.cc
     src/inferencing/generative/chat/chat_template.cc
     src/inferencing/generative/chat/chat_transcript.cc
     src/inferencing/generative/chat/media_input.cc
@@ -393,7 +403,8 @@ list(APPEND FOUNDRY_LOCAL_SOURCES ${FOUNDRY_LOCAL_PUBLIC_HEADERS})
 function(foundry_local_configure_target TARGET LINK_SCOPE)
     target_compile_options(${TARGET} PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
     target_compile_definitions(${TARGET} ${LINK_SCOPE}
-        FOUNDRY_LOCAL_HAS_SHARED_HOST=$<BOOL:${FOUNDRY_LOCAL_HAS_SHARED_HOST}>)
+        FOUNDRY_LOCAL_HAS_SHARED_HOST=$<BOOL:${FOUNDRY_LOCAL_HAS_SHARED_HOST}>
+        FOUNDRY_LOCAL_OGA_HAS_TERMINAL_TOKEN=$<BOOL:${FOUNDRY_LOCAL_OGA_HAS_TERMINAL_TOKEN}>)
 
     target_include_directories(${TARGET}
         PUBLIC

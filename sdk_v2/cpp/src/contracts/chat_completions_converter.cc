@@ -313,6 +313,9 @@ void MapRequestParameters(const ChatCompletionRequest& req, Request& session_req
     session_request.options["chat_template_kwargs"] =
         ResolveReasoningTemplateKwargs(req.chat_template_kwargs, req.reasoning_effort).dump();
   }
+  if (req.reasoning_effort.has_value()) {
+    session_request.options["reasoning_effort"] = *req.reasoning_effort;
+  }
 
   // Extract metadata extensions (matching C# GetTopK/GetRandomSeed)
   if (req.metadata.has_value()) {

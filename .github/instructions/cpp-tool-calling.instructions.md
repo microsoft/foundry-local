@@ -13,9 +13,13 @@ applyTo: "sdk_v2/cpp/src/inferencing/generative/{chat,toolcalling}/**"
   Permit JSON whitespace at structural boundaries explicitly; never use global whitespace ignoring inside strings.
 - Reasoning and executable tool boundaries use published token IDs. Added tokens may have `special:false`; quoted
   marker spellings are data. Preserve payload ownership once a canonical or explicit raw envelope has opened.
-- Automatic structured output must explicitly choose `MESSAGE\n` plus ordinary text or an executable tool boundary.
+- Canonical automatic structured output must explicitly choose `MESSAGE\n` plus ordinary text or an executable tool boundary.
   Strip text framing incrementally and project it into assistant history. Use whole-turn guidance for automatic
   turns, including nonreasoning Engine models; region-only masks cannot enforce this initial mode selection.
+- Qualified native Harmony uses assistant channel/recipient headers instead of canonical text framing or arrays.
+  Decode its structure by token identity, seed the prepared assistant-header continuation explicitly, and authorize
+  a call only at the actual sampled handoff. Reuse the same original-schema plan and publication/recovery sinks.
+  Terminal-token completion metadata is not a retained token and must never be added to the Engine sequence ledger.
 - Encode transcript/schema/argument data with the independent literal tokenizer. Only template-owned structure,
   runtime-owned protocol boundaries, and actual historical call boundaries use ordinary encoding. Encoding
   protocol boundary exemplars literally teaches the model to echo ordinary text instead of invoking tools.

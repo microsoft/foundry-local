@@ -28,6 +28,8 @@ enum class ToolKind {
 enum class GeneratedCallEncoding {
   kStructured,
   kRawEnvelope,
+  kNativeRaw,
+  kNativeJson,
 };
 
 struct ForcedToolChoice {

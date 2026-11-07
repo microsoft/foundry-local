@@ -410,7 +410,7 @@ std::unique_ptr<Item> Decode(const Json& value, const ItemDecodingContext& conte
               ? std::nullopt
               : std::optional(ReadEnum<ToolKind>(declared_kind, 0, static_cast<int>(ToolKind::kCustom)));
       call->generated_encoding = ReadEnum<GeneratedCallEncoding>(value.at("encoding"), 0,
-                                                                 static_cast<int>(GeneratedCallEncoding::kRawEnvelope));
+                                                                 static_cast<int>(GeneratedCallEncoding::kNativeJson));
       call->replayed_from_store = value.at("replayed").get<bool>();
       call->replayed_arguments = value.at("replayed_arguments").get<std::string>();
       const auto& replayed_kind = value.at("replayed_kind");

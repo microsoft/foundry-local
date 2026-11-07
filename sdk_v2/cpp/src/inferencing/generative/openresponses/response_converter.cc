@@ -741,6 +741,7 @@ Request ToSessionRequest(const ResponseCreateParams& params, const ResponseChain
   if (params.reasoning.has_value() && params.reasoning->effort.has_value()) {
     request.options["chat_template_kwargs"] =
         ResolveReasoningTemplateKwargs(std::nullopt, params.reasoning->effort).dump();
+    request.options["reasoning_effort"] = *params.reasoning->effort;
   }
 
   // Text format / grammar guidance → metadata parameters

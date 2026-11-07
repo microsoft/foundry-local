@@ -3,6 +3,7 @@
 #pragma once
 
 #include "inferencing/session/types.h"
+#include "inferencing/generative/chat/harmony_protocol.h"
 
 #include <cstdint>
 #include <memory>
@@ -10,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace fl {
@@ -25,6 +27,7 @@ struct ToolCallContext {
   /// Whether the model supports tool calling, using explicit catalog metadata when present
   /// and otherwise the loaded model's rendered-template probe.
   bool supports_tool_calling = false;
+  std::optional<HarmonyProtocol> harmony;
 
   /// The special token that marks the start of a tool call in generated text.
   /// Empty if the model does not advertise tool call tokens.
@@ -102,6 +105,7 @@ struct ToolCallContext {
   }
 
   const RawEnvelopeDescriptor* ActiveRawEnvelope() const {
+    if (harmony) return nullptr;
     if (!tool_output || !raw_envelope.has_value() || !IsCustomTool(raw_envelope->tool_name)) {
       return nullptr;
     }
@@ -132,6 +136,25 @@ struct ToolCallContext {
   /// Whether the named tool takes a raw text payload rather than JSON arguments.
   bool IsCustomTool(const std::string& name) const { return KindOf(name) == ToolKind::kCustom; }
 
+  /// Unframed custom text keeps JSON transport; native raw bodies require an admitted input grammar.
+  bool UsesNativeRawBody(const std::string& name) const {
+    return harmony && IsCustomTool(name) && custom_lark_grammars.find(name) != custom_lark_grammars.end();
+  }
+
+  std::unordered_set<std::string> NativeRawToolNames() const {
+    std::unordered_set<std::string> names;
+    for (const auto& entry : custom_lark_grammars) {
+      if (UsesNativeRawBody(entry.first)) names.insert(entry.first);
+    }
+    return names;
+  }
+
+  GeneratedCallEncoding CallEncoding(const std::string& name, bool raw_envelope) const {
+    if (raw_envelope) return GeneratedCallEncoding::kRawEnvelope;
+    if (!harmony) return GeneratedCallEncoding::kStructured;
+    return UsesNativeRawBody(name) ? GeneratedCallEncoding::kNativeRaw : GeneratedCallEncoding::kNativeJson;
+  }
+
   /// User-specified guidance type from response_format (e.g., "lark_grammar", "json_schema").
   /// Empty means no explicit guidance — the generator may still apply auto-generated tool guidance.
   std::string guidance_type;
@@ -152,7 +175,7 @@ struct ToolCallContext {
   }
 
   bool UsesAssistantTextFraming() const {
-    return tool_plan && text_output && tool_output && !HasAnyExplicitGuidance() && !ActiveRawEnvelope();
+    return !harmony && tool_plan && text_output && tool_output && !HasAnyExplicitGuidance() && !ActiveRawEnvelope();
   }
 
   /// Whether any tools were provided in the request.
