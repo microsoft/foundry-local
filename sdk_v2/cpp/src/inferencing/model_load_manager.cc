@@ -552,13 +552,10 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
   }
 
   if (resolved_ep == ExecutionProvider::kDefault) {
-    // Auto-select EP for generic-gpu models: DML models are compatible with
-    // CUDA and WebGPU, so try those in order when available.
+    // Do not promote generic-gpu models to CUDA: OGA overrides only the decoder provider, leaving explicit
+    // vision and embedding providers unchanged. WebGPU keeps those component sessions on the same device.
     if (id_str.find("generic-gpu") != std::string::npos) {
-      if (HasEP("CUDAExecutionProvider")) {
-        resolved_ep = ExecutionProvider::kCUDA;
-        logger_.Log(LogLevel::Information, fmt::format("using CUDA EP for model: {}", id_str));
-      } else if (HasEP("WebGpuExecutionProvider")) {
+      if (HasEP("WebGpuExecutionProvider")) {
         resolved_ep = ExecutionProvider::kWebGPU;
         logger_.Log(LogLevel::Information, fmt::format("using WebGPU EP for model: {}", id_str));
       }
