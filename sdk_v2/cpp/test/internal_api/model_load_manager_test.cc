@@ -326,19 +326,31 @@ TEST(ModelLoadManagerTest, GenericGpuAutoSelectionDoesNotSelectAmdGpu) {
   EXPECT_TRUE(ep.prepared_ep.empty());
 }
 
-TEST(ModelLoadManagerTest, GenericGpuAutoSelectionStillPrefersCudaThenWebGpuWithAmdGpuAvailable) {
-  for (const auto preferred : {"CUDAExecutionProvider", "WebGpuExecutionProvider"}) {
+TEST(ModelLoadManagerTest, GenericGpuAutoSelectionPrefersWebGpuEvenWithCudaAndAmdGpuAvailable) {
+  for (const bool cuda_available : {false, true}) {
+    SCOPED_TRACE(cuda_available);
     AmdGpuEpDetector ep;
     ep.providers.push_back("WebGpuExecutionProvider");
-    if (std::string_view(preferred) == "CUDAExecutionProvider") {
+    if (cuda_available) {
       ep.providers.push_back("CUDAExecutionProvider");
     }
     fl::StderrLogger logger;
-    TempModelDir dir("generic-gpu-priority");
+    TempModelDir dir("generic-gpu-priority", "webgpu");
     fl::ModelLoadManager mgr(ep, logger);
     EXPECT_THROW(mgr.LoadModel(dir.path(), "model-generic-gpu:1"), fl::Exception);
-    EXPECT_EQ(ep.prepared_ep, preferred);
+    EXPECT_EQ(ep.prepared_ep, "WebGpuExecutionProvider");
   }
+}
+
+TEST(ModelLoadManagerTest, LoadGenericGpuModel_ExplicitCudaOverride_StillSelectsCuda) {
+  AmdGpuEpDetector ep;
+  ep.providers = {"CUDAExecutionProvider", "WebGpuExecutionProvider"};
+  fl::StderrLogger logger;
+  TempModelDir dir("generic-gpu-explicit-cuda", "webgpu");
+  fl::ModelLoadManager mgr(ep, logger);
+
+  EXPECT_THROW(mgr.LoadModel(dir.path(), "model-generic-gpu:1", fl::ExecutionProvider::kCUDA), fl::Exception);
+  EXPECT_EQ(ep.prepared_ep, "CUDAExecutionProvider");
 }
 
 TEST(ModelLoadManagerTest, LoadRuntimeIdWithFullDmlProviderName_DoesNotRequireDownloadableEp) {
@@ -411,22 +423,28 @@ TEST(ModelLoadManagerTest, LoadCpuModel_AlwaysSucceeds_NoEpGuard) {
   }
 }
 
-TEST(ModelLoadManagerTest, LoadGenericGpuModel_CudaAvailable_AutoSelectsCuda) {
-  GpuEpDetector ep;
-  fl::StderrLogger logger;
-  TempModelDir dir("phi-4-mini-generic-gpu");
-  fl::ModelLoadManager mgr(ep, logger);
+TEST(ModelLoadManagerTest, LoadGenericGpuModel_OnlyCudaAvailable_DoesNotOverrideConfiguredProvider) {
+  for (const auto provider : {"dml", "webgpu"}) {
+    SCOPED_TRACE(provider);
+    GpuEpDetector ep;
+    fl::StderrLogger logger;
+    TempModelDir dir("phi-4-mini-generic-gpu", provider);
+    fl::ModelLoadManager mgr(ep, logger);
 
-  // Will fail at GenAIModelInstance construction, but should NOT fail at EP guard.
-  // The auto-select logic should pick CUDA, and CUDA IS available.
-  try {
-    mgr.LoadModel(dir.path(), "phi-4-mini-generic-gpu");
-  } catch (const fl::Exception& e) {
-    // Should NOT be an EP guard error
-    EXPECT_NE(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+    try {
+      mgr.LoadModel(dir.path(), "phi-4-mini-generic-gpu");
+      FAIL() << "Expected exception";
+    } catch (const fl::Exception& e) {
+      if (std::string_view(provider) == "webgpu") {
+        EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+        EXPECT_NE(std::string(e.what()).find("WebGpuExecutionProvider"), std::string::npos);
+      } else {
+        EXPECT_NE(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+      }
+    }
+
+    EXPECT_TRUE(ep.prepared_ep.empty());
   }
-
-  EXPECT_EQ(ep.prepared_ep, "CUDAExecutionProvider");
 }
 
 TEST(ModelLoadManagerTest, LoadGenericGpuModel_WebGpuAvailable_AutoSelectsWebGpu) {
