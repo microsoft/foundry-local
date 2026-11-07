@@ -81,6 +81,10 @@ impl RankingRequest {
 pub struct RankedCandidate {
     /// One-based rank.
     pub rank: usize,
+    /// String form of the zero-based candidate index.
+    pub id: String,
+    /// Zero-based index into [`RankingRequest::answers`].
+    pub index: usize,
     /// Original candidate text.
     pub candidate: String,
     /// Model probability for this candidate.
@@ -301,7 +305,7 @@ impl RankingResult {
             return invalid_response("ranking result must contain every submitted answer");
         }
 
-        let mut matched = vec![false; request.answers.len()];
+        let mut matched_indexes = vec![false; request.answers.len()];
         for (index, candidate) in self.ranked.iter().enumerate() {
             if candidate.rank != index + 1 {
                 return invalid_response(
@@ -311,21 +315,16 @@ impl RankingResult {
             if !candidate.probability.is_finite() || !(0.0..=1.0).contains(&candidate.probability) {
                 return invalid_response("ranking probabilities must be finite and in [0, 1]");
             }
-            let Some(answer_index) =
-                request
-                    .answers
-                    .iter()
-                    .enumerate()
-                    .find_map(|(answer_index, answer)| {
-                        (!matched[answer_index] && answer == &candidate.candidate)
-                            .then_some(answer_index)
-                    })
-            else {
+            if candidate.index >= request.answers.len()
+                || matched_indexes[candidate.index]
+                || candidate.id != candidate.index.to_string()
+                || candidate.candidate != request.answers[candidate.index]
+            {
                 return invalid_response(
-                    "ranking candidates must match submitted answers exactly once",
+                    "ranking IDs and indexes must be unique, in range, and match submitted answers",
                 );
-            };
-            matched[answer_index] = true;
+            }
+            matched_indexes[candidate.index] = true;
         }
         Ok(())
     }
@@ -551,7 +550,7 @@ mod tests {
 
         let result: RankingResult = serde_json::from_value(serde_json::json!({
             "model": "clm:1",
-            "ranked": [{"rank": 1, "candidate": "b", "prob": 0.75}]
+            "ranked": [{"rank": 1, "id": "1", "index": 1, "candidate": "b", "prob": 0.75}]
         }))
         .unwrap();
         assert_eq!(result.ranked[0].probability, 0.75);
@@ -587,11 +586,15 @@ mod tests {
             ranked: vec![
                 RankedCandidate {
                     rank: 1,
+                    id: "1".into(),
+                    index: 1,
                     candidate: "b".into(),
                     probability: 0.75,
                 },
                 RankedCandidate {
                     rank: 2,
+                    id: "0".into(),
+                    index: 0,
                     candidate: "a".into(),
                     probability: 0.25,
                 },
@@ -602,8 +605,12 @@ mod tests {
         result.ranked[1].rank = 1;
         assert_invalid_response(result.validate(&request), "unique consecutive ranks");
         result.ranked[1].rank = 2;
+        result.ranked[1].index = 1;
+        result.ranked[1].id = "1".into();
         result.ranked[1].candidate = "b".into();
-        assert_invalid_response(result.validate(&request), "exactly once");
+        assert_invalid_response(result.validate(&request), "unique");
+        result.ranked[1].index = 0;
+        result.ranked[1].id = "0".into();
         result.ranked[1].candidate = "a".into();
         result.ranked[1].probability = f64::NAN;
         assert_invalid_response(result.validate(&request), "probabilities");

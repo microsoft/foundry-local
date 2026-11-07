@@ -533,12 +533,16 @@ native submission.
 ```rust
 pub struct RankedCandidate {
     pub rank: usize,
+    pub id: String,
+    pub index: usize,
     pub candidate: String,
     pub probability: f64,
 }
 ```
 
-`probability` maps to the endpoint's `prob` JSON field. `rank` is one-based.
+`probability` maps to the endpoint's `prob` JSON field. `rank` is one-based;
+`index` is the zero-based position in the submitted answers and `id` is its
+string representation.
 
 ### RankingResult
 
