@@ -233,8 +233,6 @@ class Model {
   std::string local_path_;
   mutable std::forward_list<std::string> published_paths_;
   bool external_registration_ = false;
-  std::atomic<bool> external_runtime_loaded_{false};
-  std::atomic<size_t> external_session_count_{0};
 
   // Non-owning service bindings for leaf operations. Set once at construction and never
   // reassigned; guaranteed non-null because FromModelInfo takes them by reference.
