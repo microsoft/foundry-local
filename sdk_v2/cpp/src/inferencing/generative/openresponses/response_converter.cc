@@ -360,7 +360,7 @@ static void AddJsonItemsToRequest(Request& request, const nlohmann::json& items)
     }
 
     if (type == "function_call") {
-      request.AddOwnedItem(MakeReplayedToolCall(entry));
+      request.AddOwnedItem(MakeReplayedToolCall(entry, {}));
       continue;
     }
 
