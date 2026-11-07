@@ -240,33 +240,45 @@ values so their JSON shape is preserved.
 ```csharp
 using System.Text.Json;
 
-using var ranking = new RankingSession(rankingModel);
-var ranked = await ranking.RankAsync(new RankingRequest
+await rankingModel.LoadAsync();
+using (var ranking = new RankingSession(rankingModel))
 {
-    Context = JsonSerializer.SerializeToElement(new { weather = "heavy rain" }),
-    Question = "Which activity is more suitable?",
-    Answers = ["Have a picnic outdoors", "Visit an indoor museum"],
-});
-Console.WriteLine(ranked.Ranked[0].Candidate);
-
-using var decisions = new DecisionSession(decisionModel);
-var result = await decisions.DecideAsync(new DecisionRequest
-{
-    State = JsonSerializer.SerializeToElement(new { weather = "heavy rain" }),
-    Questions = new Dictionary<string, DecisionQuestion>
+    var ranked = await ranking.RankAsync(new RankingRequest
     {
-        ["umbrella"] = new()
+        Model = rankingModel.Info.Id,
+        Context = JsonSerializer.SerializeToElement(new { weather = "heavy rain" }),
+        Question = "Which activity is more suitable?",
+        Answers = ["Have a picnic outdoors", "Visit an indoor museum"],
+    });
+    Console.WriteLine(ranked.Ranked[0].Candidate);
+}
+await rankingModel.UnloadAsync();
+
+await decisionModel.LoadAsync();
+using (var decisions = new DecisionSession(decisionModel))
+{
+    var result = await decisions.DecideAsync(new DecisionRequest
+    {
+        Model = decisionModel.Info.Id,
+        State = JsonSerializer.SerializeToElement(new { weather = "heavy rain" }),
+        Questions = new Dictionary<string, DecisionQuestion>
         {
-            Type = "noul",
-            Instructions = JsonSerializer.SerializeToElement("Should I take an umbrella?"),
+            ["umbrella"] = new()
+            {
+                Type = "noul",
+                Instructions = JsonSerializer.SerializeToElement("Should I take an umbrella?"),
+            },
         },
-    },
-});
-Console.WriteLine(result.Answers["umbrella"].Noul);
+    });
+    Console.WriteLine(result.Answers["umbrella"].Noul);
+}
+await decisionModel.UnloadAsync();
 ```
 
-`RankingSession` requires a cached model with task `text-ranking`; `DecisionSession` requires a
-cached model with task `typed-decision`. The native session loads the package runtime as needed.
+`RankingSession` requires a loaded model with task `text-ranking`; `DecisionSession` requires a
+loaded model with task `typed-decision`. The caller owns the model: call `LoadAsync` before creating
+a session, dispose every session before `UnloadAsync`, and then unload in a `finally` block in
+production code. Requests and native results are validated at the SDK boundary.
 Each call sends exactly one `TextItem.OpenAIJson` and expects exactly one such item in response.
 
 ### Chat Completions

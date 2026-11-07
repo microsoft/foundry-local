@@ -35,14 +35,24 @@ public abstract class NonGenerativeSession : Session
         CancellationToken ct)
     {
         Detail.Throw.IfNull(input);
+        ThrowIfDisposed();
         var requestJson = JsonSerializer.Serialize(input, requestTypeInfo);
         var responseJson = _testTransport == null
             ? await ProcessNativeJsonAsync(requestJson, ct).ConfigureAwait(false)
             : await _testTransport(requestJson, ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
 
-        return JsonSerializer.Deserialize(responseJson, resultTypeInfo)
-            ?? throw new JsonException($"Native response could not be deserialized as {typeof(TResult).Name}.");
+        try
+        {
+            return JsonSerializer.Deserialize(responseJson, resultTypeInfo)
+                ?? throw new JsonException($"Response could not be deserialized as {typeof(TResult).Name}.");
+        }
+        catch (JsonException ex)
+        {
+            throw new FoundryLocalException(
+                $"Non-generative session returned invalid {typeof(TResult).Name} JSON.", ex);
+        }
     }
 
     private async Task<string> ProcessNativeJsonAsync(string requestJson, CancellationToken ct)

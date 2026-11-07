@@ -34,6 +34,12 @@ public sealed record RankedCandidate
     [JsonPropertyName("rank")]
     public int Rank { get; init; }
 
+    [JsonPropertyName("id")]
+    public string Id { get; init; } = string.Empty;
+
+    [JsonPropertyName("index")]
+    public int Index { get; init; }
+
     [JsonPropertyName("candidate")]
     public required string Candidate { get; init; }
 
