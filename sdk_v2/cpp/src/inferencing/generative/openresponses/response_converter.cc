@@ -251,6 +251,11 @@ std::unique_ptr<MessageItem> MakeReasoningMessage(std::string reasoning) {
   return message;
 }
 
+GeneratedCallEncoding ReplayedCallEncoding(const std::string& call_id, const ToolCallEncodings& encodings) {
+  const auto found = encodings.find(call_id);
+  return found == encodings.end() ? GeneratedCallEncoding::kStructured : found->second;
+}
+
 /// Rebuild a stored `function_call` item.
 ///
 /// A hop's stored items are replayed as the hop recorded them, whether the call came from the model's own output or
@@ -258,7 +263,7 @@ std::unique_ptr<MessageItem> MakeReasoningMessage(std::string reasoning) {
 /// validated strictly at the time, and a model-emitted call whose argument bytes were not a JSON object was already
 /// presented to the model as having none. Replay reproduces that rather than re-admitting bytes the strict
 /// caller-supplied path would now reject, which would fail a continuation of a conversation that already happened.
-std::unique_ptr<ToolCallItem> MakeReplayedToolCall(const nlohmann::json& item) {
+std::unique_ptr<ToolCallItem> MakeReplayedToolCall(const nlohmann::json& item, const ToolCallEncodings& encodings) {
   const auto call_id = RequiredReplayString(item, "call_id", "stored function_call");
   const auto name = RequiredReplayString(item, "name", "stored function_call");
   std::string arguments;
@@ -271,7 +276,7 @@ std::unique_ptr<ToolCallItem> MakeReplayedToolCall(const nlohmann::json& item) {
   }
 
   auto call = std::make_unique<ToolCallItem>(call_id, name, arguments, /*replayed_from_store=*/true,
-                                             ToolKind::kFunction);
+                                             ToolKind::kFunction, std::nullopt, ReplayedCallEncoding(call_id, encodings));
   call->replayed_arguments = std::move(arguments);
   call->replayed_kind = ToolKind::kFunction;
   return call;
@@ -283,15 +288,13 @@ std::unique_ptr<ToolCallItem> MakeReplayedToolCall(const nlohmann::json& item) {
 /// produced it in, and the same form the tool would receive. It is never parsed or re-encoded: doing so would change
 /// the bytes for a payload that is itself JSON, or reject one that is not.
 std::unique_ptr<ToolCallItem> MakeReplayedCustomToolCall(
-    const nlohmann::json& item, const std::unordered_set<std::string>& raw_envelope_call_ids) {
+    const nlohmann::json& item, const ToolCallEncodings& encodings) {
   const auto call_id = RequiredReplayString(item, "call_id", "stored custom_tool_call");
   const auto name = RequiredReplayString(item, "name", "stored custom_tool_call");
   auto input = RequiredReplayString(item, "input", "stored custom_tool_call", true);
   auto call = std::make_unique<ToolCallItem>(call_id, name, input, /*replayed_from_store=*/true,
                                              ToolKind::kCustom, std::nullopt,
-                                             raw_envelope_call_ids.contains(call_id)
-                                                 ? GeneratedCallEncoding::kRawEnvelope
-                                                 : GeneratedCallEncoding::kStructured);
+                                             ReplayedCallEncoding(call_id, encodings));
   call->replayed_arguments = std::move(input);
   call->replayed_kind = ToolKind::kCustom;
   return call;
@@ -411,7 +414,7 @@ static void AddJsonItemsToRequest(Request& request, const nlohmann::json& items)
 /// text moved in front of the call. A hop that produced nothing replayable still emits the assistant boundary it
 /// committed live.
 static void AddHopOutputToRequest(Request& request, const nlohmann::json& output_items,
-                                  const std::unordered_set<std::string>& raw_envelope_call_ids) {
+                                  const ToolCallEncodings& encodings) {
   bool emitted = false;
 
   if (output_items.is_array()) {
@@ -423,13 +426,13 @@ static void AddHopOutputToRequest(Request& request, const nlohmann::json& output
       const std::string type = entry.value("type", "");
 
       if (type == "function_call") {
-        request.AddOwnedItem(MakeReplayedToolCall(entry));
+        request.AddOwnedItem(MakeReplayedToolCall(entry, encodings));
         emitted = true;
         continue;
       }
 
       if (type == "custom_tool_call") {
-        request.AddOwnedItem(MakeReplayedCustomToolCall(entry, raw_envelope_call_ids));
+        request.AddOwnedItem(MakeReplayedCustomToolCall(entry, encodings));
         emitted = true;
         continue;
       }
@@ -466,7 +469,7 @@ static void AddChainContextToRequest(Request& request, const ResponseChainContex
     request.BeginItemSegment();
     AddJsonItemsToRequest(request, hop.input_items);
     request.BeginItemSegment();
-    AddHopOutputToRequest(request, hop.output_items, hop.raw_envelope_call_ids);
+    AddHopOutputToRequest(request, hop.output_items, hop.call_encodings);
   }
 }
 

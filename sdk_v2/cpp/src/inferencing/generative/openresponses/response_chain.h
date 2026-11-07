@@ -2,14 +2,18 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "inferencing/session/types.h"
+
 #include <nlohmann/json.hpp>
 
 #include <vector>
 #include <string>
-#include <unordered_set>
+#include <unordered_map>
 #include <utility>
 
 namespace fl {
+
+using ToolCallEncodings = std::unordered_map<std::string, GeneratedCallEncoding>;
 
 /// One hop of a reconstructed Responses chain: the input items that request was given, followed by the output items
 /// it produced.
@@ -24,14 +28,14 @@ namespace fl {
 struct ResponseChainHop {
   ResponseChainHop() = default;
   ResponseChainHop(nlohmann::json input, nlohmann::json output,
-                   std::unordered_set<std::string> raw_call_ids = {})
+                   ToolCallEncodings encodings = {})
       : input_items(std::move(input)),
         output_items(std::move(output)),
-        raw_envelope_call_ids(std::move(raw_call_ids)) {}
+        call_encodings(std::move(encodings)) {}
 
   nlohmann::json input_items = nlohmann::json::array();
   nlohmann::json output_items = nlohmann::json::array();
-  std::unordered_set<std::string> raw_envelope_call_ids;
+  ToolCallEncodings call_encodings;
 };
 
 /// A complete chain, oldest hop first.

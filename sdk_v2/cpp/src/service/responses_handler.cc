@@ -22,7 +22,6 @@
 #include <chrono>
 #include <fmt/format.h>
 #include <thread>
-#include <unordered_set>
 
 namespace fl {
 
@@ -61,7 +60,7 @@ struct PublishRequest {
   std::string model_id;
   nlohmann::json response;
   nlohmann::json input_items;
-  std::unordered_set<std::string> raw_envelope_call_ids;
+  ToolCallEncodings call_encodings;
 };
 
 /// Publish a completed response: store its metadata and cache its session as one indivisible step.
@@ -79,7 +78,7 @@ void PublishResponse(PublishRequest request) {
   const bool published = request.store.Commit(
       request.lease,
       ResponseStore::StoredResponse{request.response_id, request.model_id, std::move(request.response),
-                                    std::move(request.input_items), std::move(request.raw_envelope_call_ids)},
+                                    std::move(request.input_items), std::move(request.call_encodings)},
       &admission);
 
   if (!published) {
@@ -426,11 +425,13 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleNo
   session->ProcessRequest(session_request, session_response);
 
   auto [output, output_text] = ResponseConverter::FromSessionResponse(session_response);
-  std::unordered_set<std::string> raw_envelope_call_ids;
-  for (const auto& item : output) {
-    if (const auto* custom = std::get_if<CustomToolCallOutputItem>(&item);
-        custom != nullptr && custom->generated_encoding == GeneratedCallEncoding::kRawEnvelope) {
-      raw_envelope_call_ids.insert(custom->call_id);
+  ToolCallEncodings call_encodings;
+  for (const auto& item : session_response.items) {
+    if (item->type == FOUNDRY_LOCAL_ITEM_TOOL_CALL) {
+      const auto& call = static_cast<const ToolCallItem&>(*item);
+      if (call.generated_encoding != GeneratedCallEncoding::kStructured) {
+        call_encodings.emplace(call.call_id, call.generated_encoding);
+      }
     }
   }
 
@@ -450,7 +451,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleNo
                                    .model_id = turn.model_id,
                                    .response = response_json,
                                    .input_items = ResponseConverter::ToInputItems(req_json),
-                                   .raw_envelope_call_ids = std::move(raw_envelope_call_ids)});
+                                   .call_encodings = std::move(call_encodings)});
   }
 
   return JsonResponse(Status::CODE_200, response_json);
@@ -531,7 +532,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
     // Items that have been *closed* (or, for the currently-open item at end-of-stream, finalized in place).
     // Used to construct the final `output[]` array for the response.completed event.
     std::vector<ResponseOutputItem> closed_items;
-    std::unordered_set<std::string> raw_envelope_call_ids;
+    ToolCallEncodings call_encodings;
 
     auto push_event = [&](const std::string& event_name, const StreamEvent& ev) {
       stream->Push("event: " + event_name + "\ndata: " + nlohmann::json(ev).dump() + "\n\n");
@@ -669,8 +670,8 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
       }
 
       closed_items.push_back(std::move(output.completed_item));
-      if (call.generated_encoding == GeneratedCallEncoding::kRawEnvelope) {
-        raw_envelope_call_ids.insert(call.call_id);
+      if (call.generated_encoding != GeneratedCallEncoding::kStructured) {
+        call_encodings.emplace(call.call_id, call.generated_encoding);
       }
     };
 
@@ -779,7 +780,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
                                            .model_id = turn.model_id,
                                            .response = std::move(response_json),
                                            .input_items = ResponseConverter::ToInputItems(req_copy),
-                                           .raw_envelope_call_ids = std::move(raw_envelope_call_ids)});
+                                           .call_encodings = std::move(call_encodings)});
           })) {
         stream->Finish();
         return;

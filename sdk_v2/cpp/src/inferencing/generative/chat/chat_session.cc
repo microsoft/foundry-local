@@ -2159,7 +2159,8 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
           if (streaming_callback) {
             streaming_callback->PushItem(std::make_unique<ToolCallItem>(
                 call.id, call.name, call.arguments, /*replayed_from_store=*/false,
-                completed_tool_ctx.KindOf(call.name), std::nullopt, GeneratedCallEncoding::kStructured));
+                completed_tool_ctx.KindOf(call.name), std::nullopt,
+                completed_tool_ctx.CallEncoding(call.name, call.raw_envelope)));
           }
         }
 
