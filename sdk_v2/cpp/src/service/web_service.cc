@@ -300,15 +300,7 @@ struct WebService::Impl {
                            session_manager,
                            public_response_store,
                            telemetry,
-                           thread_tracker,
-#ifdef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
-                           CreateNonGenerativeRuntimeState(
-                               non_generative_memory_budget_bytes,
-                               non_generative_readiness_concurrency)
-#else
-                           nullptr
-#endif
-            })),
+                           thread_tracker})),
         local_context(std::make_unique<ServiceContext>(
             ServiceContext{local_catalog,
                            logger,
@@ -481,10 +473,6 @@ void WebService::Stop() {
     }
   }
 
-#ifdef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
-  ClearNonGenerativeRuntimes(*impl_->public_context);
-  ClearNonGenerativeRuntimes(*impl_->local_context);
-#endif
   impl_->servers.clear();
   impl_->listener_threads.clear();
   impl_->providers.clear();
