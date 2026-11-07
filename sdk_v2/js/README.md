@@ -76,6 +76,38 @@ inference. Cancellation rejects with `AbortError`, but a completed native respon
 chat, audio, and embedding methods accept the same options as their last argument; for chat without tools, use
 `client.completeChat(messages, undefined, { signal })`.
 
+### Ranking and typed decisions
+
+`RankingSession` and `DecisionSession` use the same contracts as
+`POST /v1/rank` and `POST /v1/systemone`:
+
+```ts
+import { DecisionSession, RankingSession } from "foundry-local-sdk";
+
+using ranking = new RankingSession(cachedRankingModel);
+const ranked = await ranking.rank({
+  context: { weather: "rain" },
+  question: "Which activity is best?",
+  answers: ["picnic", "museum"],
+});
+
+using decisions = new DecisionSession(cachedDecisionModel);
+const result = await decisions.decide({
+  state: { weather: "rain" },
+  questions: {
+    umbrella: { type: "noul", instructions: "Should I take an umbrella?" },
+  },
+});
+```
+
+Ranking and decision models must be cached, but callers do not explicitly load
+or unload them; the native session manages their runtime.
+
+The inherited low-level `processRequest()` API accepts exactly one
+`Item.text(JSON.stringify(payload), "openai-json")` item and returns one OpenAI JSON text item.
+Sessions validate the model task before native construction and must be disposed like chat and
+embeddings sessions.
+
 ---
 
 ## 2. Prerequisites
