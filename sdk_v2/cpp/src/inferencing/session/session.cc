@@ -6,9 +6,7 @@
 #include "inferencing/generative/audio/audio_session.h"
 #include "inferencing/generative/chat/chat_session.h"
 #include "inferencing/generative/embeddings/embeddings_session.h"
-#ifdef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
 #include "inferencing/predictive/non_generative_session.h"
-#endif
 #include "inferencing/model_load_manager.h"
 #include "inferencing/session/session_manager.h"
 #include "items/message_item.h"
@@ -76,7 +74,7 @@ uint64_t CountTypedRequestMessages(const Request& request) {
 
 Session::Session(const fl::Model& catalog_model, ILogger& logger, ITelemetry& telemetry,
                  bool allow_concurrent_requests)
-    : catalog_model_(catalog_model),
+    : catalog_model_(&catalog_model),
       logger_(logger),
       telemetry_(telemetry),
       allow_concurrent_requests_(allow_concurrent_requests) {
@@ -100,25 +98,21 @@ std::unique_ptr<Session> Session::Create(const fl::Model& model) {
     const auto& info = model.Info();
     const bool non_generative =
         info.task == "text-ranking" || info.task == "typed-decision";
-    if (non_generative && !model.IsCached()) {
-      FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
-                       "model must be cached before creating a session");
-    }
-    if (!non_generative && !model.IsLoaded()) {
+    if (!model.IsLoaded()) {
       FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model must be loaded before creating a session");
     }
 
-    auto* loaded = non_generative
-                       ? nullptr
-                       : mgr.GetModelLoadManager().GetLoadedModel(
-                             model.Id(), model.GetPath());
+    ModelLoadManager::SessionModelReference loaded;
+    if (!non_generative)
+      loaded = mgr.GetModelLoadManager().AcquireSessionModel(
+          model.Id(), model.GetPath());
     if (!non_generative && !loaded) {
-      FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL, "loaded model not found in load manager");
+      FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model must be loaded before creating a session");
     }
 
     tracker.SetModelId(model.Id());
 
-    if (info.task == "chat-completion" || info.task == "vision-language-chat") {
+    if (info.task == "chat-completion" || info.task == "coding" || info.task == "vision-language-chat") {
       auto session = std::make_unique<ChatSession>(model, *loaded, logger, telemetry);
       tracker.SetStatus(ActionStatus::kSuccess);
       return session;
@@ -136,14 +130,13 @@ std::unique_ptr<Session> Session::Create(const fl::Model& model) {
       return session;
     }
 
-#ifdef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
     if (non_generative) {
       auto session =
-          std::make_unique<NonGenerativeSession>(model, logger, telemetry);
+          std::make_unique<NonGenerativeSession>(
+              model, mgr.GetModelLoadManager(), logger, telemetry);
       tracker.SetStatus(ActionStatus::kSuccess);
       return session;
     }
-#endif
 
     FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unsupported model task: ", info.task);
   } catch (const std::exception& ex) {
@@ -152,7 +145,7 @@ std::unique_ptr<Session> Session::Create(const fl::Model& model) {
   }
 }
 
-void Session::UndoTurns(size_t /*count*/) {
+size_t Session::UndoTurns(size_t /*count*/) {
   FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "UndoTurns is not supported for this session type");
 }
 
@@ -194,13 +187,13 @@ void Session::AddToolDefinition(ToolDefinition tool_def) {
 void Session::ValidateRequestItems(const Request& request) const {
   // Only chat tasks are validated: other tasks either have no IO descriptor (embeddings) or accept
   // transport items that the descriptor does not advertise (the ASR streaming QUEUE item).
-  const auto& task = catalog_model_.Info().task;
-  if (task != "chat-completion" && task != "vision-language-chat") {
+  const auto& task = catalog_model_->Info().task;
+  if (task != "chat-completion" && task != "coding" && task != "vision-language-chat") {
     return;
   }
 
   // The model's task metadata is the source of truth for which input modalities are accepted.
-  const auto io_info = catalog_model_.GetInputOutputInfo();
+  const auto io_info = catalog_model_->GetInputOutputInfo();
 
   // An item type is accepted only if it matches one of the advertised inputs.
   auto check = [&](flItemType type) {
@@ -209,7 +202,7 @@ void Session::ValidateRequestItems(const Request& request) const {
     if (!supported) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
                fmt::format("{} input is not supported by model task '{}'",
-                           Item::TypeName(type), catalog_model_.Info().task));
+                           Item::TypeName(type), catalog_model_->Info().task));
     }
   };
 
@@ -239,7 +232,9 @@ void Session::ValidateRequestItems(const Request& request) const {
   }
 }
 
-void Session::ProcessRequest(const Request& request, Response& response) {
+size_t Session::ProcessRequest(const Request& request, Response& response,
+                               std::optional<StreamingCallback> callback) {
+  auto request_lifetime = AcquireRequestLifetime();
   // Serialize requests unless the derived class opted into concurrency.
   std::unique_lock<std::mutex> lock(*request_mutex_, std::defer_lock);
   if (!allow_concurrent_requests_) {
@@ -285,7 +280,11 @@ void Session::ProcessRequest(const Request& request, Response& response) {
       request.Cancel(Request::CancellationReason::SessionShutdown);
     }
 
-    active_requests_.insert(&request);
+    if (!callback) {
+      callback = StreamingCallback{callback_fn_, callback_user_data_};
+    }
+
+    active_requests_.emplace(&request, *callback);
     registered = true;
   }
 
@@ -346,7 +345,9 @@ void Session::ProcessRequest(const Request& request, Response& response) {
 
   const auto elapsed = std::chrono::steady_clock::now() - start;
   RecordUsage(request, response, tracker.Context(),
-              std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
+              std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
+              static_cast<bool>(callback->function));
+  return TurnCount();
 }
 
 InvocationContext Session::TakeInvocationContext() {
@@ -361,7 +362,7 @@ int32_t Session::TelemetryTokenCount(int64_t count) {
 }
 
 void Session::RecordUsage(const Request& request, const Response& response,
-                          const InvocationContext& context, int64_t total_time_ms) {
+                          const InvocationContext& context, int64_t total_time_ms, bool streaming) {
   // This boundary covers metric preparation as well as emission; neither may change inference results.
   try {
     if (!response.openai_json_message_count.has_value()) {
@@ -380,7 +381,7 @@ void Session::RecordUsage(const Request& request, const Response& response,
     usage.user_agent = TelemetryInternal::SanitizeTelemetryValue(context.user_agent);
     usage.correlation_id = TelemetryInternal::SanitizeTelemetryIdentifier(context.correlation_id);
     usage.indirect = context.indirect;
-    usage.stream = static_cast<bool>(callback_fn_);
+    usage.stream = streaming;
     usage.num_messages = CountTypedRequestMessages(request) + *response.openai_json_message_count;
     usage.total_time_ms = total_time_ms;
     usage.total_tokens = TelemetryTokenCount(response.usage.total_tokens);
@@ -404,7 +405,7 @@ void Session::Cancel() {
   // SessionManager holds its own lock during shutdown. Generation loops poll the flag.
   std::lock_guard<std::mutex> lock(*active_requests_mutex_);
   session_canceled_ = true;
-  for (const Request* r : active_requests_) {
+  for (const auto& [r, callback] : active_requests_) {
     r->Cancel(Request::CancellationReason::SessionShutdown);
   }
 }

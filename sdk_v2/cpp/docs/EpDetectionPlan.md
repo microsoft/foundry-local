@@ -23,7 +23,7 @@ C ABI (foundry_local_c.h)
   └── IEpDetector interface (expanded)
         ├── EpDetector (orchestrator — replaces stub)
         │     ├── WinMLEpBootstrapper (Windows 10 19H1+ reg-free, WinML 2.x package present)
-        │     ├── CudaEpBootstrapper (Windows x64 + NVIDIA, Linux x64)
+        │     ├── CudaEpBootstrapper (Windows/Linux x64 and ARM64 + NVIDIA)
         │     └── [future bootstrappers as needed]
         └── StubEpDetector (fallback — CPU only, used in tests)
 ```
@@ -45,7 +45,7 @@ C ABI (foundry_local_c.h)
 
 ### Microsoft.Windows.AI.MachineLearning NuGet (WinML 2.x)
 
-**Package:** `Microsoft.Windows.AI.MachineLearning` 2.4.89 (or newer GA)
+**Package:** `Microsoft.Windows.AI.MachineLearning` 2.5.96 (or newer GA)
 
 WinML 2.x is reg-free: the package ships a single self-contained native DLL
 that loads directly on Windows 10 19H1 (build 18362) and later. There is no
@@ -77,7 +77,7 @@ because ORT's C API is ABI-stable.
 
 ### WinML EP Catalog C API Summary
 
-The `Microsoft.Windows.AI.MachineLearning` 2.4.89 package provides a pure C API (no WinRT/C++/WinRT projection needed):
+The `Microsoft.Windows.AI.MachineLearning` 2.5.96 package provides a pure C API (no WinRT/C++/WinRT projection needed):
 
 ```c
 // Catalog lifecycle
@@ -254,8 +254,9 @@ static std::vector<std::unique_ptr<WinMLEpBootstrapper>>
 4. Create one `WinMLEpBootstrapper` per EP.
 5. Catalog handle released when bootstrappers are done (shared via `shared_ptr`).
 
-**MIGraphX special case:** Same as C# — treat failure as non-fatal. MIGraphX isn't
-available in retail builds yet.
+**AMDGPU:** WinML discovery trusts `AMDGPUExecutionProvider`, not the legacy
+`MIGraphXExecutionProvider`. Explicit and local-model runtime selections map to
+GenAI's `AMDGPU` provider. Generic-GPU auto-selection remains CUDA, then WebGPU only.
 
 ---
 
@@ -266,14 +267,21 @@ available in retail builds yet.
 **Port of:** `CudaEpBootstrapper.cs`
 
 **Design:**
-- Downloads CUDA EP provider DLLs from Azure CDN.
+- Downloads only CUDA EP and ORT GenAI CUDA libraries from Azure CDN.
+- CUDA toolkit and cuDNN runtimes are externally installed prerequisites, not distributed by Foundry Local.
 - Cross-process file-based lock (`cuda-ep.lock`) to prevent concurrent installs.
 - SHA256 verification of downloaded binaries.
 - `SetDllDirectory()` + ORT `RegisterExecutionProviderLibrary()` for registration.
 
 **Platform behavior:**
-- **Windows x64 + NVIDIA GPU:** Download from CDN, verify, register.
-- **Linux x64:** Register from co-located `.so` in app package (no download).
+- **Windows x64/ARM64 + NVIDIA GPU:** Download from CDN, verify, register; resolve external
+  runtime DLLs through `PATH` for ORT's provider loader. On x64, also register the CUDA runtime
+  directory with `AddDllDirectory` for the GenAI CUDA bridge's direct runtime imports.
+  Applications using DLL directories instead of `PATH` must register all runtime directories
+  and enable them with `SetDefaultDllDirectories`; this process-wide setting is not required
+  solely for the bridge load.
+- **Linux x64/ARM64 + NVIDIA GPU:** Download from CDN, verify, register; resolve external
+  runtime libraries through the system loader configuration or `LD_LIBRARY_PATH`.
 - **Other platforms:** Not applicable — bootstrapper not created.
 
 **Download flow (from C#):**

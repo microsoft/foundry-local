@@ -10,9 +10,9 @@
 
 int main(int argc, char** argv) {
 #ifdef _WIN32
-  _putenv_s("ORT_TELEMETRY_DISABLED", "1");
+  _putenv_s("ORT_DISABLE_TELEMETRY", "1");
 #else
-  setenv("ORT_TELEMETRY_DISABLED", "1", 1);
+  setenv("ORT_DISABLE_TELEMETRY", "1", 1);
 #endif
 
   ::testing::InitGoogleTest(&argc, argv);

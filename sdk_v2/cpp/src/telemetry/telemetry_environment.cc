@@ -130,7 +130,7 @@ bool TelemetryEnvironment::IsCiEnvironment() {
 }
 
 bool TelemetryEnvironment::IsTelemetryDisabledByEnvVar() {
-  return IsTruthyEnvironmentValue("ORT_TELEMETRY_DISABLED");
+  return IsTruthyEnvironmentValue("ORT_DISABLE_TELEMETRY");
 }
 
 }  // namespace fl

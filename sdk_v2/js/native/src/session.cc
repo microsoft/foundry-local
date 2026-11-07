@@ -200,6 +200,26 @@ class SessionWorkerGate {
   Napi::ThreadSafeFunction tsfn_;
 };
 
+struct QueuedCancellation {
+  std::shared_ptr<SessionScheduler> scheduler;
+  std::atomic_bool requested = false;
+  uint64_t id = 0;
+};
+
+std::shared_ptr<QueuedCancellation> AttachQueuedCancellation(
+    Napi::Env env, Napi::Promise promise, std::shared_ptr<SessionScheduler> scheduler) {
+  auto cancellation = std::make_shared<QueuedCancellation>();
+  cancellation->scheduler = std::move(scheduler);
+  promise.As<Napi::Object>().Set(
+      "cancelQueued", Napi::Function::New(env, [cancellation](const Napi::CallbackInfo& info) {
+        cancellation->requested.store(true, std::memory_order_release);
+        const bool canceled = cancellation->id != 0 && cancellation->scheduler != nullptr &&
+                              cancellation->scheduler->Cancel(cancellation->id);
+        return Napi::Boolean::New(info.Env(), canceled);
+      }));
+  return cancellation;
+}
+
 // Process a Request on a worker thread, converting to JS after completion. Chat/audio workers are queued by their
 // per-session scheduler before consuming a libuv worker; embeddings workers start immediately.
 template <typename SessT>
@@ -221,9 +241,12 @@ class SessionPromiseWorker : public Napi::AsyncWorker {
       worker->activity_->Start();
     }
     Napi::Promise promise = worker->deferred_.Promise();
+    auto queued_cancellation = AttachQueuedCancellation(env, promise, worker->scheduler_);
+    worker->queued_cancellation_ = queued_cancellation;
     try {
       if (worker->scheduler_ != nullptr) {
-        worker->scheduler_->Enqueue([worker] { worker->Start(); });
+        queued_cancellation->id = worker->scheduler_->Enqueue(
+            [worker] { worker->Start(); }, [worker] { worker->CancelBeforeStart(); });
       } else {
         worker->Start();
       }
@@ -239,6 +262,14 @@ class SessionPromiseWorker : public Napi::AsyncWorker {
   void Execute() override {
     try {
       if (worker_gate_ != nullptr) worker_gate_->SignalAndWait();
+      if (queued_cancellation_->requested.load(std::memory_order_acquire)) {
+        err_code_ = FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED;
+        err_msg_ = "request canceled before native processing";
+        tagged_ = true;
+        SetError(err_msg_);
+        return;
+      }
+
       response_ = std::make_shared<foundry_local::Response>(sess_->ProcessRequest(*req_));
     } catch (const foundry_local::Error& e) {
       err_code_ = static_cast<int>(e.Code());
@@ -344,6 +375,15 @@ class SessionPromiseWorker : public Napi::AsyncWorker {
     delete this;
   }
 
+  void CancelBeforeStart() {
+    scheduler_.reset();
+    err_code_ = FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED;
+    err_msg_ = "request canceled before native processing";
+    tagged_ = true;
+    OnError(Napi::Error::New(Env(), err_msg_));
+    delete this;
+  }
+
   Napi::Promise::Deferred deferred_;
   std::shared_ptr<SessT> sess_;
   foundry_local::Request* req_;
@@ -353,6 +393,7 @@ class SessionPromiseWorker : public Napi::AsyncWorker {
   std::shared_ptr<SessionScheduler> scheduler_;
   std::shared_ptr<SessionActivity> activity_;
   std::shared_ptr<SessionWorkerGate> worker_gate_;
+  std::shared_ptr<QueuedCancellation> queued_cancellation_;
   Result response_;
   std::string err_msg_;
   int err_code_ = 0;
@@ -505,12 +546,6 @@ struct StreamCtx {
   bool errored = false;
 };
 
-struct QueuedCancellation {
-  std::shared_ptr<SessionScheduler> scheduler;
-  std::atomic_bool requested = false;
-  uint64_t id = 0;
-};
-
 class StreamFinalizeGuard {
  public:
   explicit StreamFinalizeGuard(StreamCtx* ctx) : ctx_(ctx) {}
@@ -564,16 +599,7 @@ class StreamWorker : public Napi::AsyncWorker {
                            Napi::Function jsCallback, StreamCtx* ctx,
                            std::shared_ptr<SessionScheduler> scheduler) {
     Napi::Promise p = ctx->deferred.Promise();
-    auto queued_cancellation = std::make_shared<QueuedCancellation>();
-    queued_cancellation->scheduler = scheduler;
-    p.As<Napi::Object>().Set(
-        "cancelQueued",
-        Napi::Function::New(env, [queued_cancellation](const Napi::CallbackInfo& info) {
-          queued_cancellation->requested.store(true, std::memory_order_release);
-          const bool canceled = queued_cancellation->id != 0 && queued_cancellation->scheduler != nullptr &&
-                                queued_cancellation->scheduler->Cancel(queued_cancellation->id);
-          return Napi::Boolean::New(info.Env(), canceled);
-        }));
+    auto queued_cancellation = AttachQueuedCancellation(env, p, scheduler);
 
     StreamWorker* w = nullptr;
     try {

@@ -7,7 +7,7 @@ import { Item, type Item as ItemT, type TextItem } from "../items.js";
 import type { Model } from "../model.js";
 import { Request } from "../request.js";
 import type { Response } from "../response.js";
-import { ChatSession } from "../session.js";
+import { ChatSession, type StreamOptions } from "../session.js";
 import type { ResponseFormat, ToolChoice } from "../types.js";
 
 // biome-ignore lint/suspicious/noExplicitAny: OpenAI request/response objects are user-shaped JSON; the surface intentionally accepts `any`.
@@ -108,12 +108,10 @@ export class ChatClient {
   }
 
   /**
-   * Synchronous chat completion.
+   * Non-streaming chat completion. Pass `{ signal }` as the final argument to cancel native processing.
    * @returns Parsed OpenAI Chat Completion response object.
    */
-  async completeChat(messages: Json[]): Promise<Json>;
-  async completeChat(messages: Json[], tools: Json[]): Promise<Json>;
-  async completeChat(messages: Json[], tools?: Json[]): Promise<Json> {
+  async completeChat(messages: Json[], tools?: Json[], options?: StreamOptions): Promise<Json> {
     this.#checkNotDisposed();
     validateMessages(messages);
     validateTools(tools);
@@ -131,8 +129,9 @@ export class ChatClient {
     const session = new ChatSession(this.#model);
     let response: Response;
     try {
-      response = await session.processRequest(request);
+      response = await session.processRequest(request, options);
     } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") throw err;
       throw new Error(
         `Chat completion failed for model '${this.modelId}': ${err instanceof Error ? err.message : String(err)}`,
         { cause: err },
@@ -143,20 +142,16 @@ export class ChatClient {
 
     const text = findOpenAiJsonText(response.output);
     if (text === undefined) {
-      throw new Error(
-        `Chat completion for model '${this.modelId}' returned no openai-json text item.`,
-      );
+      throw new Error(`Chat completion for model '${this.modelId}' returned no openai-json text item.`);
     }
     return JSON.parse(text);
   }
 
   /**
    * Streaming chat completion. Yields one parsed chunk object per OpenAI
-   * SSE chunk emitted by the model.
+   * SSE chunk emitted by the model. Pass `{ signal }` as the final argument to cancel native processing.
    */
-  completeStreamingChat(messages: Json[]): AsyncIterable<Json>;
-  completeStreamingChat(messages: Json[], tools: Json[]): AsyncIterable<Json>;
-  completeStreamingChat(messages: Json[], tools?: Json[]): AsyncIterable<Json> {
+  completeStreamingChat(messages: Json[], tools?: Json[], options?: StreamOptions): AsyncIterable<Json> {
     this.#checkNotDisposed();
     validateMessages(messages);
     validateTools(tools);
@@ -178,7 +173,7 @@ export class ChatClient {
 
         const session = new ChatSession(model);
         try {
-          for await (const item of session.processStreamingRequest(request)) {
+          for await (const item of session.processStreamingRequest(request, options)) {
             if (item.type !== "text") {
               continue;
             }
@@ -262,10 +257,7 @@ function validateResponseFormat(format?: ResponseFormat): void {
   }
   const validGrammarTypes = ["json_schema", "lark_grammar"];
   if (validGrammarTypes.includes(format.type)) {
-    if (
-      format.type === "json_schema" &&
-      (typeof format.jsonSchema !== "string" || format.jsonSchema.trim() === "")
-    ) {
+    if (format.type === "json_schema" && (typeof format.jsonSchema !== "string" || format.jsonSchema.trim() === "")) {
       throw new Error('ResponseFormat with type "json_schema" must have a valid jsonSchema string.');
     }
     if (

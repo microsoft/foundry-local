@@ -1,4 +1,8 @@
-import { FOUNDRY_LOCAL_RELEASES_URL, fallbackCliDownloadLinks, type CliDownloadLink } from '$lib/cli-downloads';
+import {
+	FOUNDRY_LOCAL_RELEASES_URL,
+	fallbackCliDownloadLinks,
+	type CliDownloadLink
+} from '$lib/cli-downloads';
 
 type GitHubReleaseAsset = {
 	name: string;
@@ -64,7 +68,12 @@ function buildCliDownloadLinks(release: GitHubRelease): CliDownloadLink[] {
 	const releaseLabel = release.tag_name;
 
 	return [
-		buildLink(fallbackById.get('windows-cli')!, release, releaseLabel, /win-x64-winml\.msix$/i),
+		buildLink(
+			fallbackById.get('windows-cli')!,
+			release,
+			releaseLabel,
+			/win-x64(?:-winml)?\.msix$/i
+		),
 		buildLink(fallbackById.get('macos-cli')!, release, releaseLabel, /osx-arm64\.pkg$/i),
 		buildLink(fallbackById.get('linux-cli')!, release, releaseLabel, /linux-x64\.tar\.gz$/i)
 	];

@@ -11,6 +11,8 @@
 
 namespace fl {
 
+struct Configuration;
+
 /// Process-wide metadata stamped onto every 1DS event as common context.
 /// Computed once at startup and cached. Cheap to copy.
 struct TelemetryMetadata {
@@ -27,8 +29,14 @@ struct TelemetryMetadata {
   /// Best-effort host application version from platform metadata. Falls back to `version`.
   std::string app_version;
 
+  /// Best-effort Windows host executable CompanyName, not a verified signer. Empty when unavailable.
+  std::string publisher;
+
   /// Configured app name (from Configuration::app_name).
   std::string app_name;
+
+  /// Executable name, without its directory.
+  std::string process_name;
 
   /// Free-form "Windows 11 10.0.26100 amd64" / "Linux 6.5.0 x86_64" / "macOS 14.4 arm64".
   std::string os_name;     // "Windows" / "Linux" / "Darwin"
@@ -40,8 +48,10 @@ struct TelemetryMetadata {
 /// app_name comes from Configuration.
 TelemetryMetadata BuildTelemetryMetadata(std::string_view app_name);
 
-/// Build the one-shot ProcessInfo event payload from metadata and system APIs.
-ProcessInfo BuildProcessInfo(const TelemetryMetadata& metadata, bool include_device_id_status = true);
+/// Build the one-shot ProcessInfo payload from cached metadata, resolved configuration, and system APIs.
+/// Directory values are redacted before being retained.
+ProcessInfo BuildProcessInfo(const TelemetryMetadata& metadata, const Configuration& configuration,
+                             bool include_device_id_status = true);
 
 inline constexpr size_t kMaxTelemetryInventoryEntries = 64;
 

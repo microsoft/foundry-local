@@ -212,14 +212,11 @@ export interface NativeItemQueue {
   dispose(): void;
 }
 
-export interface NativeOneShotSession {
-  processRequest(request: NativeRequest, workerStartedForTest?: (release: () => void) => void): Promise<NativeResponse>;
-  setOptions(options: NativeRequestOptions): void;
-  dispose(): void;
-  isDisposed(): boolean;
-}
-
-export interface NativeSession extends NativeOneShotSession {
+export interface NativeSession {
+  processRequest(
+    request: NativeRequest,
+    workerStartedForTest?: (release: () => void) => void,
+  ): Promise<NativeResponse> & { cancelQueued(): boolean };
   processStreamingRequest(
     request: NativeRequest,
     onItem: (item: unknown) => void,

@@ -11,7 +11,7 @@ namespace fl {
 
 inline bool IsTrustedWinMLProvider(std::string_view provider_name) {
   constexpr std::array<std::string_view, 6> trusted_provider_names = {
-      "MIGraphXExecutionProvider",
+      "AMDGPUExecutionProvider",
       "NvTensorRtRtxExecutionProvider",
       "OpenVINOExecutionProvider",
       "QNNExecutionProvider",

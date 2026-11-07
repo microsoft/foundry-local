@@ -70,19 +70,6 @@
 	$: displayDescription = generateModelDescription(model);
 	$: genericModelName = getGenericModelName();
 	
-	// Check if model is speech-to-text
-	function isSpeechToTextModel(): boolean {
-		const taskType = model.taskType?.toLowerCase() || '';
-		const alias = model.alias?.toLowerCase() || '';
-		const displayName = model.displayName?.toLowerCase() || '';
-		
-		return taskType.includes('automatic-speech-recognition') || 
-			taskType.includes('speech-to-text') ||
-			alias.includes('whisper') ||
-			displayName.includes('whisper');
-	}
-	
-	$: isSpeechToText = isSpeechToTextModel();
 </script>
 
 <div use:animate={{ delay: 0, duration: 600, animation: 'fade-in', once: true }} class="flex">
@@ -182,38 +169,7 @@
 
 			<!-- Copy Run Command Section -->
 			<div class="border-border/40 border-t pt-3">
-				{#if isSpeechToText}
-					<!-- SDK Only Notice for Speech-to-Text Models -->
-					<div class="space-y-2">
-						<div class="bg-gradient-to-r from-violet-500/10 to-purple-500/10 rounded-lg p-3 border border-violet-500/20">
-							<div class="flex items-center gap-2 mb-2">
-								<svg class="size-4 text-violet-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-								</svg>
-								<span class="text-xs font-semibold text-violet-600 dark:text-violet-400">SDK Only</span>
-							</div>
-							<div class="font-mono text-xs text-muted-foreground mb-2">
-								Model ID: <span class="text-foreground font-medium">{genericModelName}</span>
-							</div>
-							<a
-								href="https://learn.microsoft.com/en-us/azure/ai-foundry/foundry-local/how-to/how-to-transcribe-audio?view=foundry-classic&tabs=windows"
-								target="_blank"
-								rel="noopener noreferrer"
-								onclick={(e) => e.stopPropagation()}
-								class="relative z-20 inline-flex items-center gap-1.5 text-xs font-medium text-violet-600 transition-colors hover:text-violet-700 dark:text-violet-400 dark:hover:text-violet-300"
-								aria-label="View SDK Documentation (opens in new tab)"
-							>
-								<svg class="size-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
-								</svg>
-								View SDK Documentation
-								<svg class="size-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-								</svg>
-							</a>
-						</div>
-					</div>
-				{:else if uniqueVariants.length > 0}
+				{#if uniqueVariants.length > 0}
 					<div class="space-y-1.5">
 						<div class="text-xs font-medium text-gray-600 dark:text-gray-400">
 							Copy Run Command:

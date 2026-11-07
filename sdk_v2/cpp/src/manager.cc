@@ -7,6 +7,7 @@
 #include <ort_genai_c.h>
 
 #include <atomic>
+#include <DebugEvents.hpp>
 #include <charconv>
 #include <limits>
 #include <string_view>
@@ -32,6 +33,7 @@
 #include "telemetry/one_ds_telemetry.h"
 #include "telemetry/telemetry_environment.h"
 #include "telemetry/telemetry_metadata.h"
+#include "util/process_shutdown.h"
 #include "util/string_utils.h"
 #include "utils.h"
 
@@ -197,10 +199,60 @@ void SetOgaLogCallback(ILogger* logger) {
 }  // namespace
 
 std::mutex Manager::s_mutex_;
-std::unique_ptr<Manager> Manager::s_instance_;
+Manager::InstanceOwner* Manager::s_owner_ = nullptr;
+bool Manager::s_destroyed_ = false;
+
+struct Manager::InstanceOwner {
+  explicit InstanceOwner(std::unique_ptr<Manager> initial_instance) : instance(std::move(initial_instance)) {
+    // Prime the mutex even when the first Manager suppresses telemetry and a later Create enables it.
+    // An empty diagnostic source starts no uploader and emits no collector event.
+    ::Microsoft::Applications::Events::DebugEventSource source;
+    source.DispatchEvent({});
+  }
+
+  ~InstanceOwner() {
+    // DLL process detach runs after Windows terminates other threads, which may still own our locks.
+    // Leave the Manager and its workers to process reclamation; ordinary Destroy/FreeLibrary still clean up.
+    if (IsDllShutdownInProgress()) {
+      (void)instance.release();
+      return;
+    }
+
+    std::lock_guard<std::mutex> lock(s_mutex_);
+    s_destroyed_ = true;
+    instance.reset();
+    s_owner_ = nullptr;
+  }
+
+  std::unique_ptr<Manager> instance;
+};
+
+void Manager::PrepareOrtEnvironment() {
+#ifdef _WIN32
+  // Temporary workaround until our ORT core and EP bundles include microsoft/onnxruntime#33291.
+  // Suppress uploader initialization before any ORT/GenAI calls, including in subsequently loaded EP libraries.
+  if (!::SetEnvironmentVariableW(L"ORT_DISABLE_TELEMETRY", L"1")) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+             fmt::format("Failed to disable ORT telemetry (Windows error {}).", ::GetLastError()));
+  }
+#endif
+}
 
 Manager::Manager(const Configuration& config) : config_(config) {
   config_.Validate();
+  const auto non_generative_memory_budget_bytes =
+      UnsignedAdditionalOption(
+          config_, "NonGenerativeMemoryBudgetBytes",
+          (std::numeric_limits<uint64_t>::max)());
+  const auto non_generative_readiness_concurrency =
+      UnsignedAdditionalOption(
+          config_, "NonGenerativeReadinessConcurrency", 1);
+  if (non_generative_readiness_concurrency >
+      (std::numeric_limits<size_t>::max)())
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "NonGenerativeReadinessConcurrency exceeds size_t");
+  PrepareOrtEnvironment();
+
   const auto user_agent = config_.additional_options.find("UserAgent");
   SetDefaultUserAgent(user_agent == config_.additional_options.end() ? std::string_view{}
                                                                      : std::string_view(user_agent->second));
@@ -325,10 +377,9 @@ Manager::Manager(const Configuration& config) : config_(config) {
       config_.disable_nonessential_telemetry || IsAdditionalOptionEnabled(config_, "DisableNonessentialTelemetry") ||
       TelemetryEnvironment::IsTelemetryDisabledByEnvVar();
   const bool telemetry_hard_disabled = TelemetryEnvironment::IsCiEnvironment();
-  telemetry_ = std::make_unique<OneDsTelemetry>(config_.app_name, *logger_, disable_nonessential_telemetry);
+  auto telemetry = std::make_unique<OneDsTelemetry>(config_.app_name, *logger_, disable_nonessential_telemetry);
   try {
-    telemetry_->RecordProcessInfo(BuildProcessInfo(BuildTelemetryMetadata(config_.app_name),
-                                                   !disable_nonessential_telemetry && !telemetry_hard_disabled));
+    telemetry->RecordProcessInfo(config_);
   } catch (const std::exception& ex) {
     logger_->Log(LogLevel::Warning,
                  fmt::format("telemetry ProcessInfo failed during Manager initialization: {}",
@@ -337,6 +388,7 @@ Manager::Manager(const Configuration& config) : config_(config) {
     logger_->Log(LogLevel::Warning, "telemetry ProcessInfo failed during Manager initialization.");
   }
 
+  telemetry_ = std::move(telemetry);
   ep_detector_ =
       std::make_unique<EpDetector>(*ort_api_, *ort_env_, std::move(bootstrappers), *logger_, *telemetry_);
   if (!disable_nonessential_telemetry && !telemetry_hard_disabled) {
@@ -372,7 +424,9 @@ Manager::Manager(const Configuration& config) : config_(config) {
   download_manager_ =
       std::make_unique<DownloadManager>(*config_.model_cache_dir, config_.catalog_region.value_or("auto"),
                                         download_concurrency, *logger_, *telemetry_, disable_region_fallback);
-  model_load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
+  model_load_manager_ = std::make_unique<ModelLoadManager>(
+      *ep_detector_, *logger_, non_generative_memory_budget_bytes,
+      static_cast<size_t>(non_generative_readiness_concurrency));
   session_manager_ = std::make_unique<SessionManager>(*logger_);
 
   public_catalog_ = std::make_unique<AzureModelCatalog>(
@@ -410,6 +464,10 @@ Manager::~Manager() {
   web_service_.reset();
 #endif
   session_manager_.reset();
+  if (model_load_manager_) {
+    model_load_manager_->WaitForPredictiveRequests();
+    model_load_manager_->ReleasePredictiveSessions();
+  }
   model_load_manager_.reset();
   download_manager_.reset();
   local_catalog_.reset();
@@ -463,8 +521,12 @@ Manager::~Manager() {
 Manager& Manager::Create(const Configuration& config) {
   std::lock_guard<std::mutex> lock(s_mutex_);
 
-  if (s_instance_ != nullptr) {
-    FL_LOG_AND_THROW(s_instance_->GetLogger(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+  if (s_destroyed_) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Manager cannot be created during process shutdown.");
+  }
+
+  if (s_owner_ != nullptr && s_owner_->instance != nullptr) {
+    FL_LOG_AND_THROW(s_owner_->instance->GetLogger(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
                      "Manager already created. Call Destroy() first.");
   }
 
@@ -487,24 +549,32 @@ Manager& Manager::Create(const Configuration& config) {
 
   created->GetLogger().Log(LogLevel::Information, "Manager initialized successfully.");
 
-  s_instance_ = std::move(created);
-  return *s_instance_;
+  if (s_owner_ == nullptr) {
+    // Register the actual owner after Manager's construction has initialized its static dependencies.
+    static InstanceOwner owner(std::move(created));
+    s_owner_ = &owner;
+  } else {
+    s_owner_->instance = std::move(created);
+  }
+  return *s_owner_->instance;
 }
 
 Manager& Manager::Instance() {
   std::lock_guard<std::mutex> lock(s_mutex_);
-  if (s_instance_ == nullptr) {
+  if (s_owner_ == nullptr || s_owner_->instance == nullptr) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
              "Manager not created. Call Create() first. "
              "Manager must remain valid until all Model and Session instances are destroyed.");
   }
 
-  return *s_instance_;
+  return *s_owner_->instance;
 }
 
 void Manager::Destroy() {
   std::lock_guard<std::mutex> lock(s_mutex_);
-  s_instance_.reset();
+  if (s_owner_ != nullptr) {
+    s_owner_->instance.reset();
+  }
 }
 
 ICatalog& Manager::GetCatalog() {
@@ -535,31 +605,19 @@ void Manager::StartWebService() {
   ActionTracker tracker(Action::kCoreServiceStart, *telemetry_);
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
-  const auto non_generative_memory_budget_bytes =
-      UnsignedAdditionalOption(
-          config_, "NonGenerativeMemoryBudgetBytes",
-          std::numeric_limits<uint64_t>::max());
-  const auto non_generative_readiness_concurrency =
-      UnsignedAdditionalOption(
-          config_, "NonGenerativeReadinessConcurrency", 1);
-  if (non_generative_readiness_concurrency >
-      std::numeric_limits<size_t>::max())
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             "NonGenerativeReadinessConcurrency exceeds size_t");
-  web_service_ = std::make_unique<WebService>(*public_catalog_, *local_catalog_, *logger_, *config_.model_cache_dir,
-                                              *model_load_manager_,
-                                              *session_manager_, *telemetry_,
-                                              [this]() { Shutdown(); },
-                                              non_generative_memory_budget_bytes,
-                                              static_cast<size_t>(
-                                                  non_generative_readiness_concurrency));
+  web_service_ = std::make_unique<WebService>(*public_catalog_, *local_catalog_, *logger_, *config_.model_cache_dir, *model_load_manager_, *session_manager_, *telemetry_, [this]() { RequestShutdown(); }, shared_host_lifetime_);
 
   auto endpoints = config_.web_service_endpoints;
   if (endpoints.empty()) {
     endpoints.push_back("http://127.0.0.1:0");
   }
 
-  bound_urls_ = web_service_->Start(endpoints);
+  auto urls = web_service_->Start(endpoints);
+  {
+    std::lock_guard lock(urls_mutex_);
+    bound_urls_ = std::move(urls);
+  }
+
   web_service_running_ = true;
   try {
     telemetry_->StartSession();
@@ -576,11 +634,19 @@ void Manager::StartWebService() {
 #endif
 }
 
+void Manager::SetSharedHostLifetime(std::shared_ptr<hosting::HostLifetime> lifetime) {
+  if (!lifetime || web_service_running_ ||
+      (shared_host_lifetime_ && shared_host_lifetime_ != lifetime)) {
+    FL_LOG_AND_THROW(*logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                     "shared-host HTTP admission must be configured once before starting the web service");
+  }
+
+  shared_host_lifetime_ = std::move(lifetime);
+}
+
 const std::vector<std::string>& Manager::GetWebServiceUrls() const {
-  // No "not running" check: bound_urls_ is cleared in StopWebService() and is empty before
-  // StartWebService(), so the empty vector is the documented "service is not running" signal
-  // (see GetWebServiceEndpoints() docstring in foundry_local_cpp.h).
-  return bound_urls_;
+  std::lock_guard lock(urls_mutex_);
+  return *url_snapshots_.insert(bound_urls_).first;
 }
 
 void Manager::StopWebService() {
@@ -605,7 +671,10 @@ void Manager::StopWebService() {
   }
   web_service_.reset();
   web_service_running_ = false;
-  bound_urls_.clear();
+  {
+    std::lock_guard lock(urls_mutex_);
+    bound_urls_.clear();
+  }
   tracker.SetStatus(ActionStatus::kSuccess);
 #else
   FL_LOG_AND_THROW(*logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
@@ -613,13 +682,25 @@ void Manager::StopWebService() {
 #endif
 }
 
-void Manager::Shutdown() {
+void Manager::RequestShutdown() {
   bool expected = false;
   if (!shutdown_requested_.compare_exchange_strong(expected, true)) {
     return;  // already shutting down
   }
 
   logger_->Log(LogLevel::Information, "Shutdown requested");
+
+  model_load_manager_->RejectNewLoads();
+  session_manager_->CancelAll();
+}
+
+void Manager::Shutdown() {
+  RequestShutdown();
+
+  bool expected = false;
+  if (!shutdown_started_.compare_exchange_strong(expected, true)) {
+    return;
+  }
 
   // Order matters:
   //   1. Reject new loads so callers gated on IsShutdownRequested can stop early.
@@ -630,9 +711,6 @@ void Manager::Shutdown() {
   //   3. Stop the web service (JoinAll now unblocks), then drain HTTP-tracked sessions.
   //   4. Unload all models, polling per-model session refcount for direct-API users who haven't
   //      dropped their flSession* yet. Bounded by timeout so a stuck caller can't block shutdown.
-  model_load_manager_->RejectNewLoads();
-  session_manager_->CancelAll();
-
   if (web_service_running_) {
     StopWebService();
   }

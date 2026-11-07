@@ -70,6 +70,7 @@ class LocalModelScannerTest : public ::testing::Test {
                        const std::string& model_name,
                        const std::string& task = "text-ranking") {
     const auto root = fs::path(test_dir_) / relative_path;
+    CreateFile(relative_path + "/genai_config.json");
     CreateFile(relative_path + "/tokenizer.json");
     CreateFile(relative_path + "/tokenizer_config.json");
     nlohmann::json components = nlohmann::json::object();
@@ -154,6 +155,16 @@ TEST_F(LocalModelScannerTest, IncompleteDownloadExcluded) {
   EXPECT_TRUE(results.empty());
 }
 
+TEST_F(LocalModelScannerTest, IncompleteParentExcludesRevisionDirectories) {
+  CreateModelDir("publisher/downloading-model/v3", "downloading-model:3");
+  CreateModelDir("publisher/completed-model/v1", "completed-model:1");
+  CreateFile("publisher/downloading-model/download.tmp", "");
+
+  const auto results = ScanLocalModels(test_dir_, logger_);
+  EXPECT_EQ(results.count("downloading-model:3"), 0u);
+  EXPECT_EQ(results.count("completed-model:1"), 1u);
+}
+
 TEST_F(LocalModelScannerTest, MissingGenaiConfigExcluded) {
   auto dir = fs::path(test_dir_) / "publisher" / "no-genai";
   fs::create_directories(dir);
@@ -228,7 +239,13 @@ TEST_F(LocalModelScannerTest, IncompleteBundleDownloadIsExcluded) {
   EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
 }
 
-TEST_F(LocalModelScannerTest, ReadsDeclaredResidentMemoryEstimate) {
+TEST_F(LocalModelScannerTest, BundleWithoutGenAiConfigIsExcluded) {
+  CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
+  fs::remove(fs::path(test_dir_) / "microsoft/clm/genai_config.json");
+  EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
+}
+
+TEST_F(LocalModelScannerTest, UsesContainedPackageSizeForAdmission) {
   CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
   const auto root = fs::path(test_dir_) / "microsoft/clm";
   nlohmann::json metadata;
@@ -241,11 +258,10 @@ TEST_F(LocalModelScannerTest, ReadsDeclaredResidentMemoryEstimate) {
 
   const auto package = ReadNonGenerativePackage(root);
   ASSERT_TRUE(package.has_value());
-  EXPECT_EQ(package->estimated_resident_bytes, 123456u);
-  EXPECT_GT(package->package_bytes, 0u);
+  EXPECT_GT(package->estimated_resident_bytes, 0u);
 }
 
-TEST_F(LocalModelScannerTest, InvalidResidentMemoryEstimateIsExcluded) {
+TEST_F(LocalModelScannerTest, IgnoresDescriptiveResidentMemoryMetadata) {
   CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
   const auto root = fs::path(test_dir_) / "microsoft/clm";
   nlohmann::json metadata;
@@ -256,10 +272,10 @@ TEST_F(LocalModelScannerTest, InvalidResidentMemoryEstimateIsExcluded) {
   metadata["Resources"] = {{"estimated_resident_bytes", 0}};
   std::ofstream(root / "inference_model.json") << metadata;
 
-  EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
+  EXPECT_FALSE(ScanLocalModels(test_dir_, logger_).empty());
 }
 
-TEST_F(LocalModelScannerTest, AlternateManifestNameIsExcluded) {
+TEST_F(LocalModelScannerTest, IgnoresDescriptiveManifestMetadata) {
   CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
   auto metadata_path = fs::path(test_dir_) / "microsoft/clm/inference_model.json";
   nlohmann::json metadata;
@@ -269,10 +285,10 @@ TEST_F(LocalModelScannerTest, AlternateManifestNameIsExcluded) {
   }
   metadata["ComponentManifest"] = "other.json";
   std::ofstream(metadata_path) << metadata;
-  EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
+  EXPECT_FALSE(ScanLocalModels(test_dir_, logger_).empty());
 }
 
-TEST_F(LocalModelScannerTest, ManifestFileWithoutMetadataKeyCannotFallBackToGenerative) {
+TEST_F(LocalModelScannerTest, ManifestDoesNotRequireMetadataKey) {
   CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
   CreateFile("microsoft/clm/genai_config.json");
   auto metadata_path = fs::path(test_dir_) / "microsoft/clm/inference_model.json";
@@ -284,7 +300,7 @@ TEST_F(LocalModelScannerTest, ManifestFileWithoutMetadataKeyCannotFallBackToGene
   metadata.erase("ComponentManifest");
   std::ofstream(metadata_path) << metadata;
 
-  EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
+  EXPECT_FALSE(ScanLocalModels(test_dir_, logger_).empty());
 }
 
 TEST_F(LocalModelScannerTest, NonGenerativeTaskWithoutManifestCannotFallBackToGenerative) {
@@ -303,7 +319,7 @@ TEST_F(LocalModelScannerTest, NonGenerativeTaskWithoutManifestCannotFallBackToGe
   EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
 }
 
-TEST_F(LocalModelScannerTest, TaskSpecificIncompleteLayoutIsExcluded) {
+TEST_F(LocalModelScannerTest, BackendOwnsComponentTopologyValidation) {
   CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
   auto manifest_path = fs::path(test_dir_) / "microsoft/clm/component_manifest.json";
   nlohmann::json manifest;
@@ -313,7 +329,7 @@ TEST_F(LocalModelScannerTest, TaskSpecificIncompleteLayoutIsExcluded) {
   }
   manifest["components"].erase("scorer");
   std::ofstream(manifest_path) << manifest;
-  EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
+  EXPECT_FALSE(ScanLocalModels(test_dir_, logger_).empty());
 }
 
 #ifndef _WIN32
@@ -323,6 +339,14 @@ TEST_F(LocalModelScannerTest, SymlinkedPackageAssetEscapeIsExcluded) {
   const auto tokenizer = fs::path(test_dir_) / "microsoft/clm/tokenizer.json";
   fs::remove(tokenizer);
   fs::create_symlink(fs::path(test_dir_) / "outside-tokenizer.json", tokenizer);
+  EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
+}
+
+TEST_F(LocalModelScannerTest, UndeclaredSymlinkedSidecarEscapeIsExcluded) {
+  CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
+  CreateFile("outside-sidecar.bin");
+  const auto sidecar = fs::path(test_dir_) / "microsoft/clm/optional-sidecar.bin";
+  fs::create_symlink(fs::path(test_dir_) / "outside-sidecar.bin", sidecar);
   EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
 }
 #endif

@@ -1,0 +1,19 @@
+diff --git a/lib/pal/PAL.cpp b/lib/pal/PAL.cpp
+--- a/lib/pal/PAL.cpp
++++ b/lib/pal/PAL.cpp
+@@ -631,8 +631,13 @@
+ 
+     const std::string& PlatformAbstractionLayer::getSdkVersion() const
+     {
+-        static const std::string sdkVersion(EVTSDK_VERSION_PREFIX "-" OS_NAME "-C++-" ECS_SUPP "-" BUILD_VERSION_STR);
+-        return sdkVersion;
++        // Like GetPAL(), this immutable value must survive late upload workers.
++        // A Manager can first enable telemetry after its exit owner was registered.
++        using SdkVersion = std::string;
++        alignas(SdkVersion) static unsigned char storage[sizeof(SdkVersion)];
++        static const SdkVersion* sdkVersion = ::new (storage)
++            SdkVersion(EVTSDK_VERSION_PREFIX "-" OS_NAME "-C++-" ECS_SUPP "-" BUILD_VERSION_STR);
++        return *sdkVersion;
+     }
+ 
+     void PlatformAbstractionLayer::initialize(IRuntimeConfig& configuration)

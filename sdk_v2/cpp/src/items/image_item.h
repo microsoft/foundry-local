@@ -5,7 +5,9 @@
 #include "items/item.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -69,7 +71,7 @@ struct ImageItem : Item {
   }
 
   void GetApiData(flImageData& out) const {
-    out.version = FOUNDRY_LOCAL_API_VERSION;
+    out.version = FOUNDRY_LOCAL_DATA_VERSION;
     out.data = data;
     out.mutable_data = nullptr;
     out.data_size = data_size;
@@ -86,6 +88,10 @@ struct ImageItem : Item {
   /// Throws FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT when the item carries no
   /// bytes and no readable URI.
   std::vector<std::uint8_t> ReadBytes() const;
+
+  /// Decode an inline base64 data URL into an image that owns its bytes.
+  static std::unique_ptr<ImageItem> FromDataUrl(const std::string& url,
+                                                std::string_view error_source = "image_url data URL");
 
  private:
   // Optional owning storage when the item was constructed with a vector of

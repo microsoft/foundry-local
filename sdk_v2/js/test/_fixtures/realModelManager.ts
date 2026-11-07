@@ -41,7 +41,7 @@ export interface RealModelManagerOptions {
    */
   readonly task?: string;
   /**
-   * Preferred model alias / name. If supplied AND the model is in the
+   * Preferred model alias, name, or full variant ID. If supplied AND the model is in the
    * catalog, it wins over the smallest-by-task fallback. Defaults to
    * "qwen2.5-0.5b" — alias of the smallest chat model we ship.
    */
@@ -85,7 +85,7 @@ export async function setupRealModelManager(opts: RealModelManagerOptions = {}):
   // Preference 1: exact name / alias hit (V1 throws on miss, so swallow).
   let model: IModel | undefined;
   try {
-    const exact = await catalog.getModel(namePref);
+    const exact = namePref.includes(":") ? await catalog.getModelVariant(namePref) : await catalog.getModel(namePref);
     model = exact.info.deviceType === "CPU" ? exact : undefined;
   } catch {
     model = undefined;

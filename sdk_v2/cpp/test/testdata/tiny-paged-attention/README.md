@@ -18,8 +18,11 @@ This lets tests check every generated token against an independent integer
 reference, including across page boundaries, retained turns, and concurrent
 requests. A dropped or contaminated KV history changes the output. The printable
 ASCII tokenizer is lossless (one character per token); IDs 0-2 are reserved
-private-use Unicode characters. EOS is never generated, so output limits and explicit cancellation
-control the turn lifetime.
+private-use Unicode characters. A newline token and ByteLevel decoder let the
+CPU Engine tests compile and execute XML-region guidance with llguidance.
+The deterministic next-token rule still emits only printable ASCII, not the
+new newline token. EOS is never generated, so output limits and explicit
+cancellation control the turn lifetime.
 
 The model has a 1,024-token context, four-token pages, 512 physical pages, and two
 resident request slots. A 16-token scheduling budget also exercises chunked prefill.

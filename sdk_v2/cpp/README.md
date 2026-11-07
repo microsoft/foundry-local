@@ -1,4 +1,4 @@
-# Foundry Local C++ SDK (v2)
+# Foundry Local C and C++ SDK (v2)
 
 The Foundry Local C++ SDK runs AI models locally through the Foundry Local engine. It
 provides a header-only, RAII-style C++17 wrapper over the stable C ABI for catalog
@@ -6,14 +6,23 @@ access, model lifecycle management, chat, tool calling, embeddings, audio
 transcription, execution-provider management, and the optional OpenAI-compatible web
 service.
 
+C and C++ are supported application interfaces to the same native runtime that powers
+the C#, JavaScript, Python, and Rust bindings. C applications use the
+[public C API](include/foundry_local/foundry_local_c.h) directly; C++ applications can
+use the [C++ wrapper](include/foundry_local/foundry_local_cpp.h). Neither requires a
+separate server process.
+
 The SDK implementation builds as C++20, while applications that consume the public
 wrapper need only C++17 or newer.
+
+For an inference-focused introduction to models, sessions, requests, responses, items,
+and streaming across languages, see [Inference with the Foundry Local SDK](../INFERENCING.md).
 
 ## Features
 
 - **Model catalog** -- discover model aliases, variants, cached models, and loaded models
 - **Model lifecycle** -- download, load, unload, remove, and register local model assets
-- **Chat** -- stateful chat sessions with streaming callbacks and per-request settings
+- **Chat** -- stateful chat sessions, including text-only `coding` models, with streaming and per-request settings
 - **Tool calling** -- session-scoped and request-scoped tool definitions, plus typed tool call/result items
 - **Embeddings** -- single and batch `std::vector<float>` helpers
 - **Audio** -- offline and real-time streaming audio transcription
@@ -23,7 +32,48 @@ wrapper need only C++17 or newer.
 - **Embedded web service** -- optionally expose an OpenAI-compatible local endpoint
 - **C API** -- a stable ABI for other language bindings and low-level integrations
 
-## Prerequisites
+Models with task `coding` use `ChatSession`. See [coding models](../INFERENCING.md#coding-models) for
+capabilities, registration, and compatibility considerations.
+
+## Install From NuGet
+
+**You do not need to build Foundry Local from source.** Restore the published
+[`Microsoft.AI.Foundry.Local.Runtime`](https://www.nuget.org/packages/Microsoft.AI.Foundry.Local.Runtime)
+package and its dependencies with the NuGet CLI:
+
+```bash
+nuget install Microsoft.AI.Foundry.Local.Runtime -OutputDirectory packages
+```
+
+The Runtime package contains the public C/C++ headers and prebuilt native libraries.
+It is also the native dependency of the `Microsoft.AI.Foundry.Local` C# SDK package.
+Install the Runtime package directly for C and C++ to avoid the managed SDK dependencies.
+Neither C nor C++ applications need a .NET runtime to use the native libraries.
+
+After restoring the packages:
+
+| Asset | Location |
+|---|---|
+| C API and C++17 wrapper headers | `packages/Microsoft.AI.Foundry.Local.Runtime.<version>/build/native/include/` |
+| Foundry Local native library | `packages/Microsoft.AI.Foundry.Local.Runtime.<version>/runtimes/<rid>/native/` |
+| ONNX Runtime and GenAI dependencies | Matching native assets in the restored `Microsoft.ML.OnnxRuntime` and `Microsoft.ML.OnnxRuntimeGenAI.Foundry` packages |
+
+Choose the RID for your application's operating system and architecture:
+`win-x64`, `win-arm64`, `linux-x64`, `linux-arm64`, or `osx-arm64`.
+Add the header directory to your compiler's include path. On Windows, link
+`foundry_local.lib`; on Linux, link `libfoundry_local.so`; on macOS, link
+`libfoundry_local.dylib`. Copy the matching native runtime files and their dependency
+libraries beside your executable or into its loader search path. Keep the restored
+package versions together; do not mix headers and native libraries from different
+releases.
+
+See [Use In Your Project](#use-in-your-project) for a CMake example,
+[Quick Start](#quick-start) for C++, and [C API](#c-api) for C.
+
+## Source Build Prerequisites
+
+The following tools are needed only when developing or customizing the native SDK,
+not when consuming the published NuGet packages.
 
 - CMake 3.20 or newer
 - Python 3.10 or newer to run `build.py`
@@ -35,6 +85,10 @@ wrapper need only C++17 or newer.
 The build resolves its C++ dependencies from the manifest in `vcpkg.json`, and obtains
 the pinned ONNX Runtime and ONNX Runtime GenAI dependencies during CMake configuration.
 
+Linux runtime requirements are architecture-specific: glibc 2.28 or newer on x64,
+and glibc 2.34 or newer on ARM64. The ARM64 minimum also applies to CPU-only usage
+because the pinned GenAI runtime requires it.
+
 Chat completions accept a typed `chat_template_kwargs` JSON object, such as
 `{"enable_thinking": false}`, for model-specific template controls. The pinned stable
 GenAI package supports this feature; a nightly package is not required. Session-level
@@ -42,6 +96,54 @@ kwargs are defaults: per-request kwargs override the entire object, and `{}` exp
 clears an inherited default for that request.
 For OpenAI JSON requests, the payload takes precedence over request options, followed
 by session defaults. Omitting kwargs inherits the session default, if any.
+
+### CUDA acceleration
+
+On Windows and Linux (x64 and ARM64), Foundry Local downloads and verifies only the
+CUDA execution provider and ORT GenAI CUDA libraries. It does not distribute the
+CUDA toolkit or cuDNN runtime libraries. Install compatible CUDA and cuDNN runtimes
+separately before registering the CUDA execution provider.
+
+On Windows, make the runtime DLL directories available through `PATH` for ORT's
+provider loader. On x64, also call `AddDllDirectory` for the CUDA runtime directory
+before CUDA registration: the GenAI CUDA bridge directly imports the CUDA runtime,
+and its explicit DLL search policy includes application-added directories but not `PATH`.
+
+Applications that manage DLL search directories instead of `PATH` can call
+`AddDllDirectory` for each runtime directory and enable these directories with
+`SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)` before CUDA registration.
+This process-wide setting replaces the standard PATH-based DLL search; register all
+required runtime directories when using it. It is not needed solely for the x64 bridge load.
+Foundry Local leaves runtime dependency loading to ORT and GenAI. On Linux, use the
+system loader configuration or `LD_LIBRARY_PATH`.
+
+## Clearing a Model Cache
+
+Use `Model::RemoveFromCache()` to clear a completed, interrupted, or corrupted download.
+It does not require `IsCached()` to return true. Unload the model first and stop any active
+downloads; removal rejects loaded models and conflicting downloads. After successful
+removal, the model handle reports `IsCached() == false` and its path is cleared.
+Removal on the same handle is rejected until an active download has finished its
+callbacks and published its cached state, including cache-hit downloads.
+Externally registered models must be unregistered instead; their files are not deleted.
+Applications sharing a cache must coordinate removal with other instances using the
+model. The download lock serializes file mutations, but does not protect cache-hit
+reads or models loaded in another process.
+
+`GetPath()` returns the inference directory, which may be a revision subdirectory.
+Do not delete that directory manually: download markers and other revisions can live
+above it. Removal clears the model's cache root, including payloads, inference metadata,
+`download.tmp`, blob resume sidecars, and legacy progress markers. An empty root may
+remain for download-lock safety; it is not considered cached. Shared catalog metadata
+and other models are retained.
+
+For scanner-discovered locations outside the standard layout, removal also recognizes a
+parent containing only numeric revision directories (`v2`, `v3`, etc.) and download
+markers or root-level `inference_model.json`. Matching root metadata can establish
+ownership without download markers; corrupt metadata requires a marker. Removal locks
+the parent before inspecting ownership and retains that lock even if unrelated entries
+or another model's metadata restrict deletion to the discovered inference directory.
+It never expands to the cache root or across unrelated parent entries.
 
 ## Native Export Isolation
 
@@ -61,33 +163,23 @@ ELF checks inspect external definitions only: local symbols retained in `.dynsym
 by GCC compatibility objects are not public exports.
 ### Native non-generative packages
 
-When the web service is enabled, `POST /v1/rank` and `POST /v1/systemone`
+When the web service is enabled, `POST /catalogs/local/v1/rank` and
+`POST /catalogs/local/v1/systemone`
 resolve the request `model` as a local-catalog ID or alias. Multi-component
 packages use the metadata described in
 [`docs/non-generative-packages.md`](docs/non-generative-packages.md). Runtime
 caches are isolated by canonical model identity and provider; active requests
 hold lifecycle ownership and block unload. Each loaded typed runtime executes
-session construction and requests on one dedicated thread so CUDA graph
-capture and replay are not moved across web-service workers. Explicit local paths remain a
-prototype fallback when an alias is not registered:
+session construction and requests on one dedicated thread so provider and
+session ownership stay on the same execution thread. Requests resolve a
+registered local-catalog model ID or alias:
 
 ```bash
-export FOUNDRY_LOCAL_RANK_MODEL_PATH=/models/clm
-export FOUNDRY_LOCAL_SYSTEMONE_MODEL_PATH=/models/kev
-export FOUNDRY_LOCAL_NON_GENERATIVE_PROVIDER=cuda
-# Bounded session-local caches; setting either corresponding value to 0 disables.
-export FOUNDRY_LOCAL_CLM_CACHE_CAPACITY=256
-export FOUNDRY_LOCAL_CLM_CACHE_CAPACITY_BYTES=67108864
-export FOUNDRY_LOCAL_KEV_CACHE_CAPACITY=512
-export FOUNDRY_LOCAL_KEV_CACHE_CAPACITY_BYTES=16777216
-# Alternatively set FOUNDRY_LOCAL_NON_GENERATIVE_PACKAGE_ROOT, containing
-# rank/ and systemone/ subdirectories.
-
-curl -s http://127.0.0.1:5272/v1/rank \
+curl -s http://127.0.0.1:5272/catalogs/local/v1/rank \
   -H 'Content-Type: application/json' \
   -d '{"model":"clm","context":{"text":"sample"},"question":"Select","answers":["first","second"],"temperature":1}'
 
-curl -s http://127.0.0.1:5272/v1/systemone \
+curl -s http://127.0.0.1:5272/catalogs/local/v1/systemone \
   -H 'Content-Type: application/json' \
   -d '{"model":"kev","state":"sample","questions":{"q":{"type":"noul","instructions":"Is this valid?"}}}'
 ```
@@ -97,35 +189,44 @@ tasks, criteria, or token bounds are HTTP 400. This bounded integration does
 not add remote catalog submission.
 Until the corresponding ORT GenAI package is published, configure this branch
 with `--ort_genai_home /path/to/onnxruntime-genai` so the native
-`DirectoryTokenizer` and component session exports are available.
+`OgaConfig`-based `NonGenerativeSession` API is available.
 
 Cached catalog models can also be used directly without starting the web
-service or calling the generative `Load` path:
+service. The normal lifecycle uses the same model-owned manager as other
+tasks: load the model, create a task session, process requests, destroy the
+session, and unload the model. Session construction requires the selected
+artifact to be loaded and only acquires a lease on that model-owned runtime.
 
 ```cpp
-foundry_local::RankingSession ranking(clm_model);
-const auto ranked = ranking.RankJson(R"({
-  "context":{"weather":"heavy rain"},
-  "question":"Which activity is more suitable?",
-  "answers":["Have a picnic outdoors","Visit an indoor museum"]
-})");
-
-foundry_local::DecisionSession decision(kev_model);
-const auto answers = decision.DecideJson(R"({
-  "state":{"weather":"heavy rain"},
-  "questions":{"umbrella":{
-    "type":"noul",
-    "instructions":"Should I take an umbrella?"
-  }}
-})");
+clm_model.Load();
+{
+  foundry_local::RankingSession ranking(clm_model);
+  const auto ranked = ranking.RankJson(R"({
+    "context":{"weather":"heavy rain"},
+    "question":"Which activity is more suitable?",
+    "answers":["Have a picnic outdoors","Visit an indoor museum"]
+  })");
+}
+clm_model.Unload();
 ```
 
-The SDK methods use the same JSON contracts and response shapes as
-`POST /v1/rank` and `POST /v1/systemone`. The C ABI remains unchanged: all
-language bindings use the existing `flSession`, `flRequest`, `flResponse`, and
-OpenAI-JSON text-item contract.
+The session already selects the model. The JSON `model` field may be omitted;
+a matching bound model ID or alias is accepted, while a different model is
+rejected rather than routed elsewhere. Temperature precedence is JSON value,
+then request options, then session defaults. Ordinary text items containing
+JSON are accepted; responses retain the compatibility OpenAI-JSON text tag.
+These are Foundry task payloads, not standard OpenAI request schemas.
+
+The SDK methods use the same payload and response shapes as
+`POST /catalogs/local/v1/rank` and
+`POST /catalogs/local/v1/systemone`. The C ABI remains unchanged: all language
+bindings use the existing `flSession`, `flRequest`, `flResponse`, and JSON
+text-item contract.
 
 ## Build From Source
+
+Building from source is optional. For application development, use the
+[published NuGet packages](#install-from-nuget) instead.
 
 From this directory:
 
@@ -167,7 +268,212 @@ example, the default library and examples are under
 The build places `foundry_local` alongside its ONNX Runtime and ONNX Runtime GenAI
 dependencies. Keep these files together when copying a build to another location.
 
+### Dependency regression checks
+
+Native Windows x64, macOS ARM64, and Linux CI run the telemetry shutdown and
+installed nanoarrow consumer regressions. Telemetry tests require
+`TELEMETRY_SHUTDOWN_SDK_SOURCE_DIR` to name the pinned telemetry sources with all
+patches from `ports/cpp-client-telemetry/portfile.cmake` applied. They link the real
+Foundry Manager and observe SDK lock, worker, version, and encoder lifetimes.
+Events traverse normal decoration, queuing, storage, and encoding; only the HTTP
+transport is replaced with an in-process responder. The `upload-after-ci` case
+holds encoding until process exit after a CI-suppressed first Manager.
+
+Windows also runs five DLL lifecycle cases for the Manager owner and standalone
+telemetry. A mock provider avoids the real SDK workers' DLL pinning so the
+fixture can exercise actual `FreeLibrary` teardown. Process-termination cases
+retain a pending mock uploader callback; they do not access private locks or
+reproduce lock ownership by terminated threads. Normal destruction and explicit
+`FreeLibrary` must each flush, tear down, and release the uploader exactly once. Only Windows
+process termination abandons cleanup; pending telemetry is not flushed there.
+The standalone bridge covers teardown inside `FreeLibrary`; active Manager
+runtime resources can retain the DLL, so Manager coverage explicitly destroys
+the instance before unloading.
+
+```pwsh
+python tools/run_dependency_tests.py --build build/Windows/RelWithDebInfo --config RelWithDebInfo
+```
+
+The runner rejects missing and skipped cases. Nanoarrow consumers configure,
+link, and run separately in Debug and Release, with an application-defined
+`flatccrt` target declared both before and after package discovery.
+
+### Measuring dependency updates
+
+Build baseline and updated SDKs from the same Foundry sources, toolchain,
+configuration, and ORT/GenAI packages, preserving each native bundle and its
+vcpkg status file. The `sdk-dependency-probe` executable loads the actual shared
+SDK through its public C ABI. Compare the bundles with:
+
+```pwsh
+python tools/measure_sdk_dependencies.py `
+  --probe build/Windows/RelWithDebInfo/bin/RelWithDebInfo/sdk-dependency-probe.exe `
+  --baseline build/baseline-native/foundry_local.dll `
+  --candidate build/updated-native/foundry_local.dll `
+  --output build/dependency-measurements --samples 10
+```
+
+Add `--model-id <exact-catalog-model-id>` to time real model downloads into fresh,
+isolated caches; this is opt-in and may transfer substantial data. Runs alternate
+baseline/current order and preserve every sample, binary hashes, medians, native
+payload/ZIP sizes, and (on Windows) unsigned C++ SDK-layout ZIP size including
+headers, symbols, and the import library. Telemetry is CI-suppressed in both
+bundles to prevent external collector transmission. These are warm-file-cache,
+local-host observations, not cold-boot, inference, telemetry-enabled, mobile, or
+release-signed-package measurements. Network variability is not itself evidence
+of a dependency performance regression.
+### Structured coding tools
+
+Structured tool turns on both Engine and Generator use one immutable `ToolCallPlan` for declaration
+admission, call-name selection, original-schema validation, and batch acceptance.
+The model emits a nonempty canonical JSON array inside its published tool
+markers, for example:
+
+```json
+[{"name":"edit","parameters":{"path":"main.py","new_str":"print(\"hello\")\n"}}]
+```
+
+This replaces the model's native XML argument protocol; callers continue using
+the ordinary Chat Completions, Responses, or SDK tool APIs. Arguments are never
+coerced, repaired, default-filled, or guessed from XML text.
+
+**Generation and validation have different responsibilities.** Structural Lark
+guidance restricts JSON syntax, the canonical envelope, declared/forced tool names,
+and serial versus parallel calls. It preserves arbitrary argument property order,
+JSON structural whitespace, and standard string escapes, including printable Unicode escapes. It does
+not use the runtime's JSON Schema-to-grammar projection: a mask must not turn a
+valid argument spelling into a different value to satisfy a compiler limitation.
+The unchanged original parameter schema is validated with jsoncons before any
+call in the batch is published. Structural guidance alone does not guarantee
+schema compliance or that the model chose the user's intended argument value.
+
+Automatic tool turns select their response mode explicitly: ordinary assistant
+text starts with an internal `MESSAGE` line, while executable calls start with
+the model's dedicated tool boundary. The runtime removes the text framing line
+incrementally; callers still receive normal content and tool-call events.
+Unframed tool-shaped text is rejected instead of silently returned as an answer.
+Historical assistant text uses the same framing when projected back to the model.
+
+The admitted schema profile supports Draft 2020-12 and supported Draft 7
+declarations, local JSON Pointer references, composition, string/numeric/array
+bounds, and open objects when the original schema permits them. Remote references,
+recursive references, anchors, custom vocabularies, reserved control keywords, and
+unsupported content features are rejected explicitly, not silently dropped.
+Unknown non-reserved keywords and `format` are treated as annotations; their original
+values remain in the schema for prompting and validation. Format assertions are not enabled.
+Schema input is limited to 1 MiB, individual argument JSON to 4 MiB, a canonical batch
+to 16 MiB, and nesting to 64. Duplicate JSON members are rejected before DOM parsing can erase them.
+
+Only model-published token identities delimit reasoning and executable tool
+regions. Marker spellings quoted in reasoning or in argument strings remain
+data, even when the tokenizer marks the published added tokens `special:false`.
+Transcript text, tool results, schemas, and historical argument bodies use a
+separate literal tokenizer; template-owned structure and runtime-owned protocol
+boundary exemplars use their actual token identities. This separation preserves
+multiline code, backslashes, Unicode, bracket-prefixed strings, and literal
+tool/reasoning marker text.
+
+Automatic structured tool turns use whole-turn guidance rather than region guidance, so a
+marker mentioned in scratchpad text cannot prematurely activate argument decoding.
+Whole-turn guidance disables speculative drafts; qualify its performance as well
+as correctness with the intended model. Region-only masks cannot enforce the
+initial text-versus-tool response mode and are not an automatic tool fallback.
+Required tools, forced names, and `parallel_tool_calls=false` remain authoritative.
+
+Concurrent Engine requests wait while resident turns make progress, including
+background coding-agent compaction. The capacity watchdog bounds stalled capacity,
+not total queue time; queued requests remain cancelable and do not expire merely
+because another healthy local generation lasts more than 30 seconds.
+
+An invalid uncommitted call gets at most one guided retry with a bounded schema
+diagnostic and the remaining output-token budget. Already streamed text/reasoning
+retains its exact token prefix and is not published twice. No retry is allowed
+after a tool call was published, cancellation, truncation, stop-sequence
+interruption, or incompatible explicit/raw guidance. Rejected and interrupted
+argument payloads never become assistant text. Exhaustion is an explicit error,
+not an empty successful response.
+
+Recovery also shares implicit classic Generator output limits; it cannot acquire a
+fresh default allowance or use the retained conversation's full context as an output
+budget. Engine text turns remain uncapped when the caller leaves their limit unset.
+
+Qualification requires both protocol fidelity and the **real Copilot CLI** coding
+workflow, not just an offline harness self-test. With the server already running:
+
+```powershell
+python sdk_v2\cpp\test\manual\tool_call_gate.py `
+  --endpoint http://127.0.0.1:5273/catalogs/local/v1 --model qwen-3.8-27b-dflash2:1 `
+  --output-dir sdk_v2\cpp\build\tool-call-gate
+python sdk_v2\cpp\test\manual\coding_agent_gate.py `
+  --endpoint http://127.0.0.1:5273/catalogs/local/v1 --model qwen-3.8-27b-dflash2:1 `
+  --schema-profile native --timeout-seconds 600 --max-output-tokens 8192 `
+  --output-dir sdk_v2\cpp\build\coding-agent-gate
+```
+
+Use fresh output directories and run the Copilot gate separately for `native`,
+`minlength`, and `oneof`. The isolated CLI must read/search files, encounter a real
+tool error and failing tests, repair the adversarial fixture through real editing
+tools, and finish with passing tests and exact file bytes. Private HTTP/SSE
+artifacts must show the intended local provider/model, no provider errors, and no
+invalid calls. These opt-in gates require the supplied model and installed CLI;
+they do not download models in CI or certify an unchanged release package.
+An `edit` qualifies only with a successful correlated CLI completion and exact
+full-file original and replacement arguments, including terminal LF; a failed edit
+followed by shell repair is insufficient. Protocol checks require a successful
+terminal choice, with `[DONE]` following it for streaming Chat Completions.
+The protocol gate also checks optional-property ordering through nonstreaming
+`/responses`, requiring a completed response and completed function calls.
+It checks ordinary function calls with a raw patch descriptor enabled in both
+streaming and nonstreaming Chat Completions.
+The `failed_tool_recovery_auto` case executes a genuinely failing `multiply(7,9)`
+callback, retains the identical tools and default automatic selection, and requires
+a Python final response instead of another tool call. It statically checks the
+function and expected test without executing model-generated code. Run it alone
+with `--case failed_tool_recovery_auto`; a short public-prompt pass does not qualify
+the real CLI's system prompt, and removing tools on recovery does not qualify either gate.
+Qualification applies to the model, backend, platform, and exact native binaries
+recorded for the run. Scripted Generator regressions do not substitute for a
+trained Generator model gate, and these text-only workflows do not qualify
+multimodal input. Rebuilt release artifacts must pass the same gates independently.
+
 ## Quick Start
+
+In-process execution is the default. Call `config.SetUseSharedHost(true)` before constructing `Manager` to route
+the same model/session APIs through the native host shipped beside the runtime. Metadata, discovery and model downloads
+do not start it; execution, cache removal, EP download/registration or `StartWebService()` starts or joins a compatible host.
+Cache removal always runs in the host so it cannot race a newly started host loading the same weights.
+Compatible applications must use the same Foundry native build and IPC protocol, platform, and effective catalog,
+data/cache, provider and web configuration. Logs directory/level, effective telemetry settings and additional settings
+other than `UserAgent` also separate hosts. Dependency file hashes and packaging differences do not separate clients
+into different hosts.
+The first starter selects the host's runtime; its files are verified at launch, and that runtime serves all attached
+clients. Joining a host does not replace its runtime with the joining client's local dependencies.
+
+The host inherits the first starter's environment, working directory and application identity; later clients do not
+reconfigure them. Environment-derived settings resolved into the compatibility profile, including telemetry, still
+affect sharing. Linux shared hosting requires kernel 5.3+ with `pidfd_open` permitted by the container/seccomp policy,
+and GNU build IDs in the Foundry, ORT and GenAI runtime modules.
+
+Destroying or shutting down a hosted manager releases only that client. The host drains admitted work and exits after
+the final owner and a five-second reconnect grace. Keep a manager alive while using its HTTP endpoint: HTTP connections
+are not owners. Explicit model unload remains shared and rejects in-use models; web-service Stop rejects other owners
+or active HTTP work. Hosted mode never silently falls back to in-process execution.
+
+The host admits up to 64 connected clients and 64 concurrent IPC operations across clients. Excess operations return
+an error without replay; callers may retry after work completes. Each connection allows 128 outstanding calls and
+256 MiB per encoded message and across pending initial requests. Exceeding an inbound transport limit closes that
+connection, not the host. Large live inputs should be split into streaming messages. These are admission and wire
+limits, not quotas on loaded models, decoded items or session history.
+Session and preflight disposal bypass the execution-worker limit and use a serialized reserved call slot with
+small, independently bounded requests, so saturation cannot silently orphan a client's native resources.
+
+Model selection checks the model ID, catalog metadata and canonical path, not the contents of every model file.
+Keep model files immutable while loaded. To replace weights, unload and register the replacement at a new path;
+overwriting files in place is not a supported revision mechanism.
+
+An embedded HTTP `/shutdown` request signals shutdown and returns before service teardown. Its SDK owner must
+observe `IsShutdownRequested()` and call `Shutdown()` or destroy the manager to finish releasing the service.
+Shared hosts reject this endpoint; their teardown follows SDK ownership instead.
 
 Include the C++ wrapper and link the `foundry_local` shared library. The example below
 uses a catalog model, downloading it on first use:
@@ -227,27 +533,58 @@ when they leave scope.
 
 ## Use In Your Project
 
-The public wrapper is header-only. Add `include/` to your header search path and link
-your executable to `foundry_local`:
+The public wrapper is header-only. After [installing from NuGet](#install-from-nuget),
+point CMake at the restored Runtime package and your application's RID, and link
+your executable to the packaged native library:
 
 ```cmake
 cmake_minimum_required(VERSION 3.20)
 project(my_foundry_app LANGUAGES CXX)
 
+set(FOUNDRY_LOCAL_RUNTIME_DIR "" CACHE PATH "Restored Microsoft.AI.Foundry.Local.Runtime.<version> directory")
+set(FOUNDRY_LOCAL_RID "linux-x64" CACHE STRING "Target NuGet runtime identifier")
+find_library(FOUNDRY_LOCAL_LIBRARY
+    NAMES foundry_local
+    PATHS "${FOUNDRY_LOCAL_RUNTIME_DIR}/runtimes/${FOUNDRY_LOCAL_RID}/native"
+    NO_DEFAULT_PATH REQUIRED)
+
 add_executable(my_foundry_app main.cc)
 target_compile_features(my_foundry_app PRIVATE cxx_std_17)
-target_include_directories(my_foundry_app PRIVATE /path/to/foundry-local/sdk_v2/cpp/include)
-target_link_libraries(my_foundry_app PRIVATE /path/to/foundry-local.dll-or-library)
+target_include_directories(my_foundry_app PRIVATE "${FOUNDRY_LOCAL_RUNTIME_DIR}/build/native/include")
+target_link_libraries(my_foundry_app PRIVATE "${FOUNDRY_LOCAL_LIBRARY}")
 ```
 
 On Windows, place `foundry_local.dll`, `onnxruntime.dll`, `onnxruntime-genai.dll`, and
-the other files from the SDK build output beside your executable. On Linux and macOS,
+the other native runtime dependencies from the restored packages beside your executable. On Linux and macOS,
 place `libfoundry_local` and its neighboring runtime libraries beside the executable or
 in a loader search path. The shared library uses `$ORIGIN` on Linux and `@loader_path` on
 macOS to locate co-located dependencies.
 
-For a lower-level integration or another language binding, include
-`foundry_local/foundry_local_c.h` and use the versioned C API function tables instead.
+### C API
+
+For a C application, a lower-level integration, or another language binding, include
+[`foundry_local/foundry_local_c.h`](include/foundry_local/foundry_local_c.h) and link the
+same `foundry_local` shared library. Use the [NuGet installation instructions](#install-from-nuget)
+above to restore the prebuilt native library, matching headers, and runtime dependencies.
+
+Call `FoundryLocalGetApi(FOUNDRY_LOCAL_API_VERSION)` to obtain the root `flApi` function
+table. Check for a null pointer, which indicates that the library does not support the
+requested API version. The root table exposes manager operations and accessors such as
+`GetConfigurationApi()`, `GetCatalogApi()`, `GetModelApi()`, `GetInferenceApi()`, and
+`GetItemApi()` for configuration, catalog access, model management, and inference.
+
+The C API uses opaque handles and explicit ownership rather than C++ classes:
+
+- Check the returned `flStatus*` from status-returning calls. A null status means
+  success; otherwise inspect `Status_GetErrorCode()` and `Status_GetErrorMessage()`,
+  then call `Status_Release()`.
+- Release owned handles with their corresponding `*_Release` function. Borrowed
+  pointers and views remain valid only for the lifetime documented in the header.
+- Follow the lifetime and callback ownership contracts documented on each function
+  in the public C header. The C++ wrapper automates handle cleanup with RAII.
+
+The C API exposes chat, tool calling, embeddings, audio transcription, and the same
+model and execution-provider lifecycle used by the C++ wrapper.
 
 ## Common Workflows
 
@@ -366,11 +703,58 @@ for (const std::string& endpoint : manager.GetWebServiceEndpoints()) {
 manager.StopWebService();
 ```
 
+Model management accepts exact versioned model IDs as well as legacy aliases:
+`GET /models/load/{name}` and `GET /models/unload/{name}` use the public catalog;
+`GET /catalogs/local/models/load/{name}` and `GET /catalogs/local/models/unload/{name}` use the local catalog.
+Encode the entire name as one URL path segment (for example, `publisher/model:2` becomes `publisher%2Fmodel%3A2`).
+The service percent-decodes once, preserves literal `+`, and resolves an exact ID before falling back to an alias.
+Loading an exact variant does not change its alias group's selected variant. Unload still refuses models held by
+live native sessions.
+`GET /models/loaded` and `GET /catalogs/local/models/loaded` list loaded variant IDs from their respective catalogs,
+including loaded non-selected variants. A matching ID at a different artifact path is not considered loaded.
+Adding `?details=true` to either loaded-model route instead returns an array of authoritative
+`{"model_id": "...", "model_path": "...", "context_length": 1024}` states, qualified by the selected catalog
+and artifact path. It only observes loaded instances: it does not load weights, create sessions, or fetch metadata.
+Unknown context limits are omitted. Without `details=true`, the legacy array of ID strings is unchanged.
+`GET /status` advertises `"artifact_qualified_model_management": true` when these native path-qualified management
+semantics are available. HTTP model-management clients should check this capability before relying on path-qualified
+readiness or management requests against an older native library.
+
+Load and unload requests optionally accept the `expected_model_path` query parameter. Encode the filesystem path as a
+query value (spaces may be `%20` or `+`; encode literal `+`, `%`, `&`, and `#`). The service decodes exactly once,
+canonicalizes the expected and host-resolved cached/BYOM paths, and compares them using native model-loader identity
+rules before loading, reusing, or unloading weights. Weak canonicalization permits unloading after artifact files
+or their directory have been removed. A mismatch returns HTTP 409 without changing an existing load; a malformed value
+returns HTTP 400. Callers omitting this parameter retain the legacy behavior.
+Shared-serving clients should always supply their selected native `Model::GetPath()` / SDK `Model::path()` value:
+another metadata client can unregister/re-register an ID while a running host still holds its old catalog snapshot.
+This is a path precondition, not detection of weight-file changes at the same path.
+
+Successful load responses retain `status` (`loaded` or `already_loaded`) and also return the resolved `model_id`
+and authoritative filesystem `model_path` from the loaded instance. Clients should verify both ID and path before
+binding to that host; registration metadata URI is not an artifact-path contract.
+For Generator backends, `context_length` reports the configured total input-plus-output token window used by
+inference (`model.context_length`, falling back to legacy `search.max_length`). Generator explicitly overrides
+native `max_length` per request, so a lower artifact `search.max_length` is not an additional ceiling.
+This is read from the loaded instance, qualified by model ID and artifact path, without creating a session.
+It is not a catalog maximum or an independent input/output cap: clients must reserve their requested output tokens
+within that window. For Engine backends, `context_length` comes from the existing loaded Engine's native
+`MaxRequestLength` capability, also used by session preflight. Observing this cached value creates no request or
+session. Unknown limits are omitted rather than guessed; the response does not negotiate profiles or verify changes
+to files at the same artifact path.
+
+`POST /shutdown` returns `{"status":"shutting_down"}`, rejects new loads, and cancels tracked sessions.
+The HTTP worker only requests shutdown: a standalone host must observe `Manager::IsShutdownRequested()` and release
+the manager on its owner thread, which stops the service, drains sessions, and unloads models.
+
 Streaming chat completions, Responses, and audio transcriptions cancel their active inference when the SSE client
 disconnects. The service sends SSE keepalive comments during token silence so a dropped connection can be detected
 without waiting for the next token. Undrained streams are limited to 1 MiB of buffered events; exceeding the limit
-cancels inference and replaces pending events with a terminal SSE error. A disconnected stream cannot be resumed;
-non-streaming requests are unchanged. Engine cancellation is cooperative between inference steps; an in-progress
+cancels inference and replaces pending events with a terminal SSE error. A disconnected stream cannot be resumed.
+Non-streaming chat completions cancel inference on TCP resets or other transport errors without consuming pending
+request bytes. A graceful FIN alone does not cancel inference: clients can half-close their sending direction and
+still read a response, so a graceful full close cannot be distinguished until the response is written. Other
+non-streaming routes are unchanged. Engine cancellation is cooperative between inference steps; an in-progress
 prefill step cannot be interrupted before it returns.
 
 Configure with `--skip_service` when the web service is not required; this removes its
@@ -386,7 +770,7 @@ The build produces these example executables in the build output directory:
 | `tool_calling_example` | Tool definitions, tool-result turns, and streaming tool calls |
 | `embeddings_example` | Single and batch embeddings with cosine similarity |
 | `realtime_audio_example <audio_file_path>` | PCM streaming input and streaming transcription output |
-| `kev_decision_example <package_path> [provider]` | Run a typed KEV decision package through Foundry Local Core |
+| `kev_decision_example <package_path>` | Run a typed KEV decision package through Foundry Local Core |
 
 The source for each is under [examples/](examples/). `basic_chat_example` honors
 `FOUNDRY_LOCAL_SAMPLE_CACHE_DIR` to use an existing model-cache location.
@@ -434,19 +818,13 @@ sdk_v2/cpp/
 ## Non-generative ranking and decisions
 
 The CLM ranking and KEV decision routes translate their existing JSON contracts
-to the public ORT GenAI `OgaStructuredRequest` and
-`OgaFreeFormRankRequest` types. Rendering, tokenization, tensor preparation,
-pooling, scoring, and typed result construction are owned by ORT GenAI; Foundry
-only performs contract translation. Set
-`FOUNDRY_LOCAL_NON_GENERATIVE_PROVIDER=cuda` to select CUDA only for prototype
-path-fallback packages. Catalog-selected packages use their registered/package
-provider metadata and are not overridden by this environment variable.
-The `FOUNDRY_LOCAL_{CLM,KEV}_CACHE_CAPACITY` and `_CAPACITY_BYTES` variables
-configure bounded session-local runtime caches. Package runtimes are also
-cached per canonical catalog identity and evicted by model unload. KEV caches
-tokenized prefixes/rows only.
-True recurrent/convolution/KV state branching needs a future exported
-graph/state-handle contract.
+to the public ORT GenAI `NonGenerativeSession` JSON boundary. Rendering,
+tokenization, tensor preparation, pooling, scoring, and typed result
+construction are owned by ORT GenAI; Foundry only performs contract
+translation. Runtime provider selection and provider options come from each
+package's `genai_config.json`. Package runtimes are cached per canonical
+catalog identity and evicted by model unload; bounded model-specific caches
+remain private to ORT GenAI.
 The HTTP request and response schemas are unchanged.
 
 ## License

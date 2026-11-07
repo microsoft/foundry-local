@@ -511,43 +511,6 @@ std::string MimeFromExtension(const std::string& path) {
   return {};
 }
 
-std::unique_ptr<ImageItem> MakeImageItemFromDataUrl(const std::string& url, std::string_view error_source) {
-  // Format: "data:<media-type>;base64,<payload>"
-  // Strict: we require base64 encoding (not raw text) and a `;base64,`
-  // marker. Anything else throws — vision models can't consume non-base64
-  // data URLs.
-  auto comma = url.find(',');
-  if (comma == std::string::npos) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             std::string(error_source) + " is missing payload separator ','");
-  }
-
-  std::string header = url.substr(kDataUrlPrefix.size(), comma - kDataUrlPrefix.size());
-
-  constexpr std::string_view kBase64Marker = ";base64";
-  auto base64_pos = header.find(kBase64Marker);
-  if (base64_pos == std::string::npos) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, std::string(error_source) + " must use ';base64,' encoding");
-  }
-
-  std::string media_type = header.substr(0, base64_pos);
-  std::string payload = url.substr(comma + 1);
-
-  std::vector<std::uint8_t> bytes;
-  try {
-    bytes = Azure::Core::Convert::Base64Decode(payload);
-  } catch (const std::exception& e) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             std::string(error_source) + " has invalid base64 payload: " + e.what());
-  }
-
-  if (bytes.empty()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, std::string(error_source) + " decoded to zero bytes");
-  }
-
-  return std::make_unique<ImageItem>(std::move(bytes), std::move(media_type));
-}
-
 std::unique_ptr<ImageItem> MakeImageItemFromLocalFile(const std::string& url,
                                                       const std::optional<std::string>& explicit_media_type) {
   std::string path = url;
@@ -585,7 +548,7 @@ std::unique_ptr<ImageItem> MakeImageItemFromInputImage(const InputImageContent& 
     const std::string& url = *c.image_url;
 
     if (url.compare(0, kDataUrlPrefix.size(), kDataUrlPrefix) == 0) {
-      return MakeImageItemFromDataUrl(url, "image_url data URL");
+      return ImageItem::FromDataUrl(url);
     }
 
     // file:// URI or absolute local path.
@@ -602,7 +565,7 @@ std::unique_ptr<ImageItem> MakeImageItemFromInputImage(const InputImageContent& 
   if (c.image_data.has_value() && !c.image_data->empty()) {
     const std::string media_type =
         c.media_type.has_value() && !c.media_type->empty() ? *c.media_type : "image/png";
-    return MakeImageItemFromDataUrl("data:" + media_type + ";base64," + *c.image_data, "image_data");
+    return ImageItem::FromDataUrl("data:" + media_type + ";base64," + *c.image_data, "image_data");
   }
 
   if (c.file_id.has_value() && !c.file_id->empty()) {
@@ -867,6 +830,10 @@ std::vector<fl::ToolDefinition> ExtractResponsesToolDefinitions(const ResponseCr
     }
   }
   tools::ValidateUniqueNames(definitions);
+
+  if (params.parallel_tool_calls.has_value()) {
+    session_request.options["parallel_tool_calls"] = *params.parallel_tool_calls ? "true" : "false";
+  }
 
   // tool_choice: the mode strings flow straight to options. A forced tool additionally narrows the
   // set to the named tool of the matching kind and forces "required".

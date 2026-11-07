@@ -78,8 +78,7 @@ void EmbeddingsSession::ProcessRequestImpl(const Request& request, Response& res
     return;
   }
 
-  // Single batched forward pass for all inputs.
-  auto embeddings = GenerateEmbeddingsBatch(inputs);
+  auto embeddings = GenerateEmbeddingsBatch(inputs, request, response.usage);
 
   // Wrap each embedding as a TensorItem in the response. The vector is heap-allocated
   // and ownership is transferred to the TensorItem deleter via deleter_user_data_, so
@@ -101,7 +100,7 @@ void EmbeddingsSession::ProcessRequestImpl(const Request& request, Response& res
 }
 
 void EmbeddingsSession::ProcessEmbeddingsJson(const std::string& request_json,
-                                              const Request& /*original_request*/,
+                                              const Request& original_request,
                                               Response& response) {
   // Parse the OpenAI embeddings request. Let nlohmann::json::parse_error propagate —
   // matches AudioSession::ProcessAudioTranscriptionJson behavior.
@@ -124,7 +123,7 @@ void EmbeddingsSession::ProcessEmbeddingsJson(const std::string& request_json,
   // Reuse GenerateEmbeddingsBatch so the typed and JSON paths stay bit-for-bit equal
   // under future refactors (parity test relies on this).
   if (!inputs.empty()) {
-    auto embeddings = GenerateEmbeddingsBatch(inputs);
+    auto embeddings = GenerateEmbeddingsBatch(inputs, original_request, response.usage);
 
     output.data.reserve(embeddings.size());
     for (size_t i = 0; i < embeddings.size(); ++i) {
@@ -136,9 +135,7 @@ void EmbeddingsSession::ProcessEmbeddingsJson(const std::string& request_json,
     }
   }
 
-  // Token accounting parity with the typed/handler path is a separate TODO —
-  // the legacy embeddings_handler.cc also leaves these at zero today.
-  output.usage = EmbeddingUsage{0, 0};
+  output.usage = EmbeddingUsage{response.usage.prompt_tokens, response.usage.total_tokens};
 
   // encoding_format = "base64" is parsed but intentionally not honored here, matching
   // the existing handler behavior. Follow-up task.
@@ -149,7 +146,7 @@ void EmbeddingsSession::ProcessEmbeddingsJson(const std::string& request_json,
 }
 
 std::vector<std::vector<float>> EmbeddingsSession::GenerateEmbeddingsBatch(
-    const std::vector<std::string>& inputs) {
+    const std::vector<std::string>& inputs, const Request& request, TokenUsage& usage) {
   // Process each input independently (batch_size=1 per forward pass).
   //
   // Embedding models like Qwen3-Embedding use bidirectional attention —
@@ -160,12 +157,8 @@ std::vector<std::vector<float>> EmbeddingsSession::GenerateEmbeddingsBatch(
   //
   // The performance cost of per-input forward passes is negligible for
   // embedding models — they're small and inference is fast.
-  std::vector<std::vector<float>> results;
-  results.reserve(inputs.size());
-
-  for (const auto& input : inputs) {
-    results.push_back(GenerateSingleEmbedding(input));
-  }
+  auto results = embeddings_internal::GenerateBatch(
+      inputs, request, [this, &usage](const std::string& input) { return GenerateSingleEmbedding(input, usage); });
 
   logger_.Log(LogLevel::Verbose,
               fmt::format("Embeddings: processed {} input(s)", inputs.size()));
@@ -173,7 +166,7 @@ std::vector<std::vector<float>> EmbeddingsSession::GenerateEmbeddingsBatch(
   return results;
 }
 
-std::vector<float> EmbeddingsSession::GenerateSingleEmbedding(const std::string& input) {
+std::vector<float> EmbeddingsSession::GenerateSingleEmbedding(const std::string& input, TokenUsage& usage) {
   auto& oga_model = model_.GetOgaModel();
 
   // 1. Tokenize and append EOS. Encode is serialized on the model's shared tokenizer.
@@ -252,6 +245,10 @@ std::vector<float> EmbeddingsSession::GenerateSingleEmbedding(const std::string&
       v /= norm;
     }
   }
+
+  // Count the prepared sequence, including the EOS used for last-token pooling.
+  usage.prompt_tokens += static_cast<int64_t>(token_count);
+  usage.total_tokens = usage.prompt_tokens;
 
   return embedding;
 }

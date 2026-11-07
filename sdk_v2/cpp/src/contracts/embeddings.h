@@ -4,6 +4,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <variant>
@@ -34,8 +35,8 @@ struct EmbeddingData {
 };
 
 struct EmbeddingUsage {
-  int prompt_tokens = 0;
-  int total_tokens = 0;
+  int64_t prompt_tokens = 0;
+  int64_t total_tokens = 0;
 };
 
 struct EmbeddingCreateResponse {

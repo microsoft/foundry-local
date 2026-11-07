@@ -9,6 +9,8 @@ namespace Microsoft.AI.Foundry.Local.Detail;
 using System.Runtime.InteropServices;
 
 using Microsoft.AI.Foundry.Local.Detail.Interop;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 /// <summary>
 /// Handles native DLL resolution for foundry_local.dll.
@@ -39,6 +41,7 @@ internal static partial class DllLoader
 {
     private static bool _initialized;
     private static readonly object _lock = new();
+    private static ILogger _logger = NullLogger.Instance;
 
     // Hold ORT and GenAI handles for the process lifetime so the preloaded
     // copies stay resident and win base-name resolution for foundry_local's imports.
@@ -49,15 +52,16 @@ internal static partial class DllLoader
     // Contains a single line: the absolute path to the C++ build output directory.
     private const string RedirectFileName = "foundry_local.native.cfg";
 
-    internal static void Initialize()
+    internal static void Initialize(ILogger? logger = null)
     {
-        if (_initialized)
-        {
-            return;
-        }
-
         lock (_lock)
         {
+            // Keep the current logger during low-level P/Invoke bootstrap; replace it for a new manager.
+            if (logger != null)
+            {
+                _logger = logger;
+            }
+
             if (_initialized)
             {
                 return;
@@ -202,15 +206,11 @@ internal static partial class DllLoader
     }
 
     /// <summary>
-    /// Emit a one-line marker to stderr (and the diagnostic trace) recording which strategy
-    /// produced the loaded library and from where. Stderr is used so the line shows up in
-    /// CI test-output capture even when no ILogger is wired in.
+    /// Record which strategy produced the loaded library using the application's logging settings.
     /// </summary>
     private static void LogResolution(string strategy, string path)
     {
-        var msg = $"[FoundryLocal.DllLoader] resolved foundry_local via {strategy}: {path}";
-        Console.Error.WriteLine(msg);
-        System.Diagnostics.Trace.WriteLine(msg);
+        _logger.LogDebug("[FoundryLocal.DllLoader] resolved foundry_local via {Strategy}: {Path}", strategy, path);
     }
 
     /// <summary>
@@ -242,15 +242,11 @@ internal static partial class DllLoader
 
         if (TryLoadNativeLibrary(path, out var handle))
         {
-            var msg = $"[FoundryLocal.DllLoader] preloaded {libraryName}: {path}";
-            Console.Error.WriteLine(msg);
-            System.Diagnostics.Trace.WriteLine(msg);
+            _logger.LogDebug("[FoundryLocal.DllLoader] preloaded {LibraryName}: {Path}", libraryName, path);
             return handle;
         }
 
-        var failMsg = $"[FoundryLocal.DllLoader] failed to preload {libraryName} from {path}";
-        Console.Error.WriteLine(failMsg);
-        System.Diagnostics.Trace.WriteLine(failMsg);
+        _logger.LogWarning("[FoundryLocal.DllLoader] failed to preload {LibraryName} from {Path}", libraryName, path);
         return IntPtr.Zero;
     }
 }

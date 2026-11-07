@@ -43,6 +43,19 @@ inline std::filesystem::path MakeUniqueTempPath(const std::string& prefix) {
           std::to_string(counter.fetch_add(1, std::memory_order_relaxed)));
 }
 
+#ifndef _WIN32
+// Socket paths need trusted ancestors and must fit sockaddr_un even in a long or group-writable checkout.
+inline std::filesystem::path MakePrivateIpcDirectory() {
+  for (;;) {
+    const auto path = std::filesystem::canonical("/tmp") / MakeUniqueTempPath("fl-ipc-").filename();
+    if (std::filesystem::create_directory(path)) {
+      std::filesystem::permissions(path, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+      return path;
+    }
+  }
+}
+#endif
+
 /// RAII temporary filesystem path for test isolation, removed on destruction so a flaky test
 /// never leaks into the system temp dir. The name comes from MakeUniqueTempPath, so it is unique
 /// both across the separate processes CTest launches per test and across multiple instances within

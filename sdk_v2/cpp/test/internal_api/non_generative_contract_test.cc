@@ -12,14 +12,14 @@ namespace {
 TEST(NonGenerativeContractTest, ParsesTypedRequest) {
   auto request = nlohmann::ordered_json{
       {"state", {{"enabled", true}}},
-      {"temperature", 0.5},
+      {"temperature", 1.0},
       {"questions",
        {{"quality",
          {{"type", "choice"},
           {"instructions", "Choose"},
           {"criteria", {{"good", "Good"}, {"bad", "Bad"}}}}}}}}
                      .get<NonGenerativeRequest>();
-  EXPECT_FLOAT_EQ(request.temperature, 0.5f);
+  EXPECT_FLOAT_EQ(request.temperature, 1.0f);
   ASSERT_EQ(request.questions.size(), 1u);
   EXPECT_EQ(request.questions.front().first, "quality");
   EXPECT_EQ(request.questions.front().second.type, "choice");
@@ -33,12 +33,67 @@ TEST(NonGenerativeContractTest, RejectsEmptyQuestionsAndBadTemperature) {
                                        {"questions", {{"q", {{"type", "noul"}}}}}}
                     .get<NonGenerativeRequest>()),
                nlohmann::json::exception);
+  EXPECT_THROW((nlohmann::ordered_json{{"temperature", 0.5},
+                                       {"questions", {{"q", {{"type", "noul"}}}}}}
+                    .get<NonGenerativeRequest>()),
+               nlohmann::json::exception);
 }
 
 TEST(NonGenerativeContractTest, RejectsUnknownQuestionType) {
   EXPECT_THROW((nlohmann::ordered_json{{"questions", {{"q", {{"type", "freeform"}}}}}}
                     .get<NonGenerativeRequest>()),
                nlohmann::json::exception);
+}
+
+TEST(NonGenerativeContractTest, RejectsInvalidDecisionCriteria) {
+  EXPECT_THROW((nlohmann::ordered_json{
+                   {"questions", {{"q", {{"type", "choice"}}}}}}
+                    .get<NonGenerativeRequest>()),
+               nlohmann::json::exception);
+  EXPECT_THROW((nlohmann::ordered_json{
+                   {"questions",
+                    {{"q", {{"type", "score"}, {"criteria", nlohmann::ordered_json::object()}}}}}}
+                    .get<NonGenerativeRequest>()),
+               nlohmann::json::exception);
+}
+
+TEST(NonGenerativeContractTest, EnforcesDecisionCriteriaOptionLimit) {
+  for (const auto* type : {"choice", "score"}) {
+    nlohmann::ordered_json criteria =
+        std::string_view(type) == "choice"
+            ? nlohmann::ordered_json::object()
+            : nlohmann::ordered_json::array();
+    for (size_t index = 0; index < 255; ++index) {
+      if (criteria.is_object())
+        criteria[std::to_string(index)] = std::to_string(index);
+      else
+        criteria.push_back(std::to_string(index));
+    }
+    const auto request = nlohmann::ordered_json{
+        {"questions",
+         {{"q", {{"type", type}, {"criteria", criteria}}}}}};
+    EXPECT_NO_THROW(request.get<NonGenerativeRequest>());
+    if (criteria.is_object())
+      criteria["255"] = "255";
+    else
+      criteria.push_back("255");
+    EXPECT_THROW(
+        (nlohmann::ordered_json{
+            {"questions",
+             {{"q", {{"type", type}, {"criteria", criteria}}}}}}
+             .get<NonGenerativeRequest>()),
+        nlohmann::json::exception);
+  }
+}
+
+TEST(NonGenerativeContractTest, RejectsEmbeddedNullQuestionId) {
+  const std::string id{"q\0private", 9};
+  nlohmann::ordered_json questions = nlohmann::ordered_json::object();
+  questions[id] = {{"type", "noul"}};
+  EXPECT_THROW(
+      (nlohmann::ordered_json{{"questions", std::move(questions)}}
+           .get<NonGenerativeRequest>()),
+      nlohmann::json::exception);
 }
 
 TEST(NonGenerativeContractTest, ParsesRankingRequest) {
@@ -64,6 +119,11 @@ TEST(NonGenerativeContractTest, RejectsInvalidRankingAnswers) {
   EXPECT_THROW((nlohmann::ordered_json{{"model", ""}, {"answers", {"a", "b"}}}
                     .get<RankingRequest>()),
                nlohmann::json::exception);
+  const std::string embedded_nul{"a\0private", 9};
+  EXPECT_THROW(
+      (nlohmann::ordered_json{{"answers", {"valid", embedded_nul}}}
+           .get<RankingRequest>()),
+      nlohmann::json::exception);
 }
 
 TEST(NonGenerativeContractTest, AcceptsCatalogModelIdsAndAliases) {

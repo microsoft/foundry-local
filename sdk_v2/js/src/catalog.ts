@@ -102,7 +102,10 @@ export class Catalog {
 
   /**
    * Register existing local model assets. Use this only with `CatalogType.Local`; public catalogs reject mutation.
-   * The metadata is copied, and the catalog never deletes `modelPath`.
+   * Registration requires `task` and copies the metadata. Missing display name and modalities receive defaults, while
+   * context length comes from `model.context_length`, then `search.max_length`, when positive. A caller-supplied provider
+   * remains the default load override; when omitted, runtime metadata stays unset and `genai_config.json` selects it.
+   * The catalog never deletes `modelPath`.
    */
   async registerModel(modelPath: string, modelId: string, metadata: MutableModelInfo): Promise<IModel> {
     validateRegistrationArgs(modelPath, modelId, metadata);
@@ -110,7 +113,8 @@ export class Catalog {
   }
 
   /**
-   * Synchronous registration variant. This performs file I/O and blocks the event loop; prefer `registerModel()`.
+   * Synchronous registration variant with the same metadata behavior as `registerModel()`. This performs file I/O and
+   * blocks the event loop; prefer `registerModel()`.
    */
   registerModelSync(modelPath: string, modelId: string, metadata: MutableModelInfo): IModel {
     validateRegistrationArgs(modelPath, modelId, metadata);

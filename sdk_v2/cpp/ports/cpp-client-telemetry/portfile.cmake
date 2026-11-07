@@ -1,11 +1,18 @@
 vcpkg_check_linkage(ONLY_STATIC_LIBRARY)
 
-vcpkg_from_git(
+vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
-    URL https://github.com/microsoft/cpp_client_telemetry.git
-    REF 88defca71f0f0afe406a892b32e61e0cf6d915fe
-    FETCH_REF v${VERSION}
+    REPO microsoft/cpp_client_telemetry
+    REF v${VERSION}
+    SHA512 934ac980096f571aa4eaeba5159ee87a687e32e174c548190c3926c5c29c1054f7b7924647457c8bcc97a78dd216651577dbb958a7895175d49a97784fb3bf51
     HEAD_REF main
+    PATCHES apple-system-libraries.patch sdk-version-lifetime.patch
+)
+
+vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
+    FEATURES
+        device-id MATSDK_ENABLE_DEVICE_ID
+        no-logging MATSDK_DISABLE_LOGGING
 )
 
 set(MATSDK_BUILD_APPLE_HTTP OFF)
@@ -18,13 +25,21 @@ if("minimal-sqlite" IN_LIST FEATURES AND "system-sqlite" IN_LIST FEATURES)
 endif()
 
 set(MATSDK_SQLITE_PROVIDER SYSTEM)
-if("minimal-sqlite" IN_LIST FEATURES)
+if("minimal-sqlite" IN_LIST FEATURES AND NOT MATSDK_BUILD_APPLE_HTTP)
     set(MATSDK_SQLITE_PROVIDER MINIMAL)
+endif()
+
+set(MATSDK_PLATFORM_OPTIONS)
+if(VCPKG_TARGET_IS_IOS)
+    list(APPEND MATSDK_PLATFORM_OPTIONS -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0)
 endif()
 
 vcpkg_cmake_configure(
     SOURCE_PATH "${SOURCE_PATH}"
     OPTIONS
+        ${FEATURE_OPTIONS}
+        ${MATSDK_PLATFORM_OPTIONS}
+        -DBUILD_SHARED_LIBS=OFF
         -DMATSDK_BUILD_HEADERS=ON
         -DMATSDK_BUILD_LIBRARY=ON
         -DMATSDK_BUILD_TEST_TOOL=OFF
@@ -40,7 +55,10 @@ vcpkg_cmake_configure(
         -DMATSDK_BUILD_OBJC_WRAPPER=OFF
         -DMATSDK_BUILD_SWIFT_WRAPPER=OFF
         -DMATSDK_BUILD_PACKAGE=OFF
-        -DMATSDK_DISABLE_LOGGING=ON
+        -DMATSDK_DISABLE_EXCEPTIONS=OFF
+        -DMATSDK_USE_WININET=OFF
+        -DMATSDK_ANDROID_USE_ROOM=OFF
+        -DMATSDK_ENABLE_CAPI_HTTP_CLIENT=OFF
         -DBUILD_VERSION=${VERSION}
         -DMATSDK_BUILD_APPLE_HTTP=${MATSDK_BUILD_APPLE_HTTP}
         -DMATSDK_ANDROID_HTTP_CLIENT=CURL

@@ -9,7 +9,10 @@
 #include "contracts/tool_definitions.h"
 #include "ep_detection/ep_detector.h"
 #include "http/http_client.h"
+#include "inferencing/generative/chat/chat_session.h"
+#include "inferencing/generative/genai_model_instance.h"
 #include "inferencing/model_load_manager.h"
+#include "inferencing/predictive/non_generative_session.h"
 #include "inferencing/session/session_manager.h"
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
@@ -17,10 +20,14 @@
 #include "internal_api/web_service_test_helpers.h"
 #include "utils/safe_getenv.h"
 #include "logger.h"
+#include "manager.h"
 #include "model.h"
 #include "model_info.h"
 #include "service/handler_utils.h"
+#include "service/non_streaming_disconnect_monitor.h"
 #include "service/web_service.h"
+#include "util/path_safety.h"
+#include "util/scope_guard.h"
 #include "utils/temp_path.h"
 
 #include <foundry_local/foundry_local_c.h>
@@ -30,16 +37,27 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <mutex>
 #include <optional>
+#include <semaphore>
 #include <sstream>
 #include <string>
 #include <thread>
 #include <tuple>
 #include <vector>
+
+#ifndef _WIN32
+#include <netinet/in.h>
+#include <sys/select.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 #include <httplib.h>
 
@@ -49,6 +67,23 @@ using json = nlohmann::json;
 namespace {
 
 constexpr const char* kResponseStoreTestModelAlias = "response-store-test-model";
+constexpr const char* kCodingTestModelAlias = "coding-test-model";
+
+class CpuCudaEpDetector : public IEpDetector {
+ public:
+  std::map<std::string, std::vector<std::string>>
+  GetAvailableDevicesToEPs() const override {
+    return {{"CPU", {"CPUExecutionProvider"}},
+            {"GPU", {"CUDAExecutionProvider"}}};
+  }
+
+  bool PrepareForModelLoad(std::string_view ep_name) override {
+    prepared = std::string(ep_name);
+    return true;
+  }
+
+  std::string prepared;
+};
 
 TEST(HttpUserAgentTest, KeepsOnlyKnownProductAndNumericReleaseVersion) {
   EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/1.2.3"), "foundry-local-cpp/1.2.3");
@@ -107,6 +142,26 @@ class WebUsageTelemetry : public TelemetryLogger {
   Snapshot events_;
 };
 
+class WebTestSessionManager : public SessionManager {
+ public:
+  using SessionManager::SessionManager;
+
+  void Register(Session& session) override {
+    SessionManager::Register(session);
+    std::lock_guard lock(disconnect_mutex_);
+    disconnect_client_.reset();
+  }
+
+  void ResetClientOnNextRegistration(std::shared_ptr<oatpp::network::tcp::Connection> client) {
+    std::lock_guard lock(disconnect_mutex_);
+    disconnect_client_ = std::move(client);
+  }
+
+ private:
+  std::mutex disconnect_mutex_;
+  std::shared_ptr<oatpp::network::tcp::Connection> disconnect_client_;
+};
+
 std::string TestHttpGet(const std::string& url, const std::string& user_agent = "") {
   http::HttpRequestOptions options;
   options.user_agent = user_agent;
@@ -133,6 +188,130 @@ std::string TestHttpDelete(const std::string& url, const std::string& user_agent
 
 }  // namespace
 
+class NonStreamingDisconnectMonitorTest : public ::testing::Test {
+ protected:
+  using Socket = decltype(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+
+  void SetUp() override {
+#ifdef _WIN32
+    WSADATA winsock{};
+    ASSERT_EQ(::WSAStartup(MAKEWORD(2, 2), &winsock), 0);
+#endif
+    const auto listener_socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    ASSERT_NE(listener_socket, static_cast<Socket>(-1));
+    auto listener = std::make_shared<oatpp::network::tcp::Connection>(listener_socket);
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    ASSERT_EQ(::bind(listener_socket, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0);
+    ASSERT_EQ(::listen(listener_socket, 1), 0);
+#ifdef _WIN32
+    int address_length = sizeof(address);
+#else
+    socklen_t address_length = sizeof(address);
+#endif
+    ASSERT_EQ(::getsockname(listener_socket, reinterpret_cast<sockaddr*>(&address), &address_length), 0);
+    const auto client_socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    ASSERT_NE(client_socket, static_cast<Socket>(-1));
+    client_ = std::make_shared<oatpp::network::tcp::Connection>(client_socket);
+    ASSERT_EQ(::connect(client_socket, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0);
+    const auto server_socket = ::accept(listener_socket, nullptr, nullptr);
+    ASSERT_NE(server_socket, static_cast<Socket>(-1));
+    server_ = std::make_shared<oatpp::network::tcp::Connection>(server_socket);
+  }
+
+  void TearDown() override {
+    server_.reset();
+    client_.reset();
+#ifdef _WIN32
+    ::WSACleanup();
+#endif
+  }
+
+  void ResetClient() {
+    linger abortive_close{1, 0};
+    ASSERT_EQ(::setsockopt(static_cast<Socket>(client_->getHandle()), SOL_SOCKET, SO_LINGER,
+                           reinterpret_cast<const char*>(&abortive_close), sizeof(abortive_close)),
+              0);
+    client_.reset();
+  }
+
+  std::shared_ptr<oatpp::network::tcp::Connection> client_;
+  std::shared_ptr<oatpp::network::tcp::Connection> server_;
+};
+
+TEST_F(NonStreamingDisconnectMonitorTest, CancelsWhenClientResetsWithoutConsumingBufferedInput) {
+  Request request;
+  ASSERT_TRUE(request.TryBegin());
+  NonStreamingDisconnectMonitor monitor(server_, request);
+  ASSERT_EQ(::send(static_cast<Socket>(client_->getHandle()), "x", 1, 0), 1);
+  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  EXPECT_FALSE(request.IsCancellationRequested());
+  char byte = 0;
+  ASSERT_EQ(::recv(static_cast<Socket>(server_->getHandle()), &byte, 1, MSG_PEEK), 1);
+  EXPECT_EQ(byte, 'x');
+
+  ResetClient();
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!request.IsCancellationRequested() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+
+  EXPECT_TRUE(monitor.Stop());
+  EXPECT_TRUE(request.IsCancellationRequested());
+#ifndef _WIN32
+  ASSERT_EQ(::recv(static_cast<Socket>(server_->getHandle()), &byte, 1, MSG_PEEK), 1);
+  EXPECT_EQ(byte, 'x');
+#endif
+}
+
+TEST_F(NonStreamingDisconnectMonitorTest, CompletingRequestDoesNotCancelIt) {
+  Request request;
+  NonStreamingDisconnectMonitor monitor(server_, request);
+  EXPECT_FALSE(monitor.Stop());
+  ResetClient();
+  EXPECT_FALSE(monitor.Stop());
+  EXPECT_FALSE(request.IsCancellationRequested());
+}
+
+TEST_F(NonStreamingDisconnectMonitorTest, StopDetectsResetAfterLastWorkerPoll) {
+  Request request;
+  ASSERT_TRUE(request.TryBegin());
+  NonStreamingDisconnectMonitor monitor(server_, request);
+  ResetClient();
+  fd_set readable;
+  FD_ZERO(&readable);
+  const auto server_socket = static_cast<Socket>(server_->getHandle());
+  FD_SET(server_socket, &readable);
+  timeval timeout{2, 0};
+  ASSERT_EQ(::select(static_cast<int>(server_socket) + 1, &readable, nullptr, nullptr, &timeout), 1);
+  EXPECT_TRUE(monitor.Stop());
+  EXPECT_TRUE(request.IsCancellationRequested());
+}
+
+class NonStreamingHalfCloseTest : public NonStreamingDisconnectMonitorTest,
+                                  public ::testing::WithParamInterface<bool> {};
+
+TEST_P(NonStreamingHalfCloseTest, PreservesResponseWithOrWithoutBufferedInput) {
+  Request request;
+  ASSERT_TRUE(request.TryBegin());
+  NonStreamingDisconnectMonitor monitor(server_, request);
+  if (GetParam()) {
+    ASSERT_EQ(::send(static_cast<Socket>(client_->getHandle()), "x", 1, 0), 1);
+  }
+
+#ifdef _WIN32
+  ASSERT_EQ(::shutdown(static_cast<Socket>(client_->getHandle()), SD_SEND), 0);
+#else
+  ASSERT_EQ(::shutdown(static_cast<Socket>(client_->getHandle()), SHUT_WR), 0);
+#endif
+  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  EXPECT_FALSE(monitor.Stop());
+  EXPECT_FALSE(request.IsCancellationRequested());
+}
+
+INSTANTIATE_TEST_SUITE_P(Tcp, NonStreamingHalfCloseTest, ::testing::Bool());
+
 // ========================================================================
 // Test fixture — starts a real web service on an ephemeral port
 // ========================================================================
@@ -141,10 +320,10 @@ class WebServiceTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
     logger_ = std::make_unique<StderrLogger>();
-    ep_detector_ = std::make_unique<test::CpuOnlyEpDetector>();
+    ep_detector_ = std::make_unique<CpuCudaEpDetector>();
     model_load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
-    session_manager_ = std::make_unique<SessionManager>(*logger_);
-    null_telemetry_ = std::make_unique<TelemetryLogger>("test", fl::test::NullLog());
+    session_manager_ = std::make_unique<WebTestSessionManager>(*logger_);
+    telemetry_ = std::make_unique<WebUsageTelemetry>();
     public_catalog_ = std::make_unique<test::MockCatalog>();
     local_catalog_ = std::make_unique<test::MockCatalog>();
 
@@ -173,6 +352,12 @@ class WebServiceTest : public ::testing::Test {
         response_store_model_path,
         svc_.download_manager,
         *model_load_manager_));
+    public_catalog_->AddModel(Model::FromModelInfo(
+        test::MakeTestModelInfo(kCodingTestModelAlias, "microsoft", "coding"),
+        response_store_model_path, svc_.download_manager, *model_load_manager_));
+    local_catalog_->AddModel(Model::FromModelInfo(
+        test::MakeTestModelInfo(kCodingTestModelAlias, "local-owner", "coding"),
+        response_store_model_path, svc_.download_manager, *model_load_manager_));
 
     local_catalog_->AddModel(Model::FromModelInfo(
         test::MakeTestModelInfo("alpha-model", "local-owner"),
@@ -189,7 +374,7 @@ class WebServiceTest : public ::testing::Test {
         *model_load_manager_));
 
     service_ = std::make_unique<WebService>(*public_catalog_, *local_catalog_, *logger_, "/tmp/test-cache",
-                                            *model_load_manager_, *session_manager_, *null_telemetry_, []() {});
+                                            *model_load_manager_, *session_manager_, *telemetry_, []() {});
     auto urls = service_->Start({"http://127.0.0.1:0"});
     ASSERT_EQ(urls.size(), 1u);
     base_url_ = urls[0];
@@ -203,7 +388,7 @@ class WebServiceTest : public ::testing::Test {
     local_catalog_.reset();
     public_catalog_.reset();
     session_manager_.reset();
-    null_telemetry_.reset();
+    telemetry_.reset();
     model_load_manager_.reset();
     ep_detector_.reset();
     logger_.reset();
@@ -232,17 +417,17 @@ class WebServiceTest : public ::testing::Test {
                         package->execution_provider);
     local_catalog_->AddModel(Model::FromLocalRegistration(
         std::move(info), path.string(), svc_.download_manager,
-        svc_.model_load_manager));
+        *model_load_manager_));
     return *package;
   }
 
   static std::unique_ptr<test::MockCatalog> public_catalog_;
   static std::unique_ptr<test::MockCatalog> local_catalog_;
-  static std::unique_ptr<test::CpuOnlyEpDetector> ep_detector_;
+  static std::unique_ptr<CpuCudaEpDetector> ep_detector_;
   static std::unique_ptr<StderrLogger> logger_;
   static std::unique_ptr<ModelLoadManager> model_load_manager_;
-  static std::unique_ptr<SessionManager> session_manager_;
-  static std::unique_ptr<TelemetryLogger> null_telemetry_;
+  static std::unique_ptr<WebTestSessionManager> session_manager_;
+  static std::unique_ptr<WebUsageTelemetry> telemetry_;
   static std::unique_ptr<WebService> service_;
   static std::string base_url_;
   static inline fl::test::FakeServiceBindings svc_;
@@ -251,17 +436,25 @@ class WebServiceTest : public ::testing::Test {
 // Static member definitions
 std::unique_ptr<test::MockCatalog> WebServiceTest::public_catalog_;
 std::unique_ptr<test::MockCatalog> WebServiceTest::local_catalog_;
-std::unique_ptr<test::CpuOnlyEpDetector> WebServiceTest::ep_detector_;
+std::unique_ptr<CpuCudaEpDetector> WebServiceTest::ep_detector_;
 std::unique_ptr<StderrLogger> WebServiceTest::logger_;
 std::unique_ptr<ModelLoadManager> WebServiceTest::model_load_manager_;
-std::unique_ptr<SessionManager> WebServiceTest::session_manager_;
-std::unique_ptr<TelemetryLogger> WebServiceTest::null_telemetry_;
+std::unique_ptr<WebTestSessionManager> WebServiceTest::session_manager_;
+std::unique_ptr<WebUsageTelemetry> WebServiceTest::telemetry_;
 std::unique_ptr<WebService> WebServiceTest::service_;
 std::string WebServiceTest::base_url_;
 
 // ========================================================================
 // GET /status
 // ========================================================================
+
+TEST_F(WebServiceTest, StatusAdvertisesArtifactQualifiedModelManagementAsBoolean) {
+  const auto body = Get("/status");
+  ASSERT_TRUE(body.contains("artifact_qualified_model_management"));
+  const auto& capability = body.at("artifact_qualified_model_management");
+  ASSERT_TRUE(capability.is_boolean());
+  EXPECT_TRUE(capability.get<bool>());
+}
 
 TEST_F(WebServiceTest, StatusReturnsModelCachePath) {
   auto j = Get("/status");
@@ -369,6 +562,505 @@ TEST_F(WebServiceTest, UnloadModelReturnsUnloadedStatusForLoadedModel) {
 }
 
 // ========================================================================
+// Model management — exact IDs and aliases in both catalog scopes
+// ========================================================================
+
+class WebServiceModelManagementTest : public ::testing::TestWithParam<bool> {
+ protected:
+  void SetUp() override {
+    const auto model_path = test::GetTestDataModelPath("tiny-paged-attention");
+    ASSERT_TRUE(std::filesystem::exists(model_path)) << model_path;
+    auto& catalog = GetParam() ? local_catalog_ : public_catalog_;
+    catalog.AddModel(Model::FromModelInfo(test::MakeTestModelInfo("shared-model"), model_path,
+                                          bindings_.download_manager, bindings_.model_load_manager));
+
+    auto info = test::MakeTestModelInfo("shared-model");
+    info.model_id = kExactId;
+    info.name = "shared-model-second";
+    info.version = 2;
+    catalog.AddModel(Model::FromModelInfo(std::move(info), model_path, bindings_.download_manager,
+                                          bindings_.model_load_manager));
+    // An alias that collides with an exact ID must not take precedence over that variant.
+    catalog.AddModel(Model::FromModelInfo(test::MakeTestModelInfo(kExactId), "", bindings_.download_manager,
+                                          bindings_.model_load_manager));
+
+    prefix_ = GetParam() ? "/catalogs/local" : "";
+    service_ = std::make_unique<WebService>(public_catalog_, local_catalog_, bindings_.logger, "/tmp/test-cache",
+                                            bindings_.model_load_manager, sessions_, telemetry_, []() {});
+    const auto urls = service_->Start({"http://127.0.0.1:0"});
+    ASSERT_EQ(urls.size(), 1u);
+    client_ = std::make_unique<httplib::Client>(urls[0]);
+    client_->set_read_timeout(10, 0);
+    client_->set_path_encode(false);
+  }
+
+  void TearDown() override {
+    if (service_) {
+      service_->Stop();
+    }
+  }
+
+  Model* ExactModel() {
+    return (GetParam() ? local_catalog_ : public_catalog_).GetModelVariant(kExactId);
+  }
+
+  void ExpectStatus(const std::string& operation, const std::string& name, const char* status) {
+    const auto response = client_->Get(prefix_ + "/models/" + operation + "/" + name);
+    ASSERT_TRUE(response) << httplib::to_string(response.error());
+    ASSERT_EQ(response->status, 200) << response->body;
+    const auto body = json::parse(response->body);
+    EXPECT_EQ(body.at("status"), status);
+    if (operation == "load") {
+      EXPECT_EQ(body.at("model_id"), name == "shared-model" || name == "shared-model:1" || name == "shared-model%3a1"
+                                         ? "shared-model:1"
+                                         : kExactId);
+      // The native Engine reports 1024 despite the artifact's lower search.max_length (128).
+      EXPECT_EQ(body.at("context_length"), 1024);
+      EXPECT_EQ(body.at("model_path"), NormalizeModelPath(ExactModel()->GetPath()));
+      EXPECT_FALSE(body.contains("max_input_tokens"));
+      EXPECT_FALSE(body.contains("max_output_tokens"));
+    }
+  }
+
+  httplib::Result ManageWithExpectedPath(const std::string& operation, const std::string& name,
+                                         const std::string& expected_path) {
+    return client_->Get(prefix_ + "/models/" + operation + "/" + name +
+                        "?expected_model_path=" + httplib::encode_uri_component(expected_path));
+  }
+
+  void ExpectPathMismatch(const std::string& operation, const std::string& expected_path) {
+    const auto response = ManageWithExpectedPath(operation, kEncodedId, expected_path);
+    ASSERT_TRUE(response);
+    EXPECT_EQ(response->status, 409) << response->body;
+    const auto body = json::parse(response->body);
+    EXPECT_EQ(body.at("error").at("type"), "invalid_request_error");
+    EXPECT_EQ(body.at("error").at("message"),
+              "Model path mismatch: expected_model_path does not match the server's model path");
+    EXPECT_FALSE(body.contains("model_path"));
+  }
+
+  static constexpr const char* kExactId = "publisher/shared model+%2F:2";
+  static constexpr const char* kEncodedId = "publisher%2Fshared%20model%2B%252F%3A2";
+  test::FakeServiceBindings bindings_;
+  SessionManager sessions_{bindings_.logger};
+  WebUsageTelemetry telemetry_;
+  test::MockCatalog public_catalog_;
+  test::MockCatalog local_catalog_;
+  std::unique_ptr<WebService> service_;
+  std::unique_ptr<httplib::Client> client_;
+  std::string prefix_;
+};
+
+TEST_P(WebServiceModelManagementTest, EncodedExactIdTakesPrecedenceAndPreservesAliasSelection) {
+  auto& catalog = GetParam() ? local_catalog_ : public_catalog_;
+  const auto* alias = catalog.GetModel("shared-model");
+  ASSERT_NE(alias, nullptr);
+  ASSERT_EQ(alias->Id(), "shared-model:1");
+
+  ExpectStatus("load", kEncodedId, "loaded");
+  ASSERT_TRUE(ExactModel()->IsLoaded());
+  EXPECT_FALSE(alias->IsLoaded());
+  EXPECT_EQ(alias->Id(), "shared-model:1");
+  ExpectStatus("load", kEncodedId, "already_loaded");
+
+  ExpectStatus("unload", kEncodedId, "unloaded");
+  EXPECT_FALSE(ExactModel()->IsLoaded());
+  ExpectStatus("unload", kEncodedId, "not_loaded");
+  ExpectStatus("load", "shared-model", "loaded");
+  EXPECT_TRUE(alias->IsLoaded());
+  EXPECT_FALSE(ExactModel()->IsLoaded());
+  ExpectStatus("unload", "shared-model", "unloaded");
+}
+
+TEST_P(WebServiceModelManagementTest, RawColonAndLowercaseEscapesResolveExactIds) {
+  ExpectStatus("load", "shared-model:1", "loaded");
+  ExpectStatus("load", "shared-model%3a1", "already_loaded");
+  ExpectStatus("unload", "shared-model%3a1", "unloaded");
+  ExpectStatus("load", "publisher%2fshared%20model+%252F%3a2", "loaded");
+  EXPECT_TRUE(ExactModel()->IsLoaded());
+  ExpectStatus("unload", kEncodedId, "unloaded");
+}
+
+TEST_P(WebServiceModelManagementTest, StaleRegistrationPathIsRejectedBeforeLoadingOldArtifact) {
+  const auto replacement_path = test::GetTestDataModelPath(test::kLoadableTestModelAlias);
+  ASSERT_NE(NormalizeModelPath(replacement_path), NormalizeModelPath(ExactModel()->GetPath()));
+  ExpectPathMismatch("load", replacement_path);
+  ExpectPathMismatch("unload", replacement_path);
+  EXPECT_EQ(bindings_.model_load_manager.GetLoadedModel(kExactId), nullptr);
+  EXPECT_FALSE(ExactModel()->IsLoaded());
+
+  // Legacy callers may still explicitly load the host's old catalog snapshot.
+  ExpectStatus("load", kEncodedId, "loaded");
+  ExpectStatus("unload", kEncodedId, "unloaded");
+  service_->Stop();
+  const auto actions = telemetry_.Events().actions;
+  ASSERT_EQ(actions.size(), 4u);
+  for (size_t i = 0; i < 2; ++i) {
+    EXPECT_EQ(actions[i].status, ActionStatus::kClientError);
+    EXPECT_EQ(actions[i].model_id, kExactId);
+  }
+}
+
+TEST_P(WebServiceModelManagementTest, StaleRegistrationCannotReuseOrUnloadOldArtifactWithLiveSession) {
+  ExpectStatus("load", kEncodedId, "loaded");
+  auto* original = bindings_.model_load_manager.GetLoadedModel(kExactId);
+  ASSERT_NE(original, nullptr);
+  auto session = std::make_unique<ChatSession>(*ExactModel(), *original, bindings_.logger, telemetry_);
+  const auto replacement_path = test::GetTestDataModelPath(test::kLoadableTestModelAlias);
+  ExpectPathMismatch("load", replacement_path);
+  ExpectPathMismatch("unload", replacement_path);
+  EXPECT_EQ(bindings_.model_load_manager.GetLoadedModel(kExactId), original);
+  EXPECT_TRUE(ExactModel()->IsLoaded());
+  EXPECT_EQ(original->SessionRefCount(), 1);
+  session.reset();
+  ExpectStatus("unload", kEncodedId, "unloaded");
+}
+
+TEST_P(WebServiceModelManagementTest, MatchingNormalizedExpectedPathLoadsAndReusesActualArtifact) {
+  const std::filesystem::path path = ExactModel()->GetPath();
+  const auto spelling = path.parent_path() / "unused-normalization-component" / ".." / path.filename() / ".";
+  for (const auto* status : {"loaded", "already_loaded"}) {
+    const auto response = ManageWithExpectedPath("load", kEncodedId, spelling.generic_string());
+    ASSERT_TRUE(response);
+    ASSERT_EQ(response->status, 200) << response->body;
+    const auto body = json::parse(response->body);
+    EXPECT_EQ(body.at("status"), status);
+    EXPECT_EQ(body.at("model_id"), kExactId);
+    EXPECT_EQ(body.at("model_path"), NormalizeModelPath(path.string()));
+    EXPECT_EQ(body.at("context_length"), 1024);
+  }
+
+  const auto response = ManageWithExpectedPath("unload", kEncodedId, spelling.generic_string());
+  ASSERT_TRUE(response);
+  EXPECT_EQ(response->status, 200) << response->body;
+  EXPECT_EQ(json::parse(response->body).at("status"), "unloaded");
+}
+
+#ifdef _WIN32
+TEST_P(WebServiceModelManagementTest, WindowsExtendedPathAndCaseDifferencesMatchSameArtifact) {
+  const std::filesystem::path path = ExactModel()->GetPath();
+  const auto extended = std::filesystem::path(L"\\\\?\\" + path.wstring()).string();
+  const auto response = ManageWithExpectedPath("load", kEncodedId, extended);
+  ASSERT_TRUE(response);
+  ASSERT_EQ(response->status, 200) << response->body;
+  EXPECT_EQ(json::parse(response->body).at("model_path"), NormalizeModelPath(path.string()));
+  std::string uppercase = path.generic_string();
+  std::transform(uppercase.begin(), uppercase.end(), uppercase.begin(),
+                 [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+  const auto unloaded = ManageWithExpectedPath("unload", kEncodedId, uppercase);
+  ASSERT_TRUE(unloaded);
+  EXPECT_EQ(unloaded->status, 200) << unloaded->body;
+  EXPECT_EQ(json::parse(unloaded->body).at("status"), "unloaded");
+}
+#endif
+
+TEST_P(WebServiceModelManagementTest, LocalExpectedPathDecodesSpacesPlusPercentAndQueryDelimitersExactlyOnce) {
+  auto root = test::TempPath::CreateTempDir("fl_expected_path_");
+  const auto path = root.path() / "artifact space+%2F & #=";
+  std::filesystem::copy(test::GetTestDataModelPath("tiny-paged-attention"), path,
+                        std::filesystem::copy_options::recursive);
+  auto info = test::MakeTestModelInfo("encoded-artifact");
+  info.uri = "test://not-the-artifact-path";
+  auto& catalog = GetParam() ? local_catalog_ : public_catalog_;
+  catalog.AddModel(Model::FromLocalRegistration(std::move(info), path.string(), bindings_.download_manager,
+                                                bindings_.model_load_manager));
+  auto encoded = httplib::encode_uri_component((path / ".").string());
+  ASSERT_NE(encoded.find("%252F"), std::string::npos);
+  // Form encoders use '+' for spaces, but literal '+' must remain percent-encoded.
+  for (auto pos = encoded.find("%20"); pos != std::string::npos; pos = encoded.find("%20")) {
+    encoded.replace(pos, 3, "+");
+  }
+
+  for (const auto* status : {"loaded", "already_loaded"}) {
+    const auto response = client_->Get(prefix_ + "/models/load/encoded-artifact%3A1?expected_model_path=" + encoded);
+    ASSERT_TRUE(response);
+    ASSERT_EQ(response->status, 200) << response->body;
+    const auto body = json::parse(response->body);
+    EXPECT_EQ(body.at("status"), status);
+    EXPECT_EQ(body.at("model_id"), "encoded-artifact:1");
+    EXPECT_EQ(body.at("model_path"), NormalizeModelPath(path.string()));
+  }
+
+  const auto response = ManageWithExpectedPath("unload", "encoded-artifact%3A1", path.string());
+  ASSERT_TRUE(response);
+  EXPECT_EQ(response->status, 200) << response->body;
+  EXPECT_EQ(json::parse(response->body).at("status"), "unloaded");
+}
+
+TEST_P(WebServiceModelManagementTest, InvalidExpectedPathsAreRejectedBeforeAnyLoadOrUnload) {
+  for (const auto* operation : {"load", "unload"}) {
+    for (const auto* invalid : {"", "%", "%2", "%GG", "%00", "%0A", "%7f"}) {
+      const auto response =
+          client_->Get(prefix_ + "/models/" + operation + "/" + kEncodedId + "?expected_model_path=" + invalid);
+      ASSERT_TRUE(response);
+      EXPECT_EQ(response->status, 400) << response->body;
+      EXPECT_EQ(json::parse(response->body).at("error").at("type"), "invalid_request_error");
+    }
+  }
+
+  EXPECT_EQ(bindings_.model_load_manager.GetLoadedModel(kExactId), nullptr);
+}
+
+TEST_P(WebServiceModelManagementTest, UnloadPreconditionAndDetailedInventoryWorkAfterArtifactDirectoryRemoval) {
+  auto root = test::TempPath::CreateTempDir("fl_missing_artifact_");
+  const auto path = root.path() / "removed-artifact";
+  std::filesystem::copy(test::GetTestDataModelPath("tiny-paged-attention"), path,
+                        std::filesystem::copy_options::recursive);
+  auto& catalog = GetParam() ? local_catalog_ : public_catalog_;
+  catalog.AddModel(Model::FromLocalRegistration(test::MakeTestModelInfo("removed-artifact"), path.string(),
+                                                bindings_.download_manager, bindings_.model_load_manager));
+  const auto loaded = ManageWithExpectedPath("load", "removed-artifact%3A1", path.string());
+  ASSERT_TRUE(loaded);
+  ASSERT_EQ(loaded->status, 200) << loaded->body;
+  std::filesystem::remove_all(path);
+  ASSERT_FALSE(std::filesystem::exists(path));
+  const auto states = client_->Get(prefix_ + "/models/loaded?details=true");
+  ASSERT_TRUE(states);
+  ASSERT_EQ(states->status, 200) << states->body;
+  EXPECT_EQ(json::parse(states->body), json::array({{{"model_id", "removed-artifact:1"},
+                                                     {"model_path", NormalizeModelPath(path.string())},
+                                                     {"context_length", 1024}}}));
+  const auto rejected =
+      ManageWithExpectedPath("unload", "removed-artifact%3A1", (root.path() / "replacement").string());
+  ASSERT_TRUE(rejected);
+  EXPECT_EQ(rejected->status, 409) << rejected->body;
+  EXPECT_NE(bindings_.model_load_manager.GetLoadedModel("removed-artifact:1"), nullptr);
+  const auto unloaded = ManageWithExpectedPath("unload", "removed-artifact%3A1", (path / ".").string());
+  ASSERT_TRUE(unloaded);
+  EXPECT_EQ(unloaded->status, 200) << unloaded->body;
+  EXPECT_EQ(json::parse(unloaded->body).at("status"), "unloaded");
+  EXPECT_EQ(bindings_.model_load_manager.GetLoadedModel("removed-artifact:1"), nullptr);
+}
+
+TEST_P(WebServiceModelManagementTest, DetailedLoadedStatesAreCatalogAndArtifactScopedWithoutCreatingSessions) {
+  const auto other_path = test::GetTestDataModelPath(test::kLoadableTestModelAlias);
+  auto& other_catalog = GetParam() ? public_catalog_ : local_catalog_;
+  auto collision = test::MakeTestModelInfo("collision");
+  collision.model_id = kExactId;
+  other_catalog.AddModel(Model::FromLocalRegistration(std::move(collision), other_path, bindings_.download_manager,
+                                                      bindings_.model_load_manager));
+  other_catalog.AddModel(Model::FromModelInfo(test::MakeTestModelInfo("other-scope"), other_path,
+                                              bindings_.download_manager, bindings_.model_load_manager));
+  const std::string other_prefix = GetParam() ? "" : "/catalogs/local";
+  const auto expect_states = [this](const std::string& prefix, const json& expected) {
+    const auto response = client_->Get(prefix + "/models/loaded?details=true");
+    ASSERT_TRUE(response);
+    ASSERT_EQ(response->status, 200) << response->body;
+    EXPECT_EQ(json::parse(response->body), expected);
+  };
+
+  expect_states(prefix_, json::array());
+  expect_states(other_prefix, json::array());
+  ExpectStatus("load", kEncodedId, "loaded");
+  const auto own_state = json::array({{{"model_id", kExactId},
+                                       {"model_path", NormalizeModelPath(ExactModel()->GetPath())},
+                                       {"context_length", 1024}}});
+  expect_states(prefix_, own_state);
+  expect_states(other_prefix, json::array());
+  const auto legacy = client_->Get(prefix_ + "/models/loaded?details=false");
+  ASSERT_TRUE(legacy);
+  ASSERT_EQ(legacy->status, 200) << legacy->body;
+  EXPECT_EQ(json::parse(legacy->body), json::array({kExactId}));
+
+  const auto loaded = client_->Get(other_prefix + "/models/load/other-scope%3A1");
+  ASSERT_TRUE(loaded);
+  ASSERT_EQ(loaded->status, 200) << loaded->body;
+  expect_states(
+      other_prefix,
+      json::array(
+          {{{"model_id", "other-scope:1"}, {"model_path", NormalizeModelPath(other_path)}, {"context_length", 512}}}));
+  expect_states(prefix_, own_state);
+  EXPECT_EQ(bindings_.model_load_manager.GetLoadedModel(kExactId)->SessionRefCount(), 0);
+  EXPECT_EQ(bindings_.model_load_manager.GetLoadedModel("other-scope:1")->SessionRefCount(), 0);
+  ExpectStatus("unload", kEncodedId, "unloaded");
+  const auto unloaded = client_->Get(other_prefix + "/models/unload/other-scope%3A1");
+  ASSERT_TRUE(unloaded);
+  ASSERT_EQ(unloaded->status, 200) << unloaded->body;
+  expect_states(prefix_, json::array());
+  expect_states(other_prefix, json::array());
+}
+
+TEST_P(WebServiceModelManagementTest, EngineLoadReturnsNativeContextWithoutCreatingSession) {
+  for (const auto* status : {"loaded", "already_loaded"}) {
+    ExpectStatus("load", kEncodedId, status);
+    const auto* instance = bindings_.model_load_manager.GetLoadedModel(kExactId);
+    ASSERT_NE(instance, nullptr);
+    EXPECT_EQ(instance->SessionRefCount(), 0);
+    ASSERT_TRUE(instance->GetGenAIConfig().search.has_value());
+    EXPECT_EQ(instance->GetGenAIConfig().search->max_length, 128);
+  }
+
+  ExpectStatus("unload", kEncodedId, "unloaded");
+}
+
+TEST_P(WebServiceModelManagementTest, GeneratorLoadReturnsConfiguredContextWithoutCreatingSession) {
+  auto& catalog = GetParam() ? local_catalog_ : public_catalog_;
+  const auto path = test::GetTestDataModelPath(test::kLoadableTestModelAlias);
+  ASSERT_TRUE(std::filesystem::exists(path)) << path;
+  catalog.AddModel(Model::FromModelInfo(test::MakeTestModelInfo("generator-model"), path,
+                                        bindings_.download_manager, bindings_.model_load_manager));
+  for (const auto* status : {"loaded", "already_loaded"}) {
+    const auto response = client_->Get(prefix_ + "/models/load/generator-model%3A1");
+    ASSERT_TRUE(response);
+    ASSERT_EQ(response->status, 200) << response->body;
+    const auto body = json::parse(response->body);
+    EXPECT_EQ(body.at("status"), status);
+    EXPECT_EQ(body.at("model_id"), "generator-model:1");
+    EXPECT_EQ(body.at("context_length"), 512);
+    const auto* instance = bindings_.model_load_manager.GetLoadedModel("generator-model:1");
+    ASSERT_NE(instance, nullptr);
+    EXPECT_EQ(instance->SessionRefCount(), 0);
+  }
+
+  ExpectStatus("unload", "generator-model%3A1", "unloaded");
+}
+
+TEST_P(WebServiceModelManagementTest, UnknownIdsRemainNotFoundAndCatalogScopesStayIsolated) {
+  for (const auto* operation : {"load", "unload"}) {
+    for (const auto* name : {"missing%3A7", "shared-model%3A99"}) {
+      const auto response = client_->Get(prefix_ + "/models/" + operation + "/" + name);
+      ASSERT_TRUE(response);
+      EXPECT_EQ(response->status, 404) << response->body;
+      EXPECT_EQ(json::parse(response->body).at("error").at("type"), "invalid_request_error");
+    }
+
+    const std::string other_prefix = GetParam() ? "" : "/catalogs/local";
+    const auto response = client_->Get(other_prefix + "/models/" + operation + "/" + kEncodedId);
+    ASSERT_TRUE(response);
+    EXPECT_EQ(response->status, 404) << response->body;
+  }
+}
+
+TEST_P(WebServiceModelManagementTest, MalformedEscapesAndControlCharactersReturnBadRequest) {
+  for (const auto* operation : {"load", "unload"}) {
+    for (const auto* name : {"bad%", "bad%2", "bad%GG", "shared-model%00ignored", "bad%0A", "bad%7f"}) {
+      const auto response = client_->Get(prefix_ + "/models/" + operation + "/" + name);
+      ASSERT_TRUE(response) << name;
+      EXPECT_EQ(response->status, 400) << name << ": " << response->body;
+      const auto error = json::parse(response->body).at("error");
+      EXPECT_EQ(error.at("type"), "invalid_request_error");
+      EXPECT_EQ(error.at("message"), "Invalid model name: Invalid path segment encoding");
+    }
+  }
+}
+
+TEST_P(WebServiceModelManagementTest, EmptyNameDoesNotMatchManagementRoute) {
+  for (const auto* operation : {"load", "unload"}) {
+    const auto response = client_->Get(prefix_ + "/models/" + operation + "/");
+    ASSERT_TRUE(response);
+    EXPECT_EQ(response->status, 404);
+  }
+}
+
+TEST_P(WebServiceModelManagementTest, SameIdAtDifferentArtifactPathCannotReturnLoadedContextOrUnloadOriginal) {
+  auto& other_catalog = GetParam() ? public_catalog_ : local_catalog_;
+  auto replacement = test::MakeTestModelInfo("replacement-model");
+  replacement.model_id = kExactId;
+  const auto other_path = test::GetTestDataModelPath(test::kLoadableTestModelAlias);
+  ASSERT_TRUE(std::filesystem::exists(other_path)) << other_path;
+  other_catalog.AddModel(Model::FromModelInfo(std::move(replacement), other_path, bindings_.download_manager,
+                                              bindings_.model_load_manager));
+  ExpectStatus("load", kEncodedId, "loaded");
+
+  const std::string other_prefix = GetParam() ? "" : "/catalogs/local";
+  const auto response = client_->Get(other_prefix + "/models/load/" + kEncodedId);
+  ASSERT_TRUE(response);
+  EXPECT_EQ(response->status, 500) << response->body;
+  const auto body = json::parse(response->body);
+  EXPECT_NE(body.at("error").at("message").get<std::string>().find("different path"), std::string::npos);
+  EXPECT_FALSE(body.contains("context_length"));
+  const auto unload = client_->Get(other_prefix + "/models/unload/" + kEncodedId);
+  ASSERT_TRUE(unload);
+  EXPECT_EQ(unload->status, 200) << unload->body;
+  EXPECT_EQ(json::parse(unload->body).at("status"), "not_loaded");
+  EXPECT_TRUE(ExactModel()->IsLoaded());
+  ExpectStatus("load", kEncodedId, "already_loaded");
+  ExpectStatus("unload", kEncodedId, "unloaded");
+}
+
+TEST_P(WebServiceModelManagementTest, LoadedIdsAreCatalogAndArtifactPathScopedAcrossVariants) {
+  auto& other_catalog = GetParam() ? public_catalog_ : local_catalog_;
+  const auto other_path = test::GetTestDataModelPath(test::kLoadableTestModelAlias);
+  ASSERT_TRUE(std::filesystem::exists(other_path)) << other_path;
+  auto collision = test::MakeTestModelInfo("collision");
+  collision.model_id = kExactId;
+  other_catalog.AddModel(Model::FromModelInfo(std::move(collision), other_path, bindings_.download_manager,
+                                              bindings_.model_load_manager));
+  other_catalog.AddModel(Model::FromModelInfo(test::MakeTestModelInfo("other-scope"), other_path,
+                                              bindings_.download_manager, bindings_.model_load_manager));
+  const std::string other_prefix = GetParam() ? "" : "/catalogs/local";
+  const auto expect_loaded = [this](const std::string& prefix, const json& expected) {
+    const auto response = client_->Get(prefix + "/models/loaded");
+    ASSERT_TRUE(response);
+    ASSERT_EQ(response->status, 200) << response->body;
+    EXPECT_EQ(json::parse(response->body), expected);
+  };
+
+  ExpectStatus("load", kEncodedId, "loaded");
+  expect_loaded(prefix_, json::array({kExactId}));
+  expect_loaded(other_prefix, json::array());
+  auto& catalog = GetParam() ? local_catalog_ : public_catalog_;
+  EXPECT_EQ(catalog.GetModel("shared-model")->Id(), "shared-model:1");
+
+  const auto loaded = client_->Get(other_prefix + "/models/load/other-scope%3A1");
+  ASSERT_TRUE(loaded);
+  ASSERT_EQ(loaded->status, 200) << loaded->body;
+  EXPECT_EQ(json::parse(loaded->body).at("model_id"), "other-scope:1");
+  expect_loaded(prefix_, json::array({kExactId}));
+  expect_loaded(other_prefix, json::array({"other-scope:1"}));
+
+  ExpectStatus("unload", kEncodedId, "unloaded");
+  expect_loaded(prefix_, json::array());
+  expect_loaded(other_prefix, json::array({"other-scope:1"}));
+  const auto unloaded = client_->Get(other_prefix + "/models/unload/other-scope%3A1");
+  ASSERT_TRUE(unloaded);
+  ASSERT_EQ(unloaded->status, 200) << unloaded->body;
+  EXPECT_EQ(json::parse(unloaded->body).at("status"), "unloaded");
+  expect_loaded(other_prefix, json::array());
+}
+
+TEST_P(WebServiceModelManagementTest, UnloadRefusesLiveNativeSessionAndSucceedsAfterRelease) {
+  ExpectStatus("load", kEncodedId, "loaded");
+  auto* instance = bindings_.model_load_manager.GetLoadedModel(kExactId);
+  ASSERT_NE(instance, nullptr);
+  auto session = std::make_unique<ChatSession>(*ExactModel(), *instance, bindings_.logger, telemetry_);
+  EXPECT_EQ(instance->SessionRefCount(), 1);
+  const auto response = client_->Get(prefix_ + "/models/unload/" + kEncodedId);
+  session.reset();
+  ASSERT_TRUE(response);
+  EXPECT_EQ(response->status, 500) << response->body;
+  const auto error = json::parse(response->body).at("error");
+  EXPECT_EQ(error.at("type"), "server_error");
+  EXPECT_NE(error.at("message").get<std::string>().find("session(s) still using it"), std::string::npos);
+  EXPECT_TRUE(ExactModel()->IsLoaded());
+  ExpectStatus("unload", kEncodedId, "unloaded");
+  EXPECT_FALSE(ExactModel()->IsLoaded());
+}
+
+TEST_P(WebServiceModelManagementTest, TelemetryRecordsExactResolvedIdAndExistingOutcomeStatuses) {
+  ExpectStatus("load", kEncodedId, "loaded");
+  ExpectStatus("load", kEncodedId, "already_loaded");
+  ExpectStatus("unload", kEncodedId, "unloaded");
+  ExpectStatus("unload", kEncodedId, "not_loaded");
+  service_->Stop();
+
+  const auto events = telemetry_.Events();
+  ASSERT_EQ(events.actions.size(), 4u);
+  const Action expected_actions[] = {
+      Action::kModelLoad, Action::kModelLoad, Action::kModelUnload, Action::kModelUnload};
+  const ActionStatus expected_statuses[] = {ActionStatus::kSuccess, ActionStatus::kSkipped,
+                                            ActionStatus::kSuccess, ActionStatus::kSkipped};
+  for (size_t i = 0; i < events.actions.size(); ++i) {
+    EXPECT_EQ(events.actions[i].action, expected_actions[i]);
+    EXPECT_EQ(events.actions[i].status, expected_statuses[i]);
+    EXPECT_EQ(events.actions[i].model_id, kExactId);
+    EXPECT_FALSE(events.actions[i].context.indirect);
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(CatalogScopes, WebServiceModelManagementTest, ::testing::Bool());
+
+// ========================================================================
 // GET /v1/models — OpenAI-compatible
 // ========================================================================
 
@@ -377,7 +1069,7 @@ TEST_F(WebServiceTest, OpenAIListModelsReturnsAllModels) {
 
   EXPECT_EQ(j["object"], "list") << "Response: " << j.dump(2);
   ASSERT_TRUE(j["data"].is_array()) << "Response: " << j.dump(2);
-  EXPECT_EQ(j["data"].size(), 4u) << "Expected 4 models. Response: " << j.dump(2);
+  EXPECT_EQ(j["data"].size(), 5u) << "Expected 5 models. Response: " << j.dump(2);
 }
 
 TEST_F(WebServiceTest, OpenAIListModelsContainsExpectedFields) {
@@ -494,7 +1186,6 @@ TEST_F(WebServiceTest, ChatCompletionsRejectsMissingMessages) {
                std::exception);
 }
 
-#ifdef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
 TEST_F(WebServiceTest, NonGenerativeRoutesRejectInvalidContracts) {
   EXPECT_THROW(TestHttpPost(base_url_ + "/v1/rank", ""),
                std::exception);
@@ -531,16 +1222,6 @@ TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCpuPackagesWhenConfi
   const auto kev = root / "kev-4b-fp32";
   const auto clm_metadata = AddLocalPackage(clm);
   const auto kev_metadata = AddLocalPackage(kev);
-#ifdef _WIN32
-  _putenv_s("FOUNDRY_LOCAL_RANK_MODEL_PATH", clm.string().c_str());
-  _putenv_s("FOUNDRY_LOCAL_SYSTEMONE_MODEL_PATH", kev.string().c_str());
-  _putenv_s("FOUNDRY_LOCAL_NON_GENERATIVE_PROVIDER", "");
-#else
-  setenv("FOUNDRY_LOCAL_RANK_MODEL_PATH", clm.string().c_str(), 1);
-  setenv("FOUNDRY_LOCAL_SYSTEMONE_MODEL_PATH", kev.string().c_str(), 1);
-  unsetenv("FOUNDRY_LOCAL_NON_GENERATIVE_PROVIDER");
-#endif
-
   auto ranking = json::parse(TestHttpPost(
       base_url_ + "/catalogs/local/v1/rank",
       json{{"model", clm_metadata.model_id},
@@ -551,10 +1232,18 @@ TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCpuPackagesWhenConfi
       "", std::chrono::minutes(3)));
   ASSERT_EQ(ranking.at("ranked").size(), 2u);
   EXPECT_EQ(ranking.at("model"), clm_metadata.model_id);
-  EXPECT_THROW(
+  auto* shared_clm = local_catalog_->GetModelVariant(clm_metadata.model_id);
+  ASSERT_NE(shared_clm, nullptr);
+  ASSERT_TRUE(shared_clm->IsLoaded());
+  {
+    fl::NonGenerativeSession sdk_session(
+        *shared_clm, *model_load_manager_, *logger_, *telemetry_);
+  }
+  EXPECT_TRUE(shared_clm->IsLoaded());
+  const auto load = json::parse(
       TestHttpGet(base_url_ + "/catalogs/local/models/load/" +
-                  clm_metadata.model_id),
-      std::exception);
+                  clm_metadata.model_id));
+  EXPECT_EQ(load.at("status"), "already_loaded");
 
   auto decision = json::parse(TestHttpPost(
       base_url_ + "/catalogs/local/v1/systemone",
@@ -568,55 +1257,20 @@ TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCpuPackagesWhenConfi
       "", std::chrono::minutes(3)));
   ASSERT_TRUE(decision.at("answers").contains("umbrella"));
   EXPECT_EQ(decision.at("model"), kev_metadata.model_id);
-
-  auto sdk_root =
-      test::TempPath::CreateTempDir("fl_non_generative_sdk_");
-  foundry_local::Configuration sdk_config("non-generative-sdk-test");
-  sdk_config.SetAppDataDir(sdk_root.string());
-  foundry_local::Manager sdk_manager(std::move(sdk_config));
-  auto& sdk_catalog =
-      sdk_manager.GetCatalog(FOUNDRY_LOCAL_CATALOG_LOCAL);
-
-  foundry_local::ModelInfo sdk_clm_metadata;
-  sdk_clm_metadata.SetStringProperty(
-      FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "text-ranking");
-  auto sdk_clm = sdk_catalog.RegisterModel(
-      clm.string(), clm_metadata.model_id, sdk_clm_metadata);
-  {
-    foundry_local::RankingSession ranking_session(*sdk_clm);
-    const auto sdk_ranking = json::parse(ranking_session.RankJson(
-        json{{"context", {{"weather", "heavy rain"}}},
-             {"question", "Which activity is more suitable?"},
-             {"answers",
-              {"Have a picnic outdoors", "Visit an indoor museum"}}}
-            .dump()));
-    EXPECT_EQ(sdk_ranking.at("model"), clm_metadata.model_id);
-    ASSERT_EQ(sdk_ranking.at("ranked").size(), 2u);
-  }
-
-  foundry_local::ModelInfo sdk_kev_metadata;
-  sdk_kev_metadata.SetStringProperty(
-      FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "typed-decision");
-  auto sdk_kev = sdk_catalog.RegisterModel(
-      kev.string(), kev_metadata.model_id, sdk_kev_metadata);
-  {
-    foundry_local::DecisionSession decision_session(*sdk_kev);
-    const auto sdk_decision = json::parse(decision_session.DecideJson(
-        json{{"state", {{"weather", "heavy rain"}}},
-             {"questions",
-              {{"umbrella",
-                {{"type", "noul"},
-                 {"instructions", "Should I take an umbrella?"}}}}}}
-            .dump()));
-    EXPECT_EQ(sdk_decision.at("model"), kev_metadata.model_id);
-    EXPECT_TRUE(sdk_decision.at("answers").contains("umbrella"));
-  }
-
-  auto fallback = json::parse(TestHttpPost(
-      base_url_ + "/v1/rank",
-      R"({"model":"clm-latest","context":{},"question":"select","answers":["a","b"]})",
-      "", std::chrono::minutes(3)));
-  EXPECT_EQ(fallback.at("model"), clm_metadata.model_id);
+  const auto decision_load = json::parse(
+      TestHttpGet(base_url_ + "/catalogs/local/models/load/" +
+                  kev_metadata.model_id));
+  EXPECT_EQ(decision_load.at("status"), "already_loaded");
+  EXPECT_EQ(
+      json::parse(TestHttpGet(base_url_ + "/catalogs/local/models/unload/" +
+                              clm_metadata.model_id))
+          .at("status"),
+      "unloaded");
+  EXPECT_EQ(
+      json::parse(TestHttpGet(base_url_ + "/catalogs/local/models/unload/" +
+                              kev_metadata.model_id))
+          .at("status"),
+      "unloaded");
 }
 
 TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCudaPackagesWhenConfigured) {
@@ -632,14 +1286,10 @@ TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCudaPackagesWhenConf
   const auto clm_metadata = AddLocalPackage(clm);
   const auto kev_metadata = AddLocalPackage(kev);
 
-  EXPECT_THROW(
-      TestHttpGet(base_url_ + "/catalogs/local/models/load/" +
-                  clm_metadata.model_id),
-      std::exception);
-  EXPECT_THROW(
-      TestHttpGet(base_url_ + "/catalogs/local/models/load/" +
-                  kev_metadata.model_id),
-      std::exception);
+  EXPECT_NO_THROW(TestHttpGet(
+      base_url_ + "/catalogs/local/models/load/" + clm_metadata.model_id));
+  EXPECT_NO_THROW(TestHttpGet(
+      base_url_ + "/catalogs/local/models/load/" + kev_metadata.model_id));
 
   auto ranking = json::parse(TestHttpPost(
       base_url_ + "/catalogs/local/v1/rank",
@@ -660,48 +1310,6 @@ TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCudaPackagesWhenConf
       "", std::chrono::minutes(3)));
   EXPECT_EQ(decision.at("model"), kev_metadata.model_id);
 }
-
-TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedWebGpuPackagesWhenConfigured) {
-  const auto enabled = test::SafeGetEnv("FOUNDRY_LOCAL_RUN_WEBGPU_TESTS");
-  const auto root_value = test::SafeGetEnv("FOUNDRY_LOCAL_NON_GENERATIVE_TEST_ROOT");
-  if (enabled != "1" || root_value.empty()) {
-    GTEST_SKIP() << "set FOUNDRY_LOCAL_RUN_WEBGPU_TESTS=1 and "
-                    "FOUNDRY_LOCAL_NON_GENERATIVE_TEST_ROOT to run WebGPU packages";
-  }
-  const auto provider_library =
-      test::SafeGetEnv("FOUNDRY_LOCAL_WEBGPU_EP_LIBRARY");
-  if (provider_library.empty()) {
-    GTEST_SKIP() << "set FOUNDRY_LOCAL_WEBGPU_EP_LIBRARY to the WebGPU EP";
-  }
-  OgaRegisterExecutionProviderLibrary("WebGpuExecutionProvider",
-                                      provider_library.c_str());
-  const auto root = std::filesystem::path(root_value);
-  const auto clm = root / "clm-v0.1-8b-webgpu";
-  const auto kev = root / "kev-4b-webgpu";
-  const auto clm_metadata = AddLocalPackage(clm);
-  const auto kev_metadata = AddLocalPackage(kev);
-
-  auto ranking = json::parse(TestHttpPost(
-      base_url_ + "/catalogs/local/v1/rank",
-      json{{"model", clm_metadata.model_id},
-           {"context", {{"weather", "heavy rain"}}},
-           {"question", "select"},
-           {"answers", {"outside", "inside"}}}
-          .dump(),
-      "", std::chrono::minutes(5)));
-  EXPECT_EQ(ranking.at("model"), clm_metadata.model_id);
-
-  auto decision = json::parse(TestHttpPost(
-      base_url_ + "/catalogs/local/v1/systemone",
-      json{{"model", kev_metadata.model_id},
-           {"state", {{"weather", "heavy rain"}}},
-           {"questions", {{"umbrella", {{"type", "noul"}}}}}}
-          .dump(),
-      "", std::chrono::minutes(5)));
-  EXPECT_EQ(decision.at("model"), kev_metadata.model_id);
-}
-#endif
-
 TEST_F(WebServiceTest, ChatCompletionsRejectsUnknownModel) {
   json body = {
       {"model", "nonexistent-model"},
@@ -1181,6 +1789,215 @@ std::string ErrorMessageOf(const json& body) {
 
 }  // namespace
 
+TEST_F(WebServiceTest, CodingSupportsChatAndResponsesIncludingStreaming) {
+  for (const std::string prefix : {"", "/catalogs/local"}) {
+    SCOPED_TRACE(prefix);
+    const auto listed = Get(prefix + "/v1/models/" + kCodingTestModelAlias + ":1");
+    EXPECT_EQ(listed["id"], std::string(kCodingTestModelAlias) + ":1");
+    const auto loaded = Get(prefix + "/models/load/" + kCodingTestModelAlias);
+    ASSERT_EQ(loaded["status"], "loaded") << loaded.dump(2);
+
+    for (const bool responses : {false, true}) {
+      SCOPED_TRACE(responses);
+      const auto endpoint = prefix + (responses ? "/v1/responses" : "/v1/chat/completions");
+      json body = {{"model", std::string(kCodingTestModelAlias) + ":1"}, {"temperature", 0}};
+      if (responses) {
+        body["input"] = "Write a function.";
+        body["max_output_tokens"] = 4;
+        body["store"] = false;
+      } else {
+        body["messages"] = json::array({{{"role", "user"}, {"content", "Write a function."}}});
+        body["max_tokens"] = 4;
+      }
+
+      const auto result = PostJson(base_url_ + endpoint, body);
+      ASSERT_EQ(result.status, 200) << result.body.dump(2);
+      if (responses) {
+        EXPECT_FALSE(result.body.at("output").empty()) << result.body.dump(2);
+      } else {
+        EXPECT_FALSE(result.body.at("choices").at(0).at("message").at("content").get<std::string>().empty());
+      }
+
+      body["stream"] = true;
+      httplib::Client client(base_url_);
+      const auto streamed = client.Post(endpoint, body.dump(), "application/json");
+      ASSERT_TRUE(streamed) << httplib::to_string(streamed.error());
+      ASSERT_EQ(streamed->status, 200) << streamed->body;
+      if (responses) {
+        EXPECT_NE(streamed->body.find("event: response.output_text.delta"), std::string::npos);
+        EXPECT_TRUE(streamed->body.find("event: response.completed") != std::string::npos ||
+                    streamed->body.find("event: response.incomplete") != std::string::npos)
+            << streamed->body;
+      } else {
+        EXPECT_NE(streamed->body.find("chat.completion.chunk"), std::string::npos);
+        EXPECT_NE(streamed->body.find("data: [DONE]"), std::string::npos);
+      }
+    }
+
+    const auto unloaded = Get(prefix + "/models/unload/" + kCodingTestModelAlias);
+    EXPECT_EQ(unloaded["status"], "unloaded") << unloaded.dump(2);
+  }
+}
+
+TEST_F(WebServiceTest, CodingResponsesRejectImageInput) {
+  const auto loaded = Get(std::string("/models/load/") + kCodingTestModelAlias);
+  ASSERT_EQ(loaded["status"], "loaded") << loaded.dump(2);
+  const auto result = PostJson(
+      base_url_ + "/v1/responses",
+      {{"model", std::string(kCodingTestModelAlias) + ":1"},
+       {"input", json::array({{{"role", "user"},
+                               {"content", json::array({{{"type", "input_image"},
+                                                         {"image_url", "data:image/png;base64,AA=="}}})}}})},
+       {"max_output_tokens", 4}});
+
+  EXPECT_EQ(result.status, 400) << result.body.dump(2);
+  EXPECT_NE(ErrorMessageOf(result.body).find("IMAGE input is not supported by model task 'coding'"),
+            std::string::npos)
+      << result.body.dump(2);
+  const auto unloaded = Get(std::string("/models/unload/") + kCodingTestModelAlias);
+  EXPECT_EQ(unloaded["status"], "unloaded") << unloaded.dump(2);
+}
+
+TEST_F(WebServiceTest, ChatCompletionsDoesNotSilentlyIgnoreImagesOnATextModel) {
+  const auto loaded = Get(std::string("/models/load/") + kResponseStoreTestModelAlias);
+  ASSERT_EQ(loaded["status"], "loaded") << loaded.dump(2);
+  const json body = {
+      {"model", std::string(kResponseStoreTestModelAlias) + ":1"},
+      {"messages",
+       json::array({{{"role", "user"},
+                     {"content", json::array({
+                                     {{"type", "text"}, {"text", "Describe the image."}},
+                                     {{"type", "image_url"}, {"image_url", {{"url", "data:image/png;base64,AA=="}}}},
+                                 })}}})},
+      {"max_completion_tokens", 4},
+  };
+
+  const auto result = PostJson(base_url_ + "/v1/chat/completions", body);
+  EXPECT_EQ(result.status, 400) << result.body.dump(2);
+  EXPECT_NE(ErrorMessageOf(result.body).find("multimodal model"), std::string::npos) << result.body.dump(2);
+
+  auto text_body = body;
+  text_body["messages"][0]["content"] = "Say hello.";
+  const auto healthy = PostJson(base_url_ + "/v1/chat/completions", text_body);
+  EXPECT_EQ(healthy.status, 200) << healthy.body.dump(2);
+  const auto unloaded = Get(std::string("/models/unload/") + kResponseStoreTestModelAlias);
+  EXPECT_EQ(unloaded["status"], "unloaded") << unloaded.dump(2);
+}
+
+TEST_F(WebServiceTest, ChatCompletionsRemoteImageUrlsAreClientErrorsIncludingStreaming) {
+  const auto loaded = Get(std::string("/models/load/") + kResponseStoreTestModelAlias);
+  ASSERT_EQ(loaded["status"], "loaded") << loaded.dump(2);
+  httplib::Client client(base_url_);
+  client.set_read_timeout(60, 0);
+  for (const bool streaming : {false, true}) {
+    SCOPED_TRACE(streaming ? "streaming" : "nonstreaming");
+    const json body = {
+        {"model", std::string(kResponseStoreTestModelAlias) + ":1"},
+        {"messages", json::array({{{"role", "user"},
+                                   {"content", json::array({{{"type", "image_url"},
+                                                             {"image_url", {{"url", "https://example.com/image.png"}}}}})}}})},
+        {"stream", streaming},
+    };
+    const auto result = client.Post("/v1/chat/completions", body.dump(), "application/json");
+    ASSERT_TRUE(result) << httplib::to_string(result.error());
+    json error;
+    if (streaming) {
+      ASSERT_EQ(result->status, 200) << result->body;
+      std::istringstream stream(result->body);
+      std::string line;
+      while (std::getline(stream, line)) {
+        if (line.rfind("data: ", 0) == 0 && line.find("[DONE]") == std::string::npos) {
+          const auto chunk = json::parse(line.substr(6));
+          if (chunk.contains("error")) {
+            error = chunk["error"];
+          }
+        }
+      }
+    } else {
+      ASSERT_EQ(result->status, 400) << result->body;
+      error = json::parse(result->body)["error"];
+    }
+
+    ASSERT_TRUE(error.is_object()) << result->body;
+    EXPECT_EQ(error.value("type", ""), "invalid_request_error") << error.dump(2);
+    EXPECT_NE(error.value("message", "").find("remote http(s) URLs are not supported"), std::string::npos)
+        << error.dump(2);
+  }
+
+  const auto unloaded = Get(std::string("/models/unload/") + kResponseStoreTestModelAlias);
+  EXPECT_EQ(unloaded["status"], "unloaded") << unloaded.dump(2);
+}
+
+TEST_F(WebServiceTest, ChatCompletionsAppliesMediaPolicyBeforeInference) {
+  const auto loaded = Get(std::string("/models/load/") + kResponseStoreTestModelAlias);
+  ASSERT_EQ(loaded["status"], "loaded") << loaded.dump(2);
+  const json image_message = {
+      {"role", "user"},
+      {"content", json::array({{{"type", "image_url"}, {"image_url", {{"url", "data:image/png;base64,AA=="}}}}})},
+  };
+  for (const bool with_tools : {false, true}) {
+    json body = {
+        {"model", std::string(kResponseStoreTestModelAlias) + ":1"},
+        {"messages", json::array({image_message})},
+        {"max_completion_tokens", 4},
+    };
+    if (with_tools) {
+      body["tools"] = json::array(
+          {{{"type", "function"}, {"function", {{"name", "look_up"}, {"parameters", {{"type", "object"}}}}}}});
+    } else {
+      body["messages"] = json::array(
+          {{{"role", "user"}, {"content", "Hello."}}, {{"role", "assistant"}, {"content", "Hi."}}, image_message});
+    }
+
+    const auto result = PostJson(base_url_ + "/v1/chat/completions", body);
+    EXPECT_EQ(result.status, 400) << result.body.dump(2);
+    EXPECT_NE(ErrorMessageOf(result.body).find(with_tools ? "tool definitions" : "first turn"), std::string::npos)
+        << result.body.dump(2);
+  }
+
+  const auto unloaded = Get(std::string("/models/unload/") + kResponseStoreTestModelAlias);
+  EXPECT_EQ(unloaded["status"], "unloaded") << unloaded.dump(2);
+}
+
+TEST_F(WebServiceTest, CodingChatCompletionsRejectImageAndAudioInput) {
+  const auto loaded = Get(std::string("/models/load/") + kCodingTestModelAlias);
+  ASSERT_EQ(loaded["status"], "loaded") << loaded.dump(2);
+  const json media_parts = {
+      {{"type", "image_url"}, {"image_url", {{"url", "data:image/png;base64,AA=="}}}},
+      {{"type", "input_audio"}, {"input_audio", {{"data", "AA=="}, {"format", "wav"}}}},
+  };
+  for (const std::string prefix : {"", "/catalogs/local"}) {
+    for (const auto& media : media_parts) {
+      const auto expected = std::string(media.at("type") == "image_url" ? "IMAGE" : "AUDIO") +
+                            " input is not supported by model task 'coding'";
+      for (const bool stream : {false, true}) {
+        SCOPED_TRACE(prefix + media.dump() + (stream ? " streaming" : " non-streaming"));
+        const json body = {
+            {"model", std::string(kCodingTestModelAlias) + ":1"},
+            {"messages", {{{"role", "user"}, {"content", {{{"type", "text"}, {"text", "Write a function."}}, media}}}}},
+            {"max_tokens", 4},
+            {"stream", stream},
+        };
+        httplib::Client client(base_url_);
+        const auto result = client.Post(prefix + "/v1/chat/completions", body.dump(), "application/json");
+        ASSERT_TRUE(result) << httplib::to_string(result.error());
+        if (stream) {
+          EXPECT_EQ(result->status, 200) << result->body;
+          EXPECT_NE(result->body.find("invalid_request_error"), std::string::npos) << result->body;
+          EXPECT_NE(result->body.find(expected), std::string::npos) << result->body;
+          EXPECT_EQ(result->body.find("chat.completion.chunk"), std::string::npos) << result->body;
+        } else {
+          EXPECT_EQ(result->status, 400) << result->body;
+          EXPECT_NE(ErrorMessageOf(json::parse(result->body)).find(expected), std::string::npos) << result->body;
+        }
+      }
+    }
+  }
+
+  const auto unloaded = Get(std::string("/models/unload/") + kCodingTestModelAlias);
+  EXPECT_EQ(unloaded["status"], "unloaded") << unloaded.dump(2);
+}
+
 TEST_F(WebServiceTest, LocalInferenceRoutesResolveOnlyLocalModels) {
   const auto audio_path = fl::test::GetTestDataPath("Recording.mp3");
   const std::vector<std::pair<std::string, json>> requests = {
@@ -1283,6 +2100,111 @@ TEST_F(WebServiceTest, LocalStoredResponsesRemainIsolatedFromPublicRoutes) {
   EXPECT_TRUE(Get("/catalogs/local/v1/responses")["data"].empty());
 
   const auto unload_result = Get(std::string("/catalogs/local/models/unload/") + kResponseStoreTestModelAlias);
+  EXPECT_EQ(unload_result["status"], "unloaded") << unload_result.dump(2);
+}
+
+#ifndef _WIN32
+TEST_F(WebServiceTest, HalfClosedNonStreamingChatConnectionReceivesCompletion) {
+  const auto load_result = Get(std::string("/models/load/") + kResponseStoreTestModelAlias);
+  ASSERT_EQ(load_result["status"], "loaded") << load_result.dump(2);
+  const int client = ::socket(AF_INET, SOCK_STREAM, 0);
+  ASSERT_GE(client, 0);
+  auto connection = std::make_shared<oatpp::network::tcp::Connection>(client);
+  sockaddr_in address{};
+  address.sin_family = AF_INET;
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  address.sin_port = htons(static_cast<uint16_t>(std::stoi(base_url_.substr(base_url_.rfind(':') + 1))));
+  ASSERT_EQ(::connect(client, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0);
+  timeval timeout{5, 0};
+  ASSERT_EQ(::setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)), 0);
+  const json body = {
+      {"model", std::string(kResponseStoreTestModelAlias) + ":1"},
+      {"messages", json::array({{{"role", "user"}, {"content", "Hello"}}})},
+      {"max_tokens", 4},
+  };
+  const std::string payload = body.dump();
+  const std::string message =
+      "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+      "Content-Type: application/json\r\nContent-Length: " +
+      std::to_string(payload.size()) + "\r\nConnection: close\r\n\r\n" + payload;
+  ASSERT_EQ(::send(client, message.data(), message.size(), 0), static_cast<ssize_t>(message.size()));
+  ASSERT_EQ(::shutdown(client, SHUT_WR), 0);
+  std::string response;
+  char buffer[4096];
+  ssize_t received;
+  while ((received = ::recv(client, buffer, sizeof(buffer), 0)) > 0) {
+    response.append(buffer, static_cast<size_t>(received));
+  }
+
+  EXPECT_EQ(received, 0) << "Timed out reading the completion";
+  EXPECT_EQ(response.find("HTTP/1.1 200 "), 0u) << response;
+  const auto body_start = response.find("\r\n\r\n");
+  ASSERT_NE(body_start, std::string::npos) << response;
+  EXPECT_TRUE(json::parse(response.substr(body_start + 4)).contains("choices")) << response;
+  const auto unload_result = Get(std::string("/models/unload/") + kResponseStoreTestModelAlias);
+  EXPECT_EQ(unload_result["status"], "unloaded") << unload_result.dump(2);
+}
+#endif
+
+TEST_F(WebServiceTest, ClosingNonStreamingChatConnectionCancelsInferenceAndReleasesSession) {
+  const auto load_result = Get(std::string("/models/load/") + kResponseStoreTestModelAlias);
+  ASSERT_EQ(load_result["status"], "loaded") << load_result.dump(2);
+  const auto prior_action_count = telemetry_->Events().actions.size();
+
+  using Socket = decltype(::socket(AF_INET, SOCK_STREAM, 0));
+  const Socket client = ::socket(AF_INET, SOCK_STREAM, 0);
+  ASSERT_NE(client, static_cast<Socket>(-1));
+  auto connection = std::make_shared<oatpp::network::tcp::Connection>(client);
+  sockaddr_in address{};
+  address.sin_family = AF_INET;
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  address.sin_port = htons(static_cast<uint16_t>(std::stoi(base_url_.substr(base_url_.rfind(':') + 1))));
+  ASSERT_EQ(::connect(client, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0);
+
+  const json body = {
+      {"model", std::string(kResponseStoreTestModelAlias) + ":1"},
+      {"messages", json::array({{{"role", "user"}, {"content", "Hello"}}})},
+      {"max_tokens", 1},
+  };
+  const std::string payload = body.dump();
+  const std::string message =
+      "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+      "Content-Type: application/json\r\nContent-Length: " +
+      std::to_string(payload.size()) + "\r\nConnection: close\r\n\r\n" + payload;
+  linger abortive_close{1, 0};
+  ASSERT_EQ(::setsockopt(client, SOL_SOCKET, SO_LINGER, reinterpret_cast<const char*>(&abortive_close),
+                         sizeof(abortive_close)),
+            0);
+  // Reset after HTTP parsing but before inference can finish, independently of the tiny model's generation speed.
+  session_manager_->ResetClientOnNextRegistration(std::move(connection));
+  ScopeGuard clear_disconnect([&]() noexcept { session_manager_->ResetClientOnNextRegistration(nullptr); });
+  ASSERT_EQ(::send(client, message.data(), static_cast<int>(message.size()), 0), static_cast<int>(message.size()));
+
+  bool canceled = false;
+  const auto telemetry_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!canceled && std::chrono::steady_clock::now() < telemetry_deadline) {
+    const auto actions = telemetry_->Events().actions;
+    for (size_t i = prior_action_count; i < actions.size(); ++i) {
+      canceled |= actions[i].action == Action::kOpenAIChatCompletions && actions[i].status == ActionStatus::kCanceled;
+    }
+    if (!canceled) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+  }
+  EXPECT_TRUE(canceled) << "The disconnected request completed instead of being canceled";
+
+  const auto stop_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (session_manager_->ActiveCount() > 0 && std::chrono::steady_clock::now() < stop_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_EQ(session_manager_->ActiveCount(), 0u) << "Disconnected inference did not stop";
+
+  const auto recovered = PostJson(base_url_ + "/v1/chat/completions",
+                                  {{"model", std::string(kResponseStoreTestModelAlias) + ":1"},
+                                   {"messages", json::array({{{"role", "user"}, {"content", "Hello"}}})},
+                                   {"max_tokens", 4}});
+  EXPECT_EQ(recovered.status, 200) << recovered.body.dump(2);
+  const auto unload_result = Get(std::string("/models/unload/") + kResponseStoreTestModelAlias);
   EXPECT_EQ(unload_result["status"], "unloaded") << unload_result.dump(2);
 }
 
@@ -1502,6 +2424,34 @@ TEST_F(WebServiceTest, ResponsesStrictContractIsValidatedBeforeModelResolution) 
       }
     }
   }
+}
+
+TEST_F(WebServiceTest, ChatCompletionsRejectsNonBooleanParallelToolCalls) {
+  const json body = {
+      {"model", "alpha-model"},
+      {"messages", json::array({{{"role", "user"}, {"content", "hi"}}})},
+      {"parallel_tool_calls", "false"},
+  };
+
+  const auto result = PostJson(base_url_ + "/v1/chat/completions", body);
+
+  EXPECT_EQ(result.status, 400) << result.body.dump(2);
+  EXPECT_NE(ErrorMessageOf(result.body).find("boolean"), std::string::npos)
+      << result.body.dump(2);
+}
+
+TEST_F(WebServiceTest, ResponsesRejectsNonBooleanParallelToolCalls) {
+  const json body = {
+      {"model", "alpha-model"},
+      {"input", "hi"},
+      {"parallel_tool_calls", "false"},
+  };
+
+  const auto result = PostJson(base_url_ + "/v1/responses", body);
+
+  EXPECT_EQ(result.status, 400) << result.body.dump(2);
+  EXPECT_NE(ErrorMessageOf(result.body).find("boolean"), std::string::npos)
+      << result.body.dump(2);
 }
 
 TEST_F(WebServiceTest, ChatCompletionsAcceptsTextCustomToolDeclaration) {
@@ -1926,6 +2876,62 @@ TEST_F(WebServiceTest, ResponsesRejectedToolDeclarationIsAClientErrorAndStoresNo
 //
 // This test uses its OWN WebService instance (not the shared fixture) so it can exercise Stop() in isolation.
 // ========================================================================
+
+class ManagerShutdownEndpointTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    Configuration config;
+    config.app_name = "shutdown-request-test";
+    config.app_data_dir = temp_.string();
+    config.model_cache_dir = (temp_.path() / "models").string();
+    config.logs_dir = (temp_.path() / "logs").string();
+    config.disable_nonessential_telemetry = true;
+    config.web_service_endpoints = {"http://127.0.0.1:0"};
+    Manager::Create(config).StartWebService();
+  }
+
+  void TearDown() override {
+    Manager::Destroy();
+  }
+
+  test::TempPath temp_ = test::TempPath::CreateTempDir("fl_shutdown_request_");
+};
+
+TEST_F(ManagerShutdownEndpointTest, ReturnsBeforeOwnerDestroysService) {
+  auto& manager = Manager::Instance();
+  ASSERT_EQ(manager.GetWebServiceUrls().size(), 1u);
+  httplib::Client client(manager.GetWebServiceUrls()[0]);
+  client.set_read_timeout(5, 0);
+  EXPECT_FALSE(manager.IsShutdownRequested());
+
+  for (int i = 0; i < 2; ++i) {
+    const auto response = client.Post("/shutdown", "", "application/json");
+    ASSERT_TRUE(response) << httplib::to_string(response.error());
+    EXPECT_EQ(response->status, 200) << response->body;
+    EXPECT_EQ(json::parse(response->body).at("status"), "shutting_down");
+    EXPECT_TRUE(manager.IsShutdownRequested());
+  }
+
+  EXPECT_THROW(manager.GetModelLoadManager().LoadModel("unused-path", "new-model:1"), fl::Exception);
+
+  // Match a standalone host: observe the request, then release the manager on the owner thread.
+  Manager::Destroy();
+}
+
+TEST_F(ManagerShutdownEndpointTest, ExplicitShutdownStillStopsServiceAfterHttpRequest) {
+  auto& manager = Manager::Instance();
+  ASSERT_EQ(manager.GetWebServiceUrls().size(), 1u);
+  httplib::Client client(manager.GetWebServiceUrls()[0]);
+  client.set_read_timeout(5, 0);
+  const auto response = client.Post("/shutdown", "", "application/json");
+  ASSERT_TRUE(response) << httplib::to_string(response.error());
+  ASSERT_EQ(response->status, 200) << response->body;
+
+  manager.Shutdown();
+  EXPECT_TRUE(manager.IsShutdownRequested());
+  EXPECT_TRUE(manager.GetWebServiceUrls().empty());
+  EXPECT_NO_THROW(manager.Shutdown());
+}
 
 TEST(WebServiceShutdownTest, StopReturnsQuicklyWithKeepAliveClient) {
   StderrLogger logger;

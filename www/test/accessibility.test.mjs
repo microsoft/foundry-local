@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
 import test from 'node:test';
+import { transpileModule } from 'typescript';
 
 const readSource = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
 
@@ -112,10 +114,16 @@ test('model dropdown triggers are labelled by their visible labels and values', 
 	assert.match(modelFilters, /<Button\b[^>]*aria-labelledby="sort-by sort-by-value"[^>]*>/);
 	assert.match(modelFilters, /<span id="sort-by-value">/);
 	assert.match(modelFilters, /<Label id="model-family">Model Family<\/Label>/);
-	assert.match(modelFilters, /<Button\b[^>]*aria-labelledby="model-family model-family-value"[^>]*>/);
+	assert.match(
+		modelFilters,
+		/<Button\b[^>]*aria-labelledby="model-family model-family-value"[^>]*>/
+	);
 	assert.match(modelFilters, /<span id="model-family-value">/);
 	assert.match(modelFilters, /<Label id="acceleration">Acceleration<\/Label>/);
-	assert.match(modelFilters, /<Button\b[^>]*aria-labelledby="acceleration acceleration-value"[^>]*>/);
+	assert.match(
+		modelFilters,
+		/<Button\b[^>]*aria-labelledby="acceleration acceleration-value"[^>]*>/
+	);
 	assert.match(modelFilters, /<span id="acceleration-value">/);
 });
 
@@ -128,9 +136,7 @@ test('download menu copy actions participate in keyboard menu navigation', () =>
 			'onclick={() => copyToClipboard(item.crossPlatformCommand, item.crossPlatformId)}'
 		)
 	);
-	assert.ok(
-		copyItem.source.includes('aria-label={`Copy ${item.label} installation command`}')
-	);
+	assert.ok(copyItem.source.includes('aria-label={`Copy ${item.label} installation command`}'));
 	assert.doesNotMatch(
 		downloadDropdown,
 		/<button[\s\S]*?onclick=\{\(\) => copyToClipboard\(item\.crossPlatformCommand, item\.crossPlatformId\)\}/
@@ -170,6 +176,88 @@ test('device and SDK selectors expose their pressed state', () => {
 
 	assert.match(modelFilters, /aria-pressed=\{selectedDevices\.includes\(device\)\}/);
 	assert.match(installCommand, /aria-pressed=\{activeTab === tab\.key\}/);
+});
+
+test('C and C++ selectors provide package installation and complete native examples', () => {
+	const installCommand = readSource('../src/lib/components/install-command.svelte');
+	const dropdown = readSource('../src/lib/components/download-dropdown.svelte');
+
+	for (const [key, label] of [
+		['c', 'C'],
+		['cpp', 'C++']
+	]) {
+		assert.ok(installCommand.includes(`{ key: '${key}', label: '${label}' }`));
+		assert.ok(
+			installCommand.includes(`${key}: 'nuget install Microsoft.AI.Foundry.Local.Runtime'`)
+		);
+		assert.equal(installCommand.split(`${key}: nativeSnippet(String.raw`).length - 1, 2);
+		assert.ok(dropdown.includes(`label: '${label} SDK'`));
+	}
+
+	assert.match(installCommand, /flex flex-wrap justify-center/);
+	assert.doesNotMatch(installCommand, /Combine steps 2 and 3|Runtime package's|#if isNative/);
+	assert.doesNotMatch(installCommand, /#build-from-source/);
+	assert.doesNotMatch(dropdown, /Build from source/);
+});
+
+test('native examples use the shared syntax colors without changing the displayed or copied code', () => {
+	const source = readSource('../src/lib/components/install-command.svelte');
+	const helper = source.slice(
+		source.indexOf('function nativeSnippet'),
+		source.indexOf('const tabs:')
+	);
+	const { outputText } = transpileModule(helper, {});
+	const nativeSnippet = runInNewContext(`${outputText}; nativeSnippet`);
+	const examples = [...source.matchAll(/(?:c|cpp): nativeSnippet\(String\.raw`([\s\S]*?)`\)/g)];
+
+	assert.equal(examples.length, 4);
+	for (const [, raw] of examples) {
+		const snippet = nativeSnippet(raw);
+		assert.equal(snippet.raw, raw);
+		for (const style of ['keyword', 'type', 'call', 'string']) {
+			assert.ok(snippet.html.includes(`class="code-${style}"`));
+		}
+		const displayed = snippet.html
+			.replace(/<span class="code-[a-z]+">|<\/span>/g, '')
+			.replaceAll('&lt;', '<')
+			.replaceAll('&gt;', '>')
+			.replaceAll('&amp;', '&');
+		assert.equal(displayed, raw);
+	}
+
+	for (const text of [
+		'<script>&\\"Hello\\"</script>',
+		'<SCRIPT SRC=x></SCRIPT>',
+		'<ScRiPt type=x>alert(1)</sCrIpT foo=bar>',
+		'<img src=x onerror=alert(1)>',
+		'<!-- comment --!>'
+	]) {
+		const raw = `puts("${text}");`;
+		const snippet = nativeSnippet(raw);
+		const encoded = snippet.html.replace(/<span class="code-[a-z]+">|<\/span>/g, '');
+		assert.equal(snippet.raw, raw);
+		assert.ok(snippet.html.includes('class="code-string"'));
+		assert.equal(encoded.includes('<'), false);
+		assert.equal(encoded.includes('>'), false);
+		assert.equal(
+			encoded.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&'),
+			raw
+		);
+	}
+});
+
+test('quickstarts display and copy one complete example instead of separate code fragments', () => {
+	const installCommand = readSource('../src/lib/components/install-command.svelte');
+
+	assert.match(
+		installCommand,
+		/raw: `\$\{setupSnippets\[activeTab\]\.raw\}\\n\\n\$\{inferenceSnippets\[activeTab\]\.raw\}`/
+	);
+	assert.match(installCommand, /navigator\.clipboard\.writeText\(currentExample\.raw\)/);
+	assert.match(installCommand, /aria-label="Copy complete example"/);
+	assert.match(installCommand, /aria-label="Reveal complete example"/);
+	assert.match(installCommand, /\{@html currentExample\.html\}/);
+	assert.doesNotMatch(installCommand, /Copy model setup|Copy inference call|revealedStep/);
 });
 
 test('ModelDetailsModal describes Copy ID buttons with visible model IDs', () => {
