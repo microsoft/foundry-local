@@ -24,6 +24,8 @@ internal sealed class NonGenerativeIntegrationTests
         {
             using (var session = new RankingSession(model))
             {
+                await Assert.That(() => model.UnloadAsync()).Throws<FoundryLocalException>();
+                await Assert.That(await model.IsLoadedAsync()).IsTrue();
                 var result = await session.RankAsync(new RankingRequest
                 {
                     Model = model.Info.Id,
@@ -55,6 +57,8 @@ internal sealed class NonGenerativeIntegrationTests
         {
             using (var session = new DecisionSession(model))
             {
+                await Assert.That(() => model.UnloadAsync()).Throws<FoundryLocalException>();
+                await Assert.That(await model.IsLoadedAsync()).IsTrue();
                 var result = await session.DecideAsync(new DecisionRequest
                 {
                     Model = model.Info.Id,
