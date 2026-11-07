@@ -374,7 +374,11 @@ public sealed class Manager : IDisposable
 
     internal static ulong ValidateMinimumIdleDuration(TimeSpan minimumIdleDuration)
     {
-        ArgumentOutOfRangeException.ThrowIfLessThan(minimumIdleDuration, TimeSpan.Zero);
+        if (minimumIdleDuration < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(minimumIdleDuration), minimumIdleDuration, "The duration must be non-negative.");
+        }
         var ticks = (ulong)minimumIdleDuration.Ticks;
         // Round up without overflowing TimeSpan.MaxValue or stopping before a fractional millisecond expires.
         return ticks / TimeSpan.TicksPerMillisecond + (ticks % TimeSpan.TicksPerMillisecond == 0 ? 0UL : 1UL);
