@@ -658,6 +658,29 @@ TEST_F(IpcChannelTest, MalformedAndTruncatedFramesAreRejectedAndChannelIsClosed)
 }
 
 #ifndef _WIN32
+TEST_F(IpcChannelTest, BoundSocketIsRetryableBeforeListenButInsecureListenerIsRejected) {
+  const auto fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  ASSERT_GE(fd, 0);
+  ScopeGuard close_socket([&]() noexcept { close(fd); });
+  sockaddr_un address{};
+  address.sun_family = AF_UNIX;
+  const auto text = endpoint_.native();
+  ASSERT_LT(text.size(), sizeof(address.sun_path));
+  std::memcpy(address.sun_path, text.c_str(), text.size() + 1);
+  ASSERT_EQ(bind(fd, reinterpret_cast<const sockaddr*>(&address), sizeof(address)), 0);
+
+  // Reproduce bind -> chmod -> listen without relying on winning the listener's startup race.
+  ASSERT_EQ(chmod(endpoint_.c_str(), 0755), 0);
+  EXPECT_FALSE(TryConnect(endpoint_));
+  ASSERT_EQ(chmod(endpoint_.c_str(), 0600), 0);
+  EXPECT_FALSE(TryConnect(endpoint_));
+  ASSERT_EQ(listen(fd, 16), 0);
+  EXPECT_TRUE(TryConnect(endpoint_));
+
+  ASSERT_EQ(chmod(endpoint_.c_str(), 0755), 0);
+  EXPECT_THROW(static_cast<void>(TryConnect(endpoint_)), Exception);
+}
+
 TEST_F(IpcChannelTest, SocketIsOwnerOnlyAndEndpointDirectoryIsNotRemoved) {
   {
     Listener listener(endpoint_);
