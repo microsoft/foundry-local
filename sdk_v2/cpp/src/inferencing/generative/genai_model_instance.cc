@@ -16,7 +16,6 @@
 namespace fl {
 namespace {
 
-constexpr std::string_view kQwen35TextModelType = "qwen3_5_text";
 constexpr std::string_view kToolDefinitionProbeDescription = "Capability probe";
 constexpr const char* kToolCallProbeMessages = R"([
   {"role":"user","content":"capability-probe"},
