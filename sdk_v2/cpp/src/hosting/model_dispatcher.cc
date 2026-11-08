@@ -79,6 +79,30 @@ bool ModelDispatcher::Handles(Operation operation) noexcept {
 void ModelDispatcher::Dispatch(const std::shared_ptr<SdkConnection::IncomingCall>& call, HostObjects& objects) {
   SdkResult result;
   try {
+    if (call->Op() == Operation::CreateSession) {
+      api::ModelBackend* source;
+      {
+        std::lock_guard lock(mutex_);
+        if (call->IsCancelled()) {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED,
+                   "SDK invocation cancelled before execution");
+        }
+        const auto selection =
+            DecodeModelSelection(call->Payload().at("model"));
+        if (selection.info.model_id.empty() || selection.path.empty()) {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                   "SDK model has no selected local artifact");
+        }
+        RequireAbsolutePath(selection.path);
+        auto resolved = Resolve(selection);
+        source = &resolved.source;
+      }
+      result.value = EncodeObjectIdentity(
+          objects.AddSession(source->CreateSession()));
+      call->Complete(std::move(result));
+      return;
+    }
+
     // Keep source lookup/capture consistent with mutations from other SDK connections, not with session execution.
     std::lock_guard lock(mutex_);
     if (call->IsCancelled()) {
@@ -182,7 +206,7 @@ Json ModelDispatcher::Execute(const SdkConnection::IncomingCall& call, HostObjec
               {"outputs", ItemDescriptors(info.outputs, info.num_outputs)}};
     }
     case Operation::CreateSession: {
-      return EncodeObjectIdentity(objects.AddSession(model.execution->CreateSession()));
+      return EncodeObjectIdentity(objects.AddSession(model.source.CreateSession()));
     }
     default:
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "operation is not an SDK model operation");

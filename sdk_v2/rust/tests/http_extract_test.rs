@@ -13,10 +13,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 fn test_dir(name: &str) -> PathBuf {
     static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "foundry-rust-http-extract-{name}-{}-{id}",
-        std::process::id()
-    ))
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("build")
+        .join("http-extract-tests")
+        .join(format!("http-extract-{name}-{}-{id}", std::process::id()))
 }
 
 fn archive(entries: &[(&str, &[u8])]) -> Cursor<Vec<u8>> {
@@ -36,27 +36,6 @@ fn archive(entries: &[(&str, &[u8])]) -> Cursor<Vec<u8>> {
 }
 
 #[test]
-fn rejected_archive_does_not_contaminate_shared_output() {
-    let root = test_dir("rejected");
-    let staging = root.join("staging");
-    let output = root.join("output");
-    fs::create_dir_all(&output).unwrap();
-
-    let result = http_extract::extract_package(
-        archive(&[("runtimes/win-x64/native/companion.dll", b"stale")]),
-        "win-x64",
-        "dll",
-        "expected.dll",
-        &staging,
-    );
-
-    assert!(result.is_err());
-    assert!(!output.join("companion.dll").exists());
-    assert!(!staging.exists());
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
 fn failed_attempt_cannot_contaminate_later_success() {
     let root = test_dir("retry");
     let staging = root.join("staging");
@@ -71,6 +50,9 @@ fn failed_attempt_cannot_contaminate_later_success() {
         &staging,
     )
     .is_err());
+    assert!(!output.join("failed-only.dll").exists());
+    assert!(!staging.exists());
+
     let files = http_extract::extract_package(
         archive(&[
             ("runtimes/win-x64/native/expected.dll", b"expected"),

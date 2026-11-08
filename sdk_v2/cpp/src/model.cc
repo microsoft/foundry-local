@@ -546,6 +546,23 @@ std::shared_ptr<void> Model::AcquireNonGenerativeRuntime() {
       *this, [&] { lifecycle_lock.unlock(); });
 }
 
+std::shared_ptr<void> Model::AcquireLoadedNonGenerativeRuntime() {
+  if (IsContainer()) {
+    Model* selected;
+    {
+      std::lock_guard lifecycle_lock(lifecycle_mutex_);
+      selected = selected_variant_.load(std::memory_order_acquire);
+    }
+    return selected->AcquireLoadedNonGenerativeRuntime();
+  }
+
+  std::lock_guard lifecycle_lock(lifecycle_mutex_);
+  if (!active_ || unregistering_)
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "model is no longer registered");
+  return model_load_manager_->AcquireLoadedNonGenerativeRuntime(*this);
+}
+
 // ---------------------------------------------------------------------------
 // Mutation (delegate to selected_variant_ when container)
 // ---------------------------------------------------------------------------
@@ -950,6 +967,20 @@ const StaticIOCache& ChatCompletionIO() {
   return cache;
 }
 
+const StaticIOCache& NonGenerativeIO() {
+  static const StaticIOCache cache = [] {
+    StaticIOCache c;
+    c.input_items.push_back(std::make_unique<TextItem>(
+        "", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+    c.output_items.push_back(std::make_unique<TextItem>(
+        "", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+    c.input_ptrs.push_back(c.input_items.front().get());
+    c.output_ptrs.push_back(c.output_items.front().get());
+    return c;
+  }();
+  return cache;
+}
+
 const StaticIOCache& VisionLanguageChatIO() {
   static const StaticIOCache cache = [] {
     StaticIOCache c;
@@ -1020,6 +1051,10 @@ Model::IOInfo Model::GetInputOutputInfo() const {
 
   if (task == "automatic-speech-recognition") {
     return IOInfoFromCache(AutomaticSpeechRecognitionIO());
+  }
+
+  if (task == "text-ranking" || task == "typed-decision") {
+    return IOInfoFromCache(NonGenerativeIO());
   }
 
   FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED,
