@@ -127,7 +127,7 @@ std::optional<HarmonyProtocol> QualifyHarmonyProtocol(std::string_view model_typ
 #if !FOUNDRY_LOCAL_OGA_HAS_TERMINAL_TOKEN
   (void)preprocessor;
   FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
-           "GPT-OSS Harmony requires an ORT GenAI runtime exposing sampled Engine terminal-token identity");
+           "GPT-OSS Harmony requires an ORT GenAI runtime exposing sampled terminal-token identity");
 #else
   const auto resolve = [&](const char* spelling) {
     const auto encoded = preprocessor.Encode(spelling);
