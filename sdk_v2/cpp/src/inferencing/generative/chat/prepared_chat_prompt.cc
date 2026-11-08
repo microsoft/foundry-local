@@ -67,6 +67,12 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
       std::string state =
           "Use a tool only when the user's request requires it. For serial work, emit only calls whose "
           "prerequisites are already available; do not wait or deliberate about later calls.";
+      if (tool_ctx.forced_tool) {
+        state += "\nYou must call the tool named \"" + tool_ctx.forced_tool->name +
+                 "\" in this turn. Do not answer with ordinary text.";
+      } else if (!tool_ctx.text_output) {
+        state += "\nYou must call one applicable supplied tool in this turn. Do not answer with ordinary text.";
+      }
       if (!tool_ctx.automatic_retry_instruction.empty()) {
         state += "\n" + tool_ctx.automatic_retry_instruction;
       }
