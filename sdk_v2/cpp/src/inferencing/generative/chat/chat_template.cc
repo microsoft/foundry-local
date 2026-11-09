@@ -334,6 +334,12 @@ HarmonyPromptProjection BuildHarmonyPromptProjection(
     const std::function<std::string(std::string)>& protect_literal) {
   using Json = nlohmann::ordered_json;
   auto projected = Json::array();
+  const auto validate_tool_name = [](std::string_view name) {
+    if (name.empty() || name.find_first_of(" \t\r\n\v\f\x01\x02") != std::string_view::npos) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+               "Harmony tool names must not contain header separators");
+    }
+  };
   std::unordered_map<std::string, std::string> call_names;
   for (const auto& message : messages) {
     if (!projected.empty() &&
@@ -346,6 +352,7 @@ HarmonyPromptProjection BuildHarmonyPromptProjection(
       entry["thinking"] = protect_literal(message.ReasoningText());
       auto calls = Json::array();
       for (const auto* call : message.ToolCalls()) {
+        validate_tool_name(call->name);
         if (!call_names.emplace(call->call_id, call->name).second) {
           FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Duplicate Harmony history call ID");
         }
@@ -390,6 +397,7 @@ HarmonyPromptProjection BuildHarmonyPromptProjection(
     auto function_tools = Json::array();
     for (const auto& tool : tools) {
       const auto name = tool.at("function").at("name").get<std::string>();
+      validate_tool_name(name);
       if (!context.UsesNativeRawBody(name)) function_tools.push_back(tool);
       const auto grammar = context.custom_lark_grammars.find(name);
       if (context.IsCustomTool(name) && grammar != context.custom_lark_grammars.end()) {
