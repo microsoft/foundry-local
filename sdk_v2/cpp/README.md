@@ -441,9 +441,11 @@ answer or one directed tool call. Calls are validated before publication; JSON
 argument bytes are preserved. Custom tools with the admitted stock patch grammar
 use native raw bodies; unframed text custom tools retain JSON input-object transport.
 Both reuse the synthesized `{"input":"raw text"}` object for schema admission and
-deliver unchanged text to callers. Recorded native body encodings survive tool
+deliver unchanged text to callers. Recorded native and canonical body encodings survive tool
 definition changes during history replay, including encoding metadata attached to
-stored input calls as well as generated output calls. Tool results are correlated by call ID
+stored input calls as well as generated output calls.
+Unannotated caller-supplied calls continue to use the current declaration's body encoding.
+Tool results are correlated by call ID
 and rendered as named, protected JSON values. Source text and literal marker spellings remain data.
 Original schemas and custom input formats are supplied as bounded literal prompt
 information; schema admission remains owned by the existing `ToolCallPlan`.

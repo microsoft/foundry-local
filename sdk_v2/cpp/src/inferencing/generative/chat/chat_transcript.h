@@ -37,6 +37,8 @@ struct TranscriptToolCall {
   /// as what it was, and so a replayed call normalizes the same way the generated one did.
   ToolKind kind = ToolKind::kFunction;
   GeneratedCallEncoding generated_encoding = GeneratedCallEncoding::kStructured;
+  /// Unannotated caller history follows current declarations; generated and stored calls retain their encoding.
+  bool has_recorded_encoding = false;
 };
 
 /// One event within a message, stored in the order it occurred.
