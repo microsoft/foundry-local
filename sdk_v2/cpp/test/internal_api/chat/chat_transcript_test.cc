@@ -7,6 +7,7 @@
 
 #include "exception.h"
 #include "inferencing/generative/chat/chat_template.h"
+#include "inferencing/generative/toolcalling/tool_call_plan.h"
 #include "inferencing/session/request.h"
 #include "inferencing/session/tool_registry.h"
 #include "items/audio_item.h"
@@ -1272,6 +1273,21 @@ TEST(ChatTranscriptTest, SuppliedCallWithUnusableArgumentsIsRejected) {
       EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT) << "raw: " << raw;
     }
   }
+}
+
+TEST(ChatTranscriptTest, ArgumentNestingIsBoundedBeforeParsingOrProjection) {
+  for (const std::size_t depth : {std::size_t(ToolCallPlan::kMaxDepth - 1),
+                                  std::size_t(ToolCallPlan::kMaxDepth), std::size_t(10000)}) {
+    const auto arguments = "{\"value\":" + std::string(depth, '[') + "0" + std::string(depth, ']') + "}";
+    const bool supported = depth < ToolCallPlan::kMaxDepth;
+    EXPECT_EQ(ParseToolCallArguments(arguments).has_value(), supported);
+    if (supported) {
+      EXPECT_NO_THROW(MakeSuppliedToolCall("call_depth", "lookup", arguments));
+    } else {
+      EXPECT_THROW(MakeSuppliedToolCall("call_depth", "lookup", arguments), fl::Exception);
+    }
+  }
+  EXPECT_TRUE(ParseToolCallArguments("{\"value\":\"" + std::string(10000, '[') + "\"}").has_value());
 }
 
 TEST(TranscriptIngestTest, SuppliedToolCallItemWithUnusableArgumentsIsRejected) {
