@@ -14,6 +14,7 @@ using Model = Microsoft.AI.Foundry.Local.Model;
 using NativeModel = Detail.Native.Model;
 using NativeSession = Detail.Native.Session;
 
+[NotInParallel]
 internal sealed class RequestCancellationTests
 {
     [Test]

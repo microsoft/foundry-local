@@ -55,15 +55,6 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
       auto projected_json =
           nlohmann::ordered_json::parse(BuildChatMessagesJson(messages.Messages(),
                                                               tool_ctx.supports_reasoning_history));
-      struct HistoricalCall {
-        std::string name;
-        std::string arguments;
-      };
-      std::vector<HistoricalCall> completed_calls;
-      completed_calls.reserve(tool_ctx.completed_tool_calls.size());
-      for (const auto& [name, arguments] : tool_ctx.completed_tool_calls) {
-        completed_calls.push_back({name, arguments});
-      }
       std::string state =
           "Use a tool only when the user's request requires it. For serial work, emit only calls whose "
           "prerequisites are already available; do not wait or deliberate about later calls.";
@@ -75,19 +66,6 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
       }
       if (!tool_ctx.automatic_retry_instruction.empty()) {
         state += "\n" + tool_ctx.automatic_retry_instruction;
-      }
-      if (!completed_calls.empty()) {
-        state +=
-            "\nTool calls with results already present in this conversation are complete. "
-            "Do not repeat any exact call listed below:\n";
-        for (const auto& call : completed_calls) {
-          state += "- " + call.name + "(" + call.arguments + ")\n";
-        }
-        state +=
-            "A call to the same function with different arguments is new work, not a repeated call. "
-            "Continue only the user's remaining requested work. If remaining work requires a tool, emit that "
-            "tool call now without describing or simulating its result. If all requested calls are complete, "
-            "answer from their actual results without calling another tool.";
       }
       if (!projected_json.empty() && projected_json.front().value("role", "") == "system") {
         auto content = projected_json.front().value("content", "");
@@ -111,7 +89,9 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
               }
             } else if (value.is_object()) {
               for (auto& [key, item] : value.items()) {
-                protect_json_strings(item, json_escaped);
+                if (key != "type") {
+                  protect_json_strings(item, json_escaped);
+                }
               }
             }
           };
@@ -122,11 +102,22 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
           }
         }
         if (message.contains("tool_calls")) {
-          protect_json_strings(message["tool_calls"], true);
+          for (auto& call : message["tool_calls"]) {
+            if (!call.contains("function")) {
+              continue;
+            }
+            auto& function = call["function"];
+            if (function.contains("name")) {
+              protect_json_strings(function["name"], tool_ctx.native_tagged_json_tool_calls);
+            }
+            if (function.contains("arguments")) {
+              protect_json_strings(function["arguments"], tool_ctx.native_tagged_json_tool_calls);
+            }
+          }
         }
       }
       auto tools = nlohmann::ordered_json::parse(tool_ctx.tools_json);
-      protect_json_strings(tools, true);
+      protect_json_strings(tools, tool_ctx.native_tagged_json_tool_calls);
       projected = projected_json.dump();
       projected_tools = tools.dump();
     } else {

@@ -4,9 +4,9 @@ vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO microsoft/cpp_client_telemetry
     REF v${VERSION}
-    SHA512 934ac980096f571aa4eaeba5159ee87a687e32e174c548190c3926c5c29c1054f7b7924647457c8bcc97a78dd216651577dbb958a7895175d49a97784fb3bf51
+    SHA512 c48b19d9a076767bf006c539c98138fcdc2a759e2f189c07df10f48f9172be23940baf23754806330ee3774e1dcf8f7ebf350791d48e9747e55040f0de718651
     HEAD_REF main
-    PATCHES apple-system-libraries.patch sdk-version-lifetime.patch
+    PATCHES apple-system-libraries.patch sdk-version-lifetime.patch apple-delegate-namespace.patch
 )
 
 vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS

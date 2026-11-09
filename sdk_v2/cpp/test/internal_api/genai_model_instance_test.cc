@@ -178,6 +178,42 @@ TEST(ModelCapabilitiesTest, GenericTaggedJsonProtocolIsOnboarded) {
   EXPECT_TRUE(capabilities.positional_tool_results);
 }
 
+TEST(ModelCapabilitiesTest, TaggedJsonQualificationUsesDecoderSemantics) {
+  constexpr std::string_view kReorderedProjection =
+      "probe_first probe_second\n"
+      "<|tool_start|>{\"arguments\":{\"probe_parameter\":\"probe_value\"},"
+      "\"name\":\"probe_function\"}<|tool_end|>";
+  constexpr std::string_view kNestedProjection =
+      "probe_first probe_second\n"
+      "<|tool_start|>{\"function\":{\"name\":\"probe_function\","
+      "\"arguments\":{\"probe_parameter\":\"probe_value\"}}}<|tool_end|>";
+
+  const auto reordered = fl::model_capabilities_internal::ResolveRenderedProbes(
+      "custom", kReorderedProjection, {}, "<|tool_start|>", "<|tool_end|>");
+  const auto nested = fl::model_capabilities_internal::ResolveRenderedProbes(
+      "custom", kNestedProjection, {}, "<|tool_start|>", "<|tool_end|>");
+
+  EXPECT_TRUE(reordered.native_tagged_json_tool_calls);
+  EXPECT_FALSE(nested.native_tagged_json_tool_calls);
+}
+
+TEST(ModelCapabilitiesTest, NativeProtocolDoesNotRequireRenderedDescriptions) {
+  constexpr std::string_view kProjection =
+      "available: probe_first probe_second\n"
+      "<tool_call>\n"
+      "<function=probe_function>\n"
+      "<parameter=probe_parameter>\n"
+      "probe_value\n"
+      "</parameter>\n"
+      "</function>\n"
+      "</tool_call>";
+
+  const auto capabilities = fl::model_capabilities_internal::ResolveRenderedProbes(
+      "custom", kProjection, {}, "<tool_call>", "</tool_call>");
+
+  EXPECT_TRUE(capabilities.native_qwen_xml_tool_calls);
+}
+
 TEST(ModelCapabilitiesTest, NativeXmlProtocolUsesPublishedCustomBoundaries) {
   constexpr std::string_view kToolCallProjection =
       "Capability probe\n"

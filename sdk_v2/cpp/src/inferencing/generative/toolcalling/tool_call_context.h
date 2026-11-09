@@ -86,7 +86,6 @@ struct ToolCallContext {
   bool native_tagged_json_tool_calls = false;
   std::shared_ptr<const ToolCallPlan> tool_plan;
   std::optional<std::string> tool_body_grammar;
-  std::vector<std::pair<std::string, std::string>> completed_tool_calls;
   std::string automatic_retry_instruction;
   bool fenced_tool_call_output = false;
 
@@ -178,7 +177,6 @@ struct ToolCallContext {
            native_qwen_xml_tool_calls == other.native_qwen_xml_tool_calls &&
            native_tagged_json_tool_calls == other.native_tagged_json_tool_calls &&
            tool_body_grammar == other.tool_body_grammar &&
-           completed_tool_calls == other.completed_tool_calls &&
            automatic_retry_instruction == other.automatic_retry_instruction &&
            fenced_tool_call_output == other.fenced_tool_call_output;
   }
