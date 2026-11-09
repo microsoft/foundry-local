@@ -340,6 +340,11 @@ User-defined schema dictionary keys are protected as well, while structural fiel
 required-name membership, and rendered schema references retain their meaning.
 Native XML also requires representable function and parameter names; schemas with
 unsupported names retain canonical projection.
+Automatic Generator prefill chunking uses GenAI's per-model capability when the
+configured headers and library provide it. With older packages, including the
+pinned 0.19.0 package, the build explicitly reports that legacy chunk-size
+defaults are retained. Runtimes that need model-specific opt-out require the
+corresponding GenAI capability update.
 
 Otherwise, the model emits a nonempty canonical JSON array inside its published tool
 markers, for example:
