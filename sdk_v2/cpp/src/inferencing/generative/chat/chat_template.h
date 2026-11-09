@@ -104,6 +104,7 @@ struct HarmonyPromptProjection {
   std::string tools_json;
 };
 
+/// Reject non-leading system/developer messages that the qualified Harmony template would omit.
 HarmonyPromptProjection BuildHarmonyPromptProjection(
     const std::vector<TranscriptMessage>& messages, const ToolCallContext& context,
     const std::function<std::string(std::string)>& protect_literal);
