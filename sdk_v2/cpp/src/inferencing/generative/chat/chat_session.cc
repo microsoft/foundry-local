@@ -1168,7 +1168,7 @@ bool IsGuidedToolRetryEligible(
     int attempted_tokens,
     std::optional<int> output_budget) {
   return tool_ctx.tool_plan && natural_tool_output_end &&
-         (!semantic_output_seen || safe_prefix_available || !tool_ctx.text_output) &&
+         (!semantic_output_seen || safe_prefix_available) &&
          !tool_call_published &&
          (!output_budget || attempted_tokens < *output_budget) &&
          options.stop_sequences.empty() &&

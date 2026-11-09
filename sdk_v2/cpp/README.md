@@ -331,7 +331,8 @@ protocol, automatic, required, and named choices retain that protocol on either
 backend without implicit whole-turn guidance. Template-supported reasoning history
 is preserved alongside assistant calls and correlated tool results so serial
 continuations retain their context. Original-schema validation still applies
-before calls are published.
+before calls are published. Function argument history uses the same 64-level JSON
+nesting limit as generated calls, checked before DOM parsing and prompt projection.
 Native activation also requires the effective opening and closing markers to match
 the qualified tokenizer markers; overriding either boundary retains canonical
 projection. Native history arguments are literal-tokenized, including object keys,

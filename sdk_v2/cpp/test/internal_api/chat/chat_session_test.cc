@@ -4434,71 +4434,83 @@ TEST_F(QwenNativeProductionIntegrationTest,
 }
 
 TEST_F(QwenNativeProductionIntegrationTest,
-       EngineSemanticPrefixWithoutTokenCheckpointBeforeSchemaViolationNeverRetries) {
+       SemanticPrefixWithoutTokenCheckpointBeforeSchemaViolationNeverRetriesAcrossChoicesAndBackends) {
   struct Case {
     std::string output;
     std::string expected_text;
     int expected_calls;
   };
   const std::vector<Case> cases = {
-      {"MESSAGE\nsafe prefix<tool_call>[{\"name\":\"lookup\",\"parameters\":{\"city\":7}}]</tool_call> tail",
+      {"safe prefix<tool_call>[{\"name\":\"lookup\",\"parameters\":{\"city\":7}}]</tool_call> tail",
        "safe prefix", 0},
   };
 
   for (const auto& test_case : cases) {
     SCOPED_TRACE(test_case.output);
-    for (const bool json_request : {false, true}) {
-      SCOPED_TRACE(json_request ? "chat completions" : "typed");
-      auto counters = std::make_shared<GeneratorCounters>();
-      auto catalog_model = MakeCatalogModel();
-      ChatSession session(catalog_model, *engine_model_, *logger_, telemetry_, {},
-                          OutputFactory(test_case.output, counters, BackendTerminationCause::kNaturalEnd,
-                                        std::string::npos, std::string::npos, /*authoritative_controls=*/false));
-      std::string streamed_text;
-      int streamed_calls = 0;
-      if (json_request) {
-        std::vector<nlohmann::json> chunks;
-        try {
-          RunChatCompletions(session, "auto", &chunks);
-          FAIL() << "expected invalid tool call";
-        } catch (const fl::Exception& error) {
-          EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_INTERNAL);
-        }
-        for (const auto& chunk : chunks) {
-          const auto& delta = chunk.at("choices").at(0).at("delta");
-          if (delta.contains("content") && delta.at("content").is_string()) {
-            streamed_text += delta.at("content").get<std::string>();
-          }
-          streamed_calls += delta.contains("tool_calls");
-        }
-      } else {
-        AddFunctionTools(session);
-        session.SetStreamingCallback([&](flStreamingCallbackData event, void*) {
-          auto* queue = reinterpret_cast<fl::ItemQueue*>(event.item_queue);
-          while (auto item = queue->TryPop()) {
-            if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
-              streamed_text += static_cast<const TextItem&>(*item).text;
-            } else if (item->type == FOUNDRY_LOCAL_ITEM_TOOL_CALL) {
-              ++streamed_calls;
+    for (auto* native_model : {engine_model_, model_}) {
+      SCOPED_TRACE(native_model == model_ ? "classic Generator" : "Engine");
+      for (const std::string choice : {"auto", "required", "forced"}) {
+        SCOPED_TRACE(choice);
+        for (const bool json_request : {false, true}) {
+          SCOPED_TRACE(json_request ? "chat completions" : "typed");
+          auto counters = std::make_shared<GeneratorCounters>();
+          auto catalog_model = MakeCatalogModel();
+          const auto output = choice == "auto" ? "MESSAGE\n" + test_case.output : test_case.output;
+          ChatSession session(catalog_model, *native_model, *logger_, telemetry_, {},
+                              OutputFactory(output, counters, BackendTerminationCause::kNaturalEnd,
+                                            std::string::npos, std::string::npos, /*authoritative_controls=*/false));
+          std::string streamed_text;
+          int streamed_calls = 0;
+          if (json_request) {
+            std::vector<nlohmann::json> chunks;
+            try {
+              RunChatCompletions(session, choice, &chunks);
+              FAIL() << "expected invalid tool call";
+            } catch (const fl::Exception& error) {
+              EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_INTERNAL);
             }
+            for (const auto& chunk : chunks) {
+              const auto& delta = chunk.at("choices").at(0).at("delta");
+              if (delta.contains("content") && delta.at("content").is_string()) {
+                streamed_text += delta.at("content").get<std::string>();
+              }
+              streamed_calls += delta.contains("tool_calls");
+            }
+          } else {
+            AddFunctionTools(session);
+            session.SetStreamingCallback([&](flStreamingCallbackData event, void*) {
+              auto* queue = reinterpret_cast<fl::ItemQueue*>(event.item_queue);
+              while (auto item = queue->TryPop()) {
+                if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
+                  streamed_text += static_cast<const TextItem&>(*item).text;
+                } else if (item->type == FOUNDRY_LOCAL_ITEM_TOOL_CALL) {
+                  ++streamed_calls;
+                }
+              }
+              return 0;
+            });
+            auto request = MakeStatefulRequest("route this");
+            if (choice == "forced") {
+              request.forced_tool_choice = ForcedToolChoice{"lookup", ToolKind::kFunction};
+            } else {
+              request.options[FOUNDRY_LOCAL_PARAM_TOOL_CHOICE] = choice;
+            }
+            Response response;
+            try {
+              session.ProcessRequest(request, response);
+              FAIL() << "expected invalid tool call";
+            } catch (const fl::Exception& error) {
+              EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_INTERNAL);
+            }
+            EXPECT_TRUE(response.items.empty());
           }
-          return 0;
-        });
-        auto request = MakeStatefulRequest("route this");
-        Response response;
-        try {
-          session.ProcessRequest(request, response);
-          FAIL() << "expected invalid tool call";
-        } catch (const fl::Exception& error) {
-          EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_INTERNAL);
-        }
-        EXPECT_TRUE(response.items.empty());
-      }
 
-      EXPECT_EQ(counters->created, 1);
-      EXPECT_EQ(streamed_text, test_case.expected_text);
-      EXPECT_EQ(streamed_calls, test_case.expected_calls);
-      EXPECT_TRUE(session.Transcript().Empty());
+          EXPECT_EQ(counters->created, 1);
+          EXPECT_EQ(streamed_text, test_case.expected_text);
+          EXPECT_EQ(streamed_calls, test_case.expected_calls);
+          EXPECT_TRUE(session.Transcript().Empty());
+        }
+      }
     }
   }
 }

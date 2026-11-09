@@ -4,6 +4,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -12,6 +13,34 @@
 #include <vector>
 
 namespace fl {
+
+inline bool IsJsonWithinDepthLimit(std::string_view source, std::size_t max_depth) {
+  std::size_t depth = 0;
+  bool quoted = false;
+  bool escaped = false;
+  for (const char c : source) {
+    if (quoted) {
+      if (escaped) {
+        escaped = false;
+      } else if (c == '\\') {
+        escaped = true;
+      } else if (c == '"') {
+        quoted = false;
+      }
+      continue;
+    }
+    if (c == '"') {
+      quoted = true;
+    } else if (c == '{' || c == '[') {
+      if (++depth > max_depth) {
+        return false;
+      }
+    } else if ((c == '}' || c == ']') && depth > 0) {
+      --depth;
+    }
+  }
+  return true;
+}
 
 /// Preserve declaration order and reject ambiguous objects before DOM parsing can overwrite their duplicate keys.
 inline nlohmann::ordered_json ParseJsonStrict(std::string_view source) {

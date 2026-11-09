@@ -3,11 +3,13 @@
 #include "inferencing/generative/chat/chat_transcript.h"
 
 #include "exception.h"
+#include "inferencing/generative/toolcalling/tool_call_plan.h"
 #include "inferencing/session/tool_registry.h"
 #include "items/message_item.h"
 #include "items/text_item.h"
 #include "items/tool_call_item.h"
 #include "items/tool_result_item.h"
+#include "util/json_helpers.h"
 
 #include <algorithm>
 #include <cctype>
@@ -44,6 +46,10 @@ bool IsWhitespaceOnly(std::string_view text) {
 std::optional<nlohmann::ordered_json> ParseToolCallArguments(const std::string& arguments) {
   if (arguments.empty()) {
     return nlohmann::ordered_json::object();
+  }
+
+  if (!IsJsonWithinDepthLimit(arguments, ToolCallPlan::kMaxDepth)) {
+    return std::nullopt;
   }
 
   auto parsed = nlohmann::ordered_json::parse(arguments, nullptr, /*allow_exceptions=*/false);
