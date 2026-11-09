@@ -124,7 +124,7 @@ export async function setupRealModelManager(opts: RealModelManagerOptions = {}):
     });
     if (matching.length === 0) {
       manager.dispose();
-      throw new Error(
+      throw new SkipFixture(
         `No catalog model matches task='${task}' deviceType='CPU' (and preference '${namePref}' missing)`,
       );
     }
