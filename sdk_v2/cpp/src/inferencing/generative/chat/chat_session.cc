@@ -1299,22 +1299,17 @@ ToolCallContext BuildToolCallContextForRequest(const Request& request,
           !tool_ctx.text_output &&
           (model.ModelType().starts_with("qwen2") || model.ModelId().starts_with("qwen2")) &&
           !tool_ctx.ActiveRawEnvelope() && !tool_ctx.HasAnyExplicitGuidance();
-      const bool native_automatic_tool_choice =
-          tool_ctx.text_output && !tool_ctx.forced_tool && !tool_ctx.HasAnyExplicitGuidance();
-      const bool native_engine_tool_choice =
-          model.GetGenAIConfig().GetChatBackendKind() == ChatBackendKind::kEngine &&
-          !tool_ctx.HasAnyExplicitGuidance();
+      const bool native_tool_choice = !tool_ctx.HasAnyExplicitGuidance();
       tool_ctx.qualified_native_tool_calls =
           model.HasNativeQwenXmlToolCalls() || model.HasNativeTaggedJsonToolCalls();
       tool_ctx.native_qwen_xml_tool_calls =
-          !qwen2_fenced_tool_output && (native_automatic_tool_choice || native_engine_tool_choice) &&
+          !qwen2_fenced_tool_output && native_tool_choice &&
           model.HasNativeQwenXmlToolCalls() && !tool_ctx.ActiveRawEnvelope() &&
           CanDecodeQwenXmlToolSchemas(tool_ctx.tools_json, tool_ctx.tool_kinds);
       tool_ctx.native_tagged_json_tool_calls =
-          !qwen2_fenced_tool_output && (native_automatic_tool_choice || native_engine_tool_choice) &&
+          !qwen2_fenced_tool_output && native_tool_choice &&
           model.HasNativeTaggedJsonToolCalls() && !tool_ctx.ActiveRawEnvelope();
       if (tool_ctx.native_qwen_xml_tool_calls || tool_ctx.native_tagged_json_tool_calls) {
-        tool_ctx.supports_reasoning_history = false;
         tool_ctx.guidance_disabled = true;
       }
       tool_ctx.eos_token_ids = model.GetPreprocessor().GetEosTokenIds();

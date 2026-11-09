@@ -38,6 +38,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -343,6 +344,26 @@ constexpr std::string_view kLookupCall =
     "</parameter>\n"
     "</function>\n"
     "</tool_call>";
+
+constexpr std::string_view kQualifiedNativeChatTemplate = R"(
+{%- if tools %}{{- '<|im_start|>system\n' }}
+{%- for tool in tools %}{{- tool | tojson }}{% endfor %}
+{{- '<|im_end|>\n' }}{% endif %}
+{%- for message in messages %}
+{{- '<|im_start|>' + ('user' if message.role == 'tool' else message.role) + '\n' }}
+{%- if message.role == 'assistant' %}
+{{- '<think>' + (message.reasoning_content | default('')) + '</think>' + message.content }}
+{%- for call in message.tool_calls %}
+{{- '<tool_call>\n<function=' + call.function.name + '>\n' }}
+{%- for name, value in call.function.arguments.items() %}
+{{- '<parameter=' + name + '>\n' + value + '\n</parameter>\n' }}
+{%- endfor %}{{- '</function>\n</tool_call>' }}{% endfor %}
+{%- elif message.role == 'tool' %}
+{{- '<tool_response>' + message.content + '</tool_response>' }}
+{%- else %}{{- message.content }}{% endif %}
+{{- '<|im_end|>\n' }}{% endfor %}
+{%- if add_generation_prompt %}{{- '<|im_start|>assistant\n<think>' }}{% endif %}
+)";
 
 constexpr std::string_view kSecondCall =
     "<tool_call>\n"
@@ -1717,9 +1738,40 @@ class QwenNativeProductionIntegrationTest : public ::testing::Test {
     ASSERT_EQ(tags.eor_id, kEngineReasoningEnd);
     ASSERT_EQ(tags.bot_str, "<tool_call>");
     ASSERT_EQ(tags.eot_str, "</tool_call>");
+
+    const std::array sources{model_directory_, engine_model_directory_};
+    for (size_t i = 0; i < sources.size(); ++i) {
+      qualified_directories_[i] = test::MakeUniqueTempPath("qualified_native_");
+      std::filesystem::copy(sources[i], qualified_directories_[i], std::filesystem::copy_options::recursive);
+      const auto path = qualified_directories_[i] / "tokenizer_config.json";
+      auto tokenizer_config = nlohmann::json::parse(ReadText(path));
+      tokenizer_config["chat_template"] = kQualifiedNativeChatTemplate;
+      WriteText(path, tokenizer_config.dump(2));
+      const auto result = load_manager_->LoadModel(
+          qualified_directories_[i].string(), kQualifiedModelIds[i], ExecutionProvider::kCPU);
+      ASSERT_EQ(result.status, ModelLoadManager::LoadStatus::kSuccess);
+      qualified_models_[i] = result.model;
+      ASSERT_NE(qualified_models_[i], nullptr);
+      const auto probe = qualified_models_[i]->GetPreprocessor().ApplyChatTemplate(
+          R"([{"role":"user","content":"probe"},{"role":"assistant","content":"","tool_calls":[{"function":{"name":"probe_function","arguments":{"probe_parameter":"probe_value"}}}]}])",
+          R"([{"type":"function","function":{"name":"probe_function","description":"Capability probe","parameters":{"type":"object","properties":{"probe_parameter":{"type":"string"}}}}}])",
+          false);
+      ASSERT_TRUE(qualified_models_[i]->HasNativeQwenXmlToolCalls()) << probe;
+      ASSERT_TRUE(qualified_models_[i]->SupportsReasoningHistory());
+    }
   }
 
   static void TearDownTestSuite() {
+    for (size_t i = 0; i < qualified_models_.size(); ++i) {
+      if (load_manager_ && qualified_models_[i]) {
+        EXPECT_TRUE(load_manager_->UnloadModel(kQualifiedModelIds[i]));
+      }
+      qualified_models_[i] = nullptr;
+      std::error_code error;
+      std::filesystem::remove_all(qualified_directories_[i], error);
+      EXPECT_FALSE(error) << error.message();
+      qualified_directories_[i].clear();
+    }
     if (load_manager_ && engine_model_) {
       EXPECT_TRUE(load_manager_->UnloadModel(kEngineModelId));
     }
@@ -1938,9 +1990,80 @@ class QwenNativeProductionIntegrationTest : public ::testing::Test {
   static inline GenAIModelInstance* model_ = nullptr;
   static inline GenAIModelInstance* qwen2_model_ = nullptr;
   static inline GenAIModelInstance* engine_model_ = nullptr;
+  static constexpr std::array kQualifiedModelIds{"qualified-native-generator", "qualified-native-engine"};
+  static inline std::array<std::filesystem::path, 2> qualified_directories_;
+  static inline std::array<GenAIModelInstance*, 2> qualified_models_{};
   static inline test::FakeServiceBindings services_;
   TelemetryLogger telemetry_{"qwen-native-production-test", test::NullLog()};
 };
+
+TEST_F(QwenNativeProductionIntegrationTest, QualifiedNativeChoicesDoNotRequestGuidanceAcrossBackends) {
+  for (auto* model : qualified_models_) {
+    for (const auto* choice : {"auto", "required", "forced"}) {
+      SCOPED_TRACE(model->ModelId());
+      SCOPED_TRACE(choice);
+      auto catalog = MakeCatalogModel(true);
+      auto output = OutputFactory(std::string(kLookupCall));
+      int dispatched = 0;
+      ChatSession session(
+          catalog, *model, *logger_, telemetry_, {},
+          [&](const auto& messages, const auto& options, auto& instance, const auto& context, bool retry) {
+            ++dispatched;
+            EXPECT_TRUE(context.qualified_native_tool_calls);
+            EXPECT_TRUE(context.native_qwen_xml_tool_calls);
+            EXPECT_TRUE(context.guidance_disabled);
+            EXPECT_TRUE(context.supports_reasoning_history);
+            EXPECT_FALSE(retry);
+            return output(messages, options, instance, context, retry);
+          });
+      const auto result = RunChatCompletions(session, choice);
+      const auto& calls = result.at("choices").at(0).at("message").at("tool_calls");
+      ASSERT_EQ(calls.size(), 1u);
+      EXPECT_EQ(calls[0].at("function").at("name"), "lookup");
+      EXPECT_EQ(nlohmann::json::parse(calls[0].at("function").at("arguments").get<std::string>()),
+                nlohmann::json({{"city", "Paris"}}));
+      EXPECT_EQ(dispatched, 1);
+    }
+  }
+}
+
+TEST_F(QwenNativeProductionIntegrationTest, QualifiedNativeContinuationPreservesReasoningAndCorrelatedResult) {
+  for (auto* model : qualified_models_) {
+    SCOPED_TRACE(model->ModelId());
+    auto catalog = MakeCatalogModel(true);
+    auto output = OutputFactory("Finished.");
+    ChatSession session(
+        catalog, *model, *logger_, telemetry_, {},
+        [&](const auto& messages, const auto& options, auto& instance, const auto& context, bool retry) {
+          EXPECT_TRUE(context.native_qwen_xml_tool_calls);
+          EXPECT_TRUE(context.supports_reasoning_history);
+          const auto prompt = PrepareTextChatPrompt(messages, instance, context);
+          EXPECT_NE(prompt.prompt.find("<think>Continue after the result.</think>"), std::string::npos);
+          EXPECT_NE(prompt.prompt.find("<tool_response>19 degrees</tool_response>"), std::string::npos);
+          EXPECT_LT(prompt.prompt.find("</tool_call>"), prompt.prompt.find("<tool_response>"));
+          return output(messages, options, instance, context, retry);
+        });
+    const auto body = nlohmann::json{
+        {"model", model->ModelId()},
+        {"messages", {{{"role", "user"}, {"content", "Lookup Paris and then finish."}},
+                      {{"role", "assistant"}, {"content", ""},
+                       {"reasoning_content", "Continue after the result."},
+                       {"tool_calls", {{{"id", "call_1"}, {"type", "function"},
+                                        {"function", {{"name", "lookup"},
+                                                      {"arguments", R"({"city":"Paris"})"}}}}}}},
+                      {{"role", "tool"}, {"tool_call_id", "call_1"}, {"content", "19 degrees"}}}},
+        {"tools", {{{"type", "function"}, {"function", {{"name", "lookup"},
+                       {"parameters", {{"type", "object"}, {"properties", {{"city", {{"type", "string"}}}}}}}}}}}},
+        {"tool_choice", "auto"}};
+    Request request;
+    request.AddOwnedItem(std::make_unique<TextItem>(body.dump(), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+    Response response;
+    session.ProcessRequest(request, response);
+    ASSERT_EQ(response.items.size(), 1u);
+    const auto result = nlohmann::json::parse(static_cast<const TextItem&>(*response.items[0]).text);
+    EXPECT_EQ(result.at("choices").at(0).at("message").at("content"), "Finished.");
+  }
+}
 
 TEST_F(QwenNativeProductionIntegrationTest, XmlHistoryProjectionPreservesLiteralArgumentValues) {
   const std::string value = "line1\n\"quote\"\\path \xE2\x98\x83";
