@@ -13,7 +13,8 @@ endif()
 
 set(shutdown_sdk_dir "${CMAKE_CURRENT_BINARY_DIR}/telemetry_shutdown_sdk")
 file(MAKE_DIRECTORY "${shutdown_sdk_dir}")
-foreach(source callbacks/DebugSource.cpp pal/WorkerThread.cpp api/Logger.cpp pal/PAL.cpp http/HttpRequestEncoder.cpp)
+foreach(source callbacks/DebugSource.cpp pal/WorkerThread.cpp api/Logger.cpp pal/PAL.cpp api/AuthTokensController.cpp
+        http/HttpRequestEncoder.cpp)
     set(source_path "${TELEMETRY_SHUTDOWN_SDK_SOURCE_DIR}/lib/${source}")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${source_path}")
     file(READ "${source_path}" instrumented)
@@ -63,9 +64,8 @@ foreach(source callbacks/DebugSource.cpp pal/WorkerThread.cpp api/Logger.cpp pal
             instrumented "${instrumented}")
         string(REPLACE "static const std::string sdkVersion(" "static const TelemetryTestSdkVersion sdkVersion("
             instrumented "${instrumented}")
-        string(REPLACE "return *sdkVersion;" "TelemetryTestVersionAccess();\n        return *sdkVersion;"
-            instrumented "${instrumented}")
-        string(REPLACE "return sdkVersion;" "TelemetryTestVersionAccess();\n        return sdkVersion;"
+        set(version_site "PlatformAbstractionLayer::getSdkVersion() const\n    {")
+        string(REPLACE "${version_site}" "${version_site}\n        TelemetryTestVersionAccess();"
             instrumented "${instrumented}")
         string(REGEX MATCHALL "TelemetryTestVersionAccess\\(\\)" sites "${instrumented}")
         list(LENGTH sites count)
@@ -79,6 +79,28 @@ extern "C" void TelemetryTestVersionAccess();
 struct TelemetryTestSdkVersion : std::string {
     using std::string::string;
     ~TelemetryTestSdkVersion() { TelemetryTestVersionDestroyed(); }
+};
+]=])
+    elseif(source STREQUAL "api/AuthTokensController.cpp")
+        string(REPLACE "static std::mutex mutex;" "static TelemetryTestAuthMutex mutex;"
+            instrumented "${instrumented}")
+        string(REPLACE "using AuthMutex = std::mutex;" "using AuthMutex = TelemetryTestAuthMutex;"
+            instrumented "${instrumented}")
+        string(REPLACE "return mutex;" "TelemetryTestAuthMutexAccess();\n        return mutex;"
+            instrumented "${instrumented}")
+        string(REPLACE "return *mutex;" "TelemetryTestAuthMutexAccess();\n        return *mutex;"
+            instrumented "${instrumented}")
+        string(REGEX MATCHALL "TelemetryTestAuthMutexAccess\\(\\)" sites "${instrumented}")
+        list(LENGTH sites count)
+        if(NOT count EQUAL 1)
+            message(FATAL_ERROR "Update shutdown regression auth-mutex lifetime instrumentation")
+        endif()
+        string(PREPEND instrumented [=[
+#include <mutex>
+extern "C" void TelemetryTestAuthMutexDestroyed();
+extern "C" void TelemetryTestAuthMutexAccess();
+struct TelemetryTestAuthMutex : std::mutex {
+    ~TelemetryTestAuthMutex() { TelemetryTestAuthMutexDestroyed(); }
 };
 ]=])
     else()
@@ -135,7 +157,8 @@ endif()
 
 add_library(telemetry_shutdown_sdk OBJECT
     "${shutdown_sdk_dir}/DebugSource.cpp" "${shutdown_sdk_dir}/WorkerThread.cpp" "${shutdown_sdk_dir}/Logger.cpp"
-    "${shutdown_sdk_dir}/PAL.cpp" "${shutdown_sdk_dir}/HttpRequestEncoder.cpp")
+    "${shutdown_sdk_dir}/PAL.cpp" "${shutdown_sdk_dir}/AuthTokensController.cpp"
+    "${shutdown_sdk_dir}/HttpRequestEncoder.cpp")
 target_link_libraries(telemetry_shutdown_sdk PRIVATE MSTelemetry::mat)
 target_compile_definitions(telemetry_shutdown_sdk PRIVATE MATSDK_DISABLE_LOGGING MATSDK_DISABLE_DEVICE_ID)
 target_include_directories(telemetry_shutdown_sdk PRIVATE

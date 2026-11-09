@@ -31,11 +31,23 @@ public abstract class Session : IDisposable
 
     /// <summary>
     /// Create a session from a loaded model. Subclasses should validate the model task before calling this.
+    /// The caller owns the model and must dispose this session before unloading it.
     /// </summary>
-    protected Session(IModel model)
+    protected Session(IModel model) : this(model, requireLoaded: false)
+    {
+    }
+
+    private protected Session(IModel model, bool requireLoaded)
     {
         var concrete = (Model)model;
         using var managerLease = concrete.AcquireManagerLease(trackReentrancy: true);
+        if (requireLoaded && !concrete.NativeModel.IsLoaded)
+        {
+            throw new FoundryLocalException(
+                $"Model {concrete.NativeModel.GetInfo().Id} is not loaded. " +
+                "Call LoadAsync before creating a session.");
+        }
+
         try
         {
             _session = new NativeSession(concrete.NativeModel);
@@ -47,6 +59,12 @@ public abstract class Session : IDisposable
             _session?.Dispose();
             throw;
         }
+    }
+
+    // Allows task-specific wrappers to substitute their JSON transport in unit tests
+    // without loading the native runtime.
+    private protected Session()
+    {
     }
 
     /// <summary>
