@@ -111,6 +111,26 @@ internal sealed class NonGenerativeIntegrationTests
             return model;
         }
 
+        var (directory, task) = modelId switch
+        {
+            "clm-v0.1-8b-mixed-generic-cpu:1" =>
+                ("clm-v0.1-8b-mixed-generic-cpu-1", "text-ranking"),
+            "kev-0.8b-mixed-generic-cpu:1" =>
+                ("kev-0.8b-mixed-generic-cpu-1", "typed-decision"),
+            _ => (null, null),
+        };
+        var testDataRoot = Environment.GetEnvironmentVariable("FOUNDRY_TEST_DATA_DIR");
+        if (directory != null && task != null && !string.IsNullOrEmpty(testDataRoot))
+        {
+            var packagePath = Path.Combine(testDataRoot, "Microsoft", directory);
+            if (Directory.Exists(packagePath))
+            {
+                var metadata = new ModelInfoBuilder()
+                    .SetStringProperty(ModelInfoPropertyKeys.Task, task);
+                return await catalog.RegisterModelAsync(packagePath, modelId, metadata);
+            }
+        }
+
         var message = $"Required model '{modelId}' was not found under FOUNDRY_TEST_DATA_DIR.";
         if (string.Equals(
                 Environment.GetEnvironmentVariable("FOUNDRY_REQUIRE_NON_GENERATIVE_MODELS"),
