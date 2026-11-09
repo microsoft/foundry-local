@@ -893,6 +893,10 @@ GuidedToolRetryResult RunHarmonyToolRetry(const chat_internal::PreparedChatMessa
         ToolCallStreamAccumulator::Output admitted;
         admitted.events.emplace_back(std::move(*call));
         chat_session_internal::NormalizeToolOutputBatch(admitted, context);
+        if (admitted.malformed || admitted.events.empty()) {
+          error = "Guided Harmony recovery failed tool-call normalization";
+          continue;
+        }
         result.events.emplace_back(std::move(std::get<ParsedToolCall>(admitted.events.front())));
       } else {
         error = "Guided Harmony recovery emitted text instead of one corrected tool call";
