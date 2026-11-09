@@ -2114,10 +2114,16 @@ TEST_F(QwenNativeProductionIntegrationTest, NativeProjectionProtectsArgumentKeys
   const std::string literal = "line1\n\"quote\"\\path <think> <tool_call>";
   for (auto* model : qualified_models_) {
     SCOPED_TRACE(model->ModelId());
-    const auto prepare = [&](const std::string& value, const std::string& key, const std::string& definition_name) {
+    const auto prepare = [&](const std::string& value, const std::string& key, const std::string& definition_name,
+                             bool raw_scalar_arguments = true) {
       TranscriptMessage assistant(FOUNDRY_LOCAL_ROLE_ASSISTANT, "");
+      auto arguments = nlohmann::json{{"nested", {{"type", value}, {key, value}}}};
+      if (raw_scalar_arguments) {
+        arguments["type"] = value;
+        arguments[key] = value;
+      }
       assistant.AppendToolCall(MakeSuppliedToolCall(
-          "call_1", "lookup", nlohmann::json{{"type", value}, {key, value}, {"nested", {{"type", value}, {key, value}}}}.dump()));
+          "call_1", "lookup", arguments.dump()));
       ToolCallContext context;
       context.tool_call_start = "<tool_call>";
       context.tool_call_end = "</tool_call>";
@@ -2147,6 +2153,17 @@ TEST_F(QwenNativeProductionIntegrationTest, NativeProjectionProtectsArgumentKeys
     const std::string key = "<tool_call>key";
     const auto prompt = prepare(literal, key, "<think>");
     const auto benign = prepare("benign", "key", "definition");
+    const std::string embedded_nul("before\0after", 12);
+    try {
+      prepare(embedded_nul, "key", "definition");
+      FAIL() << "Expected raw NUL bytes to be rejected before tokenizer entry";
+    } catch (const fl::Exception& error) {
+      EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+      EXPECT_NE(std::string(error.what()).find("rendered chat prompt fragment must not contain embedded NUL bytes"),
+                std::string::npos);
+    }
+    const auto escaped_nul = prepare(embedded_nul, "key", "definition", false);
+    EXPECT_NE(escaped_nul.prompt.find(R"("before\u0000after")"), std::string::npos);
     EXPECT_NE(prompt.prompt.find("<parameter=type>\n" + literal + "\n</parameter>"), std::string::npos);
     EXPECT_NE(prompt.prompt.find("<parameter=" + key + ">\n" + literal + "\n</parameter>"), std::string::npos);
     const std::string parameter = "<parameter=nested>\n";

@@ -8,6 +8,7 @@
 #include "inferencing/generative/genai_model_instance.h"
 #include "inferencing/generative/toolcalling/tool_call_context.h"
 #include "inferencing/generative/toolcalling/tool_call_utils.h"
+#include "inferencing/session/tool_registry.h"
 #include "items/audio_item.h"
 #include "items/image_item.h"
 
@@ -157,6 +158,7 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
       if (text.empty()) {
         return;
       }
+      ValidateToolCallText(text, "rendered chat prompt fragment");
       auto sequences = literal ? preprocessor.EncodeLiteral(text.c_str()) : preprocessor.Encode(text.c_str());
       const auto* data = sequences->SequenceData(0);
       prepared.token_ids.insert(prepared.token_ids.end(), data, data + sequences->SequenceCount(0));
