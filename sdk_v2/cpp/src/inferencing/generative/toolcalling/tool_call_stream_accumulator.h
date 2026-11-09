@@ -183,7 +183,8 @@ class ToolCallStreamAccumulator {
   bool HasCompleteTokenOwnedEnvelope() const noexcept { return owned_after_payload_; }
 
   /// Check published boundary identity before byte buffering can erase token provenance.
-  Output ObserveTokenBoundaries(std::string_view chunk, bool owns_start, bool owns_end) {
+  Output ObserveTokenBoundaries(std::string_view chunk, bool owns_start, bool owns_end,
+                                bool json_string_payload = true) {
     Output out;
     if (selected_payload_malformed_) {
       return out;
@@ -196,7 +197,7 @@ class ToolCallStreamAccumulator {
       return out;
     }
 
-    if (owned_inside_payload_ && !owned_inside_string_ && owns_end) {
+    if (owned_inside_payload_ && (!json_string_payload || !owned_inside_string_) && owns_end) {
       owned_inside_payload_ = false;
       owned_after_payload_ = true;
       owned_boundary_prefix_.clear();
@@ -205,7 +206,7 @@ class ToolCallStreamAccumulator {
 
     for (const auto byte : chunk) {
       if (owned_inside_payload_) {
-        if (owned_inside_string_) {
+        if (json_string_payload && owned_inside_string_) {
           if (owned_escaped_) {
             owned_escaped_ = false;
           } else if (byte == '\\') {
@@ -216,7 +217,7 @@ class ToolCallStreamAccumulator {
           continue;
         }
 
-        if (byte == '"') {
+        if (json_string_payload && byte == '"') {
           owned_inside_string_ = true;
           owned_boundary_prefix_.clear();
           continue;

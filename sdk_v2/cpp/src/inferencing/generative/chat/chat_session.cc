@@ -665,7 +665,8 @@ ToolCallStreamAccumulator::Output PushToolOutputSegment(
       (raw_detector == nullptr || !raw_detector->InsideEnvelope() || structured_accumulator.InsideToolCall())) {
     auto ownership = structured_accumulator.ObserveTokenBoundaries(
         segment.text, segment.token_id == context.tool_call_start_token_id,
-        segment.token_id == context.tool_call_end_token_id);
+        segment.token_id == context.tool_call_end_token_id,
+        /*json_string_payload=*/!context.native_qwen_xml_tool_calls);
     if (ownership.malformed) {
       return ownership;
     }

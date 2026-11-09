@@ -42,6 +42,8 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
              tool_ctx.template_kwargs_json.find(prefix) != std::string::npos);
 
     std::unordered_map<std::string, std::string> literals;
+    // Keep protected dictionary keys equal to their required-name entries during template evaluation.
+    std::unordered_map<std::string, std::string> native_literal_markers;
     const bool native_literals =
         !tool_ctx.harmony && (tool_ctx.native_qwen_xml_tool_calls || tool_ctx.native_tagged_json_tool_calls);
     const std::string serialization_witness = "\\\"\n@";
@@ -54,7 +56,16 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
       if (text.empty()) {
         return text;
       }
+      if (native_literals) {
+        const auto found = native_literal_markers.find(text);
+        if (found != native_literal_markers.end()) {
+          return found->second + serialization_witness;
+        }
+      }
       auto marker = prefix + std::to_string(literals.size()) + "__";
+      if (native_literals) {
+        native_literal_markers.emplace(text, marker);
+      }
       literals.emplace(marker, std::move(text));
       // The template, not the output dialect, determines whether a fragment is JSON-escaped.
       return native_literals ? marker + serialization_witness : marker;
@@ -88,21 +99,26 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
         projected_json.insert(projected_json.begin(),
                               nlohmann::ordered_json{{"role", "system"}, {"content", state}});
       }
-      std::function<void(nlohmann::ordered_json&, bool)> protect_json_strings =
-          [&](nlohmann::ordered_json& value, bool argument_data) {
+      std::function<void(nlohmann::ordered_json&, bool, bool)> protect_json_strings =
+          [&](nlohmann::ordered_json& value, bool argument_data, bool dictionary_keys) {
             if (value.is_string()) {
               value = protect_literal(value.get<std::string>());
             } else if (value.is_array()) {
               for (auto& item : value) {
-                protect_json_strings(item, argument_data);
+                protect_json_strings(item, argument_data, false);
               }
             } else if (value.is_object()) {
               auto protected_object = nlohmann::ordered_json::object();
               for (auto& [key, item] : value.items()) {
-                if (argument_data || key != "type" || !item.is_string()) {
-                  protect_json_strings(item, argument_data);
+                if (argument_data || dictionary_keys || key != "type" || !item.is_string()) {
+                  const bool schema_dictionary =
+                      !dictionary_keys &&
+                      (key == "properties" || key == "$defs" || key == "definitions" ||
+                       key == "patternProperties" || key == "dependentRequired" ||
+                       key == "dependentSchemas" || key == "dependencies");
+                  protect_json_strings(item, argument_data, schema_dictionary);
                 }
-                protected_object[argument_data ? protect_literal(key) : key] = std::move(item);
+                protected_object[argument_data || dictionary_keys ? protect_literal(key) : key] = std::move(item);
               }
               value = std::move(protected_object);
             }
@@ -110,7 +126,7 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
       for (auto& message : projected_json) {
         for (const auto* field : {"content", "reasoning_content"}) {
           if (message.contains(field)) {
-            protect_json_strings(message[field], false);
+            protect_json_strings(message[field], false, false);
           }
         }
         if (message.contains("tool_calls")) {
@@ -120,16 +136,16 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
             }
             auto& function = call["function"];
             if (function.contains("name")) {
-              protect_json_strings(function["name"], false);
+              protect_json_strings(function["name"], false, false);
             }
             if (function.contains("arguments")) {
-              protect_json_strings(function["arguments"], true);
+              protect_json_strings(function["arguments"], true, false);
             }
           }
         }
       }
       auto tools = nlohmann::ordered_json::parse(tool_ctx.tools_json);
-      protect_json_strings(tools, false);
+      protect_json_strings(tools, false, false);
       projected = projected_json.dump();
       projected_tools = tools.dump();
     } else {

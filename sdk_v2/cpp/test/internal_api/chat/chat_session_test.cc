@@ -347,7 +347,11 @@ constexpr std::string_view kLookupCall =
 
 constexpr std::string_view kQualifiedNativeChatTemplate = R"(
 {%- if tools %}{{- '<|im_start|>system\n' }}
-{%- for tool in tools %}{{- tool | tojson }}{% endfor %}
+{%- for tool in tools %}
+{%- for name in tool.function.parameters.required | default([]) %}
+{%- if name not in tool.function.parameters.properties %}{{- raise_exception('Required name lost its property') }}{% endif %}
+{%- endfor %}
+{{- tool | tojson }}{% endfor %}
 {{- '<|im_end|>\n' }}{% endif %}
 {%- for message in messages %}
 {{- '<|im_start|>' + ('user' if message.role == 'tool' else message.role) + '\n' }}
@@ -2110,7 +2114,7 @@ TEST_F(QwenNativeProductionIntegrationTest, NativeProjectionProtectsArgumentKeys
   const std::string literal = "line1\n\"quote\"\\path <think> <tool_call>";
   for (auto* model : qualified_models_) {
     SCOPED_TRACE(model->ModelId());
-    const auto prepare = [&](const std::string& value, const std::string& key) {
+    const auto prepare = [&](const std::string& value, const std::string& key, const std::string& definition_name) {
       TranscriptMessage assistant(FOUNDRY_LOCAL_ROLE_ASSISTANT, "");
       assistant.AppendToolCall(MakeSuppliedToolCall(
           "call_1", "lookup", nlohmann::json{{"type", value}, {key, value}, {"nested", {{"type", value}, {key, value}}}}.dump()));
@@ -2120,8 +2124,14 @@ TEST_F(QwenNativeProductionIntegrationTest, NativeProjectionProtectsArgumentKeys
       context.tool_output = true;
       context.native_qwen_xml_tool_calls = true;
       context.qualified_native_tool_calls = true;
+      auto parameters = nlohmann::json{
+          {"type", "object"},
+          {"properties", {{"type", {{"type", "string"}, {"enum", {value}}}}, {key, {{"type", "string"}}}, {"reference", {{"$ref", "#/$defs/common"}}}}},
+          {"required", {"type", key}},
+          {"$defs", {{definition_name, {{"type", "string"}}}, {"common", {{"type", "string"}}}}},
+          {"additionalProperties", true}};
       context.tools_json = nlohmann::json::array(
-                               {{{"type", "function"}, {"function", {{"name", "lookup"}, {"description", value}, {"parameters", {{"type", "object"}, {"properties", {{"type", {{"type", "string"}, {"enum", {value}}}}}}, {"additionalProperties", true}}}}}}})
+                               {{{"type", "function"}, {"function", {{"name", "lookup"}, {"description", value}, {"parameters", std::move(parameters)}}}}})
                                .dump();
       context.tool_kinds = {{"lookup", ToolKind::kFunction}};
       context.tool_plan = ToolCallPlan::Create(context.tools_json);
@@ -2132,8 +2142,8 @@ TEST_F(QwenNativeProductionIntegrationTest, NativeProjectionProtectsArgumentKeys
           *model, context);
     };
     const std::string key = "<tool_call>key";
-    const auto prompt = prepare(literal, key);
-    const auto benign = prepare("benign", "key");
+    const auto prompt = prepare(literal, key, "<think>");
+    const auto benign = prepare("benign", "key", "definition");
     EXPECT_NE(prompt.prompt.find("<parameter=type>\n" + literal + "\n</parameter>"), std::string::npos);
     EXPECT_NE(prompt.prompt.find("<parameter=" + key + ">\n" + literal + "\n</parameter>"), std::string::npos);
     const std::string parameter = "<parameter=nested>\n";
@@ -2151,10 +2161,66 @@ TEST_F(QwenNativeProductionIntegrationTest, NativeProjectionProtectsArgumentKeys
         prompt.prompt.substr(definitions_start, definitions_end - definitions_start));
     EXPECT_EQ(definition["function"]["description"], literal);
     EXPECT_EQ(definition["function"]["parameters"]["properties"]["type"]["enum"][0], literal);
+    EXPECT_TRUE(definition["function"]["parameters"]["properties"].contains(key));
+    EXPECT_TRUE(definition["function"]["parameters"]["$defs"].contains("<think>"));
+    EXPECT_EQ(definition["function"]["parameters"]["properties"]["reference"]["$ref"], "#/$defs/common");
+    EXPECT_EQ(definition["function"]["parameters"]["required"], nlohmann::json::array({"type", key}));
     const auto& tags = model->GetTagInfo();
     for (const auto id : {tags.bot_id, tags.eot_id, tags.bor_id, tags.eor_id}) {
       EXPECT_EQ(std::count(prompt.token_ids.begin(), prompt.token_ids.end(), id),
                 std::count(benign.token_ids.begin(), benign.token_ids.end(), id));
+    }
+  }
+}
+
+TEST_F(QwenNativeProductionIntegrationTest, XmlRawQuoteRequiresAnAuthoritativeClosingBoundaryAcrossBackendsAndApis) {
+  const std::string call =
+      "<tool_call>\n<function=lookup>\n<parameter=city>\n\"Paris\n</parameter>\n</function>\n</tool_call>";
+  for (auto* model : qualified_models_) {
+    for (const bool json_request : {false, true}) {
+      for (const bool literal_end : {false, true}) {
+        SCOPED_TRACE(model->ModelId());
+        SCOPED_TRACE(json_request);
+        SCOPED_TRACE(literal_end);
+        TextChatGeneratorFactory factory = [&](const auto&, const auto&, auto&, const auto&, bool) {
+          auto generator = std::make_unique<FixedOutputGenerator>(
+              call, BackendTerminationCause::kNaturalEnd, false, nullptr, 4, 1,
+              std::function<void()>{}, nullptr, /*chunk_size=*/1);
+          const auto offset = model->GetGenAIConfig().GetChatBackendKind() == ChatBackendKind::kEngine
+                                  ? 0
+                                  : kClassicControlOffset;
+          generator->EnableAuthoritativeControls(offset);
+          if (literal_end) generator->ReplaceControlWithLiteral(kEngineToolEnd + offset);
+          return generator;
+        };
+        auto catalog = MakeCatalogModel();
+        ChatSession session(catalog, *model, *logger_, telemetry_, {}, std::move(factory));
+        Response response;
+        std::vector<nlohmann::json> chunks;
+        const auto run = [&] {
+          if (json_request) {
+            const auto completion = RunChatCompletions(session, "auto", &chunks);
+            const auto& calls = completion.at("choices").at(0).at("message").at("tool_calls");
+            ASSERT_EQ(calls.size(), 1u);
+            EXPECT_EQ(nlohmann::json::parse(calls[0]["function"]["arguments"].get<std::string>())["city"], "\"Paris");
+          } else {
+            AddFunctionTools(session);
+            auto request = MakeStatefulRequest("route this");
+            session.ProcessRequest(request, response);
+            ASSERT_EQ(Calls(response).size(), 1u);
+          }
+        };
+        if (literal_end) {
+          EXPECT_THROW(run(), fl::Exception);
+          EXPECT_TRUE(response.items.empty());
+          EXPECT_TRUE(session.Transcript().Empty());
+          for (const auto& chunk : chunks) {
+            EXPECT_FALSE(chunk.at("choices").at(0).at("delta").contains("tool_calls"));
+          }
+        } else {
+          EXPECT_NO_THROW(run());
+        }
+      }
     }
   }
 }
