@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
+#include "exception.h"
 #include "inferencing/generative/chat/chat_template.h"
 #include "inferencing/generative/chat/chat_transcript.h"
 #include "inferencing/generative/chat/harmony_decoder.h"
@@ -210,4 +211,25 @@ TEST(HarmonyDecoderTest, PromptProjectionPreservesNativeJsonRawAndResultProvenan
   const auto projected_tools = nlohmann::json::parse(projection.tools_json);
   EXPECT_FALSE(projected_tools[0]["function"].contains("native_freeform"));
   EXPECT_TRUE(projected_tools[1]["function"]["native_freeform"].get<bool>());
+}
+
+TEST(HarmonyDecoderTest, PromptProjectionRejectsNonLeadingInstructionRoles) {
+  for (const auto* tools : {"", kTools}) {
+    ToolCallContext context;
+    context.harmony = kProtocol;
+    context.tools_json = tools;
+    for (const auto role : {FOUNDRY_LOCAL_ROLE_SYSTEM, FOUNDRY_LOCAL_ROLE_DEVELOPER}) {
+      const auto protect = [](std::string value) { return value; };
+      EXPECT_NO_THROW(BuildHarmonyPromptProjection(
+          {{role, "Follow these instructions."}, {FOUNDRY_LOCAL_ROLE_USER, "Hello"}}, context, protect));
+      try {
+        BuildHarmonyPromptProjection(
+            {{FOUNDRY_LOCAL_ROLE_USER, "Hello"}, {role, "Do not omit this instruction."}, {FOUNDRY_LOCAL_ROLE_USER, "Continue"}},
+            context, protect);
+        FAIL() << "Expected non-leading instructions to be rejected";
+      } catch (const fl::Exception& error) {
+        EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+      }
+    }
+  }
 }

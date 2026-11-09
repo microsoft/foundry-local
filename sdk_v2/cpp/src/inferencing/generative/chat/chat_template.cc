@@ -336,6 +336,11 @@ HarmonyPromptProjection BuildHarmonyPromptProjection(
   auto projected = Json::array();
   std::unordered_map<std::string, std::string> call_names;
   for (const auto& message : messages) {
+    if (!projected.empty() &&
+        (message.role == FOUNDRY_LOCAL_ROLE_SYSTEM || message.role == FOUNDRY_LOCAL_ROLE_DEVELOPER)) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+               "Harmony requires system or developer instructions to be the first message");
+    }
     Json entry{{"role", Utils::RoleToString(message.role)}, {"content", protect_literal(message.VisibleText())}};
     if (message.role == FOUNDRY_LOCAL_ROLE_ASSISTANT) {
       entry["thinking"] = protect_literal(message.ReasoningText());
