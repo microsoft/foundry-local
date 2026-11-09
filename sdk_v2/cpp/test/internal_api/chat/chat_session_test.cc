@@ -356,7 +356,7 @@ constexpr std::string_view kQualifiedNativeChatTemplate = R"(
 {%- for call in message.tool_calls %}
 {{- '<tool_call>\n<function=' + call.function.name + '>\n' }}
 {%- for name, value in call.function.arguments.items() %}
-{{- '<parameter=' + name + '>\n' + value + '\n</parameter>\n' }}
+{{- '<parameter=' + name + '>\n' + (value if value is string else value | tojson) + '\n</parameter>\n' }}
 {%- endfor %}{{- '</function>\n</tool_call>' }}{% endfor %}
 {%- elif message.role == 'tool' %}
 {{- '<tool_response>' + message.content + '</tool_response>' }}
@@ -1744,9 +1744,9 @@ class QwenNativeProductionIntegrationTest : public ::testing::Test {
       qualified_directories_[i] = test::MakeUniqueTempPath("qualified_native_");
       std::filesystem::copy(sources[i], qualified_directories_[i], std::filesystem::copy_options::recursive);
       const auto path = qualified_directories_[i] / "tokenizer_config.json";
-      auto tokenizer_config = nlohmann::json::parse(ReadText(path));
-      tokenizer_config["chat_template"] = kQualifiedNativeChatTemplate;
-      WriteText(path, tokenizer_config.dump(2));
+      auto qualified_tokenizer_config = nlohmann::json::parse(ReadText(path));
+      qualified_tokenizer_config["chat_template"] = kQualifiedNativeChatTemplate;
+      WriteText(path, qualified_tokenizer_config.dump(2));
       const auto result = load_manager_->LoadModel(
           qualified_directories_[i].string(), kQualifiedModelIds[i], ExecutionProvider::kCPU);
       ASSERT_EQ(result.status, ModelLoadManager::LoadStatus::kSuccess);
@@ -2062,6 +2062,100 @@ TEST_F(QwenNativeProductionIntegrationTest, QualifiedNativeContinuationPreserves
     ASSERT_EQ(response.items.size(), 1u);
     const auto result = nlohmann::json::parse(static_cast<const TextItem&>(*response.items[0]).text);
     EXPECT_EQ(result.at("choices").at(0).at("message").at("content"), "Finished.");
+  }
+}
+
+TEST_F(QwenNativeProductionIntegrationTest, MarkerOverridesDisableNativeProjectionAcrossBackends) {
+  for (auto* model : qualified_models_) {
+    for (const auto* property : {FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR,
+                                 FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR}) {
+      for (const bool catalog_override : {false, true}) {
+        SCOPED_TRACE(model->ModelId());
+        SCOPED_TRACE(property);
+        SCOPED_TRACE(catalog_override);
+        ModelInfo info;
+        info.task = "chat-completion";
+        info.SetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT, 1);
+        info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR, "<tool_call>");
+        info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR, "</tool_call>");
+        if (catalog_override) info.SetPropertyStr(property, "<override>");
+        auto catalog = Model::FromModelInfo(std::move(info), "", services_.download_manager,
+                                            services_.model_load_manager);
+        auto output = OutputFactory("MESSAGE\nFinished.");
+        int dispatched = 0;
+        ChatSession session(
+            catalog, *model, *logger_, telemetry_, {},
+            [&](const auto& messages, const auto& options, auto& instance, const auto& context, bool retry) {
+              ++dispatched;
+              EXPECT_FALSE(context.qualified_native_tool_calls);
+              EXPECT_FALSE(context.native_qwen_xml_tool_calls);
+              EXPECT_FALSE(context.native_tagged_json_tool_calls);
+              EXPECT_FALSE(context.guidance_disabled);
+              EXPECT_TRUE(context.tool_plan);
+              return output(messages, options, instance, context, retry);
+            });
+        if (!catalog_override) {
+          KeyValuePairs options;
+          options.Add(property, "<override>");
+          session.SetSessionOptions(options);
+        }
+        RunChatCompletions(session, "auto");
+        EXPECT_EQ(dispatched, 1);
+      }
+    }
+  }
+}
+
+TEST_F(QwenNativeProductionIntegrationTest, NativeProjectionProtectsArgumentKeysTypesAndSerializedDefinitions) {
+  const std::string literal = "line1\n\"quote\"\\path <think> <tool_call>";
+  for (auto* model : qualified_models_) {
+    SCOPED_TRACE(model->ModelId());
+    const auto prepare = [&](const std::string& value, const std::string& key) {
+      TranscriptMessage assistant(FOUNDRY_LOCAL_ROLE_ASSISTANT, "");
+      assistant.AppendToolCall(MakeSuppliedToolCall(
+          "call_1", "lookup", nlohmann::json{{"type", value}, {key, value}, {"nested", {{"type", value}, {key, value}}}}.dump()));
+      ToolCallContext context;
+      context.tool_call_start = "<tool_call>";
+      context.tool_call_end = "</tool_call>";
+      context.tool_output = true;
+      context.native_qwen_xml_tool_calls = true;
+      context.qualified_native_tool_calls = true;
+      context.tools_json = nlohmann::json::array(
+                               {{{"type", "function"}, {"function", {{"name", "lookup"}, {"description", value}, {"parameters", {{"type", "object"}, {"properties", {{"type", {{"type", "string"}, {"enum", {value}}}}}}, {"additionalProperties", true}}}}}}})
+                               .dump();
+      context.tool_kinds = {{"lookup", ToolKind::kFunction}};
+      context.tool_plan = ToolCallPlan::Create(context.tools_json);
+      return PrepareTextChatPrompt(
+          chat_internal::PrepareChatMessages(
+              {{FOUNDRY_LOCAL_ROLE_USER, "run lookup"}, assistant, TranscriptMessage::ToolResult("call_1", "done")},
+              /*positional_tool_results=*/false),
+          *model, context);
+    };
+    const std::string key = "<tool_call>key";
+    const auto prompt = prepare(literal, key);
+    const auto benign = prepare("benign", "key");
+    EXPECT_NE(prompt.prompt.find("<parameter=type>\n" + literal + "\n</parameter>"), std::string::npos);
+    EXPECT_NE(prompt.prompt.find("<parameter=" + key + ">\n" + literal + "\n</parameter>"), std::string::npos);
+    const std::string parameter = "<parameter=nested>\n";
+    const auto nested_start = prompt.prompt.find(parameter);
+    ASSERT_NE(nested_start, std::string::npos);
+    const auto nested_end = prompt.prompt.find("\n</parameter>", nested_start);
+    const auto nested = nlohmann::json::parse(
+        prompt.prompt.substr(nested_start + parameter.size(), nested_end - nested_start - parameter.size()));
+    EXPECT_EQ(nested, (nlohmann::json{{"type", literal}, {key, literal}}));
+
+    const std::string system = "<|im_start|>system\n";
+    const auto definitions_start = prompt.prompt.find(system) + system.size();
+    const auto definitions_end = prompt.prompt.find("<|im_end|>", definitions_start);
+    const auto definition = nlohmann::json::parse(
+        prompt.prompt.substr(definitions_start, definitions_end - definitions_start));
+    EXPECT_EQ(definition["function"]["description"], literal);
+    EXPECT_EQ(definition["function"]["parameters"]["properties"]["type"]["enum"][0], literal);
+    const auto& tags = model->GetTagInfo();
+    for (const auto id : {tags.bot_id, tags.eot_id, tags.bor_id, tags.eor_id}) {
+      EXPECT_EQ(std::count(prompt.token_ids.begin(), prompt.token_ids.end(), id),
+                std::count(benign.token_ids.begin(), benign.token_ids.end(), id));
+    }
   }
 }
 
@@ -4535,6 +4629,32 @@ TEST_F(QwenNativeProductionIntegrationTest,
   EXPECT_EQ(calls.front()->arguments, "transformed text");
   EXPECT_EQ(calls.front()->kind, ToolKind::kCustom);
   EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_TOOL_CALLS);
+}
+
+TEST_F(QwenNativeProductionIntegrationTest, CustomRecoveryRejectsEmbeddedNulWithoutPublishingACall) {
+  for (auto* model : {model_, engine_model_}) {
+    SCOPED_TRACE(model->ModelId());
+    const std::vector<std::string> outputs = {
+        "<tool_call>\n<function=transform>\n<parameter=input>\ntext",
+        R"(<tool_call>[{"name":"transform","parameters":{"input":"bad\u0000input"}}]</tool_call>)",
+    };
+    auto counters = std::make_shared<GeneratorCounters>();
+    size_t creation = 0;
+    TextChatGeneratorFactory factory = [&](const auto& messages, const auto& options, auto& instance,
+                                           const auto& context, bool retry) {
+      auto output = OutputFactory(outputs.at(creation++), counters);
+      return output(messages, options, instance, context, retry);
+    };
+    auto catalog = MakeCatalogModel();
+    ChatSession session(catalog, *model, *logger_, telemetry_, {}, std::move(factory));
+    session.AddToolDefinition(tools::MakeCustomTool("transform", "Transform text."));
+    auto request = MakeStatefulRequest("transform text");
+    Response response;
+    EXPECT_THROW(session.ProcessRequest(request, response), fl::Exception);
+    EXPECT_EQ(creation, 2u);
+    EXPECT_TRUE(response.items.empty());
+    EXPECT_EQ(session.TurnCount(), 0u);
+  }
 }
 
 TEST_F(QwenNativeProductionIntegrationTest,

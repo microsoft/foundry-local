@@ -214,6 +214,20 @@ TEST(ModelCapabilitiesTest, NativeProtocolDoesNotRequireRenderedDescriptions) {
   EXPECT_TRUE(capabilities.native_qwen_xml_tool_calls);
 }
 
+TEST(ModelCapabilitiesTest, NonStringProbeArgumentsDoNotThrowOrQualify) {
+  for (const auto* value : {R"(["probe_value"])", R"({"value":"probe_value"})",
+                            "null", "true", "42"}) {
+    const auto projection =
+        "probe_first probe_second probe_value\n<tool_call>{\"name\":\"probe_function\","
+        "\"arguments\":{\"probe_parameter\":" +
+        std::string(value) + "}}</tool_call>";
+    const auto capabilities = fl::model_capabilities_internal::ResolveRenderedProbes(
+        "custom", projection, {}, "<tool_call>", "</tool_call>");
+    EXPECT_FALSE(capabilities.native_tagged_json_tool_calls) << value;
+    EXPECT_FALSE(capabilities.native_qwen_xml_tool_calls) << value;
+  }
+}
+
 TEST(ModelCapabilitiesTest, NativeXmlProtocolUsesPublishedCustomBoundaries) {
   constexpr std::string_view kToolCallProjection =
       "Capability probe\n"

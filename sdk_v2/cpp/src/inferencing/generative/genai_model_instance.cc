@@ -218,7 +218,7 @@ ModelCapabilities model_capabilities_internal::ResolveRenderedProbes(
       }
       const auto arguments = nlohmann::json::parse(result.calls.front().arguments, nullptr, false);
       return arguments.is_object() && arguments.size() == 1 &&
-             arguments.value("probe_parameter", "") == "probe_value";
+             arguments.contains("probe_parameter") && arguments.at("probe_parameter") == "probe_value";
     });
   };
   const bool native_qwen_xml_tool_calls =
