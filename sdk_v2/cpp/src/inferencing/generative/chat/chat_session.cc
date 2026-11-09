@@ -910,6 +910,10 @@ GuidedToolRetryResult RunHarmonyToolRetry(const chat_internal::PreparedChatMessa
         ToolCallStreamAccumulator::Output admitted;
         admitted.events.emplace_back(std::move(*call));
         chat_session_internal::NormalizeToolOutputBatch(admitted, context);
+        if (admitted.malformed || admitted.events.empty()) {
+          error = "Guided Harmony recovery failed tool-call normalization";
+          continue;
+        }
         result.events.emplace_back(std::move(std::get<ParsedToolCall>(admitted.events.front())));
       } else {
         error = "Guided Harmony recovery emitted text instead of one corrected tool call";
@@ -1137,6 +1141,9 @@ GuidedToolRetryResult RunGuidedToolRetry(const chat_internal::PreparedChatMessag
     ToolCallStreamAccumulator::Output output;
     output.events.emplace_back(std::move(call));
     chat_session_internal::NormalizeToolOutputBatch(output, tool_ctx);
+    if (output.malformed || output.events.empty()) {
+      ThrowInvalidGuidedToolRetry("Corrected tool call failed normalization");
+    }
     result.events.emplace_back(std::move(std::get<ParsedToolCall>(output.events.front())));
   }
 
@@ -1402,9 +1409,11 @@ ToolCallContext BuildToolCallContextForRequest(const Request& request,
           !tool_ctx.text_output &&
           (model.ModelType().starts_with("qwen2") || model.ModelId().starts_with("qwen2")) &&
           !tool_ctx.ActiveRawEnvelope() && !tool_ctx.HasAnyExplicitGuidance();
-      const bool native_tool_choice = !tool_ctx.HasAnyExplicitGuidance();
+      const bool qualified_markers =
+          tool_ctx.tool_call_start == tag_info.bot_str && tool_ctx.tool_call_end == tag_info.eot_str;
+      const bool native_tool_choice = !tool_ctx.HasAnyExplicitGuidance() && qualified_markers;
       tool_ctx.qualified_native_tool_calls =
-          model.HasNativeQwenXmlToolCalls() || model.HasNativeTaggedJsonToolCalls();
+          qualified_markers && (model.HasNativeQwenXmlToolCalls() || model.HasNativeTaggedJsonToolCalls());
       tool_ctx.native_qwen_xml_tool_calls =
           !qwen2_fenced_tool_output && native_tool_choice &&
           model.HasNativeQwenXmlToolCalls() && !tool_ctx.ActiveRawEnvelope() &&

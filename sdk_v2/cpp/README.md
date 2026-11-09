@@ -332,6 +332,10 @@ backend without implicit whole-turn guidance. Template-supported reasoning histo
 is preserved alongside assistant calls and correlated tool results so serial
 continuations retain their context. Original-schema validation still applies
 before calls are published.
+Native activation also requires the effective opening and closing markers to match
+the qualified tokenizer markers; overriding either boundary retains canonical
+projection. Native history arguments are literal-tokenized, including object keys,
+and their escaping follows the template's actual raw or JSON serialization.
 
 Otherwise, the model emits a nonempty canonical JSON array inside its published tool
 markers, for example:
