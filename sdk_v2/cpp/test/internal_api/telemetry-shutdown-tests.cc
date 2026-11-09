@@ -8,6 +8,7 @@
 #include "DebugEvents.hpp"
 #include "ITaskDispatcher.hpp"
 #include "mat/config.h"
+#include "api/AuthTokensController.hpp"
 #include "http/HttpClientFactory.hpp"
 #include "pal/PAL.hpp"
 
@@ -53,7 +54,9 @@ struct State {
   bool upload_at_exit = false;
   bool encode_started = false;
   bool version_destroyed = false;
+  bool auth_mutex_destroyed = false;
   int version_reads = 0;
+  int auth_mutex_reads = 0;
   int uploads_completed = 0;
   int workers_started = 0;
   int collector_events = 0;
@@ -68,7 +71,7 @@ struct State {
                (!upload_at_exit && (!callback_started || !callback_completed))) {
       Fail(32, "owner, native SDK worker, and mutex teardown were not fully exercised");
     }
-    if (upload_at_exit && (!encode_started || uploads_completed == 0 || version_reads < 2)) {
+    if (upload_at_exit && (!encode_started || uploads_completed == 0 || version_reads < 2 || auth_mutex_reads < 2)) {
       Fail(32, "shutdown did not exercise production decoration, encoding, and upload completion");
     }
     if (essential_only && (process_info_events == 0 || process_info_events != collector_events)) {
@@ -216,6 +219,19 @@ extern "C" void TelemetryTestVersionAccess() {
   ++state.version_reads;
 }
 
+extern "C" void TelemetryTestAuthMutexDestroyed() {
+  auto& state = GetState();
+  std::lock_guard lock(state.mutex);
+  state.auth_mutex_destroyed = true;
+}
+
+extern "C" void TelemetryTestAuthMutexAccess() {
+  auto& state = GetState();
+  std::lock_guard lock(state.mutex);
+  if (state.auth_mutex_destroyed) Fail(21, "SDK accessed its auth mutex after destruction");
+  ++state.auth_mutex_reads;
+}
+
 extern "C" void TelemetryTestBeforeEncode() {
   auto& state = GetState();
   std::unique_lock lock(state.mutex);
@@ -300,6 +316,8 @@ int main(int argc, char* argv[]) {
     if (state.upload_at_exit && std::atexit(ReleaseCallback) != 0) {
       Fail(32, "cannot register production upload release");
     }
+    // A prior upload can initialize this mutex after the Manager owner; exercise its libc++ teardown on every host.
+    if (state.upload_at_exit) (void)sdk::AuthTokensController::GetMutex();
 #ifdef _WIN32
     if (_putenv_s("CI", "0") != 0) Fail(32, "cannot clear CI suppression");
 #else

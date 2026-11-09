@@ -37,6 +37,10 @@ parameters:
   type: string
   default: ''
   # e.g. 'aarch64-pc-windows-msvc' for the win-arm64 cross build; '' for native.
+- name: runRequiredNonGenerativeTests
+  type: boolean
+  default: false
+  # Enable only on one supported x64 lane that fetched the non-generative model set.
 
 steps:
 
@@ -261,10 +265,46 @@ steps:
           $ErrorActionPreference = 'Stop'
           # Serialise: the native core enforces a single FoundryLocalManager per
           # process, so tests that each create one must not run concurrently.
-          cargo test --tests -- --test-threads=1 --nocapture
+          $testArgs = @('--tests', '--', '--test-threads=1', '--nocapture')
+          if ('${{ parameters.runRequiredNonGenerativeTests }}' -eq 'true') {
+            # The required real-model task below runs these once with strict
+            # package presence and discovery checks.
+            $testArgs += @('--skip', 'non_generative_test::')
+          }
+          cargo test @testArgs
           if ($LASTEXITCODE -ne 0) { throw "cargo test --tests failed" }
       env:
         FOUNDRY_LOCAL_NATIVE_BIN_DIR: $(flNativeDir)
         FOUNDRY_LOCAL_LIB_DIR: $(flNativeDir)
         FOUNDRY_TEST_DATA_DIR: '$(Build.SourcesDirectory)/test-data-shared'
         TF_BUILD: 'true'
+
+    - ${{ if parameters.runRequiredNonGenerativeTests }}:
+      - task: PowerShell@2
+        displayName: 'cargo test predictive real models (required)'
+        inputs:
+          targetType: inline
+          pwsh: true
+          workingDirectory: '$(Build.SourcesDirectory)/sdk_v2/rust'
+          script: |
+            $ErrorActionPreference = 'Stop'
+            $root = '$(Build.SourcesDirectory)/test-data-shared/Microsoft'
+            $required = @(
+              (Join-Path $root 'clm-v0.1-8b-mixed-generic-cpu-1'),
+              (Join-Path $root 'kev-0.8b-mixed-generic-cpu-1')
+            )
+            foreach ($package in $required) {
+              if (-not (Test-Path -LiteralPath $package -PathType Container)) {
+                throw "Required predictive model package directory is missing: $package"
+              }
+              Write-Host "Found required predictive model package: $package"
+            }
+
+            cargo test --test integration non_generative_test:: -- --test-threads=1 --nocapture
+            if ($LASTEXITCODE -ne 0) { throw "required predictive real-model tests failed" }
+        env:
+          FOUNDRY_LOCAL_NATIVE_BIN_DIR: $(flNativeDir)
+          FOUNDRY_LOCAL_LIB_DIR: $(flNativeDir)
+          FOUNDRY_TEST_DATA_DIR: '$(Build.SourcesDirectory)/test-data-shared'
+          FOUNDRY_REQUIRE_NON_GENERATIVE_MODELS: 'true'
+          TF_BUILD: 'true'

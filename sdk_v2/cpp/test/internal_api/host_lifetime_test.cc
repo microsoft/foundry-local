@@ -264,25 +264,23 @@ TEST_F(HostLifetimeTest, ReattachmentJustBeforeGraceDeadlineRestartsAcceptingAnd
   EXPECT_EQ(host_.Poll(kStart + 7s).deadline, kStart + 12s);
 }
 
-TEST_F(HostLifetimeTest, ReattachmentAtGraceDeadlineCommitsEvenWithoutPriorPoll) {
-  ASSERT_TRUE(host_.AddOwner(1, kStart));
-  ASSERT_TRUE(host_.RemoveOwner(1, kStart));
-  EXPECT_FALSE(host_.AddOwner(2, kStart + 5s));
-  const auto snapshot = host_.Poll(kStart + 5s);
-  EXPECT_EQ(snapshot.state, State::kShutdownCommitted);
-  EXPECT_EQ(snapshot.owner_count, 0u);
-  EXPECT_FALSE(snapshot.deadline);
-}
-
-TEST_F(HostLifetimeTest, ReattachmentAfterGraceDeadlineIsRejectedAndCommitmentCannotBeReversed) {
-  ASSERT_TRUE(host_.AddOwner(1, kStart));
-  ASSERT_TRUE(host_.RemoveOwner(1, kStart));
-  EXPECT_FALSE(host_.AddOwner(2, kStart + 6s));
-  EXPECT_FALSE(host_.AddOwner(3, kStart + 1s));
-  EXPECT_FALSE(host_.TryAdmitIpcWork(3, kStart + 1h));
-  EXPECT_FALSE(host_.TryAdmitHttpWork(kStart + 1h));
-  EXPECT_FALSE(host_.RemoveOwner(1, kStart + 1h));
-  EXPECT_EQ(host_.Poll(kStart + 1h).state, State::kShutdownCommitted);
+TEST_F(HostLifetimeTest, ReattachmentAtOrAfterGraceDeadlineCommitsWithoutPriorPollAndCannotBeReversed) {
+  for (const auto delay : {0s, 1s}) {
+    SCOPED_TRACE(delay.count());
+    HostLifetime host{kStartupDeadline};
+    ASSERT_TRUE(host.AddOwner(1, kStart));
+    ASSERT_TRUE(host.RemoveOwner(1, kStart));
+    EXPECT_FALSE(host.AddOwner(2, kStart + HostLifetime::kReconnectGrace + delay));
+    EXPECT_FALSE(host.AddOwner(3, kStart + 1s));
+    const auto snapshot = host.Poll(kStart + HostLifetime::kReconnectGrace + delay);
+    EXPECT_EQ(snapshot.state, State::kShutdownCommitted);
+    EXPECT_EQ(snapshot.owner_count, 0u);
+    EXPECT_FALSE(snapshot.deadline);
+    EXPECT_FALSE(host.TryAdmitIpcWork(3, kStart + 1h));
+    EXPECT_FALSE(host.TryAdmitHttpWork(kStart + 1h));
+    EXPECT_FALSE(host.RemoveOwner(1, kStart + 1h));
+    EXPECT_EQ(host.Poll(kStart + 1h).state, State::kShutdownCommitted);
+  }
 }
 
 TEST_F(HostLifetimeTest, ExceptionUnwindingReleasesWorkAndNextObservationStartsConservativeGrace) {
