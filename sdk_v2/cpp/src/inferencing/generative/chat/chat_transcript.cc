@@ -86,7 +86,7 @@ GeneratedToolCall MakeGeneratedToolCall(std::string call_id, std::string name, s
   const bool usable = normalized.has_value();
 
   return {{std::move(call_id), std::move(name), std::move(arguments),
-           usable ? std::move(*normalized) : nlohmann::ordered_json::object(), kind, encoding},
+           usable ? std::move(*normalized) : nlohmann::ordered_json::object(), kind, encoding, true},
           usable};
 }
 

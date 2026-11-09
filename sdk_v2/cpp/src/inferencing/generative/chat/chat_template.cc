@@ -359,6 +359,7 @@ HarmonyPromptProjection BuildHarmonyPromptProjection(
         const auto raw_body = call->kind == ToolKind::kCustom &&
                               (call->generated_encoding == GeneratedCallEncoding::kNativeRaw ||
                                (call->generated_encoding == GeneratedCallEncoding::kStructured &&
+                                !call->has_recorded_encoding &&
                                 context.UsesNativeRawBody(call->name)));
         const auto arguments = raw_body || (call->kind == ToolKind::kFunction && !call->arguments.empty())
                                    ? call->arguments

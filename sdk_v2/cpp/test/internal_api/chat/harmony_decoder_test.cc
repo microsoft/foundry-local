@@ -221,60 +221,88 @@ TEST(HarmonyDecoderTest, StoredInputAndOutputReplayRetainHistoricalCustomBodyEnc
   const std::string body = R"({"input":"literal <|call|> and a\\b"})";
   for (const auto encoding : {GeneratedCallEncoding::kStructured, GeneratedCallEncoding::kNativeJson,
                               GeneratedCallEncoding::kNativeRaw}) {
-    for (const bool stored_input : {false, true}) {
-      SCOPED_TRACE(static_cast<int>(encoding));
-      SCOPED_TRACE(stored_input);
-      const auto call = nlohmann::json{{"type", "custom_tool_call"}, {"call_id", "call_history"}, {"name", "patch"}, {"input", body}};
-      auto input = nlohmann::json::array({{{"role", "user"}, {"content", "patch"}}});
-      if (stored_input) {
-        input.push_back(call);
-      }
-      const auto output = stored_input ? nlohmann::json::array() : nlohmann::json::array({call});
-      ResponseStore store;
-      store.Store("history", {{"output", output}}, input, "harmony",
-                  ToolCallEncodings{{"call_history", encoding}});
-      const auto chain = store.BuildChainContext("history");
-      ASSERT_TRUE(chain.has_value());
-      responses::ResponseCreateParams params;
-      params.model = "harmony";
-      params.input = "continue";
-      auto request = ResponseConverter::ToSessionRequest(params, &*chain);
-      const auto replay = IngestRequestItems(request.items, request.item_segment_starts);
-      std::size_t call_count = 0;
-      for (const auto& message : replay.messages) {
-        for (const auto* historical : message.ToolCalls()) {
-          ++call_count;
-          EXPECT_EQ(historical->generated_encoding, encoding);
-          EXPECT_EQ(historical->kind, ToolKind::kCustom);
-          EXPECT_EQ(historical->arguments, body);
+    for (const bool current_raw : {false, true}) {
+      for (const bool stored_input : {false, true}) {
+        SCOPED_TRACE(static_cast<int>(encoding));
+        SCOPED_TRACE(current_raw);
+        SCOPED_TRACE(stored_input);
+        const auto call = nlohmann::json{{"type", "custom_tool_call"}, {"call_id", "call_history"}, {"name", "patch"}, {"input", body}};
+        auto input = nlohmann::json::array({{{"role", "user"}, {"content", "patch"}}});
+        if (stored_input) {
+          input.push_back(call);
         }
-      }
-      EXPECT_EQ(call_count, 1u);
+        const auto output = stored_input ? nlohmann::json::array() : nlohmann::json::array({call});
+        ResponseStore store;
+        store.Store("history", {{"output", output}}, input, "harmony",
+                    ToolCallEncodings{{"call_history", encoding}});
+        const auto chain = store.BuildChainContext("history");
+        ASSERT_TRUE(chain.has_value());
+        responses::ResponseCreateParams params;
+        params.model = "harmony";
+        params.input = "continue";
+        auto request = ResponseConverter::ToSessionRequest(params, &*chain);
+        const auto replay = IngestRequestItems(request.items, request.item_segment_starts);
+        std::size_t call_count = 0;
+        for (const auto& message : replay.messages) {
+          for (const auto* historical : message.ToolCalls()) {
+            ++call_count;
+            EXPECT_EQ(historical->generated_encoding, encoding);
+            EXPECT_TRUE(historical->has_recorded_encoding);
+            EXPECT_EQ(historical->kind, ToolKind::kCustom);
+            EXPECT_EQ(historical->arguments, body);
+          }
+        }
+        EXPECT_EQ(call_count, 1u);
 
-      ToolCallContext context;
-      context.harmony = kProtocol;
-      context.tools_json = kTools;
-      context.tool_kinds = {{"patch", ToolKind::kCustom}};
-      context.custom_lark_grammars = {{"patch", "start: /[\\s\\S]+/"}};
-      const auto projected = nlohmann::json::parse(
-          BuildHarmonyPromptProjection(replay.messages, context, [](std::string value) { return value; })
-              .messages_json);
-      call_count = 0;
-      for (const auto& message : projected) {
-        if (!message.contains("tool_calls")) {
-          continue;
+        ToolCallContext context;
+        context.harmony = kProtocol;
+        context.tools_json = kTools;
+        context.tool_kinds = {{"patch", ToolKind::kCustom}};
+        if (current_raw) {
+          context.custom_lark_grammars = {{"patch", "start: /[\\s\\S]+/"}};
         }
-        for (const auto& historical : message["tool_calls"]) {
-          ++call_count;
-          const auto& function = historical["function"];
-          const bool raw = encoding != GeneratedCallEncoding::kNativeJson;
-          const auto expected = raw ? body : nlohmann::json{{"input", body}}.dump();
-          EXPECT_EQ(function["native_freeform"], raw);
-          EXPECT_EQ(function["arguments_json"], expected);
+        const auto projected = nlohmann::json::parse(
+            BuildHarmonyPromptProjection(replay.messages, context, [](std::string value) { return value; })
+                .messages_json);
+        call_count = 0;
+        for (const auto& message : projected) {
+          if (!message.contains("tool_calls")) {
+            continue;
+          }
+          for (const auto& historical : message["tool_calls"]) {
+            ++call_count;
+            const auto& function = historical["function"];
+            const bool raw = encoding == GeneratedCallEncoding::kNativeRaw;
+            const auto expected = raw ? body : nlohmann::json{{"input", body}}.dump();
+            EXPECT_EQ(function["native_freeform"], raw);
+            EXPECT_EQ(function["arguments_json"], expected);
+          }
         }
+        EXPECT_EQ(call_count, 1u);
       }
-      EXPECT_EQ(call_count, 1u);
     }
+  }
+}
+
+TEST(HarmonyDecoderTest, UnannotatedCallerHistoryStillUsesTheCurrentCustomBodyDeclaration) {
+  for (const bool current_raw : {false, true}) {
+    ToolCallContext context;
+    context.harmony = kProtocol;
+    context.tools_json = kTools;
+    context.tool_kinds = {{"patch", ToolKind::kCustom}};
+    if (current_raw) {
+      context.custom_lark_grammars = {{"patch", "start: /[\\s\\S]+/"}};
+    }
+    const std::string body = R"({"input":"caller text"})";
+    TranscriptMessage assistant(FOUNDRY_LOCAL_ROLE_ASSISTANT, "");
+    assistant.AppendToolCall(MakeSuppliedToolCall("caller", "patch", body, ToolKind::kCustom));
+    const auto projected = nlohmann::json::parse(
+        BuildHarmonyPromptProjection({assistant}, context, [](std::string value) { return value; })
+            .messages_json);
+    const auto& function = projected.back()["tool_calls"][0]["function"];
+    EXPECT_EQ(function["native_freeform"], current_raw);
+    const auto expected = current_raw ? body : nlohmann::json{{"input", body}}.dump();
+    EXPECT_EQ(function["arguments_json"], expected);
   }
 }
 
