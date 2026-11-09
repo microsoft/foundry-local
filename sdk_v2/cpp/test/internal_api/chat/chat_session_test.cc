@@ -2130,6 +2130,9 @@ TEST_F(QwenNativeProductionIntegrationTest, NativeProjectionProtectsArgumentKeys
           {"required", {"type", key}},
           {"$defs", {{definition_name, {{"type", "string"}}}, {"common", {{"type", "string"}}}}},
           {"additionalProperties", true}};
+      const auto schema_data = nlohmann::json{{key, value}, {"type", value}};
+      parameters["properties"]["payload"] = {
+          {"type", "object"}, {"const", schema_data}, {"enum", {schema_data}}, {"default", schema_data}, {"examples", {schema_data}}};
       context.tools_json = nlohmann::json::array(
                                {{{"type", "function"}, {"function", {{"name", "lookup"}, {"description", value}, {"parameters", std::move(parameters)}}}}})
                                .dump();
@@ -2165,6 +2168,12 @@ TEST_F(QwenNativeProductionIntegrationTest, NativeProjectionProtectsArgumentKeys
     EXPECT_TRUE(definition["function"]["parameters"]["$defs"].contains("<think>"));
     EXPECT_EQ(definition["function"]["parameters"]["properties"]["reference"]["$ref"], "#/$defs/common");
     EXPECT_EQ(definition["function"]["parameters"]["required"], nlohmann::json::array({"type", key}));
+    const auto schema_data = nlohmann::json{{key, literal}, {"type", literal}};
+    const auto& payload = definition["function"]["parameters"]["properties"]["payload"];
+    EXPECT_EQ(payload["const"], schema_data);
+    EXPECT_EQ(payload["enum"][0], schema_data);
+    EXPECT_EQ(payload["default"], schema_data);
+    EXPECT_EQ(payload["examples"][0], schema_data);
     const auto& tags = model->GetTagInfo();
     for (const auto id : {tags.bot_id, tags.eot_id, tags.bor_id, tags.eor_id}) {
       EXPECT_EQ(std::count(prompt.token_ids.begin(), prompt.token_ids.end(), id),

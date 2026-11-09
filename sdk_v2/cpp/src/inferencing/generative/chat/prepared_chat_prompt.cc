@@ -116,7 +116,10 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
                       (key == "properties" || key == "$defs" || key == "definitions" ||
                        key == "patternProperties" || key == "dependentRequired" ||
                        key == "dependentSchemas" || key == "dependencies");
-                  protect_json_strings(item, argument_data, schema_dictionary);
+                  const bool schema_data =
+                      !dictionary_keys &&
+                      (key == "const" || key == "enum" || key == "default" || key == "examples");
+                  protect_json_strings(item, argument_data || schema_data, schema_dictionary);
                 }
                 protected_object[argument_data || dictionary_keys ? protect_literal(key) : key] = std::move(item);
               }
