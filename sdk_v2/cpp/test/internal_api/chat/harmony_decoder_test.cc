@@ -233,3 +233,26 @@ TEST(HarmonyDecoderTest, PromptProjectionRejectsNonLeadingInstructionRoles) {
     }
   }
 }
+
+TEST(HarmonyDecoderTest, PromptProjectionRejectsHeaderSeparatorsInToolAndHistoryNames) {
+  for (const char separator : std::string(" \t\r\n\v\f\x01\x02")) {
+    const std::string name = "lookup" + std::string(1, separator) + "city";
+    for (const bool history : {false, true}) {
+      ToolCallContext context;
+      context.harmony = kProtocol;
+      context.tools_json = history ? kTools : nlohmann::json::array({{{"type", "function"}, {"function", {{"name", name}, {"parameters", {{"type", "object"}}}}}}}).dump();
+      std::vector<TranscriptMessage> messages{{FOUNDRY_LOCAL_ROLE_USER, "Hello"}};
+      if (history) {
+        TranscriptMessage assistant(FOUNDRY_LOCAL_ROLE_ASSISTANT, "");
+        assistant.AppendToolCall(MakeSuppliedToolCall("call_bad", name, "{}"));
+        messages.push_back(std::move(assistant));
+      }
+      try {
+        BuildHarmonyPromptProjection(messages, context, [](std::string value) { return value; });
+        FAIL() << "Expected an unrepresentable Harmony recipient to be rejected";
+      } catch (const fl::Exception& error) {
+        EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+      }
+    }
+  }
+}
