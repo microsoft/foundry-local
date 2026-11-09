@@ -41,13 +41,21 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
              tool_ctx.template_kwargs_json.find(prefix) != std::string::npos);
 
     std::unordered_map<std::string, std::string> literals;
+    const bool native_literals = tool_ctx.native_qwen_xml_tool_calls || tool_ctx.native_tagged_json_tool_calls;
+    const std::string serialization_witness = "\\\"\n@";
+    const auto json_string_contents = [](const std::string& value) {
+      auto encoded = nlohmann::json(value).dump();
+      return encoded.substr(1, encoded.size() - 2);
+    };
+    const auto escaped_witness = json_string_contents(serialization_witness);
     const auto protect_literal = [&](std::string text) {
       if (text.empty()) {
         return text;
       }
       auto marker = prefix + std::to_string(literals.size()) + "__";
       literals.emplace(marker, std::move(text));
-      return marker;
+      // The template, not the output dialect, determines whether a fragment is JSON-escaped.
+      return native_literals ? marker + serialization_witness : marker;
     };
     std::string projected;
     std::string projected_tools;
@@ -74,25 +82,23 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
         projected_json.insert(projected_json.begin(),
                               nlohmann::ordered_json{{"role", "system"}, {"content", state}});
       }
-      const auto json_string_contents = [](const std::string& value) {
-        auto encoded = nlohmann::json(value).dump();
-        return encoded.substr(1, encoded.size() - 2);
-      };
       std::function<void(nlohmann::ordered_json&, bool)> protect_json_strings =
-          [&](nlohmann::ordered_json& value, bool json_escaped) {
+          [&](nlohmann::ordered_json& value, bool argument_data) {
             if (value.is_string()) {
-              auto literal = value.get<std::string>();
-              value = protect_literal(json_escaped ? json_string_contents(literal) : std::move(literal));
+              value = protect_literal(value.get<std::string>());
             } else if (value.is_array()) {
               for (auto& item : value) {
-                protect_json_strings(item, json_escaped);
+                protect_json_strings(item, argument_data);
               }
             } else if (value.is_object()) {
+              auto protected_object = nlohmann::ordered_json::object();
               for (auto& [key, item] : value.items()) {
-                if (key != "type") {
-                  protect_json_strings(item, json_escaped);
+                if (argument_data || key != "type" || !item.is_string()) {
+                  protect_json_strings(item, argument_data);
                 }
+                protected_object[argument_data ? protect_literal(key) : key] = std::move(item);
               }
+              value = std::move(protected_object);
             }
           };
       for (auto& message : projected_json) {
@@ -108,16 +114,16 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
             }
             auto& function = call["function"];
             if (function.contains("name")) {
-              protect_json_strings(function["name"], tool_ctx.native_tagged_json_tool_calls);
+              protect_json_strings(function["name"], false);
             }
             if (function.contains("arguments")) {
-              protect_json_strings(function["arguments"], tool_ctx.native_tagged_json_tool_calls);
+              protect_json_strings(function["arguments"], true);
             }
           }
         }
       }
       auto tools = nlohmann::ordered_json::parse(tool_ctx.tools_json);
-      protect_json_strings(tools, tool_ctx.native_tagged_json_tool_calls);
+      protect_json_strings(tools, false);
       projected = projected_json.dump();
       projected_tools = tools.dump();
     } else {
@@ -155,8 +161,21 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
       }
 
       append(rendered.substr(cursor, next - cursor), false);
-      append(found->second, true);
       cursor = end + 2;
+      if (native_literals) {
+        if (rendered.compare(cursor, escaped_witness.size(), escaped_witness) == 0) {
+          append(json_string_contents(found->second), true);
+          cursor += escaped_witness.size();
+        } else if (rendered.compare(cursor, serialization_witness.size(), serialization_witness) == 0) {
+          append(found->second, true);
+          cursor += serialization_witness.size();
+        } else {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                   "chat template changed a protected fragment's serialization");
+        }
+      } else {
+        append(found->second, true);
+      }
     }
 
     prepared.prompt_token_count = static_cast<int64_t>(prepared.token_ids.size());
