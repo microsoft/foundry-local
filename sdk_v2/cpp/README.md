@@ -326,14 +326,21 @@ of a dependency performance regression.
 
 Structured tool turns on both Engine and Generator use one immutable `ToolCallPlan` for declaration
 admission, call-name selection, original-schema validation, and batch acceptance.
-The model emits a nonempty canonical JSON array inside its published tool
+When the tokenizer's rendered probes qualify a native XML or tagged-JSON tool
+protocol, automatic, required, and named choices retain that protocol on either
+backend without implicit whole-turn guidance. Template-supported reasoning history
+is preserved alongside assistant calls and correlated tool results so serial
+continuations retain their context. Original-schema validation still applies
+before calls are published.
+
+Otherwise, the model emits a nonempty canonical JSON array inside its published tool
 markers, for example:
 
 ```json
 [{"name":"edit","parameters":{"path":"main.py","new_str":"print(\"hello\")\n"}}]
 ```
 
-This replaces the model's native XML argument protocol; callers continue using
+This canonical path replaces the model's native argument protocol; callers continue using
 the ordinary Chat Completions, Responses, or SDK tool APIs. Arguments are never
 coerced, repaired, default-filled, or guessed from XML text.
 
