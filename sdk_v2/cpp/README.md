@@ -337,6 +337,8 @@ Native activation also requires the effective opening and closing markers to mat
 the qualified tokenizer markers; overriding either boundary retains canonical
 projection. Native history arguments are literal-tokenized, including object keys,
 and their escaping follows the template's actual raw or JSON serialization.
+Raw rendered NUL bytes are rejected before tokenizer entry; JSON-escaped NUL values
+remain lossless.
 User-defined schema dictionary keys are protected as well, while structural fields,
 required-name membership, and rendered schema references retain their meaning.
 Native XML also requires representable function and parameter names; schemas with
