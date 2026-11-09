@@ -31,6 +31,11 @@ const decisionRequest = {
   },
 } satisfies DecisionRequest;
 
+const noulWithNullCriteria = {
+  questions: { approval: { type: "noul", criteria: null, instructions: undefined } },
+} satisfies DecisionRequest;
+void noulWithNullCriteria;
+
 ranking.rank(rankingRequest, { signal: new AbortController().signal }).then((result) => result.ranked[0]?.prob);
 decisions
   .decide(decisionRequest, { signal: new AbortController().signal })

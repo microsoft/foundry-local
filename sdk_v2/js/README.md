@@ -75,6 +75,8 @@ accept an `AbortSignal`. Pre-aborted signals prevent submission; aborting remove
 inference. Cancellation rejects with `AbortError`, but a completed native response can win the race. Compatibility
 chat, audio, and embedding methods accept the same options as their last argument; for chat without tools, use
 `client.completeChat(messages, undefined, { signal })`.
+Cancellation is cooperative once a worker is active, so that worker can temporarily keep `model.unload()` blocked.
+Await the request's settlement before disposing the session and unloading the model.
 
 ### Ranking and typed decisions
 
@@ -84,36 +86,81 @@ chat, audio, and embedding methods accept the same options as their last argumen
 ```ts
 import { DecisionSession, RankingSession } from "foundry-local-sdk";
 
-await cachedRankingModel.load();
-const ranking = new RankingSession(cachedRankingModel);
+let ranking: RankingSession | undefined;
+let rankingFailure: unknown;
 try {
+  await cachedRankingModel.load();
+  ranking = new RankingSession(cachedRankingModel);
   const ranked = await ranking.rank({
     context: { weather: "rain" },
     question: "Which activity is best?",
     answers: ["picnic", "museum"],
   });
+  console.log(ranked.ranked.map(({ candidate, rank, prob }) => ({ candidate, rank, prob })));
+} catch (error) {
+  rankingFailure = error;
+  throw error;
 } finally {
-  ranking.dispose();
-  await cachedRankingModel.unload();
+  try {
+    ranking?.dispose();
+  } catch (error) {
+    rankingFailure ??= error;
+  }
+  try {
+    await cachedRankingModel.unload();
+  } catch (error) {
+    rankingFailure ??= error;
+  }
+  if (rankingFailure !== undefined) throw rankingFailure;
 }
 
-await cachedDecisionModel.load();
-const decisions = new DecisionSession(cachedDecisionModel);
+let decisions: DecisionSession | undefined;
+let decisionFailure: unknown;
 try {
+  await cachedDecisionModel.load();
+  decisions = new DecisionSession(cachedDecisionModel);
   const result = await decisions.decide({
     state: { weather: "rain" },
     questions: {
       umbrella: { type: "noul", instructions: "Should I take an umbrella?" },
+      activity: {
+        type: "choice",
+        criteria: { indoors: "Visit a museum", outdoors: "Have a picnic" },
+      },
+      suitability: {
+        type: "score",
+        criteria: ["unsuitable", "acceptable", "ideal"],
+      },
     },
   });
+  for (const [id, answer] of Object.entries(result.answers)) {
+    if (answer.type === "noul") console.log(id, answer.noul);
+    if (answer.type === "choice") console.log(id, answer.choice);
+    if (answer.type === "score") console.log(id, answer.score);
+  }
+} catch (error) {
+  decisionFailure = error;
+  throw error;
 } finally {
-  decisions.dispose();
-  await cachedDecisionModel.unload();
+  try {
+    decisions?.dispose();
+  } catch (error) {
+    decisionFailure ??= error;
+  }
+  try {
+    await cachedDecisionModel.unload();
+  } catch (error) {
+    decisionFailure ??= error;
+  }
+  if (decisionFailure !== undefined) throw decisionFailure;
 }
 ```
 
-Ranking and decision models must be cached and loaded before session construction. Dispose the session before awaiting
-`model.unload()`. A session borrows its caller-owned model and never unloads it.
+Obtain each model from a catalog/cache (or register a local model), then load it before constructing the session.
+Sessions are reusable for sequential requests against that loaded model. Dispose the session before awaiting
+`model.unload()`; a session borrows its caller-owned model and never unloads it. Construct the session inside the
+protected scope because construction can fail, and preserve the original request/construction error while still
+attempting both disposal and unload, as above.
 
 The inherited low-level `processRequest()` API accepts exactly one
 `Item.text(JSON.stringify(payload), "openai-json")` item and returns one OpenAI JSON text item.

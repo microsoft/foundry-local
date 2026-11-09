@@ -33,13 +33,13 @@ export interface RankingResult {
 export type DecisionQuestionType = "noul" | "choice" | "score";
 
 interface DecisionQuestionOptions {
-  readonly instructions?: StructuredValue;
+  readonly instructions?: StructuredValue | undefined;
 }
 
 export type DecisionQuestion =
   | (DecisionQuestionOptions & {
       readonly type: "noul";
-      readonly criteria?: never;
+      readonly criteria?: null;
     })
   | (DecisionQuestionOptions & {
       readonly type: "choice";

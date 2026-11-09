@@ -169,7 +169,9 @@ function validateStructuredValue(value: unknown, name: string, seen = new Set<ob
   if (seen.has(value)) throw new TypeError(`${name} must not contain cycles`);
   seen.add(value);
   if (Array.isArray(value)) {
-    value.forEach((item, index) => validateStructuredValue(item, `${name}[${index}]`, seen));
+    for (let index = 0; index < value.length; index += 1) {
+      validateStructuredValue(value[index], `${name}[${index}]`, seen);
+    }
   } else {
     if (!isPlainObject(value)) throw new TypeError(`${name} must contain only plain JSON objects`);
     for (const [key, item] of Object.entries(value)) {
@@ -198,8 +200,11 @@ function validateRankingRequest(request: RankingRequest): void {
   if (!Array.isArray(request.answers) || request.answers.length === 0) {
     throw new TypeError("answers must be a non-empty array");
   }
-  if (request.answers.some((answer) => typeof answer !== "string" || answer.length === 0)) {
-    throw new TypeError("answers must contain only non-empty strings");
+  for (let index = 0; index < request.answers.length; index += 1) {
+    const answer = request.answers[index];
+    if (typeof answer !== "string" || answer.length === 0) {
+      throw new TypeError("answers must contain only non-empty strings");
+    }
   }
   if (request.question !== undefined && typeof request.question !== "string") {
     throw new TypeError("question must be a string");
@@ -233,10 +238,10 @@ function validateDecisionRequest(request: DecisionRequest): void {
         throw new TypeError(`questions.${questionId}.criteria must be an array with 1 to 255 entries`);
       }
       validateStructuredValue(question.criteria, `questions.${questionId}.criteria`);
-    } else if ("criteria" in question) {
+    } else if (question.criteria !== undefined && question.criteria !== null) {
       throw new TypeError(`questions.${questionId}.criteria is not supported for noul questions`);
     }
-    if ("instructions" in question) {
+    if (question.instructions !== undefined) {
       validateStructuredValue(question.instructions, `questions.${questionId}.instructions`);
     }
   }
@@ -245,8 +250,12 @@ function validateDecisionRequest(request: DecisionRequest): void {
   if (request.temperature !== undefined) validateTemperature(request.temperature, true);
 }
 
-function jsonRequest(value: RankingRequest | DecisionRequest): Request {
-  return new Request().addItem(ItemFactory.text(JSON.stringify(value), "openai-json"));
+function jsonRequest<T extends RankingRequest | DecisionRequest>(value: T): { request: Request; payload: T } {
+  const json = JSON.stringify(value);
+  return {
+    request: new Request().addItem(ItemFactory.text(json, "openai-json")),
+    payload: JSON.parse(json) as T,
+  };
 }
 
 function jsonResult(response: Response, sessionName: string): unknown {
@@ -272,7 +281,12 @@ function finiteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
-function rankingResult(response: Response, request: RankingRequest): RankingResult {
+interface RankingValidationSnapshot {
+  readonly candidates: ReadonlyArray<string>;
+  readonly count: number;
+}
+
+function rankingResult(response: Response, snapshot: RankingValidationSnapshot): RankingResult {
   const value = jsonResult(response, "RankingSession");
   if (
     !isPlainObject(value) ||
@@ -282,7 +296,7 @@ function rankingResult(response: Response, request: RankingRequest): RankingResu
   ) {
     return invalidResult("RankingSession");
   }
-  if (value.ranked.length !== request.answers.length) return invalidResult("RankingSession");
+  if (value.ranked.length !== snapshot.count) return invalidResult("RankingSession");
   const ranks = new Set<number>();
   const indexes = new Set<number>();
   for (const candidate of value.ranked) {
@@ -290,14 +304,14 @@ function rankingResult(response: Response, request: RankingRequest): RankingResu
       !isPlainObject(candidate) ||
       !Number.isInteger(candidate.rank) ||
       (candidate.rank as number) < 1 ||
-      (candidate.rank as number) > request.answers.length ||
+      (candidate.rank as number) > snapshot.count ||
       typeof candidate.id !== "string" ||
       !Number.isInteger(candidate.index) ||
       (candidate.index as number) < 0 ||
-      (candidate.index as number) >= request.answers.length ||
+      (candidate.index as number) >= snapshot.count ||
       candidate.id !== String(candidate.index) ||
       typeof candidate.candidate !== "string" ||
-      candidate.candidate !== request.answers[candidate.index as number] ||
+      candidate.candidate !== snapshot.candidates[candidate.index as number] ||
       !finiteNumber(candidate.prob) ||
       candidate.prob < 0 ||
       candidate.prob > 1 ||
@@ -312,21 +326,39 @@ function rankingResult(response: Response, request: RankingRequest): RankingResu
   return value as unknown as RankingResult;
 }
 
-function validateDecisionAnswer(value: unknown, expectedType: string): boolean {
-  if (!isPlainObject(value) || value.type !== expectedType) return false;
+type DecisionQuestionValidationSnapshot =
+  | { readonly type: "noul" }
+  | { readonly type: "choice"; readonly choices: ReadonlySet<string> }
+  | { readonly type: "score"; readonly maximum: number };
+
+interface DecisionValidationSnapshot {
+  readonly questionIds: ReadonlyArray<string>;
+  readonly questions: Readonly<Record<string, DecisionQuestionValidationSnapshot>>;
+}
+
+function inUnitInterval(value: unknown): value is number {
+  return finiteNumber(value) && value >= 0 && value <= 1;
+}
+
+function validateDecisionAnswer(value: unknown, expected: DecisionQuestionValidationSnapshot): boolean {
+  if (!isPlainObject(value) || value.type !== expected.type) return false;
+  const answerFields = ["noul", "choice", "score"] as const;
+  if (answerFields.some((field) => Object.hasOwn(value, field) !== (field === expected.type))) return false;
   const answer =
-    expectedType === "noul"
+    expected.type === "noul"
       ? value.noul
-      : expectedType === "choice"
+      : expected.type === "choice"
         ? value.choice
-        : expectedType === "score"
+        : expected.type === "score"
           ? value.score
           : undefined;
-  if (expectedType === "choice" ? typeof answer !== "string" : !finiteNumber(answer)) return false;
-  if (value.confidence !== undefined && !finiteNumber(value.confidence)) return false;
+  if (expected.type === "noul" && !inUnitInterval(answer)) return false;
+  if (expected.type === "choice" && (typeof answer !== "string" || !expected.choices.has(answer))) return false;
+  if (expected.type === "score" && (!finiteNumber(answer) || answer < 0 || answer > expected.maximum)) return false;
+  if (value.confidence !== undefined && !inUnitInterval(value.confidence)) return false;
   if (
     value.probabilities !== undefined &&
-    (!isPlainObject(value.probabilities) || Object.values(value.probabilities).some((item) => !finiteNumber(item)))
+    (!isPlainObject(value.probabilities) || Object.values(value.probabilities).some((item) => !inUnitInterval(item)))
   ) {
     return false;
   }
@@ -336,7 +368,7 @@ function validateDecisionAnswer(value: unknown, expectedType: string): boolean {
   );
 }
 
-function decisionResult(response: Response, request: DecisionRequest): DecisionResult {
+function decisionResult(response: Response, snapshot: DecisionValidationSnapshot): DecisionResult {
   const value = jsonResult(response, "DecisionSession");
   if (
     !isPlainObject(value) ||
@@ -350,14 +382,14 @@ function decisionResult(response: Response, request: DecisionRequest): DecisionR
     return invalidResult("DecisionSession");
   }
   const answers = value.answers;
-  const expectedKeys = Object.keys(request.questions);
+  const expectedKeys = snapshot.questionIds;
   const answerKeys = Object.keys(answers);
   if (
     answerKeys.length !== expectedKeys.length ||
-    expectedKeys.some(
-      (key) =>
-        !Object.hasOwn(answers, key) || !validateDecisionAnswer(answers[key], request.questions[key]?.type ?? ""),
-    )
+    expectedKeys.some((key) => {
+      const question = snapshot.questions[key];
+      return !Object.hasOwn(answers, key) || question === undefined || !validateDecisionAnswer(answers[key], question);
+    })
   ) {
     return invalidResult("DecisionSession");
   }
@@ -827,7 +859,12 @@ export class RankingSession extends OneShotSession {
 
   async rank(request: RankingRequest, options?: StreamOptions): Promise<RankingResult> {
     validateRankingRequest(request);
-    return rankingResult(await this.processRequest(jsonRequest(request), options), request);
+    const serialized = jsonRequest(request);
+    const candidates = [...serialized.payload.answers];
+    return rankingResult(await this.processRequest(serialized.request, options), {
+      candidates,
+      count: candidates.length,
+    });
   }
 }
 
@@ -844,7 +881,21 @@ export class DecisionSession extends OneShotSession {
 
   async decide(request: DecisionRequest, options?: StreamOptions): Promise<DecisionResult> {
     validateDecisionRequest(request);
-    return decisionResult(await this.processRequest(jsonRequest(request), options), request);
+    const serialized = jsonRequest(request);
+    const questions = Object.fromEntries(
+      Object.entries(serialized.payload.questions).map(
+        ([id, question]): [string, DecisionQuestionValidationSnapshot] => {
+          if (question.type === "choice")
+            return [id, { type: question.type, choices: new Set(Object.keys(question.criteria)) }];
+          if (question.type === "score") return [id, { type: question.type, maximum: question.criteria.length - 1 }];
+          return [id, { type: question.type }];
+        },
+      ),
+    );
+    return decisionResult(await this.processRequest(serialized.request, options), {
+      questionIds: Object.keys(questions),
+      questions,
+    });
   }
 }
 

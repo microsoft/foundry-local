@@ -238,11 +238,31 @@ describe.skipIf(!haveTestModelCache)("DecisionSession (real model)", () => {
       state: { weather: "heavy rain" },
       questions: {
         umbrella: { type: "noul", instructions: "Should I take an umbrella?" },
+        activity: {
+          type: "choice",
+          criteria: { indoors: "Visit a museum", "outside-option": "Have a picnic" },
+          instructions: "Choose the best activity for the weather.",
+        },
+        suitability: {
+          type: "score",
+          criteria: ["unsuitable", "acceptable", "ideal"],
+          instructions: "Score how suitable an indoor museum is.",
+        },
       },
     });
 
     expect(result.model).toBeTruthy();
     expect(result.answers.umbrella?.type).toBe("noul");
+    expect(result.answers.umbrella).toMatchObject({ noul: expect.any(Number) });
+    expect(result.answers.activity?.type).toBe("choice");
+    if (result.answers.activity?.type === "choice") {
+      expect(["indoors", "outside-option"]).toContain(result.answers.activity.choice);
+    }
+    expect(result.answers.suitability?.type).toBe("score");
+    if (result.answers.suitability?.type === "score") {
+      expect(result.answers.suitability.score).toBeGreaterThanOrEqual(0);
+      expect(result.answers.suitability.score).toBeLessThanOrEqual(2);
+    }
     expect(result.usage.billing_units).toBe(0);
   });
 

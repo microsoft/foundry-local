@@ -90,6 +90,8 @@ describe("typed predictive request validation", () => {
     [{ answers: ["ok"], context: new Date() }, /plain JSON objects/],
     [{ answers: ["ok"], context: { value: Number.NaN } }, /finite/],
     [{ answers: ["ok"], temperature: 0 }, /temperature/],
+    [{ answers: Array(1) }, /answers/],
+    [{ answers: ["ok"], context: Array(1) }, /JSON-compatible/],
   ])("rejects an invalid ranking request before native submission", async (request, message) => {
     const native = immediateNative(rankingValue);
     await expect(rankingSession(native).rank(request as never)).rejects.toThrow(message);
@@ -109,6 +111,19 @@ describe("typed predictive request validation", () => {
     await expect(decisionSession(native).decide(request as never)).rejects.toThrow(message);
     expect(native.processRequest).not.toHaveBeenCalled();
   });
+
+  it.each([
+    { questions: { q: { type: "noul" } } },
+    { questions: { q: { type: "noul", instructions: undefined } } },
+    { questions: { q: { type: "noul", criteria: null } } },
+  ])("accepts omitted, undefined, and nullable noul options", async (request) => {
+    const value = {
+      model: "kev:1",
+      answers: { q: { type: "noul", noul: 0.5 } },
+      usage: { billing_units: 0 },
+    };
+    await expect(decisionSession(immediateNative(value)).decide(request as never)).resolves.toEqual(value);
+  });
 });
 
 describe("typed predictive result validation", () => {
@@ -122,6 +137,7 @@ describe("typed predictive result validation", () => {
     { ...rankingValue, ranked: rankingValue.ranked.map((item) => ({ ...item, index: 0, id: "0" })) },
     { ...rankingValue, ranked: [{ ...rankingValue.ranked[0], rank: 3 }, rankingValue.ranked[1]] },
     { ...rankingValue, ranked: [{ ...rankingValue.ranked[0], prob: Number.NaN }, rankingValue.ranked[1]] },
+    { ...rankingValue, ranked: [{ ...rankingValue.ranked[0], prob: 1.1 }, rankingValue.ranked[1]] },
     { ...rankingValue, ranked: [{ ...rankingValue.ranked[0], candidate: "unknown" }, rankingValue.ranked[1]] },
   ])("rejects malformed ranking results", async (value) => {
     await expect(rankingSession(immediateNative(value)).rank(rankingRequest)).rejects.toThrow(/typed result/);
@@ -149,10 +165,105 @@ describe("typed predictive result validation", () => {
     { model: "kev:1", answers: {}, usage: { billing_units: 0 } },
     { model: "kev:1", answers: { q: { type: "score", score: 1 } }, usage: { billing_units: 0 } },
     { model: "kev:1", answers: { q: { type: "noul", noul: Number.NaN } }, usage: { billing_units: 0 } },
+    { model: "kev:1", answers: { q: { type: "noul", noul: -0.1 } }, usage: { billing_units: 0 } },
+    { model: "kev:1", answers: { q: { type: "noul", noul: 1.1 } }, usage: { billing_units: 0 } },
+    {
+      model: "kev:1",
+      answers: { q: { type: "noul", noul: 0.5, choice: "extra" } },
+      usage: { billing_units: 0 },
+    },
+    {
+      model: "kev:1",
+      answers: { q: { type: "noul", noul: 0.5, confidence: 1.1 } },
+      usage: { billing_units: 0 },
+    },
+    {
+      model: "kev:1",
+      answers: { q: { type: "noul", noul: 0.5, probabilities: { yes: -0.1 } } },
+      usage: { billing_units: 0 },
+    },
     { model: "kev:1", answers: { q: { type: "noul", noul: 1 } }, usage: { billing_units: 0.5 } },
   ])("rejects malformed decision results", async (value) => {
     const request = { questions: { q: { type: "noul" } } } as const;
     await expect(decisionSession(immediateNative(value)).decide(request)).rejects.toThrow(/typed result/);
+  });
+
+  it.each([
+    [
+      { type: "choice", criteria: { alpha: "A", omega: "Z" } },
+      { type: "choice", choice: "missing" },
+    ],
+    [
+      { type: "score", criteria: ["low", "high"] },
+      { type: "score", score: -0.1 },
+    ],
+    [
+      { type: "score", criteria: ["low", "high"] },
+      { type: "score", score: 1.1 },
+    ],
+    [
+      { type: "score", criteria: ["low", "high"] },
+      { type: "score", score: 0.5, noul: 0.5 },
+    ],
+  ])("rejects answers outside captured question criteria", async (question, answer) => {
+    const value = { model: "kev:1", answers: { q: answer }, usage: { billing_units: 0 } };
+    await expect(
+      decisionSession(immediateNative(value)).decide({ questions: { q: question } } as never),
+    ).rejects.toThrow(/typed result/);
+  });
+
+  it("accepts a fractional score inside the captured range", async () => {
+    const value = {
+      model: "kev:1",
+      answers: { q: { type: "score", score: 0.5 } },
+      usage: { billing_units: 0 },
+    };
+    await expect(
+      decisionSession(immediateNative(value)).decide({
+        questions: { q: { type: "score", criteria: ["low", "high"] } },
+      }),
+    ).resolves.toEqual(value);
+  });
+
+  it("validates a ranking response against candidates captured before dispatch", async () => {
+    const pending = pendingResponse();
+    const native = immediateNative(rankingValue);
+    vi.mocked(native.processRequest).mockReturnValueOnce(pending.promise);
+    const answers = ["first", "second"];
+    const result = rankingSession(native).rank({ answers });
+    answers[0] = "mutated";
+    answers.push("third");
+    pending.resolve(response(rankingValue));
+    await expect(result).resolves.toEqual(rankingValue);
+  });
+
+  it("validates a decision response against questions captured before dispatch", async () => {
+    const pending = pendingResponse();
+    const native = immediateNative({});
+    vi.mocked(native.processRequest).mockReturnValueOnce(pending.promise);
+    const questions = {
+      selected: { type: "choice" as const, criteria: { nonnumeric: "Inside" } },
+      score: { type: "score" as const, criteria: ["low", "high"] },
+    };
+    const value = {
+      model: "kev:1",
+      answers: {
+        selected: { type: "choice", choice: "nonnumeric" },
+        score: { type: "score", score: 0.5 },
+      },
+      usage: { billing_units: 0 },
+    };
+    const result = decisionSession(native).decide({ questions });
+    questions.selected.type = "score" as never;
+    const mutatedCriteria = questions.selected.criteria as Record<string, string>;
+    Reflect.deleteProperty(mutatedCriteria, "nonnumeric");
+    mutatedCriteria.changed = "Changed";
+    questions.score.criteria.length = 1;
+    const mutatedQuestions = questions as unknown as Record<string, unknown>;
+    Reflect.deleteProperty(mutatedQuestions, "score");
+    mutatedQuestions.replacement = { type: "noul" };
+    pending.resolve(response(value));
+    await expect(result).resolves.toEqual(value);
   });
 });
 

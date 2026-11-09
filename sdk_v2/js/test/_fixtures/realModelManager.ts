@@ -181,11 +181,15 @@ async function registerStagedNonGenerativeModel(
       model: await localCatalog.getModelVariant(packageInfo.modelId),
     };
   } catch {
-    using metadata = new MutableModelInfo().setStringProperty(ModelInfoStringProperty.Task, task);
-    return {
-      catalog: localCatalog,
-      model: await localCatalog.registerModel(packagePath, packageInfo.modelId, metadata),
-    };
+    const metadata = new MutableModelInfo().setStringProperty(ModelInfoStringProperty.Task, task);
+    try {
+      return {
+        catalog: localCatalog,
+        model: await localCatalog.registerModel(packagePath, packageInfo.modelId, metadata),
+      };
+    } finally {
+      metadata.dispose();
+    }
   }
 }
 
