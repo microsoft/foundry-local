@@ -328,7 +328,8 @@ flMessageRole ReplayRole(const std::string& role) {
 }  // namespace
 
 /// Replay a hop's own input items — the request the caller sent for that hop, in the shape they sent it.
-static void AddJsonItemsToRequest(Request& request, const nlohmann::json& items) {
+static void AddJsonItemsToRequest(Request& request, const nlohmann::json& items,
+                                  const ToolCallEncodings& encodings) {
   if (!items.is_array()) {
     return;
   }
@@ -360,12 +361,12 @@ static void AddJsonItemsToRequest(Request& request, const nlohmann::json& items)
     }
 
     if (type == "function_call") {
-      request.AddOwnedItem(MakeReplayedToolCall(entry, {}));
+      request.AddOwnedItem(MakeReplayedToolCall(entry, encodings));
       continue;
     }
 
     if (type == "custom_tool_call") {
-      request.AddOwnedItem(MakeReplayedCustomToolCall(entry, {}));
+      request.AddOwnedItem(MakeReplayedCustomToolCall(entry, encodings));
       continue;
     }
 
@@ -467,7 +468,7 @@ static void AddHopOutputToRequest(Request& request, const nlohmann::json& output
 static void AddChainContextToRequest(Request& request, const ResponseChainContext& context) {
   for (const auto& hop : context) {
     request.BeginItemSegment();
-    AddJsonItemsToRequest(request, hop.input_items);
+    AddJsonItemsToRequest(request, hop.input_items, hop.call_encodings);
     request.BeginItemSegment();
     AddHopOutputToRequest(request, hop.output_items, hop.call_encodings);
   }
