@@ -268,6 +268,22 @@ TEST(QwenXmlToolSchemaTest, NativeModeRequiresEverySchemaToBeRepresentable) {
       unsupported, {{"typed", ToolKind::kFunction}}));
 }
 
+TEST(QwenXmlToolSchemaTest, NativeModeRequiresRepresentableFunctionAndParameterNames) {
+  for (const auto* name : {"", "file path", "file\tpath", "file\npath", "<field", "field>", "field=value"}) {
+    const auto tools = [&](std::string function, std::string parameter) {
+      return nlohmann::json::array(
+                 {{{"type", "function"}, {"function", {{"name", function}, {"parameters", {{"type", "object"}, {"properties", {{parameter, {{"type", "string"}}}}}, {"required", {parameter}}, {"additionalProperties", false}}}}}}})
+          .dump();
+    };
+    EXPECT_FALSE(CanDecodeQwenXmlToolSchemas(
+        tools("lookup", name), {{"lookup", ToolKind::kFunction}}))
+        << name;
+    EXPECT_FALSE(CanDecodeQwenXmlToolSchemas(
+        tools(name, "city"), {{name, ToolKind::kFunction}}))
+        << name;
+  }
+}
+
 TEST(QwenXmlToolCallAccumulatorTest, ValidCallIsHiddenAndEmittedOnlyWhenBatchEnds) {
   auto acc = MakeQwenAccumulator();
   const std::string generated =
