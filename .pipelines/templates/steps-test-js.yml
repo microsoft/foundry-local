@@ -13,6 +13,10 @@ parameters:
 - name: prebuildArtifactDir
   type: string
   displayName: 'Path to the downloaded js-prebuild-<rid> artifact directory (root with prebuilds/ inside)'
+- name: runRequiredNonGenerativeTests
+  type: boolean
+  default: false
+  displayName: 'Require cached CLM and KEV real-model tests in this lane'
 
 steps:
 
@@ -161,6 +165,23 @@ steps:
       npm run build:ts
     displayName: 'Build TypeScript'
 
+  - ${{ if eq(parameters.runRequiredNonGenerativeTests, true) }}:
+    - bash: |
+        set -euo pipefail
+        root="$(Build.SourcesDirectory)/test-data-shared/Microsoft"
+        for package in \
+          clm-v0.1-8b-mixed-generic-cpu-1 \
+          kev-0.8b-mixed-generic-cpu-1
+        do
+          path="$root/$package"
+          if [ ! -d "$path" ]; then
+            echo "Required predictive model package directory missing: $path" >&2
+            exit 1
+          fi
+          echo "Found required predictive model package: $path"
+        done
+      displayName: 'Verify required CLM and KEV model packages'
+
   - bash: |
       set -euo pipefail
       cd "$(Build.SourcesDirectory)/sdk_v2/js"
@@ -169,3 +190,5 @@ steps:
     displayName: 'Run vitest'
     env:
       FOUNDRY_TEST_DATA_DIR: '$(Build.SourcesDirectory)/test-data-shared'
+      ${{ if eq(parameters.runRequiredNonGenerativeTests, true) }}:
+        FOUNDRY_REQUIRE_NON_GENERATIVE_MODELS: 'true'
