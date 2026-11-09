@@ -22,6 +22,7 @@ struct GenAIConfig {
   struct OnnxModel {
     int context_length = 0;
     std::string type;
+    std::string timestamp_level = "off";
     std::map<std::string, std::string> prompt_templates;
 
     struct Decoder {

@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 #include "inferencing/generative/audio/audio_session.h"
+#include "inferencing/generative/audio/asr_transcript.h"
 
 #include "contracts/audio_transcriptions.h"
 #include "inferencing/execution_provider.h"
@@ -260,6 +261,15 @@ void AudioSession::ProcessRequestImpl(const Request& request, Response& response
   // `file:///C:/My%20Audio.wav` work the same as a plain path.
   std::string audio_path = PathFromFileUri(audio_item.uri);
 
+  if (IsNemotronSpeechModel()) {
+    AudioTranscriptionRequest file_request;
+    file_request.filename = audio_path;
+    file_request.temperature = temperature;
+    file_request.language = language;
+    ProcessNemotronFileTranscription(file_request, request, response, false);
+    return;
+  }
+
   auto generator = OnnxAudioGenerator::Create(audio_path, temperature, Model(), language);
   audio_telemetry_details_ = AudioTelemetryDetails{
       .source = "file",
@@ -373,13 +383,13 @@ void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue
       TryNemotronLanguageId(*generator, language->second);
     }
   }
-  auto tokenizer_stream = Model().GetPreprocessor().CreateTokenizerStream();
-
+  auto postprocessor = OgaASRPostProcessor::Create(*generator);
   auto streaming_callback = CreateCallbackHandler(request);
-  std::vector<std::string> token_texts;
-  token_texts.reserve(kInitialTokenCapacity);
-  std::vector<std::unique_ptr<SpeechSegmentItem>> segments;
-  segments.reserve(kInitialTokenCapacity);
+  const auto& config = Model().GetGenAIConfig();
+  ASRTranscript transcript(config.model ? config.model->timestamp_level : "off",
+                           [&](const SpeechSegmentItem& segment) {
+                             if (streaming_callback) streaming_callback->PushItem(CopySpeechSegment(segment));
+                           });
   // Streaming ASR has no text prompt (input is audio), so prompt_tokens stays 0.
   // We track every decoded token (whether it produced visible text or not) as completion_tokens.
   int completion_tokens = 0;
@@ -390,8 +400,8 @@ void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue
     auto float_samples = ConvertS16LEToFloat(
         static_cast<const uint8_t*>(format_item.data), format_item.data_size);
     audio_samples += static_cast<int64_t>(float_samples.size());
-    ProcessChunk(*processor, *generator, *tokenizer_stream,
-                 float_samples, token_texts, segments, streaming_callback, request, completion_tokens);
+    ProcessChunk(*processor, *generator, *postprocessor,
+                 float_samples, transcript, request, completion_tokens);
   }
 
   // 4. Read from queue until finished or cancelled
@@ -416,8 +426,8 @@ void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue
         static_cast<const uint8_t*>(bytes.data), bytes.data_size);
     audio_samples += static_cast<int64_t>(float_samples.size());
 
-    ProcessChunk(*processor, *generator, *tokenizer_stream,
-                 float_samples, token_texts, segments, streaming_callback, request, completion_tokens);
+    ProcessChunk(*processor, *generator, *postprocessor,
+                 float_samples, transcript, request, completion_tokens);
   }
 
   // 5. Flush remaining buffered audio
@@ -426,15 +436,14 @@ void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue
 
     if (flush_tensors) {
       generator->SetInputs(*flush_tensors);
-      DecodeTokens(*generator, *tokenizer_stream, token_texts, segments, streaming_callback, request,
-                   completion_tokens);
+      DecodeTokens(*generator, *postprocessor, transcript, request, completion_tokens);
     }
+    postprocessor->Finalize();
+    for (const auto* result : postprocessor->GetNextResults()) transcript.Append(*result);
   }
 
-  // 6. Produce response — SpeechResultItem carrying all per-token segments.
-  std::string full_text = JoinTokens(token_texts);
-  const size_t full_text_size = full_text.size();
-  response.items.push_back(BuildSpeechResult(std::move(full_text), std::move(segments)));
+  const size_t full_text_size = transcript.Text().size();
+  response.items.push_back(transcript.Finish());
 
   if (request.IsCancellationRequested()) {
     response.finish_reason = FOUNDRY_LOCAL_FINISH_NONE;
@@ -459,48 +468,28 @@ void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue
 }
 
 void AudioSession::ProcessChunk(OgaStreamingProcessor& processor, OgaGenerator& generator,
-                                OgaTokenizerStream& tokenizer_stream,
+                                OgaASRPostProcessor& postprocessor,
                                 const std::vector<float>& samples,
-                                std::vector<std::string>& token_texts,
-                                std::vector<std::unique_ptr<SpeechSegmentItem>>& segments,
-                                const std::unique_ptr<CallbackHandler>& callback,
+                                ASRTranscript& transcript,
                                 const Request& request,
                                 int& completion_tokens) {
   auto tensors = processor.Process(samples.data(), samples.size());
 
   if (tensors) {
     generator.SetInputs(*tensors);
-    DecodeTokens(generator, tokenizer_stream, token_texts, segments, callback, request, completion_tokens);
+    DecodeTokens(generator, postprocessor, transcript, request, completion_tokens);
   }
 }
 
-void AudioSession::DecodeTokens(OgaGenerator& generator, OgaTokenizerStream& tokenizer_stream,
-                                std::vector<std::string>& token_texts,
-                                std::vector<std::unique_ptr<SpeechSegmentItem>>& segments,
-                                const std::unique_ptr<CallbackHandler>& callback,
+void AudioSession::DecodeTokens(OgaGenerator& generator, OgaASRPostProcessor& postprocessor,
+                                ASRTranscript& transcript,
                                 const Request& request,
                                 int& completion_tokens) {
   while (!generator.IsDone() && !generator.IsSessionTerminated() && !request.IsCancellationRequested()) {
     generator.GenerateNextToken();
-    auto next_tokens = generator.GetNextTokens();
-
-    if (next_tokens.empty()) {
-      continue;
-    }
-
-    int32_t token_id = next_tokens[0];
-    ++completion_tokens;
-    const char* token_text = tokenizer_stream.Decode(token_id);
-
-    if (token_text && token_text[0] != '\0') {
-      segments.push_back(MakeNoneSegment(token_text));
-
-      if (callback) {
-        callback->PushItem(MakeNoneSegment(token_text));
-      }
-
-      token_texts.emplace_back(token_text);
-    }
+    completion_tokens += static_cast<int>(generator.GetNextTokens().size());
+    postprocessor.ProcessNext();
+    for (const auto* result : postprocessor.GetNextResults()) transcript.Append(*result);
   }
 }
 
@@ -633,60 +622,35 @@ void AudioSession::TryNemotronLanguageId(OgaGenerator& generator, const std::str
   }
 }
 
-void AudioSession::DecodeNemotronTokens(OgaGenerator& generator, OgaTokenizerStream& tokenizer_stream, std::string& text,
-                                        const std::unique_ptr<CallbackHandler>& streaming_callback,
-                                        const std::string& response_id, const Request& original_request,
+void AudioSession::DecodeNemotronTokens(OgaGenerator& generator, OgaASRPostProcessor& postprocessor,
+                                        ASRTranscript& transcript, const Request& original_request,
                                         int& completion_tokens) const {
-  const bool is_streaming = (streaming_callback != nullptr);
-
   while (!generator.IsDone() && !generator.IsSessionTerminated() &&
          !original_request.IsCancellationRequested()) {
     generator.GenerateNextToken();
-    auto next_tokens = generator.GetNextTokens();
-    if (next_tokens.empty()) {
-      continue;
-    }
-
-    ++completion_tokens;
-    const char* decoded = tokenizer_stream.Decode(next_tokens[0]);
-    if (!decoded || decoded[0] == '\0') {
-      continue;
-    }
-
-    std::string token(decoded);
-    if (IsLanguageToken(token)) {
-      continue;
-    }
-
-    text += token;
-
-    if (is_streaming) {
-      AudioTranscriptionResponse chunk;
-      chunk.id = response_id;
-      chunk.text = token;
-      streaming_callback->PushItem(std::make_unique<TextItem>(nlohmann::json(chunk).dump(),
-                                                              FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+    completion_tokens += static_cast<int>(generator.GetNextTokens().size());
+    postprocessor.ProcessNext();
+    for (const auto* result : postprocessor.GetNextResults()) {
+      if (!IsLanguageToken(result->GetText())) transcript.Append(*result);
     }
   }
 }
 
 void AudioSession::RunNemotronDecodePass(std::unique_ptr<OgaNamedTensors> tensors, OgaGenerator& generator,
-                                         OgaTokenizerStream& tokenizer_stream, std::string& text,
-                                         const std::unique_ptr<CallbackHandler>& streaming_callback,
-                                         const std::string& response_id, const Request& original_request,
+                                         OgaASRPostProcessor& postprocessor, ASRTranscript& transcript,
+                                         const Request& original_request,
                                          int& completion_tokens) const {
   if (!tensors || original_request.IsCancellationRequested()) {
     return;
   }
 
   generator.SetInputs(*tensors);
-  DecodeNemotronTokens(generator, tokenizer_stream, text, streaming_callback, response_id, original_request,
-                       completion_tokens);
+  DecodeNemotronTokens(generator, postprocessor, transcript, original_request, completion_tokens);
 }
 
 void AudioSession::ProcessNemotronFileTranscription(const AudioTranscriptionRequest& req,
                                                     const Request& original_request,
-                                                    Response& response) {
+                                                    Response& response, bool openai_json) {
   if (original_request.IsCancellationRequested()) {
     response.finish_reason = FOUNDRY_LOCAL_FINISH_NONE;
     return;
@@ -707,20 +671,31 @@ void AudioSession::ProcessNemotronFileTranscription(const AudioTranscriptionRequ
   auto samples = AudioInternal::LoadPcmWavAsFloatSamples(req.filename);
   auto& oga_model = Model().GetOgaModel();
   auto processor = OgaStreamingProcessor::Create(oga_model);
-  auto tokenizer = OgaTokenizer::Create(oga_model);
-  auto tokenizer_stream = OgaTokenizerStream::Create(*tokenizer);
   auto generator_params = OgaGeneratorParams::Create(oga_model);
   if (temperature.has_value()) {
     generator_params->SetSearchOption("temperature", *temperature);
   }
   auto generator = OgaGenerator::Create(oga_model, *generator_params);
   TryNemotronLanguageId(*generator, language);
+  auto postprocessor = OgaASRPostProcessor::Create(*generator);
 
   auto streaming_callback = CreateCallbackHandler(original_request);
   std::string response_id = ResponseConverter::GenerateId("audio");
 
-  std::string text;
-  text.reserve(512);
+  const auto& config = Model().GetGenAIConfig();
+  const auto level = config.model ? config.model->timestamp_level : "off";
+  ASRTranscript transcript(level, [&](const SpeechSegmentItem& segment) {
+    if (!streaming_callback) return;
+    if (!openai_json) {
+      streaming_callback->PushItem(CopySpeechSegment(segment));
+      return;
+    }
+    SpeechResultItem chunk(segment.text);
+    chunk.segments.push_back(CopySpeechSegment(segment));
+    streaming_callback->PushItem(std::make_unique<TextItem>(
+        ToAudioTranscriptionJson(chunk, response_id, level != "off").dump(),
+        FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+  });
   int completion_tokens = 0;
   int64_t audio_samples = 0;
 
@@ -729,13 +704,15 @@ void AudioSession::ProcessNemotronFileTranscription(const AudioTranscriptionRequ
        offset < samples.size() && !original_request.IsCancellationRequested();
        offset += kNemotronSamplesPerChunk) {
     size_t count = std::min(kNemotronSamplesPerChunk, samples.size() - offset);
-    RunNemotronDecodePass(processor->Process(samples.data() + offset, count), *generator, *tokenizer_stream, text,
-                          streaming_callback, response_id, original_request, completion_tokens);
+    RunNemotronDecodePass(processor->Process(samples.data() + offset, count), *generator, *postprocessor,
+                          transcript, original_request, completion_tokens);
     audio_samples += static_cast<int64_t>(count);
   }
   if (!original_request.IsCancellationRequested()) {
-    RunNemotronDecodePass(processor->Flush(), *generator, *tokenizer_stream, text, streaming_callback, response_id,
+    RunNemotronDecodePass(processor->Flush(), *generator, *postprocessor, transcript,
                           original_request, completion_tokens);
+    postprocessor->Finalize();
+    for (const auto* result : postprocessor->GetNextResults()) transcript.Append(*result);
   }
 
   response.finish_reason =
@@ -745,18 +722,21 @@ void AudioSession::ProcessNemotronFileTranscription(const AudioTranscriptionRequ
   response.usage.completion_tokens = completion_tokens;
   response.usage.total_tokens = completion_tokens;
   audio_telemetry_details_ = AudioTelemetryDetails{
-      .source = "openai_json_file",
+      .source = openai_json ? "openai_json_file" : "file",
       .language = AudioInternal::SanitizeLanguageForTelemetry(language),
       .duration_ms = AudioInternal::AudioDurationMsFromSamples(audio_samples),
       .sample_rate = kStreamingSampleRate,
       .channels = kStreamingChannels,
   };
 
-  AudioTranscriptionResponse output;
-  output.id = response_id;
-  output.text = std::move(text);
-  response.items.push_back(std::make_unique<TextItem>(nlohmann::json(output).dump(),
-                                                      FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+  auto result = transcript.Finish();
+  if (openai_json) {
+    response.items.push_back(std::make_unique<TextItem>(
+        ToAudioTranscriptionJson(*result, response_id, level != "off").dump(),
+        FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+  } else {
+    response.items.push_back(std::move(result));
+  }
 }
 
 int64_t AudioInternal::AudioDurationMsFromSamples(int64_t samples) {

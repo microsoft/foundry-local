@@ -8,6 +8,7 @@
 #include <string>
 
 namespace fl {
+struct SpeechResultItem;
 
 // ========================================================================
 // OpenAI Audio Transcriptions API — Request/Response contract types.
@@ -46,5 +47,8 @@ void from_json(const nlohmann::json& j, AudioTranscriptionRequest& r);
 
 // --- Response serialization ---
 void to_json(nlohmann::json& j, const AudioTranscriptionResponse& r);
+
+nlohmann::json ToAudioTranscriptionJson(const SpeechResultItem& result, const std::string& id,
+                                        bool include_timestamps);
 
 }  // namespace fl

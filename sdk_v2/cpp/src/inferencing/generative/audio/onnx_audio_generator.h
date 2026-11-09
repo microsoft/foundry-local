@@ -13,7 +13,7 @@
 // Forward declarations — avoid pulling ort_genai.h into the header
 struct OgaGenerator;
 struct OgaGeneratorParams;
-struct OgaTokenizerStream;
+struct OgaASRPostProcessor;
 struct OgaAudios;
 struct OgaNamedTensors;
 
@@ -61,7 +61,7 @@ class OnnxAudioGenerator : public AudioGenerator {
                      std::unique_ptr<OgaNamedTensors> inputs,
                      std::unique_ptr<OgaGeneratorParams> gen_params,
                      std::unique_ptr<OgaGenerator> generator,
-                     std::unique_ptr<OgaTokenizerStream> stream,
+                     std::unique_ptr<OgaASRPostProcessor> postprocessor,
                      int prompt_token_count);
 
   // Destruction is reverse-declaration order. audios_ and inputs_ are declared first
@@ -70,7 +70,8 @@ class OnnxAudioGenerator : public AudioGenerator {
   std::unique_ptr<OgaNamedTensors> inputs_;
   std::unique_ptr<OgaGeneratorParams> gen_params_;
   std::unique_ptr<OgaGenerator> generator_;
-  std::unique_ptr<OgaTokenizerStream> stream_;
+  std::unique_ptr<OgaASRPostProcessor> postprocessor_;
+  std::string decoded_text_;
   int prompt_token_count_ = 0;
   std::atomic<bool> cancelled_{false};
 };

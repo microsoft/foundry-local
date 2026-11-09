@@ -129,6 +129,9 @@ GenAIConfig GenAIConfig::LoadFromFile(const std::string& path) {
     if (jm.contains("type") && jm["type"].is_string()) {
       model.type = jm["type"].get<std::string>();
     }
+    if (jm.contains("timestamp_level")) {
+      model.timestamp_level = jm["timestamp_level"].get<std::string>();
+    }
 
     if (jm.contains("prompt_templates") && jm["prompt_templates"].is_object()) {
       for (auto& [key, val] : jm["prompt_templates"].items()) {
