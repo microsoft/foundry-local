@@ -55,11 +55,12 @@ stages:
         : "${PIP_INDEX_URL:?PipAuthenticate did not set PIP_INDEX_URL}"
         "$python" -m pip install "cmake==3.31.6"
         "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
-        git clone --depth 1 --branch v3.10.281.1 \
+        git clone --depth 1 --branch v3.10.309.1 \
           https://github.com/microsoft/cpp_client_telemetry.git "$TELEMETRY_SOURCE"
-        test "$(git -C "$TELEMETRY_SOURCE" rev-parse HEAD)" = 29d0083644f6450fec037f8afc1ad8d8a3b3c830
+        test "$(git -C "$TELEMETRY_SOURCE" rev-parse HEAD)" = 114a2c5469f898f970e85eac6f5d82595a550588
         git -C "$TELEMETRY_SOURCE" apply "$PWD/ports/cpp-client-telemetry/apple-system-libraries.patch"
         git -C "$TELEMETRY_SOURCE" apply "$PWD/ports/cpp-client-telemetry/sdk-version-lifetime.patch"
+        git -C "$TELEMETRY_SOURCE" apply "$PWD/ports/cpp-client-telemetry/apple-delegate-namespace.patch"
         "$python" build.py --configure --build --skip_examples \
           --config "$BUILD_CONFIG" \
           --cmake_path "$ENGINE_VENV/bin/cmake" \

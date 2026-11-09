@@ -1,0 +1,17 @@
+diff --git a/lib/CMakeLists.txt b/lib/CMakeLists.txt
+--- a/lib/CMakeLists.txt
++++ b/lib/CMakeLists.txt
+@@ -376,6 +376,13 @@
+   message(STATUS "Building static SDK library")
+   add_library(mat STATIC ${SRCS})
+ endif()
++if(APPLE)
++  # Objective-C class names are process-global, even with hidden symbol visibility.
++  # Keep Foundry Local's private SDK delegate distinct from ONNX Runtime and GenAI's bundled copy.
++  target_compile_definitions(mat PRIVATE
++    MATStreamingSessionDelegate=ORTFoundryLocalMATStreamingSessionDelegate)
++endif()
++
+ target_link_libraries(mat PRIVATE
+   $<BUILD_INTERFACE:matsdk_build_options>
+   $<BUILD_INTERFACE:matsdk_internal_config>)

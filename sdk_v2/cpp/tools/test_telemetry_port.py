@@ -33,7 +33,7 @@ function(vcpkg_from_github)
     if(NOT arg_REF STREQUAL "v{version}")
         message(FATAL_ERROR "Unexpected release: ${{arg_REF}}")
     endif()
-    if(NOT arg_PATCHES STREQUAL "apple-system-libraries.patch;sdk-version-lifetime.patch")
+    if(NOT arg_PATCHES STREQUAL "apple-system-libraries.patch;sdk-version-lifetime.patch;apple-delegate-namespace.patch")
         message(FATAL_ERROR "Missing telemetry compatibility patches")
     endif()
     set(${{arg_OUT_SOURCE_PATH}} "{root.as_posix()}" PARENT_SCOPE)
@@ -123,6 +123,82 @@ include("{portfile}")
         result, _ = self.run_port("LINUX", ["minimal-sqlite", "system-sqlite"])
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("mutually exclusive", " ".join(result.stderr.split()))
+
+    def test_delegate_namespace_is_private_and_apple_only(self):
+        scratch = CPP_ROOT / "build" / "telemetry-port-tests"
+        scratch.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=scratch) as temporary:
+            root = Path(temporary)
+            (root / "lib").mkdir()
+            (root / "lib" / "delegate.cc").write_text("", encoding="utf-8")
+            # Reproduce Darwin initialization shadowing the APPLE cache entry on every host.
+            platform_init = root / "platform-initialize.cmake"
+            platform_init.write_text("set(APPLE 1)\n", encoding="utf-8")
+            (root / "lib" / "CMakeLists.txt").write_text(
+                """set(SRCS delegate.cc)
+if(BUILD_SHARED_LIBS)
+  message(STATUS "Building shared SDK library")
+  add_library(mat SHARED ${SRCS})
+else()
+  message(STATUS "Building static SDK library")
+  add_library(mat STATIC ${SRCS})
+endif()
+target_link_libraries(mat PRIVATE
+  $<BUILD_INTERFACE:matsdk_build_options>
+  $<BUILD_INTERFACE:matsdk_internal_config>)
+get_target_property(private_definitions mat COMPILE_DEFINITIONS)
+get_target_property(public_definitions mat INTERFACE_COMPILE_DEFINITIONS)
+file(WRITE "${CMAKE_BINARY_DIR}/definitions.txt" "${private_definitions}\\n${public_definitions}\\n")
+""",
+                encoding="utf-8",
+            )
+            (root / "CMakeLists.txt").write_text(
+                """cmake_minimum_required(VERSION 3.18)
+project(TelemetryDelegateTest LANGUAGES CXX)
+set(APPLE "${TEST_APPLE}")
+add_library(matsdk_build_options INTERFACE)
+add_library(matsdk_internal_config INTERFACE)
+add_subdirectory(lib)
+""",
+                encoding="utf-8",
+            )
+            for command in (
+                ["git", "init", "--quiet"],
+                [
+                    "git",
+                    "apply",
+                    "--ignore-whitespace",
+                    str(PORT / "apple-delegate-namespace.patch"),
+                ],
+            ):
+                result = subprocess.run(
+                    command, cwd=root, capture_output=True, text=True, check=False
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            definition = (
+                "MATStreamingSessionDelegate=ORTFoundryLocalMATStreamingSessionDelegate"
+            )
+            for apple in ("ON", "OFF"):
+                with self.subTest(apple=apple):
+                    build = root / apple
+                    result = subprocess.run(
+                        [
+                            shutil.which("cmake") or "cmake",
+                            "-S",
+                            str(root),
+                            "-B",
+                            str(build),
+                            f"-DTEST_APPLE={apple}",
+                            f"-DCMAKE_PROJECT_INCLUDE={platform_init.as_posix()}",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    private, public = (build / "definitions.txt").read_text().splitlines()
+                    self.assertEqual(definition in private, apple == "ON")
+                    self.assertNotIn(definition, public)
 
     def test_manifest_policy(self):
         manifest = json.loads((CPP_ROOT / "vcpkg.json").read_text())
