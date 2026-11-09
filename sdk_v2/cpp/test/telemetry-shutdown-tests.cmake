@@ -64,9 +64,8 @@ foreach(source callbacks/DebugSource.cpp pal/WorkerThread.cpp api/Logger.cpp pal
             instrumented "${instrumented}")
         string(REPLACE "static const std::string sdkVersion(" "static const TelemetryTestSdkVersion sdkVersion("
             instrumented "${instrumented}")
-        string(REPLACE "return *sdkVersion;" "TelemetryTestVersionAccess();\n        return *sdkVersion;"
-            instrumented "${instrumented}")
-        string(REPLACE "return sdkVersion;" "TelemetryTestVersionAccess();\n        return sdkVersion;"
+        set(version_site "PlatformAbstractionLayer::getSdkVersion() const\n    {")
+        string(REPLACE "${version_site}" "${version_site}\n        TelemetryTestVersionAccess();"
             instrumented "${instrumented}")
         string(REGEX MATCHALL "TelemetryTestVersionAccess\\(\\)" sites "${instrumented}")
         list(LENGTH sites count)
