@@ -414,10 +414,15 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreatePrepared(
   const int input_token_count = static_cast<int>(prepared.prompt_token_count);
   auto gen_params = OgaGeneratorParams::Create(model.GetOgaModel());
   const int default_max_output_tokens = GetDefaultMaxOutputTokens(prepared.HasMedia());
+#if FOUNDRY_LOCAL_OGA_HAS_PREFILL_CHUNKING_CAPABILITY
+  const bool supports_external_prefill_chunking = model.GetOgaModel().SupportsExternalPrefillChunking();
+#else
+  // Older runtimes retain the automatic chunk-size behavior they had before this capability was added.
+  constexpr bool supports_external_prefill_chunking = true;
+#endif
   const int max_length =
       ApplySearchOptions(options, input_token_count, model.GetGenAIConfig(), *gen_params, model.EP(),
-                         use_full_context, default_max_output_tokens,
-                         model.GetOgaModel().SupportsExternalPrefillChunking());
+                         use_full_context, default_max_output_tokens, supports_external_prefill_chunking);
   const int max_output_tokens = ResolveMaxOutputTokens(options, default_max_output_tokens);
 
   auto reasoning_markers = ResolveReasoningMarkers(tool_ctx, model);
