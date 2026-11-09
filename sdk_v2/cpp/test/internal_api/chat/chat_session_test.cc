@@ -749,41 +749,93 @@ TEST(ChatSessionDecisionTest, InvalidLaterCustomCallPreventsTheWholeBatchFromStr
   output.events.emplace_back(std::move(invalid));
 
   size_t streamed_calls = 0;
-  EXPECT_THROW(
-      {
-        chat_session_internal::NormalizeToolOutputBatch(output, context);
-        for (const auto& event : output.events) {
-          if (std::holds_alternative<ParsedToolCall>(event)) {
-            ++streamed_calls;
-          }
-        }
-      },
-      fl::Exception);
+  chat_session_internal::NormalizeToolOutputBatch(output, context);
+  for (const auto& event : output.events) {
+    if (std::holds_alternative<ParsedToolCall>(event)) {
+      ++streamed_calls;
+    }
+  }
+  EXPECT_TRUE(output.malformed);
+  EXPECT_FALSE(output.error.empty());
   EXPECT_EQ(streamed_calls, 0u);
 }
 
-TEST(ChatSessionDecisionTest, CompletedCallGuardUsesGenericSemanticArguments) {
+TEST(ChatSessionDecisionTest, CompletedArgumentsDoNotMakeALaterCallInvalid) {
   ToolCallContext context;
-  context.completed_tool_calls = {
-      {"perform_action", R"({"request":{"id":7,"flags":["a","b"]},"enabled":true})"}};
-
-  ToolCallStreamAccumulator::Output repeated;
-  repeated.events.emplace_back(
-      ParsedToolCall{"call_1", "perform_action",
-                     R"({ "enabled": true, "request": { "flags": ["a", "b"], "id": 7 } })"});
-  EXPECT_THROW(
-      chat_session_internal::NormalizeToolOutputBatch(repeated, context),
-      fl::Exception);
-
-  ToolCallStreamAccumulator::Output pending;
-  pending.events.emplace_back(
+  ToolCallStreamAccumulator::Output output;
+  output.events.emplace_back(
       ParsedToolCall{"call_2", "perform_action",
-                     R"({"request":{"id":8,"flags":["a","b"]},"enabled":true})"});
-  EXPECT_NO_THROW(
-      chat_session_internal::NormalizeToolOutputBatch(pending, context));
-  ASSERT_EQ(pending.events.size(), 1u);
-  EXPECT_EQ(std::get<ParsedToolCall>(pending.events.front()).arguments,
-            R"({"request":{"id":8,"flags":["a","b"]},"enabled":true})");
+                     R"({ "enabled": true, "request": { "flags": ["a", "b"], "id": 7 } })"});
+
+  chat_session_internal::NormalizeToolOutputBatch(output, context);
+
+  EXPECT_FALSE(output.malformed);
+  ASSERT_EQ(output.events.size(), 1u);
+  EXPECT_EQ(std::get<ParsedToolCall>(output.events.front()).arguments,
+            R"({ "enabled": true, "request": { "flags": ["a", "b"], "id": 7 } })");
+}
+
+TEST(ChatSessionDecisionTest, TaggedJsonRequiresGeneratedControlBoundaries) {
+  ToolCallContext context;
+  context.tool_output = true;
+  context.native_tagged_json_tool_calls = true;
+  context.tool_call_start = "<tool>";
+  context.tool_call_end = "</tool>";
+  context.tools_json =
+      R"([{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}])";
+  context.tool_kinds = {{"lookup", ToolKind::kFunction}};
+  context.tool_plan = ToolCallPlan::Create(context.tools_json);
+  const std::string payload = R"({"name":"lookup","arguments":{"city":"Paris"}})";
+
+  ToolCallStreamAccumulator ordinary(
+      context.tool_call_start, context.tool_call_end, context.tools_json, {},
+      chat_session_internal::CreateToolCallPayloadParser(context), true);
+  const auto ordinary_output = chat_session_internal::PushToolOutputSegment(
+      {payload, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT, std::nullopt},
+      context, nullptr, ordinary);
+  ASSERT_EQ(ordinary_output.events.size(), 1u);
+  ASSERT_TRUE(std::holds_alternative<std::string>(ordinary_output.events.front()));
+  EXPECT_EQ(std::get<std::string>(ordinary_output.events.front()), payload);
+
+  ToolCallStreamAccumulator framed(
+      context.tool_call_start, context.tool_call_end, context.tools_json, {},
+      chat_session_internal::CreateToolCallPayloadParser(context), true);
+  auto framed_output = chat_session_internal::PushToolOutputSegment(
+      {context.tool_call_start + payload + context.tool_call_end,
+       FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT, std::nullopt},
+      context, nullptr, framed);
+  const auto framed_flush =
+      chat_session_internal::FlushToolOutput(nullptr, framed, /*natural_end=*/true, false);
+  framed_output.events.insert(
+      framed_output.events.end(), framed_flush.events.begin(), framed_flush.events.end());
+  ASSERT_EQ(framed_output.events.size(), 1u);
+  ASSERT_TRUE(std::holds_alternative<ParsedToolCall>(framed_output.events.front()));
+  EXPECT_EQ(std::get<ParsedToolCall>(framed_output.events.front()).name, "lookup");
+}
+
+TEST(ChatSessionDecisionTest, TaggedJsonSchemaViolationBecomesMalformedAdmission) {
+  ToolCallContext context;
+  context.tool_output = true;
+  context.native_tagged_json_tool_calls = true;
+  context.tool_call_start = "<tool>";
+  context.tool_call_end = "</tool>";
+  context.tools_json =
+      R"([{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false}}}])";
+  context.tool_kinds = {{"lookup", ToolKind::kFunction}};
+  context.tool_plan = ToolCallPlan::Create(context.tools_json);
+  auto parser = chat_session_internal::CreateToolCallPayloadParser(context);
+  const auto parsed =
+      parser(R"(<tool>{"name":"lookup","arguments":{"city":7}}</tool>)", true);
+  ASSERT_EQ(parsed.disposition, ToolCallPayloadDisposition::kParsed);
+  ASSERT_EQ(parsed.calls.size(), 1u);
+
+  ToolCallStreamAccumulator::Output output;
+  output.events.emplace_back(parsed.calls.front());
+  chat_session_internal::NormalizeToolOutputBatch(output, context);
+
+  EXPECT_TRUE(output.malformed);
+  EXPECT_FALSE(output.error.empty());
+  EXPECT_TRUE(output.events.empty());
 }
 
 TEST(ChatSessionDecisionTest, CustomBatchNormalizationUsesTheCompleteArgumentSource) {
@@ -1260,16 +1312,14 @@ TEST(ChatSessionDecisionTest, InvalidLaterFunctionCallPreventsTheWholeBatchFromS
   output.events.emplace_back(std::move(invalid));
 
   size_t streamed_calls = 0;
-  EXPECT_THROW(
-      {
-        chat_session_internal::NormalizeToolOutputBatch(output, context);
-        for (const auto& event : output.events) {
-          if (std::holds_alternative<ParsedToolCall>(event)) {
-            ++streamed_calls;
-          }
-        }
-      },
-      fl::Exception);
+  chat_session_internal::NormalizeToolOutputBatch(output, context);
+  for (const auto& event : output.events) {
+    if (std::holds_alternative<ParsedToolCall>(event)) {
+      ++streamed_calls;
+    }
+  }
+  EXPECT_TRUE(output.malformed);
+  EXPECT_FALSE(output.error.empty());
   EXPECT_EQ(streamed_calls, 0u);
 }
 
@@ -1282,7 +1332,10 @@ TEST(ChatSessionDecisionTest, FunctionCallNameMustBeNulFreeUtf8) {
   invalid.argument_source = invalid.arguments;
   output.events.emplace_back(std::move(invalid));
 
-  EXPECT_THROW(chat_session_internal::NormalizeToolOutputBatch(output, context), fl::Exception);
+  chat_session_internal::NormalizeToolOutputBatch(output, context);
+  EXPECT_TRUE(output.malformed);
+  EXPECT_FALSE(output.error.empty());
+  EXPECT_TRUE(output.events.empty());
 }
 
 TEST(ChatSessionDecisionTest, ExactResidentPrefixSelectsOnlyTheUnmatchedFullPromptSuffix) {
@@ -1889,6 +1942,35 @@ class QwenNativeProductionIntegrationTest : public ::testing::Test {
   TelemetryLogger telemetry_{"qwen-native-production-test", test::NullLog()};
 };
 
+TEST_F(QwenNativeProductionIntegrationTest, XmlHistoryProjectionPreservesLiteralArgumentValues) {
+  const std::string value = "line1\n\"quote\"\\path \xE2\x98\x83";
+  const std::string key = "<tool_call>key";
+  TranscriptMessage assistant(FOUNDRY_LOCAL_ROLE_ASSISTANT, "");
+  assistant.AppendToolCall(
+      MakeSuppliedToolCall("call_1", "lookup", nlohmann::json{{key, value}}.dump()));
+
+  ToolCallContext context;
+  context.tool_call_start = "<tool_call>";
+  context.tool_call_end = "</tool_call>";
+  context.tool_output = true;
+  context.native_qwen_xml_tool_calls = true;
+  context.qualified_native_tool_calls = true;
+  context.tools_json =
+      R"([{"type":"function","function":{"name":"lookup","description":"Lookup","parameters":{"type":"object","properties":{},"additionalProperties":true}}}])";
+  context.tool_kinds = {{"lookup", ToolKind::kFunction}};
+  context.tool_plan = ToolCallPlan::Create(context.tools_json);
+
+  const auto prompt = PrepareTextChatPrompt(
+      chat_internal::PrepareChatMessages(
+          {{FOUNDRY_LOCAL_ROLE_USER, "run lookup"}, assistant, TranscriptMessage::ToolResult("call_1", "done")},
+          /*positional_tool_results=*/false),
+      *model_, context);
+
+  EXPECT_NE(prompt.prompt.find("<parameter=" + key + ">\n" + value + "\n</parameter>"),
+            std::string::npos);
+  EXPECT_EQ(prompt.prompt.find(R"(line1\n\"quote\"\\path)"), std::string::npos);
+}
+
 TEST_F(QwenNativeProductionIntegrationTest,
        AutoOutputMatrixRoutesStatefulAndStatelessProductionPaths) {
   struct Case {
@@ -2492,7 +2574,7 @@ TEST_F(QwenNativeProductionIntegrationTest, SerialToolCallsCapGuidedEngineRetry)
   EXPECT_EQ(result.finish_reason, FOUNDRY_LOCAL_FINISH_TOOL_CALLS);
 }
 
-TEST_F(QwenNativeProductionIntegrationTest, UnqualifiedCanonicalContinuationDoesNotInterceptCompletedCall) {
+TEST_F(QwenNativeProductionIntegrationTest, UnqualifiedCompletedArgumentsMayBeCalledAgainWithANewCallId) {
   for (const bool streaming : {false, true}) {
     SCOPED_TRACE(streaming);
     const std::vector<std::string> outputs = {
@@ -2505,7 +2587,6 @@ TEST_F(QwenNativeProductionIntegrationTest, UnqualifiedCanonicalContinuationDoes
             bool) -> std::unique_ptr<ChatGenerator> {
       if (attempt == 1) {
         EXPECT_FALSE(context.qualified_native_tool_calls);
-        EXPECT_TRUE(context.completed_tool_calls.empty());
       }
       auto generator = std::make_unique<FixedOutputGenerator>(
           outputs.at(attempt++), BackendTerminationCause::kNaturalEnd,

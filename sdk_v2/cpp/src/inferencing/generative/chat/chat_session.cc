@@ -473,131 +473,35 @@ ToolCallPayloadParser CreateToolCallPayloadParser(const ToolCallContext& context
   return {};
 }
 
-std::optional<std::string> FindRepeatedCompletedToolCall(
-    const ToolCallStreamAccumulator::Output& output,
-    const ToolCallContext& tool_ctx) {
-  for (const auto& event : output.events) {
-    const auto* call = std::get_if<ParsedToolCall>(&event);
-    if (call == nullptr) {
-      continue;
-    }
-
-    if (std::ranges::any_of(tool_ctx.completed_tool_calls, [&](const auto& completed) {
-          if (completed.first != call->name) {
-            return false;
-          }
-          try {
-            return nlohmann::json::parse(completed.second) ==
-                   nlohmann::json::parse(call->arguments);
-          } catch (const nlohmann::json::exception&) {
-            return completed.second == call->arguments;
-          }
-        })) {
-      return call->name;
-    }
-  }
-  return std::nullopt;
-}
-
 void NormalizeToolOutputBatch(ToolCallStreamAccumulator::Output& output,
                               const ToolCallContext& tool_ctx) {
-  if (tool_ctx.tool_plan) {
-    for (const auto& event : output.events) {
-      if (const auto* call = std::get_if<ParsedToolCall>(&event); call != nullptr && !call->raw_envelope) {
-        tool_ctx.tool_plan->ValidateCall(*call);
+  try {
+    if (tool_ctx.tool_plan) {
+      for (const auto& event : output.events) {
+        if (const auto* call = std::get_if<ParsedToolCall>(&event); call != nullptr && !call->raw_envelope) {
+          tool_ctx.tool_plan->ValidateCall(*call);
+        }
       }
     }
-  }
 
-  if (const auto repeated = FindRepeatedCompletedToolCall(output, tool_ctx)) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
-             "model repeated a tool call that already has a result: ", *repeated);
-  }
+    for (auto& event : output.events) {
+      auto* call = std::get_if<ParsedToolCall>(&event);
+      if (call == nullptr) {
+        continue;
+      }
 
-  for (auto& event : output.events) {
-    auto* call = std::get_if<ParsedToolCall>(&event);
-    if (call == nullptr) {
-      continue;
+      if (tool_ctx.IsCustomTool(call->name) && !call->raw_envelope) {
+        call->arguments = ExtractCustomToolInput(call->argument_source);
+      }
+
+      ValidateToolCallText(call->name, "tool call name");
+      ValidateToolCallText(call->arguments, "tool call arguments");
     }
-
-    if (tool_ctx.IsCustomTool(call->name) && !call->raw_envelope) {
-      call->arguments = ExtractCustomToolInput(call->argument_source);
-    }
-
-    ValidateToolCallText(call->name, "tool call name");
-    ValidateToolCallText(call->arguments, "tool call arguments");
+  } catch (const Exception& error) {
+    output.events.clear();
+    output.malformed = true;
+    output.error = error.what();
   }
-}
-
-void ConfigureAutomaticToolResultContinuation(const std::vector<TranscriptMessage>& messages,
-                                              ToolCallContext& tool_ctx) {
-  if (messages.empty() || messages.back().role != FOUNDRY_LOCAL_ROLE_TOOL ||
-      !tool_ctx.text_output || !tool_ctx.tool_output || tool_ctx.forced_tool ||
-      tool_ctx.HasAnyExplicitGuidance() ||
-      !tool_ctx.qualified_native_tool_calls) {
-    return;
-  }
-
-  size_t query_start = 0;
-  for (size_t i = 0; i < messages.size(); ++i) {
-    if (messages[i].role == FOUNDRY_LOCAL_ROLE_USER) {
-      query_start = i;
-    }
-  }
-
-  std::unordered_map<std::string, std::pair<std::string, std::string>> calls;
-  for (size_t i = query_start; i < messages.size(); ++i) {
-    for (const auto* call : messages[i].ToolCalls()) {
-      calls.emplace(call->call_id,
-                    std::pair{call->name, call->normalized_arguments.dump()});
-    }
-  }
-  for (size_t i = query_start; i < messages.size(); ++i) {
-    if (messages[i].role != FOUNDRY_LOCAL_ROLE_TOOL) {
-      continue;
-    }
-    if (const auto call = calls.find(messages[i].tool_call_id); call != calls.end()) {
-      tool_ctx.completed_tool_calls.push_back(call->second);
-    }
-  }
-}
-
-bool ShouldBufferNativeContinuationOutput(const ToolCallContext& tool_ctx) {
-  return tool_ctx.native_tagged_json_tool_calls &&
-         !tool_ctx.supports_reasoning &&
-         !tool_ctx.completed_tool_calls.empty();
-}
-
-std::string NormalizeNativeContinuationOutput(std::string output,
-                                              const ToolCallContext& tool_ctx) {
-  const auto first = output.find_first_not_of(" \t\r\n");
-  const auto last = output.find_last_not_of(" \t\r\n");
-  if (first == std::string::npos || last == std::string::npos) {
-    return output;
-  }
-
-  const auto trimmed = std::string_view(output).substr(first, last - first + 1);
-  if (trimmed.starts_with(tool_ctx.tool_call_start)) {
-    return output;
-  }
-
-  const bool has_closing_marker = trimmed.ends_with(tool_ctx.tool_call_end);
-  bool native_call = has_closing_marker;
-  if (!native_call && nlohmann::json::accept(trimmed)) {
-    const auto envelope = nlohmann::json::parse(trimmed);
-    native_call = envelope.is_object() && envelope.size() == 2 &&
-                  envelope.contains("name") && envelope.at("name").is_string() &&
-                  envelope.contains("arguments") && envelope.at("arguments").is_object();
-  }
-  if (!native_call) {
-    return output;
-  }
-
-  output.insert(first, tool_ctx.tool_call_start);
-  if (!has_closing_marker) {
-    output += tool_ctx.tool_call_end;
-  }
-  return output;
 }
 
 namespace {
@@ -780,64 +684,6 @@ ToolCallStreamAccumulator::Output PushToolOutputSegment(
   }
 
   return PushToolOutput(segment.text, raw_detector, structured_accumulator);
-}
-
-ToolCallStreamAccumulator::Output PushBufferedNativeContinuationOutput(
-    std::vector<ReasoningStreamSplitter::Segment> segments,
-    const ToolCallContext& context,
-    RawEnvelopeDetector* raw_detector,
-    ToolCallStreamAccumulator& structured_accumulator) {
-  std::string original;
-  for (const auto& segment : segments) {
-    original += segment.text;
-  }
-  const auto normalized = NormalizeNativeContinuationOutput(original, context);
-  const auto first = original.find_first_not_of(" \t\r\n");
-  const bool add_start =
-      first != std::string::npos &&
-      !std::string_view(original).substr(first).starts_with(context.tool_call_start) &&
-      std::string_view(normalized).substr(first).starts_with(context.tool_call_start);
-  const auto last = original.find_last_not_of(" \t\r\n");
-  const bool add_end =
-      last != std::string::npos &&
-      !std::string_view(original).substr(0, last + 1).ends_with(context.tool_call_end) &&
-      normalized.ends_with(context.tool_call_end);
-
-  ToolCallStreamAccumulator::Output output;
-  bool start_added = !add_start;
-  for (auto& segment : segments) {
-    if (!start_added) {
-      const auto nonspace = segment.text.find_first_not_of(" \t\r\n");
-      if (nonspace != std::string::npos) {
-        if (nonspace > 0) {
-          auto leading = segment;
-          leading.text.resize(nonspace);
-          leading.token_id.reset();
-          AppendToolOutput(
-              output, PushToolOutputSegment(leading, context, raw_detector, structured_accumulator));
-          segment.text.erase(0, nonspace);
-        }
-        AppendToolOutput(
-            output,
-            PushToolOutputSegment(
-                {context.tool_call_start, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT,
-                 context.tool_call_start_token_id},
-                context, raw_detector, structured_accumulator));
-        start_added = true;
-      }
-    }
-    AppendToolOutput(
-        output, PushToolOutputSegment(segment, context, raw_detector, structured_accumulator));
-  }
-  if (add_end) {
-    AppendToolOutput(
-        output,
-        PushToolOutputSegment(
-            {context.tool_call_end, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT,
-             context.tool_call_end_token_id},
-            context, raw_detector, structured_accumulator));
-  }
-  return output;
 }
 
 ToolCallStreamAccumulator::Output FlushToolOutput(
@@ -1102,50 +948,11 @@ GuidedToolRetryResult RunGuidedToolRetry(const chat_internal::PreparedChatMessag
                                          const SearchOptions& options, GenAIModelInstance& model,
                                          ToolCallContext tool_ctx, const Request& request,
                                          const TextChatGeneratorFactory& factory, const std::string& validation_error,
-                                         std::optional<PreparedChatPrompt> retry_prompt = std::nullopt,
-                                         bool repeated_completed_call = false) {
+                                         std::optional<PreparedChatPrompt> retry_prompt = std::nullopt) {
   if (!tool_ctx.tool_plan || !options.stop_sequences.empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "Guided tool recovery requires a schema plan and no stop sequences");
   }
 
-  if (repeated_completed_call) {
-    auto tools = nlohmann::ordered_json::parse(tool_ctx.tools_json);
-    for (auto& tool : tools) {
-      auto& function = tool.contains("function") ? tool["function"] : tool;
-      const auto name = function.at("name").get<std::string>();
-      auto& parameters = function["parameters"];
-      if (parameters.is_null()) {
-        parameters = nlohmann::ordered_json{
-            {"type", "object"},
-            {"properties", nlohmann::ordered_json::object()},
-            {"additionalProperties", false}};
-      }
-      for (const auto& [completed_name, completed_arguments] : tool_ctx.completed_tool_calls) {
-        if (completed_name != name) {
-          continue;
-        }
-        const auto exclusion =
-            nlohmann::ordered_json{{"not", {{"const", nlohmann::ordered_json::parse(completed_arguments)}}}};
-        if (!parameters.contains("allOf")) {
-          parameters["allOf"] = nlohmann::ordered_json::array();
-        }
-        parameters["allOf"].push_back(exclusion);
-      }
-    }
-    tool_ctx.tools_json = tools.dump();
-    tool_ctx.tool_plan = ToolCallPlan::Create(
-        tool_ctx.tools_json, tool_ctx.parallel_tool_calls, tool_ctx.forced_tool);
-    auto kwargs = tool_ctx.template_kwargs_json.empty()
-                      ? nlohmann::json::object()
-                      : nlohmann::json::parse(tool_ctx.template_kwargs_json);
-    kwargs["enable_thinking"] = false;
-    kwargs.erase("reasoning_effort");
-    tool_ctx.template_kwargs_json = kwargs.dump();
-    tool_ctx.supports_reasoning = false;
-    tool_ctx.automatic_retry_instruction =
-        "The previous exact completed call was rejected. Emit only the next unfinished tool call. "
-        "The same tool with different arguments is allowed. Do not describe the correction.";
-  }
   tool_ctx.ConfigureForGuidedToolRetry();
   tool_ctx.native_qwen_xml_tool_calls = false;
   tool_ctx.native_tagged_json_tool_calls = false;
@@ -1175,15 +982,12 @@ GuidedToolRetryResult RunGuidedToolRetry(const chat_internal::PreparedChatMessag
   const auto correction =
       " The previous unexecuted tool call was rejected: " + diagnostic +
       ". Emit a corrected tool call satisfying the original tool schema and the user's requested values. "
-      "Every exact completed call is excluded from the retry schema. A call to the same tool with different "
-      "arguments is allowed. Emit only the next unfinished call without repeating earlier reasoning or text. ";
-  if (!repeated_completed_call) {
-    const auto sequences = model.GetPreprocessor().EncodeLiteral(correction.c_str());
-    const auto* data = sequences->SequenceData(0);
-    retry_prompt->token_ids.insert(retry_prompt->token_ids.end(), data, data + sequences->SequenceCount(0));
-    retry_prompt->prompt += correction;
-    retry_prompt->prompt_token_count = static_cast<int64_t>(retry_prompt->token_ids.size());
-  }
+      "Emit only the corrected call without repeating earlier reasoning or text. ";
+  const auto sequences = model.GetPreprocessor().EncodeLiteral(correction.c_str());
+  const auto* data = sequences->SequenceData(0);
+  retry_prompt->token_ids.insert(retry_prompt->token_ids.end(), data, data + sequences->SequenceCount(0));
+  retry_prompt->prompt += correction;
+  retry_prompt->prompt_token_count = static_cast<int64_t>(retry_prompt->token_ids.size());
 
   auto generator = CreatePreparedTextChatGenerator(messages, std::move(*retry_prompt), options, model, tool_ctx,
                                                    /*use_full_context=*/false, factory);
@@ -1600,17 +1404,17 @@ ToolCallContext BuildToolCallContextForRequest(const Request& request,
           !tool_ctx.ActiveRawEnvelope() && !tool_ctx.HasAnyExplicitGuidance();
       const bool native_automatic_tool_choice =
           tool_ctx.text_output && !tool_ctx.forced_tool && !tool_ctx.HasAnyExplicitGuidance();
-      const bool native_only_tool_choice =
-          (model.ModelType() == "nemotron_bolt" || model.ModelType() == "qwen38_flash_graph") &&
+      const bool native_engine_tool_choice =
+          model.GetGenAIConfig().GetChatBackendKind() == ChatBackendKind::kEngine &&
           !tool_ctx.HasAnyExplicitGuidance();
       tool_ctx.qualified_native_tool_calls =
           model.HasNativeQwenXmlToolCalls() || model.HasNativeTaggedJsonToolCalls();
       tool_ctx.native_qwen_xml_tool_calls =
-          !qwen2_fenced_tool_output && (native_automatic_tool_choice || native_only_tool_choice) &&
+          !qwen2_fenced_tool_output && (native_automatic_tool_choice || native_engine_tool_choice) &&
           model.HasNativeQwenXmlToolCalls() && !tool_ctx.ActiveRawEnvelope() &&
           CanDecodeQwenXmlToolSchemas(tool_ctx.tools_json, tool_ctx.tool_kinds);
       tool_ctx.native_tagged_json_tool_calls =
-          !qwen2_fenced_tool_output && (native_automatic_tool_choice || native_only_tool_choice) &&
+          !qwen2_fenced_tool_output && (native_automatic_tool_choice || native_engine_tool_choice) &&
           model.HasNativeTaggedJsonToolCalls() && !tool_ctx.ActiveRawEnvelope();
       if (tool_ctx.native_qwen_xml_tool_calls || tool_ctx.native_tagged_json_tool_calls) {
         tool_ctx.supports_reasoning_history = false;
@@ -1783,8 +1587,6 @@ std::unique_ptr<PreparedChatRequest> PrepareChatRequest(
     auto messages = BuildTranscriptMessages(internal_request.items, prepared->tool_context.tool_kinds);
     const ChatTranscript payload_transcript;
     payload_transcript.ValidateInputs(messages);
-    chat_session_internal::ConfigureAutomaticToolResultContinuation(
-        messages, prepared->tool_context);
     prepared->messages.emplace(message_preparer(std::move(messages), model.HasPositionalToolResults()));
     if (media_turn) {
       prepared->prompt =
@@ -1834,8 +1636,6 @@ std::unique_ptr<PreparedChatRequest> PrepareChatRequest(
   all_messages.insert(all_messages.end(), committed.begin(), committed.end());
   all_messages.insert(all_messages.end(), prepared->ingest.messages.begin(), prepared->ingest.messages.end());
   all_messages = WithSystemPrompt(prepared->system_prompt, std::move(all_messages));
-  chat_session_internal::ConfigureAutomaticToolResultContinuation(
-      all_messages, prepared->tool_context);
   prepared->messages.emplace(message_preparer(std::move(all_messages), model.HasPositionalToolResults()));
 
   if (media_turn) {
@@ -2149,7 +1949,6 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   std::vector<GeneratedOutputEvent> generated_events;
   bool semantic_output_seen = false;
   bool malformed_tool_output_seen = false;
-  bool repeated_completed_call_seen = false;
   std::string malformed_tool_error;
 
   // The template opens a new assistant turn, so only calls generated in this reply close its visible text.
@@ -2178,9 +1977,6 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
     raw_detector.emplace(*descriptor);
   }
   auto* active_raw_detector = raw_detector.has_value() ? &*raw_detector : nullptr;
-  const bool buffer_native_continuation =
-      chat_session_internal::ShouldBufferNativeContinuationOutput(cached_tool_ctx_);
-  std::vector<TextSegment> buffered_native_continuation;
 
   auto push_tool_output = [&](const TextSegment& segment) {
     return chat_session_internal::PushToolOutputSegment(
@@ -2202,14 +1998,6 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   auto emit_tool_output = [&](ToolCallStreamAccumulator::Output out) {
     if (malformed_tool_output_seen || text_framer.Matched()) {
       return;
-    }
-
-    if (const auto repeated =
-            chat_session_internal::FindRepeatedCompletedToolCall(out, cached_tool_ctx_)) {
-      out.events.clear();
-      out.malformed = true;
-      out.error = "model repeated a tool call that already has a result: " + *repeated;
-      repeated_completed_call_seen = true;
     }
 
     // The accumulator can emit several calls from one decoded fragment. Admit the batch atomically:
@@ -2287,21 +2075,11 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
         continue;
       }
 
-      if (buffer_native_continuation) {
-        buffered_native_continuation.push_back(seg);
-        continue;
-      }
-
       emit_tool_output(push_tool_output(seg));
     }
   };
 
   auto flush_accumulator = [&](bool natural_end) {
-    if (buffer_native_continuation && !buffered_native_continuation.empty()) {
-      emit_tool_output(chat_session_internal::PushBufferedNativeContinuationOutput(
-          std::move(buffered_native_continuation), cached_tool_ctx_,
-          active_raw_detector, tool_accumulator));
-    }
     emit_tool_output(chat_session_internal::FlushToolOutput(
         active_raw_detector, tool_accumulator, natural_end,
         cached_tool_ctx_.fenced_tool_call_output));
@@ -2407,14 +2185,13 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   ToolCallContext completed_tool_ctx;
   if (malformed_tool_output_seen) {
     const bool preserve_prefix =
-        (harmony_decoder ? harmony_decoder->HasRecoveryCheckpoint() : recovery_checkpoint.HasBoundary()) &&
-        !repeated_completed_call_seen;
+        harmony_decoder ? harmony_decoder->HasRecoveryCheckpoint() : recovery_checkpoint.HasBoundary();
     const bool tool_call_published = HasGeneratedToolCalls(generated_events);
     const int attempted_tokens = std::max(output_tokens, total_tokens - prompt_tokens);
     const bool recovery_eligible = IsGuidedToolRetryEligible(
         natural_tool_output_end, semantic_output_seen,
         effective_options, cached_tool_ctx_,
-        preserve_prefix || repeated_completed_call_seen, tool_call_published, attempted_tokens,
+        preserve_prefix, tool_call_published, attempted_tokens,
         turn_output_budget);
     if (!recovery_eligible) {
       if (streaming_callback) {
@@ -2442,8 +2219,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
         preserve_prefix ? std::optional<PreparedChatPrompt>(
                               harmony_decoder ? harmony_decoder->TakeRecoveryPrompt()
                                               : recovery_checkpoint.TakePrompt())
-                        : std::nullopt,
-        repeated_completed_call_seen);
+                        : std::nullopt);
 
     if (!preserve_prefix) {
       generated_events.clear();
@@ -2604,9 +2380,6 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
     raw_detector.emplace(*descriptor);
   }
   auto* active_raw_detector = raw_detector.has_value() ? &*raw_detector : nullptr;
-  const bool buffer_native_continuation =
-      chat_session_internal::ShouldBufferNativeContinuationOutput(tool_ctx);
-  std::vector<TextSegment> buffered_native_continuation;
 
   auto push_tool_output = [&](const TextSegment& segment) {
     return chat_session_internal::PushToolOutputSegment(
@@ -2617,7 +2390,6 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
   std::vector<GeneratedOutputEvent> generated_events;
   bool semantic_output_seen = false;
   bool malformed_tool_output_seen = false;
-  bool repeated_completed_call_seen = false;
   std::string malformed_tool_error;
 
   AssistantTurnGuard turn_guard(tool_ctx.parallel_tool_calls);
@@ -2646,14 +2418,6 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
   auto process_tool_output = [&](ToolCallStreamAccumulator::Output out) {
     if (malformed_tool_output_seen || text_framer.Matched()) {
       return;
-    }
-
-    if (const auto repeated =
-            chat_session_internal::FindRepeatedCompletedToolCall(out, tool_ctx)) {
-      out.events.clear();
-      out.malformed = true;
-      out.error = "model repeated a tool call that already has a result: " + *repeated;
-      repeated_completed_call_seen = true;
     }
 
     // Validate and normalize the entire parsed batch before publishing any element. In particular,
@@ -2740,11 +2504,6 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
         continue;
       }
 
-      if (buffer_native_continuation) {
-        buffered_native_continuation.push_back(seg);
-        continue;
-      }
-
       process_tool_output(push_tool_output(seg));
     }
   };
@@ -2815,11 +2574,6 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
     DeliverHarmonyOutput(
         harmony_decoder->Finish(terminal_token, natural_tool_output_end), process_segments, process_tool_output);
   } else {
-    if (buffer_native_continuation && !buffered_native_continuation.empty()) {
-      process_tool_output(chat_session_internal::PushBufferedNativeContinuationOutput(
-          std::move(buffered_native_continuation), tool_ctx,
-          active_raw_detector, tool_accumulator));
-    }
     process_tool_output(
         chat_session_internal::FlushToolOutput(active_raw_detector, tool_accumulator, natural_tool_output_end,
                                                tool_ctx.fenced_tool_call_output));
@@ -2847,8 +2601,7 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
   text_framer.ValidateBoundary();
   if (malformed_tool_output_seen) {
     const bool preserve_prefix =
-        (harmony_decoder ? harmony_decoder->HasRecoveryCheckpoint() : recovery_checkpoint.HasBoundary()) &&
-        !repeated_completed_call_seen;
+        harmony_decoder ? harmony_decoder->HasRecoveryCheckpoint() : recovery_checkpoint.HasBoundary();
     const bool tool_call_published = HasGeneratedToolCalls(generated_events);
     const auto attempted_tokens = total_tokens - prompt_tokens;
     const auto turn_output_budget = prepared.host_max_output_tokens
@@ -2857,7 +2610,7 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
     const bool recovery_eligible = IsGuidedToolRetryEligible(
         natural_tool_output_end,
         semantic_output_seen, options, tool_ctx,
-        preserve_prefix || repeated_completed_call_seen, tool_call_published, attempted_tokens,
+        preserve_prefix, tool_call_published, attempted_tokens,
         turn_output_budget);
     if (!recovery_eligible) {
       if (streaming_callback) {
@@ -2882,8 +2635,7 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
         preserve_prefix ? std::optional<PreparedChatPrompt>(
                               harmony_decoder ? harmony_decoder->TakeRecoveryPrompt()
                                               : recovery_checkpoint.TakePrompt())
-                        : std::nullopt,
-        repeated_completed_call_seen);
+                        : std::nullopt);
 
     if (!preserve_prefix) {
       generated_events.clear();

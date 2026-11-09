@@ -4,19 +4,21 @@
 #include "exception.h"
 #include "inferencing/execution_provider.h"
 #include "inferencing/generative/chat/onnx_chat_engine.h"
+#include "inferencing/generative/toolcalling/qwen_xml_tool_call_decoder.h"
 #include "util/key_value_pairs.h"
 #include "utils.h"
 
 #include <ort_genai.h>
 
 #include <fmt/format.h>
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
 #include <set>
 
 namespace fl {
 namespace {
 
-constexpr std::string_view kToolDefinitionProbeDescription = "Capability probe";
 constexpr const char* kToolCallProbeMessages = R"([
   {"role":"user","content":"capability-probe"},
   {"role":"assistant","content":"","tool_calls":[
@@ -261,31 +263,50 @@ ModelCapabilities model_capabilities_internal::ResolveRenderedProbes(
     std::string_view reasoning_end) noexcept {
   const auto tool_call_regions = FindDelimitedRegions(
       tool_call_projection, tool_call_start, tool_call_end);
+  const bool rendered_tool_definitions =
+      tool_call_projection.find("Capability probe") != std::string_view::npos ||
+      (tool_call_projection.find("probe_first") != std::string_view::npos &&
+       tool_call_projection.find("probe_second") != std::string_view::npos);
   const bool supports_tool_calling = !tool_call_start.empty() && !tool_call_end.empty() &&
                                      tool_call_start != tool_call_end &&
                                      std::ranges::any_of(tool_call_regions, [](const auto& region) {
-                                       return ContainsInOrder(
-                                           region.body, {"probe_function", "probe_parameter", "probe_value"});
+                                       return region.body.find("probe_function") != std::string_view::npos &&
+                                              region.body.find("probe_parameter") != std::string_view::npos &&
+                                              region.body.find("probe_value") != std::string_view::npos;
                                      });
+  const std::unordered_map<std::string, ToolKind> probe_tool_kinds{
+      {"probe_function", ToolKind::kFunction},
+      {"probe_first", ToolKind::kFunction},
+      {"probe_second", ToolKind::kFunction}};
+  const auto parser_accepts_probe = [&](bool xml) {
+    auto parser =
+        xml ? CreateQwenXmlToolCallPayloadParser(
+                  kToolProbeDefinitions, probe_tool_kinds, /*recovery_aware=*/false,
+                  std::string(tool_call_start), std::string(tool_call_end))
+            : CreateQwenTaggedJsonToolCallPayloadParser(
+                  kToolProbeDefinitions, probe_tool_kinds,
+                  std::string(tool_call_start), std::string(tool_call_end));
+    if (!parser) {
+      return false;
+    }
+    return std::ranges::any_of(tool_call_regions, [&](const auto& region) {
+      const auto framed =
+          std::string(tool_call_start) + std::string(region.body) + std::string(tool_call_end);
+      const auto result = parser(framed, /*end_of_stream=*/true);
+      if (result.disposition != ToolCallPayloadDisposition::kParsed || result.calls.size() != 1 ||
+          result.calls.front().name != "probe_function") {
+        return false;
+      }
+      const auto arguments = nlohmann::json::parse(result.calls.front().arguments, nullptr, false);
+      return arguments.is_object() && arguments.size() == 1 &&
+             arguments.value("probe_parameter", "") == "probe_value";
+    });
+  };
   const bool native_qwen_xml_tool_calls =
-      supports_tool_calling &&
-      tool_call_projection.find(kToolDefinitionProbeDescription) != std::string_view::npos &&
-      std::ranges::any_of(tool_call_regions, [](const auto& region) {
-        return region.body.find(
-                   "<function=probe_function>\n"
-                   "<parameter=probe_parameter>\n"
-                   "probe_value\n"
-                   "</parameter>\n"
-                   "</function>") != std::string_view::npos;
-      });
+      supports_tool_calling && rendered_tool_definitions && parser_accepts_probe(/*xml=*/true);
   const bool native_tagged_json_tool_calls =
-      supports_tool_calling &&
-      tool_call_projection.find(kToolDefinitionProbeDescription) != std::string_view::npos &&
-      std::ranges::any_of(tool_call_regions, [](const auto& region) {
-        return ContainsInOrder(region.body,
-                               {"\"name\"", "probe_function", "\"arguments\"",
-                                "probe_parameter", "probe_value"});
-      });
+      supports_tool_calling && rendered_tool_definitions &&
+      !native_qwen_xml_tool_calls && parser_accepts_probe(/*xml=*/false);
   const auto tool_result_regions = FindDelimitedRegions(
       tool_result_projection, tool_call_start, tool_call_end);
   const auto first_call = std::ranges::find_if(tool_result_regions, [](const auto& region) {
