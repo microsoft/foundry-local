@@ -859,6 +859,10 @@ bool ContainsReservedFramingMarkup(std::string_view body, const ToolCallMarkers&
          });
 }
 
+bool IsXmlTagName(std::string_view name) {
+  return !name.empty() && name.find_first_of("<>=\r\n\t ") == std::string_view::npos;
+}
+
 std::optional<std::string_view> ReadTagName(std::string_view source, size_t& position,
                                             std::string_view prefix) {
   const auto prefix_state = ConsumeLiteral(source, position, prefix);
@@ -872,7 +876,7 @@ std::optional<std::string_view> ReadTagName(std::string_view source, size_t& pos
   }
 
   const auto name = source.substr(position, end - position);
-  if (name.empty() || name.find_first_of("<>=\r\n\t ") != std::string_view::npos) {
+  if (!IsXmlTagName(name)) {
     return std::nullopt;
   }
 
@@ -1292,12 +1296,12 @@ std::optional<std::string> BuildQwenXmlToolBodyGrammar(
   names.reserve(schemas.size());
   for (const auto& [name, schema] : schemas) {
     if (!schema.valid || tool_kinds.at(name) != ToolKind::kFunction ||
-        name.find_first_of("<>=\r\n\t ") != std::string::npos || schema.properties.size() > 64) {
+        !IsXmlTagName(name) || schema.properties.size() > 64) {
       return std::nullopt;
     }
 
     for (const auto& [property, definition] : schema.properties.items()) {
-      if (property.empty() || property.find_first_of("<>=\r\n\t ") != std::string::npos) {
+      if (!IsXmlTagName(property)) {
         return std::nullopt;
       }
     }
@@ -1441,7 +1445,10 @@ bool CanDecodeQwenXmlToolSchemas(
   const auto schemas = ParseFunctionSchemas(tools_json, tool_kinds, declaration_count);
   return HasCompleteDeclaredSet(schemas, declaration_count, tool_kinds) &&
          std::ranges::all_of(schemas, [](const auto& schema) {
-           return schema.second.valid;
+           return schema.second.valid && IsXmlTagName(schema.first) &&
+                  std::ranges::all_of(schema.second.properties.items(), [](const auto& property) {
+                    return IsXmlTagName(property.key());
+                  });
          });
 }
 
