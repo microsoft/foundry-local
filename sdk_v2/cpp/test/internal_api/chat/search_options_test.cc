@@ -875,6 +875,60 @@ TEST_F(SearchOptionsTest, LargeInputExceedsByOneThrows) {
                fl::Exception);
 }
 
+class ChunkedPrefillOptionsTest : public SearchOptionsTest {
+ protected:
+  static void SetUpTestSuite() {
+    logger_ = std::make_unique<StderrLogger>();
+    ep_detector_ = std::make_unique<test::CpuOnlyEpDetector>();
+    load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
+    auto model_path = fl::test::GetTestDataPath("tiny-paged-attention");
+    auto result = load_manager_->LoadModel(model_path.string(), fl::test::kTestChatModelAlias);
+    ASSERT_EQ(result.status, ModelLoadManager::LoadStatus::kSuccess);
+    model_ = result.model;
+  }
+};
+
+TEST_F(ChunkedPrefillOptionsTest, BoltDoesNotReceiveExternalChunking) {
+  SearchOptions opts;
+  opts.max_output_tokens = 8;
+  auto config = GetConfig();
+  config.model->type = "nemotron_bolt";
+  config.model->decoder.emplace().session_options.emplace().provider_options = {{{"cuda", "{}"}}};
+
+  for (auto ep : {ExecutionProvider::kDefault, ExecutionProvider::kCUDA}) {
+    auto params = MakeParams();
+    ApplySearchOptions(opts, 10, config, *params, ep);
+    EXPECT_EQ(params->GetSearchNumber("chunk_size"), 0);
+  }
+}
+
+TEST_F(ChunkedPrefillOptionsTest, OtherModelsRetainDefaultChunking) {
+  SearchOptions opts;
+  opts.max_output_tokens = 8;
+  auto config = GetConfig();
+  config.model->decoder.emplace().session_options.emplace().provider_options = {{{"cuda", "{}"}}};
+
+  for (auto ep : {ExecutionProvider::kDefault, ExecutionProvider::kCUDA}) {
+    auto params = MakeParams();
+    ApplySearchOptions(opts, 10, config, *params, ep);
+    EXPECT_EQ(params->GetSearchNumber("chunk_size"), 2048);
+  }
+}
+
+TEST_F(ChunkedPrefillOptionsTest, ExplicitChunkingIsPreserved) {
+  SearchOptions opts;
+  opts.max_output_tokens = 8;
+  auto config = GetConfig();
+
+  for (const char* model_type : {"decoder", "nemotron_bolt"}) {
+    config.model->type = model_type;
+    auto params = MakeParams();
+    params->SetSearchOption("chunk_size", 1024);
+    ApplySearchOptions(opts, 10, config, *params, ExecutionProvider::kCUDA);
+    EXPECT_EQ(params->GetSearchNumber("chunk_size"), 1024);
+  }
+}
+
 TEST_F(SearchOptionsTest, ChunkedPrefillDefaultsTo2048ForSupportedExecutionProviders) {
   SearchOptions opts;
 

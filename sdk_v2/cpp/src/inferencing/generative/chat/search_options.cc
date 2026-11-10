@@ -334,9 +334,9 @@ int ApplySearchOptions(const SearchOptions& options,
     gen_params.SetSearchOptionBool("early_stopping", true);
   }
 
-  // Preserve a positive model setting. ORT GenAI reports both an absent setting and explicit zero as zero; Foundry
-  // Local intentionally treats both as unset. ORT GenAI decides whether the model consumes the resulting option.
-  if (gen_params.GetSearchNumber("chunk_size") <= 0) {
+  // Preserve a positive model setting; ORT GenAI reports both an absent setting and explicit zero as zero.
+  // Bolt manages prefill internally and rejects external chunking, so do not inject a default for it.
+  if ((!config.model || config.model->type != "nemotron_bolt") && gen_params.GetSearchNumber("chunk_size") <= 0) {
     // The model's resolved EP is kDefault for the common load path, so use the provider declared in
     // genai_config.json. An empty provider means ORT's CPU fallback.
     ExecutionProvider effective_ep = ep;
