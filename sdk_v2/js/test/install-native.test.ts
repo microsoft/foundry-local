@@ -133,7 +133,7 @@ describe("readConfig", () => {
   });
 
   it("rejects FOUNDRY_LOCAL_DOTNET_COMMAND in http mode", () => {
-    process.env.FOUNDRY_LOCAL_DOTNET_COMMAND = "dotnet10";
+    process.env.FOUNDRY_LOCAL_DOTNET_COMMAND = "dotnet8";
     expect(() => readConfig(process.env)).toThrow(/FOUNDRY_LOCAL_DOTNET_COMMAND is only valid/);
   });
 
@@ -150,17 +150,17 @@ describe("readConfig", () => {
 
   it("rejects FOUNDRY_LOCAL_DOTNET_COMMAND in nuget mode", () => {
     process.env.FOUNDRY_LOCAL_NUGET_MODE = "nuget";
-    process.env.FOUNDRY_LOCAL_DOTNET_COMMAND = "dotnet10";
+    process.env.FOUNDRY_LOCAL_DOTNET_COMMAND = "dotnet8";
     expect(() => readConfig(process.env)).toThrow(/FOUNDRY_LOCAL_DOTNET_COMMAND is only valid/);
   });
 
   it("accepts FOUNDRY_LOCAL_NUGET_CONFIG and a custom dotnet command in dotnet mode", () => {
     process.env.FOUNDRY_LOCAL_NUGET_MODE = "dotnet";
     process.env.FOUNDRY_LOCAL_NUGET_CONFIG = "C:\\NuGet.config";
-    process.env.FOUNDRY_LOCAL_DOTNET_COMMAND = "dotnet10";
+    process.env.FOUNDRY_LOCAL_DOTNET_COMMAND = "dotnet8";
     const config = readConfig(process.env);
     expect(config.configFile).toBe("C:\\NuGet.config");
-    expect(config.dotnetCommand).toBe("dotnet10");
+    expect(config.dotnetCommand).toBe("dotnet8");
   });
 
   it("accepts FOUNDRY_LOCAL_NUGET_CONFIG and a custom nuget command in nuget mode", () => {
@@ -324,12 +324,9 @@ describe("generateRestoreProjectXml", () => {
     expect(xml).toContain("<TargetFramework>net10.0</TargetFramework>");
   });
 
-  it("does not restore framework targeting packs", () => {
+  it("omits the implicit framework reference", () => {
     const xml = generateRestoreProjectXml([{ name: "A", version: "1.0.0", expected: "a.dll" }]);
     expect(xml).toContain("<DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>");
-    expect(xml).toContain(
-      "<DisableTransitiveFrameworkReferenceDownloads>true</DisableTransitiveFrameworkReferenceDownloads>",
-    );
   });
 });
 

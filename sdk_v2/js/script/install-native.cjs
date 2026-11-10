@@ -348,9 +348,8 @@ function generateRestoreProjectXml(artifacts) {
   return `<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
-    <!-- Only package files are needed, so framework targeting packs do not need to be downloaded. -->
+    <!-- Only package files are needed, so omit the implicit framework reference. -->
     <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
-    <DisableTransitiveFrameworkReferenceDownloads>true</DisableTransitiveFrameworkReferenceDownloads>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
