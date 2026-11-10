@@ -347,9 +347,8 @@ function generateRestoreProjectXml(artifacts) {
     .join("\n");
   return `<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
-    <!-- Only package files are needed. Without these, newer SDKs restore the latest net8.0 targeting packs,
-         which can be absent from mirrored feeds right after a .NET servicing release. -->
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- Only package files are needed, so framework targeting packs do not need to be downloaded. -->
     <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
     <DisableTransitiveFrameworkReferenceDownloads>true</DisableTransitiveFrameworkReferenceDownloads>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
@@ -422,7 +421,7 @@ function runDotnetMode(config, artifacts, binDir, platform) {
       if (result.error.code === "ENOENT") {
         const cmd = config.dotnetCommand;
         throw new Error(
-          `dotnet command not found: '${cmd}'. Install the .NET SDK or set FOUNDRY_LOCAL_DOTNET_COMMAND.`,
+          `dotnet command not found: '${cmd}'. Install the .NET SDK 10.0 or later or set FOUNDRY_LOCAL_DOTNET_COMMAND.`,
         );
       }
       throw result.error;
@@ -632,6 +631,7 @@ module.exports = {
   nativeEntriesForRid,
   runHttpMode,
   // dotnet mode
+  runDotnetMode,
   generateRestoreProjectXml,
   buildDotnetRestoreArgs,
   findRestoredPackageDir,
