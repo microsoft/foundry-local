@@ -27,10 +27,12 @@ class ASRTranscript {
 
  private:
   void Publish(std::unique_ptr<SpeechSegmentItem> segment);
+  void PublishPartial();
 
   std::string timestamp_level_;
   SegmentCallback callback_;
   std::string text_;
+  size_t completed_text_size_ = 0;
   std::deque<SpeechWord> pending_words_;
   std::vector<std::unique_ptr<SpeechSegmentItem>> segments_;
 };

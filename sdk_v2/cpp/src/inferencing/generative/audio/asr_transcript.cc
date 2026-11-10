@@ -34,6 +34,8 @@ void ASRTranscript::AppendText(std::string_view text) {
   text_.append(text);
   if (timestamp_level_ == "off" && !text.empty()) {
     Publish(std::make_unique<SpeechSegmentItem>(FOUNDRY_LOCAL_SPEECH_SEGMENT_NONE, std::string(text)));
+  } else if (!text.empty()) {
+    PublishPartial();
   }
 }
 
@@ -75,9 +77,24 @@ void ASRTranscript::AppendSegment(std::string_view text, int64_t start_ms, int64
 }
 
 void ASRTranscript::Publish(std::unique_ptr<SpeechSegmentItem> segment) {
+  const bool completed = segment->kind == FOUNDRY_LOCAL_SPEECH_SEGMENT_FINAL;
+  if (completed) {
+    if (text_.compare(completed_text_size_, segment->text.size(), segment->text) != 0) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "ASR completed segment does not match pending transcript text");
+    }
+    completed_text_size_ += segment->text.size();
+  }
   segment->Finalize();
   if (callback_) callback_(*segment);
   segments_.push_back(std::move(segment));
+  if (completed) PublishPartial();
+}
+
+void ASRTranscript::PublishPartial() {
+  if (!callback_ || completed_text_size_ == text_.size()) return;
+  SpeechSegmentItem segment(FOUNDRY_LOCAL_SPEECH_SEGMENT_PARTIAL, text_.substr(completed_text_size_));
+  segment.Finalize();
+  callback_(segment);
 }
 
 std::unique_ptr<SpeechResultItem> ASRTranscript::Finish() {

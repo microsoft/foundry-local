@@ -10,26 +10,99 @@
 
 using namespace fl;
 
-TEST(ASRTranscriptTest, TextWithoutCompletedRecordsDoesNotCreateSegments) {
-  size_t callbacks = 0;
-  ASRTranscript transcript("all", [&](const SpeechSegmentItem&) { ++callbacks; });
+TEST(ASRTranscriptTest, TimedTextPublishesCumulativePartialsWithoutRetainingThem) {
+  std::vector<std::unique_ptr<SpeechSegmentItem>> streamed;
+  ASRTranscript transcript("all", [&](const SpeechSegmentItem& segment) {
+    streamed.push_back(CopySpeechSegment(segment));
+  });
   transcript.AppendText("hel");
+  transcript.AppendText("");
+  transcript.AppendText("lo");
+  transcript.AppendText(" world");
   auto result = transcript.Finish();
-  EXPECT_EQ(result->text, "hel");
+  EXPECT_EQ(result->text, "hello world");
   EXPECT_TRUE(result->segments.empty());
-  EXPECT_EQ(callbacks, 0U);
+  ASSERT_EQ(streamed.size(), 3U);
+  EXPECT_EQ(streamed[0]->text, "hel");
+  EXPECT_EQ(streamed[1]->text, "hello");
+  EXPECT_EQ(streamed[2]->text, "hello world");
+  for (const auto& segment : streamed) {
+    EXPECT_EQ(segment->kind, FOUNDRY_LOCAL_SPEECH_SEGMENT_PARTIAL);
+    EXPECT_FALSE(segment->start_time_ms.has_value());
+    EXPECT_FALSE(segment->end_time_ms.has_value());
+    EXPECT_TRUE(segment->words.empty());
+  }
+}
+
+TEST(ASRTranscriptTest, CompletedSegmentStartsNextPartialWithoutReplayingCommittedText) {
+  std::vector<std::unique_ptr<SpeechSegmentItem>> streamed;
+  ASRTranscript transcript("segment", [&](const SpeechSegmentItem& segment) {
+    streamed.push_back(CopySpeechSegment(segment));
+  });
+  transcript.AppendText("Hello.");
+  transcript.AppendText(" Next");
+  transcript.AppendSegment("Hello.", 100, 800);
+  transcript.AppendText(" sentence.");
+  transcript.AppendSegment(" Next sentence.", 1000, 1900);
+  auto result = transcript.Finish();
+  EXPECT_EQ(result->text, "Hello. Next sentence.");
+  ASSERT_EQ(result->segments.size(), 2U);
+  ASSERT_EQ(streamed.size(), 6U);
+  EXPECT_EQ(streamed[0]->text, "Hello.");
+  EXPECT_EQ(streamed[1]->text, "Hello. Next");
+  EXPECT_EQ(streamed[2]->kind, FOUNDRY_LOCAL_SPEECH_SEGMENT_FINAL);
+  EXPECT_EQ(streamed[2]->text, "Hello.");
+  EXPECT_EQ(streamed[2]->start_time_ms, 100);
+  EXPECT_EQ(streamed[2]->end_time_ms, 800);
+  EXPECT_EQ(streamed[3]->kind, FOUNDRY_LOCAL_SPEECH_SEGMENT_PARTIAL);
+  EXPECT_EQ(streamed[3]->text, " Next");
+  EXPECT_EQ(streamed[4]->text, " Next sentence.");
+  EXPECT_EQ(streamed[5]->kind, FOUNDRY_LOCAL_SPEECH_SEGMENT_FINAL);
+  EXPECT_EQ(streamed[5]->text, " Next sentence.");
+}
+
+TEST(ASRTranscriptTest, WordModeResetsPartialAtEachCompletedWord) {
+  std::vector<std::unique_ptr<SpeechSegmentItem>> streamed;
+  ASRTranscript transcript("word", [&](const SpeechSegmentItem& segment) {
+    streamed.push_back(CopySpeechSegment(segment));
+  });
+  transcript.AppendText("Hello world");
+  transcript.AppendWord("Hello", 100, 400);
+  transcript.AppendWord(" world", 500, 900);
+  auto result = transcript.Finish();
+  EXPECT_EQ(result->text, "Hello world");
+  ASSERT_EQ(result->segments.size(), 2U);
+  ASSERT_EQ(streamed.size(), 4U);
+  EXPECT_EQ(streamed[0]->kind, FOUNDRY_LOCAL_SPEECH_SEGMENT_PARTIAL);
+  EXPECT_EQ(streamed[0]->text, "Hello world");
+  EXPECT_EQ(streamed[1]->kind, FOUNDRY_LOCAL_SPEECH_SEGMENT_FINAL);
+  EXPECT_EQ(streamed[1]->text, "Hello");
+  EXPECT_EQ(streamed[2]->kind, FOUNDRY_LOCAL_SPEECH_SEGMENT_PARTIAL);
+  EXPECT_EQ(streamed[2]->text, " world");
+  EXPECT_EQ(streamed[3]->kind, FOUNDRY_LOCAL_SPEECH_SEGMENT_FINAL);
 }
 
 TEST(ASRTranscriptTest, PlainTextRetainsUntimedFragments) {
-  ASRTranscript transcript;
+  std::vector<std::unique_ptr<SpeechSegmentItem>> streamed;
+  ASRTranscript transcript("off", [&](const SpeechSegmentItem& segment) {
+    streamed.push_back(CopySpeechSegment(segment));
+  });
   transcript.AppendText("hel");
   transcript.AppendText("");
   transcript.AppendText("lo");
   auto result = transcript.Finish();
   ASSERT_EQ(result->segments.size(), 2U);
+  ASSERT_EQ(streamed.size(), 2U);
   EXPECT_EQ(result->text, "hello");
   EXPECT_EQ(result->segments[0]->kind, FOUNDRY_LOCAL_SPEECH_SEGMENT_NONE);
   EXPECT_FALSE(result->segments[0]->start_time_ms.has_value());
+  EXPECT_EQ(streamed[0]->text, "hel");
+  EXPECT_EQ(streamed[1]->text, "lo");
+  for (const auto& segment : streamed) {
+    EXPECT_EQ(segment->kind, FOUNDRY_LOCAL_SPEECH_SEGMENT_NONE);
+    EXPECT_FALSE(segment->start_time_ms.has_value());
+    EXPECT_FALSE(segment->end_time_ms.has_value());
+  }
 }
 
 TEST(ASRTranscriptTest, WordModePublishesOnlyCompletedWords) {
@@ -86,17 +159,18 @@ TEST(ASRTranscriptTest, AllModeAssociatesWordsByOrderNotEqualTimestamps) {
   transcript.AppendText(" Go. Go.");
   transcript.AppendWord(" Go.", 100, 200);
   transcript.AppendWord(" Go.", 100, 200);
-  EXPECT_TRUE(streamed.empty());
+  ASSERT_EQ(streamed.size(), 1U);
+  EXPECT_EQ(streamed[0]->kind, FOUNDRY_LOCAL_SPEECH_SEGMENT_PARTIAL);
   transcript.AppendSegment(" Go.", 100, 200);
   transcript.AppendSegment(" Go.", 100, 200);
   auto result = transcript.Finish();
   ASSERT_EQ(result->segments.size(), 2U);
-  ASSERT_EQ(streamed.size(), 2U);
-  ASSERT_EQ(streamed[0]->words.size(), 1U);
+  ASSERT_EQ(streamed.size(), 4U);
   ASSERT_EQ(streamed[1]->words.size(), 1U);
-  EXPECT_EQ(streamed[1]->words[0].text, " Go.");
+  ASSERT_EQ(streamed[3]->words.size(), 1U);
+  EXPECT_EQ(streamed[3]->words[0].text, " Go.");
   result.reset();
-  EXPECT_EQ(streamed[0]->text, " Go.");
+  EXPECT_EQ(streamed[1]->text, " Go.");
   EXPECT_EQ(streamed[1]->start_time_ms, 100);
 }
 

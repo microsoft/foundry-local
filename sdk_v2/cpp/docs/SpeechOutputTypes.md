@@ -168,20 +168,25 @@ This integration requires the GenAI integer-millisecond timestamp ABI; the
 native build checks the interval return type rather than silently accepting seconds.
 
 With timestamps off, decoded text fragments retain kind `NONE` and unset timing.
-Timed mode emits a `FINAL` item only when a word or segment completes. Empty
-completed-record lists produce no items. Word mode places each completed word in
+Timed mode emits cumulative `PARTIAL` text for the current word or segment as
+decoded text arrives, without timing or word metadata. A `FINAL` item is emitted
+when a word or segment completes, carrying its text and millisecond bounds.
+Completed text is removed from subsequent partials; any already-decoded text for
+the next record becomes its initial partial. Empty partials are not emitted.
+Word mode places each completed word in
 its own segment; segment mode supplies the segment's own text and millisecond
 bounds without word details; all mode attaches buffered words to completed segments.
 Equal timestamps do not identify records: repeated words are retained in emission order.
 
-Callbacks receive owned copies of completed records. The final `SpeechResultItem`
-contains the full raw transcript and all completed segments. Audio is flushed before
+Callbacks receive owned copies of partials and completed records. Partial snapshots
+are not retained in the final `SpeechResultItem`, which contains the full raw
+transcript and all completed segments. Audio is flushed before
 ASR finalization, which publishes trailing records. Nemotron WAV files use this same
 mapping through typed file requests and the OpenAI JSON adapter. Timed JSON adds a
 `segments` array with `text`, `start_time_ms`, `end_time_ms`, and `words`; untimed
 responses retain the existing `id`/`text` shape.
 
-`PARTIAL`, `utterance_start`, detected language, confidence, and speaker identity
+`utterance_start`, detected language, confidence, and speaker identity
 remain unset unless a producer actually reports them. Timestamp grouping does not
 invent hypothesis revisions or speaker information.
 
