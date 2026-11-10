@@ -650,6 +650,56 @@ class SearchOptionsTest : public ::testing::Test {
 // Tests
 // ---------------------------------------------------------------------------
 
+class ModelSamplingOptionsTest : public SearchOptionsTest {
+ protected:
+  static void SetUpTestSuite() {
+    logger_ = std::make_unique<StderrLogger>();
+    ep_detector_ = std::make_unique<test::CpuOnlyEpDetector>();
+    load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
+    const auto model_path = fl::test::GetTestDataPath("tiny-paged-attention");
+    const auto result = load_manager_->LoadModel(model_path.string(), fl::test::kTestChatModelAlias);
+    ASSERT_EQ(result.status, ModelLoadManager::LoadStatus::kSuccess);
+    model_ = result.model;
+  }
+};
+
+TEST_F(ModelSamplingOptionsTest, BoltPreservesModelSamplingDefaultWithoutCallerPolicy) {
+  auto config = GetConfig();
+  config.model->type = "nemotron_bolt";
+
+  for (const auto temperature : {std::optional<float>{}, std::optional<float>{1.0f}}) {
+    SearchOptions options;
+    options.max_output_tokens = 8;
+    options.temperature = temperature;
+    auto params = MakeParams();
+    params->SetSearchOptionBool("do_sample", false);
+    ApplySearchOptions(options, 10, config, *params, ExecutionProvider::kCPU);
+    EXPECT_FALSE(params->GetSearchBool("do_sample"));
+  }
+}
+
+TEST_F(ModelSamplingOptionsTest, BoltDoesNotSilentlyOverrideExplicitSampling) {
+  auto config = GetConfig();
+  config.model->type = "nemotron_bolt";
+  SearchOptions options;
+  options.max_output_tokens = 8;
+  options.temperature = 0.7f;
+  auto params = MakeParams();
+  params->SetSearchOptionBool("do_sample", false);
+  ApplySearchOptions(options, 10, config, *params, ExecutionProvider::kCPU);
+  EXPECT_TRUE(params->GetSearchBool("do_sample"));
+  EXPECT_NEAR(params->GetSearchNumber("temperature"), 0.7, 0.00001);
+}
+
+TEST_F(ModelSamplingOptionsTest, OtherModelsRetainSamplingDefault) {
+  SearchOptions options;
+  options.max_output_tokens = 8;
+  auto params = MakeParams();
+  params->SetSearchOptionBool("do_sample", false);
+  ApplySearchOptions(options, 10, GetConfig(), *params, ExecutionProvider::kCPU);
+  EXPECT_TRUE(params->GetSearchBool("do_sample"));
+}
+
 TEST_F(SearchOptionsTest, DefaultOptionsApplySuccessfully) {
   SearchOptions opts;
   auto params = MakeParams();

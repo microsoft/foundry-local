@@ -322,10 +322,10 @@ int ApplySearchOptions(const SearchOptions& options,
     gen_params.SetSearchOption("random_seed", static_cast<double>(*options.seed));
   }
 
-  // Preserve the established Generator default of sampling when the caller supplies no sampling policy.
+  // Bolt's decoder requires greedy search; preserve its model default when no policy is requested.
   if (sampling.do_sample.has_value()) {
     gen_params.SetSearchOptionBool("do_sample", *sampling.do_sample);
-  } else {
+  } else if (!config.model || config.model->type != "nemotron_bolt") {
     gen_params.SetSearchOptionBool("do_sample", true);
   }
 
