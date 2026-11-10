@@ -41,6 +41,7 @@ struct GenAIConfig {
 
   struct Search {
     int max_length = 0;
+    std::optional<bool> do_sample;
   };
 
   struct Engine {

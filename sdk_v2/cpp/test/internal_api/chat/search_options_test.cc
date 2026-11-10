@@ -663,41 +663,56 @@ class ModelSamplingOptionsTest : public SearchOptionsTest {
   }
 };
 
-TEST_F(ModelSamplingOptionsTest, BoltPreservesModelSamplingDefaultWithoutCallerPolicy) {
+TEST_F(ModelSamplingOptionsTest, PreservesExplicitModelDefaultWithoutCallerPolicy) {
   auto config = GetConfig();
-  config.model->type = "nemotron_bolt";
-
-  for (const auto temperature : {std::optional<float>{}, std::optional<float>{1.0f}}) {
-    SearchOptions options;
-    options.max_output_tokens = 8;
-    options.temperature = temperature;
-    auto params = MakeParams();
-    params->SetSearchOptionBool("do_sample", false);
-    ApplySearchOptions(options, 10, config, *params, ExecutionProvider::kCPU);
-    EXPECT_FALSE(params->GetSearchBool("do_sample"));
+  config.search.emplace();
+  for (const bool do_sample : {false, true}) {
+    config.search->do_sample = do_sample;
+    for (const auto temperature : {std::optional<float>{}, std::optional<float>{1.0f}}) {
+      SearchOptions options;
+      options.max_output_tokens = 8;
+      options.temperature = temperature;
+      auto params = MakeParams();
+      params->SetSearchOptionBool("do_sample", !do_sample);
+      ApplySearchOptions(options, 10, config, *params, ExecutionProvider::kCPU);
+      EXPECT_EQ(params->GetSearchBool("do_sample"), do_sample);
+    }
   }
 }
 
-TEST_F(ModelSamplingOptionsTest, BoltDoesNotSilentlyOverrideExplicitSampling) {
+TEST_F(ModelSamplingOptionsTest, CallerPolicyOverridesModelDefault) {
   auto config = GetConfig();
-  config.model->type = "nemotron_bolt";
-  SearchOptions options;
-  options.max_output_tokens = 8;
-  options.temperature = 0.7f;
-  auto params = MakeParams();
-  params->SetSearchOptionBool("do_sample", false);
-  ApplySearchOptions(options, 10, config, *params, ExecutionProvider::kCPU);
-  EXPECT_TRUE(params->GetSearchBool("do_sample"));
-  EXPECT_NEAR(params->GetSearchNumber("temperature"), 0.7, 0.00001);
+  config.search.emplace();
+  for (const bool model_do_sample : {false, true}) {
+    config.search->do_sample = model_do_sample;
+    for (const float temperature : {0.0f, 0.7f}) {
+      SearchOptions options;
+      options.max_output_tokens = 8;
+      options.temperature = temperature;
+      auto params = MakeParams();
+      params->SetSearchOptionBool("do_sample", model_do_sample);
+      ApplySearchOptions(options, 10, config, *params, ExecutionProvider::kCPU);
+      EXPECT_EQ(params->GetSearchBool("do_sample"), temperature != 0.0f);
+      EXPECT_NEAR(params->GetSearchNumber("temperature"), temperature, 0.00001);
+    }
+  }
 }
 
-TEST_F(ModelSamplingOptionsTest, OtherModelsRetainSamplingDefault) {
-  SearchOptions options;
-  options.max_output_tokens = 8;
-  auto params = MakeParams();
-  params->SetSearchOptionBool("do_sample", false);
-  ApplySearchOptions(options, 10, GetConfig(), *params, ExecutionProvider::kCPU);
-  EXPECT_TRUE(params->GetSearchBool("do_sample"));
+TEST_F(ModelSamplingOptionsTest, MissingModelPolicyRetainsLegacyDefault) {
+  auto config = GetConfig();
+  for (const bool has_search : {false, true}) {
+    config.search.reset();
+    if (has_search) {
+      config.search.emplace();
+    }
+
+    SearchOptions options;
+    options.max_output_tokens = 8;
+    auto params = MakeParams();
+    params->SetSearchOptionBool("do_sample", false);
+    ApplySearchOptions(options, 10, config, *params, ExecutionProvider::kCPU);
+    EXPECT_TRUE(params->GetSearchBool("do_sample"));
+  }
 }
 
 TEST_F(SearchOptionsTest, DefaultOptionsApplySuccessfully) {

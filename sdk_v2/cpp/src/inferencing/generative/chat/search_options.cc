@@ -322,12 +322,9 @@ int ApplySearchOptions(const SearchOptions& options,
     gen_params.SetSearchOption("random_seed", static_cast<double>(*options.seed));
   }
 
-  // Bolt's decoder requires greedy search; preserve its model default when no policy is requested.
-  if (sampling.do_sample.has_value()) {
-    gen_params.SetSearchOptionBool("do_sample", *sampling.do_sample);
-  } else if (!config.model || config.model->type != "nemotron_bolt") {
-    gen_params.SetSearchOptionBool("do_sample", true);
-  }
+  // Honor explicit model defaults; absent metadata retains Foundry's established sampling default.
+  const bool model_do_sample = config.search ? config.search->do_sample.value_or(true) : true;
+  gen_params.SetSearchOptionBool("do_sample", sampling.do_sample.value_or(model_do_sample));
 
   // Early stopping is a beam-search policy, independent from decoded stop strings.
   if (options.early_stopping.value_or(false)) {
