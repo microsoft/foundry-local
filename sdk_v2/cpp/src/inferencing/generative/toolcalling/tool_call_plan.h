@@ -14,14 +14,14 @@
 
 namespace fl {
 
-/// Immutable, offline authority for nonempty canonical [{"name": ..., "parameters": {...}}] tool-call batches.
+/// Immutable, offline authority for nonempty tool-call batches.
 /// Supports Draft 7 and 2020-12 (default) with local JSON Pointer references. Resource IDs, anchors,
 /// recursive references, custom vocabularies, reserved controls and unsupported content features are rejected.
 /// Unknown non-reserved keywords and format are annotations; original schemas are preserved without format assertions.
 /// Draft 7 tuple items/dependencies are not supported. No defaults, coercion or repair are performed.
 /// Omitted function.parameters declares a parameterless tool accepting only {}; supplied schemas are never defaulted.
 /// Grammar is a structural mask, NOT a semantic schema mask. It constrains JSON transport, envelopes, names and count.
-/// ParseCalls/ValidateCall enforce the original schemas before ANY call publication, without schema projection.
+/// ParseCalls/ValidateBatch enforce the original schemas before ANY call publication, without schema projection.
 class ToolCallPlan final {
  public:
   // Four MiB accommodates source-code/custom-tool arguments; the batch cap bounds aggregate parsing memory.
@@ -42,7 +42,12 @@ class ToolCallPlan final {
   /// Internal rules use tool_json_/TOOL_JSON_ prefixes for embedding.
   /// root_rule must be a lowercase Lark rule identifier outside the reserved tool_json_ prefix.
   std::string Grammar(std::string_view root_rule = "start") const;
+  /// Structural grammar for a single argument object, with the same JSON syntax and root-rule contract.
+  std::string ObjectGrammar(std::string_view root_rule = "start") const;
+  std::vector<std::string> AllowedNames() const;
   std::vector<ParsedToolCall> ParseCalls(std::string_view canonical_json) const;
+  /// Validate an entire batch without changing IDs, argument bytes, or custom-tool argument sources.
+  void ValidateBatch(const std::vector<ParsedToolCall>& calls) const;
   void ValidateCall(const ParsedToolCall& call) const;
 
  private:
