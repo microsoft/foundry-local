@@ -4,10 +4,12 @@ on:
   pull_request:
     paths:
       - 'samples/**'
+      - 'sdk_v2/cpp/test/manual/**'
       - '.github/workflows/samples-integration-test.yml'
   push:
     paths:
       - 'samples/**'
+      - 'sdk_v2/cpp/test/manual/**'
       - '.github/workflows/samples-integration-test.yml'
     branches:
       - main
@@ -17,6 +19,24 @@ permissions:
   contents: read
 
 jobs:
+  tool-gate-self-tests:
+    runs-on: ${{ matrix.platform }}-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [ubuntu, windows, macos]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Run qualification self-tests
+        run: python sdk_v2/cpp/test/manual/tool_call_qualification.py --self-test
+      - name: Run coding-agent self-tests
+        run: python sdk_v2/cpp/test/manual/coding_agent_gate.py --self-test --output-dir sdk_v2/cpp/build/coding-agent-gate/self-test
+      - name: Run protocol self-tests
+        run: python sdk_v2/cpp/test/manual/tool_call_gate.py --self-test
+
   # ── Python Samples ──────────────────────────────────────────────────
   python-samples:
     runs-on: ${{ matrix.platform }}-latest

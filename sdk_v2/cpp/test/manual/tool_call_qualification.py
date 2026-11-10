@@ -20,12 +20,16 @@ import json
 import os
 from pathlib import Path
 import platform
+import signal
 import subprocess
 import sys
 import tempfile
 import time
 from urllib.parse import urlsplit
 import uuid
+from unittest.mock import patch
+
+from coding_agent_gate import ProcessTree
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -68,6 +72,9 @@ def environment_fingerprint(backend: str, artifacts: list[Path]) -> dict:
     commit = command_output(["git", "-C", str(CPP_ROOT), "rev-parse", "HEAD"])
     return {
         "backend": backend,
+        "backend_source": "operator_request",
+        "runtime_identity_verified": False,
+        "artifact_binding_verified": False,
         "platform": platform.platform(),
         "python": platform.python_version(),
         "repository_commit": commit,
@@ -122,16 +129,26 @@ def newest_child(parent: Path, before: set[Path], prefix: str) -> Path:
 
 
 def run_command(command: list[str], stdout_path: Path, timeout: int) -> int:
-    with stdout_path.open("w", encoding="utf-8") as output:
-        result = subprocess.run(
-            command,
-            stdout=output,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
-    return result.returncode
+    tree = ProcessTree()
+    environment = dict(os.environ, FOUNDRY_GATE_SHARED_PROCESS_GROUP="1")
+    try:
+        with stdout_path.open("w", encoding="utf-8") as output:
+            process = tree.start(command, stdout_path.parent, environment, output, subprocess.STDOUT)
+            try:
+                return process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                if process.poll() is None:
+                    if os.name == "nt":
+                        process.send_signal(signal.CTRL_BREAK_EVENT)
+                    else:
+                        process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+                raise
+    finally:
+        tree.close()
 
 
 def relative(path: Path, root: Path) -> str:
@@ -241,6 +258,73 @@ def self_test() -> int:
             dict(good, end_to_end_correct_percent=99.9), "qwen-test", "cuda", 100
         )["qualified"],
     }
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        args = argparse.Namespace(
+            model="qwen-test", backend="cuda", artifact=[], genai_report=None,
+            logical_model_id=None, repetitions=1, schema_profiles=["native", "minlength"],
+            genai_min_percent=100,
+        )
+        partial = root / "partial"
+        partial.mkdir()
+        with patch(__name__ + ".environment_fingerprint", return_value={}), \
+                patch(__name__ + ".run_protocol_gate", return_value={"qualified": True, "artifact": "protocol"}), \
+                patch(__name__ + ".run_coding_gate", side_effect=[
+                    {"qualified": True, "profile": "native", "artifact": "coding/native"},
+                    subprocess.TimeoutExpired("owned-helper", 1),
+                ]):
+            result = qualify(args, partial)
+        saved = read_json(partial / "qualification.json")
+        checks["retain_partial_results"] = (
+            not result["qualified"] and len(saved["runs"]) == 1
+            and saved["runs"][0]["protocol"]["qualified"]
+            and saved["runs"][0]["coding"][0]["artifact"] == "coding/native"
+            and not saved["runs"][0]["qualified"]
+        )
+        mismatch = root / "mismatch"
+        mismatch.mkdir()
+        args.genai_report = root / "wrong-model.json"
+        args.genai_report.write_text(json.dumps(dict(good, model_id="other")), encoding="utf-8")
+        args.logical_model_id = "qwen-test"
+        with patch(__name__ + ".environment_fingerprint", return_value={}), \
+                patch(__name__ + ".run_protocol_gate") as protocol, \
+                patch(__name__ + ".run_coding_gate") as coding:
+            result = qualify(args, mismatch)
+        checks["reject_direct_report_before_inference"] = (
+            not result["qualified"] and not protocol.called and not coding.called
+            and not result["runs"] and result["genai"]["checks"]["expected_model"] is False
+        )
+        for host in ("localhost", "127.0.0.1", "[::1]"):
+            with patch.object(sys, "argv", [
+                "qualification", "--endpoint", f"http://{host}:5273/v1", "--model", "qwen-test",
+                "--output-dir", str(QUALIFICATION_ROOT / "self-test"),
+            ]):
+                checks["accept_loopback_" + host] = parse_args().endpoint == f"http://{host}:5273/v1"
+        helper = (
+            "import signal,subprocess,sys,time\n"
+            "child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)'])\n"
+            "def stop(*unused):\n"
+            " child.terminate();child.wait();print('child_reaped',flush=True);sys.exit(0)\n"
+            "signal.signal(signal.SIGTERM,stop)\n"
+            "if hasattr(signal,'SIGBREAK'):signal.signal(signal.SIGBREAK,stop)\n"
+            "print(child.pid,flush=True)\n"
+            "time.sleep(60)\n"
+        )
+        timed_out = False
+        try:
+            run_command([sys.executable, "-c", helper], root / "timeout.log", 1)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+        helper_output = (root / "timeout.log").read_text().splitlines()
+        child_pid = int(helper_output[0])
+        child_stopped = "child_reaped" in helper_output[1:]
+        if os.name != "nt":
+            try:
+                os.kill(child_pid, 0)
+                child_stopped = False
+            except ProcessLookupError:
+                pass
+        checks["timeout_stops_owned_child"] = timed_out and child_stopped
     passed = all(checks.values())
     print(json.dumps({"self_test_passed": passed, "endpoint_qualification_performed": False, "checks": checks}, indent=2))
     return 0 if passed else 1
@@ -278,13 +362,13 @@ def parse_args() -> argparse.Namespace:
         parser.error("--endpoint, --model, and --output-dir are required unless --self-test is selected")
     target = urlsplit(args.endpoint)
     try:
-        address = ipaddress.ip_address(target.hostname or "")
+        local = target.hostname == "localhost" or ipaddress.ip_address(target.hostname or "").is_loopback
         port = target.port
     except ValueError:
         parser.error("--endpoint must be an unauthenticated loopback HTTP(S) API base URL")
     if (
         target.scheme not in {"http", "https"}
-        or not address.is_loopback
+        or not local
         or target.username
         or target.password
         or target.query
@@ -326,13 +410,7 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def main() -> int:
-    args = parse_args()
-    if args.self_test:
-        return self_test()
-
-    run = args.output_dir / ("qualification-" + time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8])
-    run.mkdir(parents=True)
+def qualify(args: argparse.Namespace, run: Path) -> dict:
     result = {
         "format": FORMAT_VERSION,
         "qualified": False,
@@ -349,6 +427,10 @@ def main() -> int:
         "runs": [],
         "failure": None,
     }
+    def save():
+        (run / "qualification.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+
+    save()
     try:
         if args.genai_report:
             report, evidence = retain_genai_report(args.genai_report, run)
@@ -356,19 +438,27 @@ def main() -> int:
                 report, args.logical_model_id, args.backend, args.genai_min_percent
             )
             result["genai"]["evidence"] = evidence
+            save()
+            if not result["genai"]["qualified"]:
+                raise ValueError("direct_genai_report_failed_preflight")
         for repetition in range(1, args.repetitions + 1):
             entry = {
                 "repetition": repetition,
-                "protocol": run_protocol_gate(args, run, repetition),
-                "coding": [
-                    run_coding_gate(args, run, repetition, profile)
-                    for profile in args.schema_profiles
-                ],
+                "protocol": None,
+                "coding": [],
+                "qualified": False,
             }
+            result["runs"].append(entry)
+            save()
+            entry["protocol"] = run_protocol_gate(args, run, repetition)
+            save()
+            for profile in args.schema_profiles:
+                entry["coding"].append(run_coding_gate(args, run, repetition, profile))
+                save()
             entry["qualified"] = entry["protocol"]["qualified"] and all(
                 item["qualified"] for item in entry["coding"]
             )
-            result["runs"].append(entry)
+            save()
         result["qualified"] = (
             all(item["qualified"] for item in result["runs"])
             and (result["genai"] is None or result["genai"]["qualified"])
@@ -379,12 +469,22 @@ def main() -> int:
         result["failure"] = type(error).__name__
         (run / "failure-detail.txt").write_text(str(error), encoding="utf-8")
     result["completed_at_epoch_seconds"] = int(time.time())
-    (run / "qualification.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    save()
+    return result
+
+
+def main() -> int:
+    args = parse_args()
+    if args.self_test:
+        return self_test()
+    run = args.output_dir / ("qualification-" + time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8])
+    run.mkdir(parents=True)
+    result = qualify(args, run)
     print(json.dumps({**result, "runs": [
         {
             "repetition": item["repetition"],
             "qualified": item["qualified"],
-            "protocol": item["protocol"]["qualified"],
+            "protocol": item["protocol"]["qualified"] if item["protocol"] else None,
             "coding": {run["profile"]: run["qualified"] for run in item["coding"]},
         }
         for item in result["runs"]

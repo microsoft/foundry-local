@@ -321,6 +321,7 @@ class ProcessTree:
     def __init__(self) -> None:
         self.process: subprocess.Popen | None = None
         self.job = None
+        self.shared_group = os.name != "nt" and os.environ.get("FOUNDRY_GATE_SHARED_PROCESS_GROUP") == "1"
         if os.name == "nt":
             from ctypes import wintypes
 
@@ -362,7 +363,7 @@ class ProcessTree:
     def start(self, command: list[str], cwd: Path, env: dict, stdout, stderr) -> subprocess.Popen:
         self.process = subprocess.Popen(
             command, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
-            start_new_session=os.name != "nt",
+            start_new_session=os.name != "nt" and not self.shared_group,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
         )
         if self.job and not self.kernel.AssignProcessToJobObject(self.job, int(self.process._handle)):
@@ -375,7 +376,7 @@ class ProcessTree:
         if self.job:
             self.kernel.CloseHandle(self.job)
             self.job = None
-        elif self.process and os.name != "nt":
+        elif self.process and os.name != "nt" and not self.shared_group:
             try:
                 os.killpg(self.process.pid, signal.SIGKILL)
             except ProcessLookupError:
@@ -1000,6 +1001,12 @@ def main() -> int:
     args = parse_args()
     if args.self_test:
         return self_test(args)
+    def interrupt_run(_signum, _frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, interrupt_run)
+    if os.name == "nt":
+        signal.signal(signal.SIGBREAK, interrupt_run)
     started = time.monotonic()
     deadline = started + args.timeout_seconds
     run = args.output_dir / ("run-" + time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8])

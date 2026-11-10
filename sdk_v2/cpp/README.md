@@ -392,6 +392,10 @@ thresholds, repository commit, GPU inventory, artifact hashes, child artifact
 locations, and the final verdict. Cross-stack runs also retain and fingerprint
 the exact direct GenAI report in the private qualification directory. Private
 prompts and tool payloads remain only in their child run directories.
+The backend is operator-requested, not independently verified from the serving runtime.
+Artifact hashes fingerprint supplied files; they do not establish that the endpoint loaded those files.
+The report records these limitations explicitly. Direct-report preflight failures stop before inference,
+completed child results are saved incrementally, and outer timeouts clean up the owned gate/client process tree.
 
 ## Quick Start
 
