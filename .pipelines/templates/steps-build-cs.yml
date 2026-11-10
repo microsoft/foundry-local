@@ -116,6 +116,28 @@ steps:
         }
       }
 
+- task: PowerShell@2
+  displayName: 'Publish predictive sample with Native AOT'
+  inputs:
+    targetType: inline
+    pwsh: true
+    script: |
+      $project = "$(Build.SourcesDirectory)/sdk_v2/cs/examples/RankingAndDecision/RankingAndDecision.csproj"
+      dotnet restore $project `
+        --configfile "$(customNugetConfig)" `
+        --runtime win-x64 `
+        /p:FoundryLocalRuntimeVersion=$(packageVersion) `
+        /p:FoundryLocalNativeBinDir=
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      dotnet publish $project `
+        --no-restore --configuration Release `
+        --runtime win-x64 `
+        --output "$(Build.ArtifactStagingDirectory)/predictive-aot-smoke" `
+        /p:FoundryLocalRuntimeVersion=$(packageVersion) `
+        /p:FoundryLocalNativeBinDir=
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 # Sign SDK DLLs across all target frameworks (net8.0, net9.0, netstandard2.0).
 # Pattern is a recursive glob so every TFM output directory is covered.
 - task: SFP.build-tasks.custom-build-task-1.EsrpCodeSigning@5

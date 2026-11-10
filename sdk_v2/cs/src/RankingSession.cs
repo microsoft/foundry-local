@@ -30,8 +30,8 @@ public sealed class RankingSession : NonGenerativeSession
         var answers = request.Answers.ToArray();
         var result = await ProcessAsync(
             request,
-            JsonSerializationContext.Default.RankingRequest,
-            JsonSerializationContext.Default.RankingResult,
+            NonGenerativeJsonSerializationContext.Default.RankingRequest,
+            NonGenerativeJsonSerializationContext.Default.RankingResult,
             ct).ConfigureAwait(false);
         ValidateResult(answers, result);
         return result;

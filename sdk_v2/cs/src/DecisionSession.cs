@@ -32,8 +32,8 @@ public sealed class DecisionSession : NonGenerativeSession
         var questions = SnapshotQuestions(request.Questions);
         var result = await ProcessAsync(
             request,
-            JsonSerializationContext.Default.DecisionRequest,
-            JsonSerializationContext.Default.DecisionResult,
+            NonGenerativeJsonSerializationContext.Default.DecisionRequest,
+            NonGenerativeJsonSerializationContext.Default.DecisionResult,
             ct).ConfigureAwait(false);
         ValidateResult(questions, result);
         return result;

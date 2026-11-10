@@ -4,6 +4,9 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <PublishAot>true</PublishAot>
+    <IsAotCompatible>true</IsAotCompatible>
+    <WarningsAsErrors>$(WarningsAsErrors);IL2026;IL2104;IL3050;IL3053</WarningsAsErrors>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/Microsoft.AI.Foundry.Local.csproj" />
