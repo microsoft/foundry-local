@@ -105,7 +105,7 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
             } else if (value.is_object()) {
               auto protected_object = nlohmann::ordered_json::object();
               for (auto& [key, item] : value.items()) {
-                if (argument_data || dictionary_keys || key != "type" || !item.is_string()) {
+                if (argument_data || dictionary_keys || key != "type" || (!item.is_string() && !item.is_array())) {
                   const bool schema_dictionary =
                       !dictionary_keys &&
                       (key == "properties" || key == "$defs" || key == "definitions" ||

@@ -1004,48 +1004,7 @@ GuidedToolRetryResult RunGuidedToolRetry(const chat_internal::PreparedChatMessag
     ThrowInvalidGuidedToolRetry("Missing token-owned tool-call boundaries");
   }
 
-  std::vector<ParsedToolCall> calls;
-  if (tool_ctx.native_tagged_json_tool_calls) {
-    auto tagged_output = structured_output;
-    const auto first = tagged_output.find_first_not_of(" \t\r\n");
-    const auto last = tagged_output.find_last_not_of(" \t\r\n");
-    if (first != std::string::npos && last != std::string::npos) {
-      const auto trimmed = std::string_view(tagged_output).substr(first, last - first + 1);
-      const bool has_start = trimmed.starts_with(tool_ctx.tool_call_start);
-      const bool has_end = trimmed.ends_with(tool_ctx.tool_call_end);
-      if (!has_start) {
-        tagged_output.insert(first, tool_ctx.tool_call_start);
-      }
-      if (!has_end) {
-        tagged_output += tool_ctx.tool_call_end;
-      }
-    }
-    ToolCallStreamAccumulator accumulator(
-        tool_ctx.tool_call_start, tool_ctx.tool_call_end, tool_ctx.tools_json,
-        tool_ctx.reasoning_end,
-        CreateQwenTaggedJsonToolCallPayloadParser(
-            tool_ctx.tools_json, tool_ctx.tool_kinds,
-            tool_ctx.tool_call_start, tool_ctx.tool_call_end),
-        /*canonical_json_payload=*/true);
-    auto output = accumulator.Push(tagged_output);
-    auto terminal = accumulator.Flush();
-    output.events.insert(output.events.end(),
-                         std::make_move_iterator(terminal.events.begin()),
-                         std::make_move_iterator(terminal.events.end()));
-    if (!output.malformed) {
-      for (auto& event : output.events) {
-        if (auto* call = std::get_if<ParsedToolCall>(&event)) {
-          calls.push_back(std::move(*call));
-        } else if (const auto* text = std::get_if<std::string>(&event);
-                   text != nullptr && text->find_first_not_of(" \t\r\n") != std::string::npos) {
-          calls.clear();
-          break;
-        }
-      }
-    }
-  } else {
-    calls = ParseStrictGuidedToolCalls(structured_output, tool_ctx);
-  }
+  auto calls = ParseStrictGuidedToolCalls(structured_output, tool_ctx);
   if (!natural_end || calls.empty()) {
     ThrowInvalidGuidedToolRetry("Incomplete, interrupted, or over-budget tool-call output");
   }

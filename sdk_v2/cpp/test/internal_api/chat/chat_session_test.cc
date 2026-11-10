@@ -863,6 +863,32 @@ TEST(ChatSessionDecisionTest, TaggedJsonSchemaViolationBecomesMalformedAdmission
   EXPECT_TRUE(output.events.empty());
 }
 
+TEST(ChatSessionDecisionTest, NativeJsonDepthLimitsApplyBeforeParsingAndSerialization) {
+  const std::string tools =
+      R"([{"type":"function","function":{"name":"deep","parameters":{"type":"object","properties":{"value":{"type":"object"}}}}}])";
+  const std::unordered_map<std::string, ToolKind> kinds{{"deep", ToolKind::kFunction}};
+  const auto tagged = CreateQwenTaggedJsonToolCallPayloadParser(tools, kinds);
+  const auto xml = CreateQwenXmlToolCallPayloadParser(tools, kinds);
+  const auto nested_object = [](size_t depth) {
+    return R"({"nested":)" + std::string(depth - 1, '[') + "0" + std::string(depth - 1, ']') + "}";
+  };
+  for (const size_t depth : {size_t{63}, size_t{64}, size_t{65}, size_t{10000}}) {
+    const auto argument = nested_object(depth);
+    const auto tagged_result = tagged(
+        "<tool_call>" R"({"name":"deep","arguments":)" + argument + "}</tool_call>", true);
+    EXPECT_EQ(tagged_result.disposition, depth <= ToolCallPlan::kMaxDepth
+                                             ? ToolCallPayloadDisposition::kParsed
+                                             : ToolCallPayloadDisposition::kMalformed);
+    const auto xml_result = xml(
+        "<tool_call>\n<function=deep>\n<parameter=value>\n" + argument +
+            "\n</parameter>\n</function>\n</tool_call>",
+        true);
+    EXPECT_EQ(xml_result.disposition, depth < ToolCallPlan::kMaxDepth
+                                          ? ToolCallPayloadDisposition::kParsed
+                                          : ToolCallPayloadDisposition::kMalformed);
+  }
+}
+
 TEST(ChatSessionDecisionTest, CustomBatchNormalizationUsesTheCompleteArgumentSource) {
   ToolCallContext context;
   context.tool_kinds = {{"custom", ToolKind::kCustom}};
@@ -2108,6 +2134,44 @@ TEST_F(QwenNativeProductionIntegrationTest, MarkerOverridesDisableNativeProjecti
       }
     }
   }
+}
+
+TEST_F(QwenNativeProductionIntegrationTest, NativeProjectionPreservesSchemaTypeArraysRenderedAsText) {
+  const auto directory = model_directory_ / "nullable-type-template";
+  ASSERT_TRUE(std::filesystem::create_directory(directory));
+  for (const auto& entry : std::filesystem::directory_iterator(model_directory_)) {
+    if (entry.is_regular_file()) {
+      std::filesystem::copy_file(entry.path(), directory / entry.path().filename());
+    }
+  }
+  const auto tokenizer_path = directory / "tokenizer_config.json";
+  auto tokenizer = nlohmann::json::parse(ReadText(tokenizer_path));
+  tokenizer["chat_template"] = tokenizer["chat_template"].get<std::string>() +
+                               R"({% for tool in tools %}{% set function = tool.function if tool.function is defined else tool %})"
+                               R"({% for parameter_name, parameter in function.parameters.properties | items %})"
+                               R"(<schema-type>{{ parameter.type | string }}</schema-type>{% endfor %}{% endfor %})";
+  WriteText(tokenizer_path, tokenizer.dump(2));
+  auto loaded = load_manager_->LoadModel(directory.string(), "nullable-type-template", ExecutionProvider::kCPU);
+  ASSERT_EQ(loaded.status, ModelLoadManager::LoadStatus::kSuccess);
+  ToolCallContext context;
+  context.native_qwen_xml_tool_calls = true;
+  context.tool_output = true;
+  context.tool_call_start = "<tool_call>";
+  context.tool_call_end = "</tool_call>";
+  context.tools_json = R"([{"type":"function","function":{"name":"read","parameters":{
+    "type":"object","properties":{"path":{"type":["string","null"]}},"required":["path"]}}}])";
+  context.tool_plan = ToolCallPlan::Create(context.tools_json);
+  const auto prepared = PrepareTextChatPrompt(
+      chat_internal::PrepareChatMessages({{FOUNDRY_LOCAL_ROLE_USER, "read the file"}}, false),
+      *loaded.model, context);
+  const auto baseline = loaded.model->GetPreprocessor().ApplyChatTemplateWithOptions(
+      R"([{"role":"user","content":"read the file"}])", context.tools_json.c_str(), nullptr, true);
+  const auto begin = baseline.find("<schema-type>");
+  const auto end = baseline.find("</schema-type>", begin);
+  ASSERT_NE(begin, std::string::npos);
+  ASSERT_NE(end, std::string::npos);
+  EXPECT_NE(prepared.prompt.find(baseline.substr(begin, end - begin)), std::string::npos);
+  EXPECT_EQ(prepared.prompt.find("__foundry_literal_"), std::string::npos);
 }
 
 TEST_F(QwenNativeProductionIntegrationTest, NativeProjectionProtectsArgumentKeysTypesAndSerializedDefinitions) {

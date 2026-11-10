@@ -3,8 +3,10 @@
 #include "inferencing/generative/toolcalling/qwen_xml_tool_call_decoder.h"
 #include "inferencing/generative/toolcalling/grammar.h"
 #include "inferencing/generative/toolcalling/tool_call_context.h"
+#include "inferencing/generative/toolcalling/tool_call_plan.h"
 #include "inferencing/generative/toolcalling/tool_call_utils.h"
 #include "inferencing/session/tool_registry.h"
+#include "util/json_helpers.h"
 
 #include <nlohmann/json.hpp>
 
@@ -752,7 +754,11 @@ bool IsCompatibleParameterValue(const Json& value, const Json& schema, size_t de
   });
 }
 
-std::optional<Json> ParseJsonWithoutDuplicateObjectKeys(std::string_view source) {
+std::optional<Json> ParseJsonWithoutDuplicateObjectKeys(
+    std::string_view source, size_t max_depth = ToolCallPlan::kMaxDepth) {
+  if (!IsJsonWithinDepthLimit(source, max_depth)) {
+    return std::nullopt;
+  }
   std::vector<std::unordered_set<std::string>> object_keys;
   bool duplicate_key = false;
   const auto detect_duplicate_keys = [&](int, Json::parse_event_t event, Json& parsed) {
@@ -794,7 +800,7 @@ std::optional<Json> DecodeSimpleParameterValue(std::string_view body, const Json
     return IsCompatibleJsonValue(value, schema) ? std::optional<Json>(std::move(value)) : std::nullopt;
   }
 
-  const auto value = ParseJsonWithoutDuplicateObjectKeys(body);
+  const auto value = ParseJsonWithoutDuplicateObjectKeys(body, ToolCallPlan::kMaxDepth - 1);
   if (!value || !IsCompatibleJsonValue(*value, schema)) {
     return std::nullopt;
   }
@@ -1222,13 +1228,13 @@ ToolCallPayloadParseResult ParseTaggedJsonBatch(std::string_view source, bool en
     }
 
     auto body = trim(source.substr(body_start, body_end - body_start));
-    auto call_json = ParseJsonWithoutDuplicateObjectKeys(body);
+    auto call_json = ParseJsonWithoutDuplicateObjectKeys(body, ToolCallPlan::kMaxDepth + 1);
     for (size_t repaired_closes = 0;
          !call_json.has_value() && repaired_closes < 4 && body.ends_with('}');
          ++repaired_closes) {
       body.remove_suffix(1);
       body = trim(body);
-      call_json = ParseJsonWithoutDuplicateObjectKeys(body);
+      call_json = ParseJsonWithoutDuplicateObjectKeys(body, ToolCallPlan::kMaxDepth + 1);
     }
 
     if (!call_json.has_value() || !call_json->is_object() || call_json->size() != 2 ||
