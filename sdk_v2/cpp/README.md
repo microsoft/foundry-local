@@ -760,6 +760,14 @@ prefill step cannot be interrupted before it returns.
 Configure with `--skip_service` when the web service is not required; this removes its
 oat++ dependency from the build.
 
+## Generator prefill capability
+
+Automatic Generator prefill chunking uses GenAI's per-model capability when the configured headers and library
+provide it. Models that manage prefill internally can opt out of host-driven chunking without changing tool protocols.
+With older packages, including the pinned 0.19.0 package, the build explicitly reports that legacy chunk-size
+defaults are retained. Model-specific opt-out requires a runtime package containing the capability API.
+Explicit positive model chunk sizes are preserved.
+
 ## Examples
 
 The build produces these example executables in the build output directory:

@@ -126,6 +126,18 @@ check_cxx_source_compiles(
      }"
     FOUNDRY_LOCAL_HAS_REQUIRED_NON_GENERATIVE_ORT_GENAI
 )
+unset(FOUNDRY_LOCAL_OGA_HAS_PREFILL_CHUNKING_CAPABILITY CACHE)
+check_cxx_source_compiles(
+    "#include <ort_genai.h>
+     int main() {
+       const OgaModel* model = nullptr;
+       return model->SupportsExternalPrefillChunking();
+     }"
+    FOUNDRY_LOCAL_OGA_HAS_PREFILL_CHUNKING_CAPABILITY
+)
+if(NOT FOUNDRY_LOCAL_OGA_HAS_PREFILL_CHUNKING_CAPABILITY)
+    message(STATUS "ORT GenAI has no per-model prefill capability API; retaining legacy chunk-size defaults")
+endif()
 unset(CMAKE_REQUIRED_INCLUDES)
 unset(CMAKE_REQUIRED_LIBRARIES)
 if(NOT FOUNDRY_LOCAL_HAS_REQUIRED_NON_GENERATIVE_ORT_GENAI)
@@ -394,7 +406,8 @@ list(APPEND FOUNDRY_LOCAL_SOURCES ${FOUNDRY_LOCAL_PUBLIC_HEADERS})
 function(foundry_local_configure_target TARGET LINK_SCOPE)
     target_compile_options(${TARGET} PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
     target_compile_definitions(${TARGET} ${LINK_SCOPE}
-        FOUNDRY_LOCAL_HAS_SHARED_HOST=$<BOOL:${FOUNDRY_LOCAL_HAS_SHARED_HOST}>)
+        FOUNDRY_LOCAL_HAS_SHARED_HOST=$<BOOL:${FOUNDRY_LOCAL_HAS_SHARED_HOST}>
+        FOUNDRY_LOCAL_OGA_HAS_PREFILL_CHUNKING_CAPABILITY=$<BOOL:${FOUNDRY_LOCAL_OGA_HAS_PREFILL_CHUNKING_CAPABILITY}>)
 
     target_include_directories(${TARGET}
         PUBLIC

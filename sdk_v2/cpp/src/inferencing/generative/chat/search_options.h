@@ -164,7 +164,7 @@ EngineTurnOptionsPlan BuildEngineTurnOptionsPlan(const SearchOptions& options,
 ///                           on providers that benefit from it (CUDA, NvTensorRtRtx, WebGPU, CPU).
 ///                           When kDefault, the effective provider is taken from
 ///                           config.DefaultProvider() (empty ⇒ CPU).
-///                           ORT GenAI determines whether the model consumes this option.
+/// @param supports_external_prefill_chunking  Whether the loaded model accepts host-driven chunking.
 /// @param use_full_context   When true, set max_length to the model's full context window
 ///                           instead of input+output. Used for continuous decoding (cached generators).
 /// @param default_max_output_tokens  Default applied when the request does not specify
@@ -175,7 +175,8 @@ int ApplySearchOptions(const SearchOptions& options,
                        OgaGeneratorParams& gen_params,
                        ExecutionProvider ep,
                        bool use_full_context = false,
-                       int default_max_output_tokens = kDefaultChatTextMaxOutputTokens);
+                       int default_max_output_tokens = kDefaultChatTextMaxOutputTokens,
+                       bool supports_external_prefill_chunking = true);
 
 /// Applies request-level grammar guidance to generator parameters when the tool context requires tool-only output.
 void ApplyGuidanceOptions(const ToolCallContext& tool_ctx,
