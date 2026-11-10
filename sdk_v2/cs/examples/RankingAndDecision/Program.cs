@@ -3,12 +3,6 @@ using System.Text.Json;
 using Microsoft.AI.Foundry.Local;
 using Microsoft.Extensions.Logging.Abstractions;
 
-static JsonElement Json(string value)
-{
-    using var document = JsonDocument.Parse(value);
-    return document.RootElement.Clone();
-}
-
 static async Task RankAsync(IModel model)
 {
     await model.LoadAsync();
@@ -18,7 +12,7 @@ static async Task RankAsync(IModel model)
         var result = await session.RankAsync(new RankingRequest
         {
             Model = model.Info.Id,
-            Context = Json("""{"weather":"heavy rain"}"""),
+            Context = JsonSerializer.SerializeToElement(new { weather = "heavy rain" }),
             Question = "Which activity is more suitable?",
             Answers = ["Have a picnic outdoors", "Visit an indoor museum"],
         });
@@ -42,10 +36,11 @@ static async Task DecideAsync(IModel model)
         var result = await session.DecideAsync(new DecisionRequest
         {
             Model = model.Info.Id,
-            State = Json("""{"weather":"heavy rain"}"""),
+            State = JsonSerializer.SerializeToElement(new { weather = "heavy rain" }),
             Questions = new Dictionary<string, DecisionQuestion>
             {
-                ["umbrella"] = DecisionQuestion.Noul(Json("\"Should I take an umbrella?\"")),
+                ["umbrella"] = DecisionQuestion.Noul(
+                    JsonSerializer.SerializeToElement("Should I take an umbrella?")),
             },
         });
         Console.WriteLine($"Umbrella: {result.Answers["umbrella"].Noul:P1}");
