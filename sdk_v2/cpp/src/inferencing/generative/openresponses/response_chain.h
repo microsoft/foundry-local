@@ -4,7 +4,6 @@
 
 #include <nlohmann/json.hpp>
 
-#include <memory>
 #include <vector>
 #include <string>
 #include <unordered_set>
@@ -31,8 +30,6 @@ struct ResponseChainHop {
         raw_envelope_call_ids(std::move(raw_call_ids)) {}
 
   nlohmann::json input_items = nlohmann::json::array();
-  /// Private input override when a local image was snapshotted for replay.
-  std::shared_ptr<const nlohmann::json> replay_input_items;
   nlohmann::json output_items = nlohmann::json::array();
   std::unordered_set<std::string> raw_envelope_call_ids;
 };

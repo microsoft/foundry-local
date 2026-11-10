@@ -62,7 +62,6 @@ struct PublishRequest {
   nlohmann::json response;
   nlohmann::json input_items;
   std::unordered_set<std::string> raw_envelope_call_ids;
-  std::shared_ptr<const nlohmann::json> replay_input_items;
 };
 
 /// Publish a completed response: store its metadata and cache its session as one indivisible step.
@@ -80,8 +79,7 @@ void PublishResponse(PublishRequest request) {
   const bool published = request.store.Commit(
       request.lease,
       ResponseStore::StoredResponse{request.response_id, request.model_id, std::move(request.response),
-                                    std::move(request.input_items), std::move(request.raw_envelope_call_ids),
-                                    std::move(request.replay_input_items)},
+                                    std::move(request.input_items), std::move(request.raw_envelope_call_ids)},
       &admission);
 
   if (!published) {
@@ -442,8 +440,6 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleNo
   nlohmann::json response_json = response;
 
   if (params.store) {
-    auto input_items = ResponseConverter::ToInputItems(req_json);
-    auto replay_input_items = ResponseConverter::SnapshotReplayInputItems(input_items, session_request);
     PublishResponse(PublishRequest{.store = ctx_.response_store,
                                    .session_manager = ctx_.session_manager,
                                    .logger = ctx_.logger,
@@ -453,9 +449,8 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleNo
                                    .response_id = turn.response_id,
                                    .model_id = turn.model_id,
                                    .response = response_json,
-                                   .input_items = std::move(input_items),
-                                   .raw_envelope_call_ids = std::move(raw_envelope_call_ids),
-                                   .replay_input_items = std::move(replay_input_items)});
+                                   .input_items = ResponseConverter::ToInputItems(req_json),
+                                   .raw_envelope_call_ids = std::move(raw_envelope_call_ids)});
   }
 
   return JsonResponse(Status::CODE_200, response_json);
@@ -774,8 +769,6 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
       // PublishResponse throws and the stream ends with response.failed instead of claiming an unstored completion.
       if (should_store && !stream->RunIfConnected([&] {
             nlohmann::json response_json = completed_response;
-            auto input_items = ResponseConverter::ToInputItems(req_copy);
-            auto replay_input_items = ResponseConverter::SnapshotReplayInputItems(input_items, *req);
             PublishResponse(PublishRequest{.store = store,
                                            .session_manager = session_manager,
                                            .logger = logger,
@@ -785,9 +778,8 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
                                            .response_id = turn.response_id,
                                            .model_id = turn.model_id,
                                            .response = std::move(response_json),
-                                           .input_items = std::move(input_items),
-                                           .raw_envelope_call_ids = std::move(raw_envelope_call_ids),
-                                           .replay_input_items = std::move(replay_input_items)});
+                                           .input_items = ResponseConverter::ToInputItems(req_copy),
+                                           .raw_envelope_call_ids = std::move(raw_envelope_call_ids)});
           })) {
         stream->Finish();
         return;

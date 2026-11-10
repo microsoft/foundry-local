@@ -24,6 +24,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace fl;
@@ -373,98 +374,37 @@ TEST(MediaInputTest, StoredMixedMediaReplaysInTheSameOrderAsTypedInput) {
             (std::vector<std::uint8_t>{3, 4}));
 }
 
-TEST(MediaInputTest, LocalImageReplaySnapshotsCurrentSegmentWithoutChangingPublicInput) {
+TEST(MediaInputTest, LocalImageIsReferencedAndReadAgainOnReplay) {
   const auto dir = fl::test::TempPath::CreateTempDir("fl_media_replay_");
-  const auto image_path = dir.path() / "image.png";
-  {
-    std::ofstream file(image_path, std::ios::binary);
-    file.write("\x01\x02\x03", 3);
+  const auto image_path = dir.path() / "image%41.png";
+  const auto write_image = [&](std::string_view bytes) {
+    std::ofstream file(image_path, std::ios::binary | std::ios::trunc);
+    file.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
     ASSERT_TRUE(file.good());
-  }
+  };
+  write_image("\x01\x02\x03");
 
-  ResponseChainContext prior;
-  prior.emplace_back(
-      json::array({{{"role", "user"},
-                    {"content", json::array({{{"type", "input_image"},
-                                              {"image_url", "data:image/png;base64,CA=="}}})}}}),
-      json::array());
-  const json body = {
-      {"model", "test-model"},
-      {"input", json::array({{{"role", "user"},
-                              {"content", json::array({{{"type", "input_image"},
-                                                        {"image_url", "data:image/png;base64,CQ=="}},
-                                                       {{"type", "input_text"}, {"text", "compare"}},
-                                                       {{"type", "input_image"},
-                                                        {"image_url", image_path.string()}}})}}})}};
-  const auto public_items = ResponseConverter::ToInputItems(body);
-  auto request = ResponseConverter::ToSessionRequest(body.get<ResponseCreateParams>(), &prior);
-  ASSERT_TRUE(std::filesystem::remove(image_path));
-
-  const auto snapshot = ResponseConverter::SnapshotReplayInputItems(public_items, request);
-  ASSERT_TRUE(snapshot);
-  EXPECT_EQ(public_items[0]["content"][2]["image_url"], image_path.string());
-  EXPECT_EQ((*snapshot)[0]["content"][0]["image_url"], "data:image/png;base64,CQ==");
-  EXPECT_EQ((*snapshot)[0]["content"][2]["image_url"], "data:image/png;base64,AQID");
-
-  ResponseChainContext chain;
-  chain.emplace_back(public_items, json::array());
-  chain[0].replay_input_items = snapshot;
-  ResponseCreateParams next;
-  next.model = "test-model";
-  next.input = std::string("continue");
-  auto replay = ResponseConverter::ToSessionRequest(next, &chain);
-  auto media = CollectMediaInput(replay);
-  ASSERT_EQ(media.images.size(), 2u);
-  EXPECT_EQ(media.images[0]->ReadBytes(), (std::vector<std::uint8_t>{9}));
-  EXPECT_EQ(media.images[1]->ReadBytes(), (std::vector<std::uint8_t>{1, 2, 3}));
-}
-
-TEST(MediaInputTest, InlineImagesNeedNoPrivateReplayCopy) {
   const json body = {{"model", "test-model"},
                      {"input", json::array({{{"role", "user"},
                                              {"content", json::array({{{"type", "input_image"},
-                                                                       {"image_url", "data:image/png;base64,AQI="}}})}}})}};
+                                                                       {"image_url", image_path.string()}}})}}})}};
   auto request = ResponseConverter::ToSessionRequest(body.get<ResponseCreateParams>());
+  auto media = CollectMediaInput(request);
+  ASSERT_EQ(media.images.size(), 1u);
+  EXPECT_EQ(media.images[0]->data, nullptr);
+  EXPECT_EQ(media.images[0]->ReadBytes(), (std::vector<std::uint8_t>{1, 2, 3}));
 
-  EXPECT_FALSE(ResponseConverter::SnapshotReplayInputItems(ResponseConverter::ToInputItems(body), request));
-}
-
-TEST(MediaInputTest, LocalImageReplayRejectsMissingResolvedImage) {
-  const json input = json::array({{{"role", "user"},
-                                   {"content", json::array({{{"type", "input_image"},
-                                                             {"image_url", "/missing-image.png"}}})}}});
-  Request request;
-
-  EXPECT_THROW(ResponseConverter::SnapshotReplayInputItems(input, request), fl::Exception);
-}
-
-TEST(MediaInputTest, LocalImageReplayHandlesUnsafeFormatHints) {
-  const auto dir = fl::test::TempPath::CreateTempDir("fl_media_mime_");
-  const auto image_path = dir.path() / "image.png";
-  {
-    std::ofstream file(image_path, std::ios::binary);
-    file.write("\x01\x02\x03", 3);
-    ASSERT_TRUE(file.good());
-  }
-  const json body = {
-      {"model", "test-model"},
-      {"input", json::array({{{"role", "user"},
-                              {"content", json::array({{{"type", "input_image"},
-                                                        {"image_url", image_path.string()},
-                                                        {"media_type", "image/png;extra,invalid"}}})}}})}};
-  auto request = ResponseConverter::ToSessionRequest(body.get<ResponseCreateParams>());
-  ASSERT_TRUE(std::filesystem::remove(image_path));
-
-  const auto snapshot = ResponseConverter::SnapshotReplayInputItems(ResponseConverter::ToInputItems(body), request);
-  ASSERT_TRUE(snapshot);
   ResponseChainContext chain;
-  chain.emplace_back(json::array(), json::array());
-  chain[0].replay_input_items = snapshot;
+  chain.emplace_back(ResponseConverter::ToInputItems(body), json::array());
   ResponseCreateParams next;
   next.model = "test-model";
   next.input = std::string("continue");
+  write_image("\x04");
   auto replay = ResponseConverter::ToSessionRequest(next, &chain);
-  auto media = CollectMediaInput(replay);
-  ASSERT_EQ(media.images.size(), 1u);
-  EXPECT_EQ(media.images[0]->ReadBytes(), (std::vector<std::uint8_t>{1, 2, 3}));
+  auto replay_media = CollectMediaInput(replay);
+  ASSERT_EQ(replay_media.images.size(), 1u);
+  EXPECT_EQ(replay_media.images[0]->ReadBytes(), (std::vector<std::uint8_t>{4}));
+
+  ASSERT_TRUE(std::filesystem::remove(image_path));
+  EXPECT_THROW(ResponseConverter::ToSessionRequest(next, &chain), fl::Exception);
 }

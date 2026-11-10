@@ -25,6 +25,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -1027,28 +1028,31 @@ TEST(TranscriptIngestTest, ImagePartsRemainInTheTranscriptBetweenTextParts) {
   EXPECT_EQ(messages[0].entries[2].text, "this?");
 }
 
-TEST(TranscriptIngestTest, FileSnapshotRemainsOwnedThroughCommitCopyAndUndo) {
-  const auto dir = fl::test::TempPath::CreateTempDir("fl_chat_snapshot_");
+TEST(TranscriptIngestTest, FileBackedImageStaysAReferenceThroughCommitCopyAndUndo) {
+  const auto dir = fl::test::TempPath::CreateTempDir("fl_chat_reference_");
   const auto image_path = dir.path() / "image.png";
-  {
-    std::ofstream file(image_path, std::ios::binary);
-    file.write("\x01\x02\x03", 3);
+  const auto write_image = [&](std::string_view bytes) {
+    std::ofstream file(image_path, std::ios::binary | std::ios::trunc);
+    file.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
     ASSERT_TRUE(file.good());
-  }
+  };
+  write_image("\x01\x02\x03");
 
   Request request;
   std::vector<std::unique_ptr<Item>> parts;
   parts.push_back(std::make_unique<ImageItem>(image_path.string(), "image/png"));
   request.AddOwnedItem(std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_USER, std::move(parts)));
   auto snapshot = request.CaptureChatSnapshot();
-  ASSERT_TRUE(std::filesystem::remove(image_path));
 
   auto inputs = BuildTranscriptMessages(snapshot.items);
   ASSERT_EQ(inputs.size(), 1u);
   ASSERT_EQ(inputs[0].entries.size(), 1u);
   const auto* image = static_cast<const ImageItem*>(inputs[0].entries[0].media.get());
   ASSERT_NE(image, nullptr);
-  EXPECT_EQ(image->ReadBytes(), (std::vector<std::uint8_t>{1, 2, 3}));
+  EXPECT_EQ(image->data, nullptr);
+  EXPECT_EQ(image->uri, image_path.string());
+  write_image("\x04");
+  EXPECT_EQ(image->ReadBytes(), (std::vector<std::uint8_t>{4}));
 
   ChatTranscript transcript;
   transcript.CommitTurn(std::move(inputs), MakeAssistant("first", {}), {});
@@ -1057,11 +1061,23 @@ TEST(TranscriptIngestTest, FileSnapshotRemainsOwnedThroughCommitCopyAndUndo) {
   transcript.UndoTurns(1);
   ASSERT_EQ(transcript.Messages().size(), 2u);
   EXPECT_EQ(transcript.Messages()[0].entries[0].media.get(), copy.Messages()[0].entries[0].media.get());
-  EXPECT_EQ(static_cast<const ImageItem&>(*copy.Messages()[0].entries[0].media).ReadBytes(),
-            (std::vector<std::uint8_t>{1, 2, 3}));
   transcript.UndoTurns(1);
   EXPECT_TRUE(transcript.Empty());
   EXPECT_TRUE(copy.Messages()[0].HasMedia());
+}
+
+TEST(TranscriptIngestTest, InlineImageBytesAreCopiedFromTheCallerBuffer) {
+  std::vector<std::uint8_t> caller_bytes{1, 2, 3};
+  std::vector<std::unique_ptr<Item>> parts;
+  parts.push_back(std::make_unique<ImageItem>(caller_bytes.data(), caller_bytes.size(), "image/png"));
+  MessageItem message(FOUNDRY_LOCAL_ROLE_USER, std::move(parts));
+
+  auto inputs = BuildTranscriptMessages({&message});
+  caller_bytes.assign({9, 9, 9});
+  ASSERT_EQ(inputs.size(), 1u);
+  ASSERT_EQ(inputs[0].entries.size(), 1u);
+  EXPECT_EQ(static_cast<const ImageItem&>(*inputs[0].entries[0].media).ReadBytes(),
+            (std::vector<std::uint8_t>{1, 2, 3}));
 }
 
 TEST(TranscriptIngestTest, CarriesRespondableContentDistinguishesABoundaryFromRealInput) {

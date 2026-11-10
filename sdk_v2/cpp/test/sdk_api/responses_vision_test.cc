@@ -629,7 +629,7 @@ TEST_F(ResponsesVisionIntegrationTest, ImagesAndTextContinueWarmAndColdConversat
   EXPECT_TRUE(std::regex_search(fl::test::ToLower(text), std::regex("\\bred\\b"))) << text;
 }
 
-TEST_F(ResponsesVisionIntegrationTest, LocalImageReplaySurvivesDeletionForStreamingAndNonStreaming) {
+TEST_F(ResponsesVisionIntegrationTest, LocalImageReplayRereadsTheFileForStreamingAndNonStreaming) {
   auto client = MakeClient(600);
   for (const bool streaming : {false, true}) {
     SCOPED_TRACE(streaming ? "streaming" : "nonstreaming");
@@ -662,7 +662,6 @@ TEST_F(ResponsesVisionIntegrationTest, LocalImageReplaySurvivesDeletionForStream
     const auto id = first_response.at("id").get<std::string>();
     const auto first_text = fl::test::ToLower(first_response.value("output_text", ""));
     ASSERT_EQ(first_text.find("red"), std::string::npos) << first_text;
-    ASSERT_TRUE(std::filesystem::remove(image_path));
 
     const auto public_items = client.Get(VisionEndpoint("/v1/responses") + "/" + id + "/input_items");
     ASSERT_TRUE(public_items);
@@ -684,5 +683,12 @@ TEST_F(ResponsesVisionIntegrationTest, LocalImageReplaySurvivesDeletionForStream
       const auto text = json::parse(result->body).value("output_text", "");
       EXPECT_TRUE(std::regex_search(fl::test::ToLower(text), std::regex("\\bred\\b"))) << text;
     }
+
+    // The conversation references the file rather than retaining its bytes, so the caller must keep it available.
+    ASSERT_TRUE(std::filesystem::remove(image_path));
+    const auto missing = client.Post(VisionEndpoint("/v1/responses"), followup.dump(), "application/json");
+    ASSERT_TRUE(missing);
+    EXPECT_EQ(missing->status, 400) << missing->body;
+    EXPECT_NE(missing->body.find(image_path.filename().string()), std::string::npos) << missing->body;
   }
 }

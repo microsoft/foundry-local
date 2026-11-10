@@ -50,9 +50,14 @@ std::unique_ptr<Item> CloneChatItem(const Item& item) {
     }
     case FOUNDRY_LOCAL_ITEM_IMAGE: {
       const auto& image = static_cast<const ImageItem&>(item);
-      auto clone = std::make_unique<ImageItem>(image.ReadBytes(), image.format);
-      clone->uri = image.uri;
-      return clone;
+      if (image.data != nullptr && image.data_size > 0) {
+        const auto* begin = static_cast<const uint8_t*>(image.data);
+        auto clone = std::make_unique<ImageItem>(std::vector<uint8_t>(begin, begin + image.data_size), image.format);
+        clone->uri = image.uri;
+        return clone;
+      }
+
+      return std::make_unique<ImageItem>(image.uri, image.format);
     }
     case FOUNDRY_LOCAL_ITEM_AUDIO: {
       const auto& audio = static_cast<const AudioItem&>(item);

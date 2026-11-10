@@ -228,10 +228,12 @@ For complete setup and inference examples, see the native vision samples:
 #### Current limitations
 
 Remote HTTP(S) image fetching and image `file_id` references are not supported.
-Images may appear in any user turn. Earlier images are retained and replayed until
-the conversation history is discarded, increasing memory usage. Multi-image support
-and input limits depend on the model and its chat template. Media cannot be combined
-with tool definitions or a conversation containing tool calls or results.
+Images may appear in any user turn. Earlier images are replayed until the conversation
+history is discarded. Inline image bytes are retained in memory; local image files are
+referenced by path and read again for each turn, so keep them available and unchanged
+for the life of the conversation. Multi-image support and input limits depend on the
+model and its chat template. Media cannot be combined with tool definitions or a
+conversation containing tool calls or results.
 
 ## Run a request, then stream a follow-up
 

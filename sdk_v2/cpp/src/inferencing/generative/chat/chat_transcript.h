@@ -74,8 +74,8 @@ struct TranscriptEntry {
 
 /// A message in the authoritative transcript.
 ///
-/// Visible text, reasoning, media, and tool calls remain separate ordered events. Media owns an immutable snapshot
-/// shared by transcript copies, so later turns and preflight operations see the original bytes.
+/// Visible text, reasoning, media, and tool calls remain separate ordered events. Inline media bytes are copied once
+/// and shared by transcript copies; file-backed images keep only their uri and are re-read for each prompt.
 struct TranscriptMessage {
   flMessageRole role = FOUNDRY_LOCAL_ROLE_NONE;
   std::vector<TranscriptEntry> entries;
@@ -164,7 +164,7 @@ struct TranscriptIngest {
 /// Convert request items into transcript messages, preserving the order in which they were supplied.
 ///
 /// - MESSAGE items become role-tagged messages; text keeps its visible / reasoning distinction and image and audio
-///   parts retain owned byte snapshots in their original positions. A message with neither content nor a participant
+///   parts stay in their original positions, retaining inline bytes or a file-backed image's uri. A message with neither content nor a participant
 ///   name carries nothing and is dropped; a content-free named message survives to attribute following tool calls.
 /// - TOOL_CALL items become assistant messages, merged into an open assistant turn when there is one, so replayed
 ///   assistant content and its calls stay together exactly as the model produced them.

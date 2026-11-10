@@ -120,14 +120,12 @@ class ResponseStore {
   struct StoredResponse {
     StoredResponse(std::string id_in, std::string model_id_in, nlohmann::json response_in,
                    nlohmann::json input_items_in,
-                   std::unordered_set<std::string> raw_call_ids_in = {},
-                   std::shared_ptr<const nlohmann::json> replay_input_items_in = {})
+                   std::unordered_set<std::string> raw_call_ids_in = {})
         : id(std::move(id_in)),
           model_id(std::move(model_id_in)),
           response(std::move(response_in)),
           input_items(std::move(input_items_in)),
-          raw_envelope_call_ids(std::move(raw_call_ids_in)),
-          replay_input_items(std::move(replay_input_items_in)) {}
+          raw_envelope_call_ids(std::move(raw_call_ids_in)) {}
 
     std::string id;
     /// Resolved model that produced it. A continuation must resolve to the same model; empty means unbound, which
@@ -138,7 +136,6 @@ class ResponseStore {
     /// This hop's own request items — exactly what the /input_items endpoint returns.
     nlohmann::json input_items;
     std::unordered_set<std::string> raw_envelope_call_ids;
-    std::shared_ptr<const nlohmann::json> replay_input_items;
   };
 
   /// Outcome of ResponseStore::BeginResponse.
@@ -272,7 +269,6 @@ class ResponseStore {
     nlohmann::json response;
     nlohmann::json input_items;
     std::unordered_set<std::string> raw_envelope_call_ids;
-    std::shared_ptr<const nlohmann::json> replay_input_items;
     std::shared_ptr<const ReplayPrefix> replay_prefix;
     uint64_t insertion_sequence = 0;
   };

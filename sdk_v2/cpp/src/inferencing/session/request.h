@@ -102,7 +102,8 @@ struct Request {
   Request(const Request&) = delete;
   Request& operator=(const Request&) = delete;
 
-  /// Deep-copy every field read during chat preparation, including media bytes resolved from local files.
+  /// Deep-copy every field read during chat preparation, including inline media bytes. File-backed images keep their
+  /// uri and are read when the prompt is prepared.
   Request CaptureChatSnapshot() const;
 
   /// Add a pre-allocated owned item.

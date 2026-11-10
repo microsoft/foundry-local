@@ -311,8 +311,19 @@ TranscriptIngest IngestRequestItems(const std::vector<Item*>& items, const std::
           }
         } else if (part.view->type == FOUNDRY_LOCAL_ITEM_IMAGE) {
           const auto& image = static_cast<const ImageItem&>(*part.view);
-          auto snapshot = std::make_shared<ImageItem>(image.ReadBytes(), image.format);
-          message.entries.push_back(TranscriptEntry::Media(TranscriptEntry::Kind::kImage, std::move(snapshot)));
+          std::shared_ptr<ImageItem> retained;
+          if (image.data != nullptr && image.data_size > 0) {
+            const auto* begin = static_cast<const std::uint8_t*>(image.data);
+            retained = std::make_shared<ImageItem>(std::vector<std::uint8_t>(begin, begin + image.data_size),
+                                                   image.format);
+          } else if (!image.uri.empty()) {
+            // File-backed images are re-read for each prompt; the caller keeps the file available and unchanged.
+            retained = std::make_shared<ImageItem>(image.uri, image.format);
+          } else {
+            FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "image entry must contain bytes or a uri");
+          }
+
+          message.entries.push_back(TranscriptEntry::Media(TranscriptEntry::Kind::kImage, std::move(retained)));
         } else if (part.view->type == FOUNDRY_LOCAL_ITEM_AUDIO) {
           const auto& audio = static_cast<const AudioItem&>(*part.view);
           if (audio.data == nullptr || audio.data_size == 0) {

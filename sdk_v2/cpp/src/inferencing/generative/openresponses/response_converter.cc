@@ -170,7 +170,8 @@ namespace {
 /// What a stored message contributes to replay.
 struct StoredMessageContent {
   std::string text;
-  /// Media messages use the typed input converter so their parts and byte buffers are replayed in order.
+  /// Media messages use the typed input converter so their parts are replayed in order. Local image files are read
+  /// again, so a replay requires them to remain available and unchanged.
   bool has_media = false;
 };
 
@@ -457,7 +458,7 @@ static void AddHopOutputToRequest(Request& request, const nlohmann::json& output
 static void AddChainContextToRequest(Request& request, const ResponseChainContext& context) {
   for (const auto& hop : context) {
     request.BeginItemSegment();
-    AddJsonItemsToRequest(request, hop.replay_input_items ? *hop.replay_input_items : hop.input_items);
+    AddJsonItemsToRequest(request, hop.input_items);
     request.BeginItemSegment();
     AddHopOutputToRequest(request, hop.output_items, hop.raw_envelope_call_ids);
   }
@@ -470,7 +471,7 @@ static void AddChainContextToRequest(Request& request, const ResponseChainContex
 //   - data URLs:  "data:<mime-type>;base64,<payload>"
 //                 → base64-decoded into an owning byte buffer.
 //   - local files: absolute path or a `file://` URI
-//                 → bytes read from disk.
+//                 → validated now and read from disk when each prompt is prepared.
 //
 // Anything else (http/https URL, file_id reference) is rejected with
 // NOT_IMPLEMENTED. Matches upstream C# ResponseInputConverter behaviour:
@@ -518,22 +519,25 @@ std::unique_ptr<ImageItem> MakeImageItemFromLocalFile(const std::string& url,
   }
 
   in.seekg(0, std::ios::end);
-  auto size = in.tellg();
-  in.seekg(0, std::ios::beg);
-
-  if (size <= 0) {
+  if (in.tellg() <= 0) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
              std::string("image_url local file is empty: ") + path);
   }
 
-  std::vector<std::uint8_t> bytes(static_cast<size_t>(size));
-  if (!in.read(reinterpret_cast<char*>(bytes.data()), size)) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             std::string("image_url local file read failed: ") + path);
+  // The bytes are read when a prompt is prepared, so the caller must keep the file available and unchanged for the
+  // conversation. ImageItem::ReadBytes percent-decodes its uri; escape '%' so it opens exactly this path.
+  std::string uri;
+  uri.reserve(path.size());
+  for (const char ch : path) {
+    if (ch == '%') {
+      uri += "%25";
+    } else {
+      uri += ch;
+    }
   }
 
   std::string media_type = explicit_media_type.value_or(MimeFromExtension(path));
-  return std::make_unique<ImageItem>(std::move(bytes), std::move(media_type));
+  return std::make_unique<ImageItem>(std::move(uri), std::move(media_type));
 }
 
 std::unique_ptr<ImageItem> MakeImageItemFromInputImage(const InputImageContent& c) {
@@ -1195,92 +1199,6 @@ nlohmann::json ToInputItems(const nlohmann::json& req_json) {
   }
 
   return items;
-}
-
-std::shared_ptr<const nlohmann::json> SnapshotReplayInputItems(const nlohmann::json& input_items,
-                                                               const Request& request) {
-  const auto visit_images = [](auto& items, auto&& visit) {
-    if (!items.is_array()) {
-      return;
-    }
-
-    for (auto& item : items) {
-      if (!item.is_object()) {
-        continue;
-      }
-      const auto type = item.value("type", "");
-      if (type == "function_call" || type == "function_call_output" || type == "custom_tool_call" ||
-          type == "custom_tool_call_output" || type == "reasoning" || item.value("role", "").empty()) {
-        continue;
-      }
-      const auto content = item.find("content");
-      if (content == item.end() || !content->is_array()) {
-        continue;
-      }
-      for (auto& part : *content) {
-        if (part.is_object() && part.value("type", "") == "input_image") {
-          visit(part);
-        }
-      }
-    }
-  };
-  const auto is_local_image = [](const nlohmann::json& part) {
-    const auto url = part.find("image_url");
-    if (url == part.end() || !url->is_string()) {
-      return false;
-    }
-    const auto& value = url->get_ref<const std::string&>();
-    return !value.empty() && !value.starts_with(kDataUrlPrefix);
-  };
-
-  bool needs_snapshot = false;
-  visit_images(input_items, [&](const auto& part) { needs_snapshot |= is_local_image(part); });
-  if (!needs_snapshot) {
-    return {};
-  }
-
-  const size_t current_start = request.item_segment_starts.empty() ? 0 : request.item_segment_starts.back();
-  if (current_start > request.items.size()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot match stored image input to the current request segment");
-  }
-
-  std::vector<const ImageItem*> images;
-  for (size_t i = current_start; i < request.items.size(); ++i) {
-    const auto* item = request.items[i];
-    if (!item || item->type != FOUNDRY_LOCAL_ITEM_MESSAGE) {
-      continue;
-    }
-    for (const auto& part : static_cast<const MessageItem&>(*item).content) {
-      if (part.view && part.view->type == FOUNDRY_LOCAL_ITEM_IMAGE) {
-        images.push_back(static_cast<const ImageItem*>(part.view));
-      }
-    }
-  }
-
-  auto replay = std::make_shared<nlohmann::json>(input_items);
-  size_t image_index = 0;
-  visit_images(*replay, [&](nlohmann::json& part) {
-    if (image_index >= images.size()) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot match stored image input to resolved request images");
-    }
-    const auto& image = *images[image_index++];
-    if (!is_local_image(part)) {
-      return;
-    }
-    if (!image.data || image.data_size == 0) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "local image input was not resolved to owned bytes");
-    }
-
-    auto mime = image.format;
-    if (mime.empty() || mime.find_first_of(";,") != std::string::npos) {
-      mime = "application/octet-stream";
-    }
-    part["image_url"] = "data:" + mime + ";base64," + Azure::Core::Convert::Base64Encode(image.ReadBytes());
-  });
-  if (image_index != images.size()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot match stored image input to resolved request images");
-  }
-  return replay;
 }
 
 }  // namespace ResponseConverter
