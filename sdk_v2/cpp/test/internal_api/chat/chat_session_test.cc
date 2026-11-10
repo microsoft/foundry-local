@@ -1751,10 +1751,10 @@ class QwenNativeProductionIntegrationTest : public ::testing::Test {
       auto qualified_tokenizer_config = nlohmann::json::parse(ReadText(path));
       qualified_tokenizer_config["chat_template"] = kQualifiedNativeChatTemplate;
       WriteText(path, qualified_tokenizer_config.dump(2));
-      const auto result = load_manager_->LoadModel(
+      const auto qualified_result = load_manager_->LoadModel(
           qualified_directories_[i].string(), kQualifiedModelIds[i], ExecutionProvider::kCPU);
-      ASSERT_EQ(result.status, ModelLoadManager::LoadStatus::kSuccess);
-      qualified_models_[i] = result.model;
+      ASSERT_EQ(qualified_result.status, ModelLoadManager::LoadStatus::kSuccess);
+      qualified_models_[i] = qualified_result.model;
       ASSERT_NE(qualified_models_[i], nullptr);
       const auto probe = qualified_models_[i]->GetPreprocessor().ApplyChatTemplate(
           R"([{"role":"user","content":"probe"},{"role":"assistant","content":"","tool_calls":[{"function":{"name":"probe_function","arguments":{"probe_parameter":"probe_value"}}}]}])",
@@ -5389,6 +5389,52 @@ TEST_F(QwenNativeProductionIntegrationTest,
   EXPECT_EQ(completed.at("output").at(0).at("type"), "function_call");
   EXPECT_EQ(completed.at("output").at(0).at("name"), "zero");
   EXPECT_EQ(completed.at("output").at(0).at("arguments"), "{}");
+}
+
+TEST_F(QwenNativeProductionIntegrationTest, Qwen2InheritedRequiredChoiceUsesFenceGuidanceAfterRequestOverrides) {
+  for (const bool override_first : {false, true}) {
+    size_t attempts = 0;
+    TextChatGeneratorFactory factory = [&](const auto&, const auto&, auto&, const ToolCallContext& context, bool) {
+      const bool text_only = override_first && attempts == 0;
+      ++attempts;
+      EXPECT_EQ(context.tool_output, !text_only);
+      EXPECT_EQ(context.text_output, text_only);
+      const auto guidance = ResolveTurnGuidanceOptions(context, false);
+      if (text_only) {
+        EXPECT_FALSE(guidance.has_value());
+      } else {
+        EXPECT_TRUE(context.fenced_tool_call_output);
+        EXPECT_FALSE(context.guidance_disabled);
+        EXPECT_TRUE(guidance.has_value());
+        if (guidance) {
+          EXPECT_NE(guidance->data.find("toolcall: \"```json\" functioncall \"```\""), std::string::npos);
+        }
+      }
+      return std::make_unique<FixedOutputGenerator>(
+          text_only ? "ready" : "```json\n[{\"name\":\"lookup\",\"parameters\":{\"city\":\"Paris\"}}]\n```",
+          BackendTerminationCause::kNaturalEnd);
+    };
+    auto catalog_model = MakeCatalogModel();
+    ChatSession session(catalog_model, *qwen2_model_, *logger_, telemetry_, {}, std::move(factory));
+    AddFunctionTools(session);
+    KeyValuePairs defaults;
+    defaults.Add(FOUNDRY_LOCAL_PARAM_TOOL_CHOICE, "required");
+    session.SetSessionOptions(defaults);
+    if (override_first) {
+      auto request = MakeStatefulRequest("say ready");
+      request.options[FOUNDRY_LOCAL_PARAM_TOOL_CHOICE] = "none";
+      Response response;
+      session.ProcessRequest(request, response);
+      EXPECT_TRUE(Calls(response).empty());
+    }
+    auto request = MakeStatefulRequest("route this");
+    request.options.Remove(FOUNDRY_LOCAL_PARAM_TOOL_CHOICE);
+    Response response;
+    session.ProcessRequest(request, response);
+    ASSERT_EQ(Calls(response).size(), 1u);
+    EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_TOOL_CALLS);
+    EXPECT_EQ(attempts, override_first ? 2u : 1u);
+  }
 }
 
 TEST_F(QwenNativeProductionIntegrationTest,

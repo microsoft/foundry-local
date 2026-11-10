@@ -82,8 +82,13 @@ std::string BuildLarkGrammar(const ToolCallContext& ctx, bool prompt_opens_reaso
     }
     grammar << "]>\n";
   }
-  grammar << "toolcall: " << RenderLarkMarker(ctx.tool_call_start, ctx.tool_call_start_token_id)
-          << " functioncall " << RenderLarkMarker(ctx.tool_call_end, ctx.tool_call_end_token_id) << "\n";
+  grammar << "toolcall: "
+          << (ctx.fenced_tool_call_output ? EscapeLarkLiteral(ctx.GeneratedToolCallStart())
+                                          : RenderLarkMarker(ctx.tool_call_start, ctx.tool_call_start_token_id))
+          << " functioncall "
+          << (ctx.fenced_tool_call_output ? EscapeLarkLiteral(ctx.GeneratedToolCallEnd())
+                                          : RenderLarkMarker(ctx.tool_call_end, ctx.tool_call_end_token_id))
+          << "\n";
   grammar << ctx.tool_plan->Grammar("functioncall");
   return grammar.str();
 }

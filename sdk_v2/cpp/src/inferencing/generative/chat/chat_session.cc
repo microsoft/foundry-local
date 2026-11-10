@@ -1324,7 +1324,6 @@ ToolCallContext BuildToolCallContextForRequest(const Request& request,
       }
       if (qwen2_fenced_tool_output) {
         tool_ctx.fenced_tool_call_output = true;
-        tool_ctx.guidance_disabled = true;
       }
     }
   }
