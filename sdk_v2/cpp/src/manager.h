@@ -11,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -24,6 +25,9 @@ class WebService;
 #endif
 
 namespace fl {
+namespace hosting {
+class HostLifetime;
+}
 
 // Forward declarations
 class ICatalog;
@@ -38,6 +42,9 @@ struct ModelInfo;
 /// Central manager for the Foundry Local SDK.
 class Manager {
  public:
+  /// Apply runtime environment policy before shared-host compatibility is captured or ORT is initialized.
+  static void PrepareOrtEnvironment();
+
   /// Create and initialize the singleton manager.
   /// The manager creates its own logger from the configuration.
   static Manager& Create(const Configuration& config);
@@ -81,6 +88,8 @@ class Manager {
 
   /// Start the embedded web service. Binds to configured endpoints.
   void StartWebService();
+  /// Internal child-host role: configure shared admission before HTTP serving can start.
+  void SetSharedHostLifetime(std::shared_ptr<hosting::HostLifetime> lifetime);
 
   /// Get the bound service URLs. The returned reference is valid as long as
   /// the web service is running. Throws if web service is not running.
@@ -89,8 +98,8 @@ class Manager {
   /// Stop the embedded web service.
   void StopWebService();
 
-  /// Begin graceful shutdown. Sets the shutdown flag and signals subsystems to drain.
-  /// Idempotent and non-blocking — safe to call from any thread including web service handlers.
+  /// Perform graceful shutdown on an owner thread, stopping the service and draining subsystems.
+  /// Idempotent. HTTP handlers only request shutdown; they must not wait for their own worker to exit.
   /// Destroy() calls this internally, so direct SDK users don't need to call it explicitly.
   void Shutdown();
 
@@ -138,6 +147,7 @@ class Manager {
   const OrtApi* ort_api_ = nullptr;
   OrtEnv* ort_env_ = nullptr;
   std::vector<std::string> registered_ep_libraries_;
+  std::vector<std::string> oga_registered_ep_libraries_;
   std::unique_ptr<ILogger> logger_;
   std::unique_ptr<ITelemetry> telemetry_;
   std::unique_ptr<IEpDetector> ep_detector_;
@@ -147,14 +157,19 @@ class Manager {
   std::unique_ptr<ModelLoadManager> model_load_manager_;
   std::unique_ptr<SessionManager> session_manager_;
   std::atomic<bool> shutdown_requested_{false};
+  std::atomic<bool> shutdown_started_{false};
   std::atomic<bool> web_service_running_{false};
   std::vector<std::string> bound_urls_;
+  mutable std::mutex urls_mutex_;
+  mutable std::set<std::vector<std::string>> url_snapshots_;
+  std::shared_ptr<hosting::HostLifetime> shared_host_lifetime_;
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
   std::unique_ptr<WebService> web_service_;
 #endif
 
  private:
+  void RequestShutdown();
   Model CreateModel(ModelInfo info, std::string local_path);
   Model CreateLocalModel(ModelInfo info, std::string local_path);
 

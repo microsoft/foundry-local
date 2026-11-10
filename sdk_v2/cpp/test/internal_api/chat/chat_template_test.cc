@@ -79,6 +79,29 @@ TEST(CanonicalToolPromptTest, InsertsExactlyOneSystemObjectWhenUserStartsConvers
   EXPECT_EQ(projected[1].at("content"), "unchanged user input");
 }
 
+TEST(CanonicalToolPromptTest, FencedToolOnlyInstructionsRequireTheNamedTool) {
+  ToolCallContext context;
+  context.tools_json = R"([{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}])";
+  context.tool_call_start = "<tool_call>";
+  context.tool_call_end = "</tool_call>";
+  context.text_output = false;
+  context.tool_output = true;
+  context.fenced_tool_call_output = true;
+  context.forced_tool = ForcedToolChoice{"lookup", ToolKind::kFunction};
+
+  const auto projected = nlohmann::json::parse(
+      BuildCanonicalToolMessagesJson({{FOUNDRY_LOCAL_ROLE_USER, "Find it."}}, context));
+  const auto instructions = projected.front().at("content").get<std::string>();
+  EXPECT_NE(instructions.find("You must call a declared tool"), std::string::npos);
+  EXPECT_NE(instructions.find("Emit one JSON code fence"), std::string::npos);
+  EXPECT_NE(instructions.find(
+                "```json\n[{\"name\":\"tool_name\",\"parameters\":{\"argument\":\"value\"}}]\n```"),
+            std::string::npos);
+  EXPECT_NE(instructions.find("Call exactly the tool \"lookup\""), std::string::npos);
+  EXPECT_EQ(instructions.find("dedicated tool boundary tokens"), std::string::npos);
+  EXPECT_EQ(instructions.find("If no tool is needed"), std::string::npos);
+}
+
 TEST(CanonicalToolPromptTest, HistoricalAssistantTextRetainsAnExplicitModeWithoutReinterpretingItsBytes) {
   ToolCallContext context;
   context.tools_json = R"([{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}])";

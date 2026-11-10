@@ -48,12 +48,14 @@ steps:
       targetType: inline
       pwsh: true
       script: |
-        python3 --version
-        python3 -c "import sys; assert sys.version_info[:2] == (3, 12), sys.version"
+        $ErrorActionPreference = 'Stop'
+        $python = if ('${{ parameters.rid }}' -eq 'linux-x64') { '/usr/bin/python3' } else { 'python3' }
+        & $python -c "import ssl, sys; assert sys.version_info[:2] == (3, 12), sys.version; ssl.create_default_context(); print(sys.executable); print(sys.version); print(ssl.OPENSSL_VERSION)"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
         $venvDir = "$(Agent.TempDirectory)/fl-py-build-$(System.JobId)"
         if (Test-Path $venvDir) { Remove-Item -Recurse -Force $venvDir }
-        python3 -m venv $venvDir
+        & $python -m venv $venvDir
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
         $venvBin = Join-Path $venvDir 'bin'
@@ -134,6 +136,14 @@ steps:
         foreach ($f in $files) {
             Copy-Item $f.FullName -Destination $dest -Force
         }
+        $hostName = if ('${{ parameters.rid }}' -like 'win-*') { 'foundry-local-host.exe' } else { 'foundry-local-host' }
+        foreach ($required in @($hostName, 'foundry-local-runtime.json')) {
+            if (-not (Test-Path (Join-Path $dest $required))) { throw "Required runtime payload missing: $required" }
+        }
+        if ('${{ parameters.rid }}' -notlike 'win-*') {
+            chmod u+x (Join-Path $dest $hostName)
+            if ($LASTEXITCODE -ne 0) { throw "Failed to make the shared host executable" }
+        }
         Write-Host "Copied $($files.Count) native file(s) to $dest"
         Get-ChildItem $dest | ForEach-Object { Write-Host "  $($_.Name)" }
 
@@ -209,9 +219,16 @@ steps:
                   '--includeRecommended'
               )
 
-              $process = Start-Process -FilePath $bootstrapper -ArgumentList $arguments -Wait -PassThru
-              if ($process.ExitCode -ne 0) {
-                  throw "Visual Studio Build Tools install failed with exit code $($process.ExitCode)."
+              for ($attempt = 1; $attempt -le 10; ++$attempt) {
+                  $process = Start-Process -FilePath $bootstrapper -ArgumentList $arguments -Wait -PassThru
+                  if ($process.ExitCode -in @(0, 3010)) {
+                      break
+                  }
+                  if ($process.ExitCode -ne 1618 -or $attempt -eq 10) {
+                      throw "Visual Studio Build Tools install failed with exit code $($process.ExitCode)."
+                  }
+                  Write-Host "Another installation is in progress; retrying in 30 seconds (attempt $attempt/10)."
+                  Start-Sleep -Seconds 30
               }
           }
 
@@ -432,15 +449,20 @@ steps:
                     print("  " + name)
                 sys.exit(1)
 
-        hits = [name for name in names if name.endswith(expected)]
-        if not hits:
-            print("ERROR: " + expected + " not found in wheel")
-            for name in names:
-                if name.endswith((".so", ".dll", ".dylib")):
-                    print("  " + name)
-            sys.exit(1)
-
-        print("OK: found " + hits[0])
+        prefix = expected.rsplit("/", 1)[0] + "/"
+        host = "foundry-local-host.exe" if rid.startswith("win-") else "foundry-local-host"
+        with zipfile.ZipFile(whl) as wheel:
+            for required in (expected, prefix + host, prefix + "foundry-local-runtime.json"):
+                hits = [name for name in names if name.endswith(required)]
+                if not hits:
+                    sys.exit("ERROR: " + required + " not found in wheel")
+                entry = wheel.getinfo(hits[0])
+                if entry.is_dir():
+                    sys.exit("ERROR: required wheel payload is a directory: " + hits[0])
+                if required == prefix + host and not rid.startswith("win-"):
+                    if not (entry.external_attr >> 16) & 0o100:
+                        sys.exit("ERROR: wheel host is not executable: " + hits[0])
+                print("OK: found " + hits[0])
         '@
         $code | python - "$($whl.FullName)" "$expected" "${{ parameters.rid }}"
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

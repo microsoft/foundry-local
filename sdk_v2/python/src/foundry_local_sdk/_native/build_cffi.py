@@ -499,6 +499,7 @@ typedef struct flConfigurationApi {
     flStatusPtr (*AddWebServiceEndpoint)(flConfiguration* config, const char* url);
     flStatusPtr (*SetExternalServiceUrl)(flConfiguration* config, const char* url);
     flStatusPtr (*SetAdditionalOptions)(flConfiguration* config, const flKeyValuePairs* options);
+    flStatusPtr (*SetUseSharedHost)(flConfiguration* config, _Bool enabled);
 } flConfigurationApi;
 
 /* -----------------------------------------------------------------------

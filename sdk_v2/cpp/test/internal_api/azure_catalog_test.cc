@@ -13,6 +13,7 @@
 #include <nlohmann/json.hpp>
 
 #include <chrono>
+#include <limits>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -48,6 +49,7 @@ std::string MakeSummaryResponse(const std::vector<std::pair<std::string, int>>& 
         {"name", name},
         {"alias", name},
         {"version", std::to_string(version)},
+        {"foundryLocal", ""},
         {"variantInformation", {
                                    {"parents", {{{"assetId", "azureml://registries/azureml/models/" + name + "/versions/1"}}}},
                                    {"variantMetadata", {
@@ -183,6 +185,121 @@ TEST(AzureCatalogClientTest, UsesOneFilterSetPerDeviceAndProvider) {
   EXPECT_EQ(requests[2]["filters"][5]["values"], nlohmann::json({"npu"}));
 }
 
+TEST(AzureCatalogClientTest, FiltersOutNonemptyFoundryLocalTags) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  const char* response = R"({
+    "value": [{
+      "assetId": "azureml://registries/azureml/models/test-model/versions/1",
+      "annotations": {
+        "tags": {"alias": "test-model", "foundryLocal": "test"},
+        "systemCatalogData": {
+          "deploymentOptions": ["Foundry Local on Devices"]
+        }
+      },
+      "properties": {
+        "name": "test-model", "version": 1,
+        "variantInfo": {
+          "variantMetadata": {"modelType": "ONNX", "device": "cpu", "executionProvider": "CPUExecutionProvider"}
+        }
+      }
+    }, {
+      "assetId": "azureml://registries/azureml/models/hidden-model/versions/1",
+      "annotations": {
+        "tags": {"alias": "test-model", "foundryLocal": "hide"},
+        "systemCatalogData": {
+          "deploymentOptions": ["Foundry Local on Devices"]
+        }
+      },
+      "properties": {
+        "name": "hidden-model", "version": 1,
+        "variantInfo": {
+          "variantMetadata": {"modelType": "ONNX", "device": "cpu", "executionProvider": "CPUExecutionProvider"}
+        }
+      }
+    }]
+  })";
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string&) { return MakeOkResponse(response); });
+
+  const auto raw_models = client.FetchAllModels();
+  ASSERT_EQ(raw_models.size(), 2u);
+  EXPECT_EQ(raw_models.front().foundry_local, "test");
+  EXPECT_EQ(raw_models.back().foundry_local, "hide");
+  ASSERT_TRUE(CatalogModelToModelInfo(raw_models.front()).has_value());
+  ASSERT_TRUE(CatalogModelToModelInfo(raw_models.back()).has_value());
+  EXPECT_TRUE(client.FetchAllModelInfos().empty());
+  EXPECT_TRUE(client.FetchModelsByIds({"test-model:1", "hidden-model:1"}).empty());
+  EXPECT_TRUE(client.FetchAllVersionsByAlias("test-model").empty());
+}
+
+TEST(AzureCatalogClientTest, LegacyTagOverridesBypassDefaultAllowlistAcrossCatalogQueries) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  auto response = nlohmann::json::parse(
+      MakeSummaryResponse({{"matching", 3}, {"different", 2}, {"legacy", 1}}));
+  for (auto& record : response["summaries"]) {
+    record["alias"] = "shared-alias";
+  }
+  response["summaries"][0]["foundryLocal"] = "Private Ring";
+  response["summaries"][1]["foundryLocal"] = "Other Ring";
+  response["summaries"][2].erase("foundryLocal");
+
+  for (const auto* filter_override : {"foundryLocal=Private Ring", "Private Ring"}) {
+    SCOPED_TRACE(filter_override);
+    for (const std::string query : {"list", "ids", "versions"}) {
+      SCOPED_TRACE(query);
+      AzureCatalogClient client("https://test.com", filter_override, ep, logger,
+                                [&](const std::string&, const std::string& body) {
+                                  if (query == "list") {
+                                    const auto request = nlohmann::json::parse(body);
+                                    EXPECT_EQ(request["filters"][2]["field"], "annotations/tags/foundryLocal");
+                                    EXPECT_EQ(request["filters"][2]["values"], nlohmann::json({"Private Ring"}));
+                                    auto filtered_response = response;
+                                    filtered_response["summaries"] = nlohmann::json::array({response["summaries"][0]});
+                                    filtered_response["totalCount"] = 1;
+                                    return MakeOkResponse(filtered_response.dump());
+                                  }
+                                  return MakeOkResponse(response.dump());
+                                });
+
+      std::vector<ModelInfo> models;
+      if (query == "list") {
+        models = client.FetchAllModelInfos();
+      } else if (query == "ids") {
+        models = client.FetchModelsByIds({"matching:3", "different:2", "legacy:1"});
+      } else {
+        models = client.FetchAllVersionsByAlias("shared-alias");
+      }
+
+      std::vector<std::string> actual_ids;
+      for (const auto& model : models) {
+        actual_ids.push_back(model.model_id);
+      }
+      std::sort(actual_ids.begin(), actual_ids.end());
+      const std::vector<std::string> expected_ids = query == "list"
+                                                        ? std::vector<std::string>{"matching:3"}
+                                                        : std::vector<std::string>{"legacy:1", "matching:3"};
+      EXPECT_EQ(actual_ids, expected_ids);
+    }
+  }
+}
+
+TEST(AzureCatalogClientTest, FiltersOutModelsWithoutFoundryLocalTag) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  auto response = nlohmann::json::parse(MakeSummaryResponse({{"untagged", 1}}));
+  response["summaries"][0].erase("foundryLocal");
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string&) { return MakeOkResponse(response.dump()); });
+
+  const auto raw_models = client.FetchAllModels();
+  ASSERT_EQ(raw_models.size(), 1u);
+  EXPECT_FALSE(raw_models.front().foundry_local.has_value());
+  ASSERT_TRUE(CatalogModelToModelInfo(raw_models.front()).has_value());
+  EXPECT_TRUE(client.FetchAllModelInfos().empty());
+}
+
 TEST(AzureCatalogClientTest, ParsesFlatAssetGalleryResponse) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
@@ -195,6 +312,7 @@ TEST(AzureCatalogClientTest, ParsesFlatAssetGalleryResponse) {
       "alias": "phi-4-mini",
       "displayName": "Phi-4 Mini",
       "version": "2",
+      "foundryLocal": "",
       "publisher": "Microsoft",
       "license": "MIT",
       "minFLVersion": "0.1.0",
@@ -236,12 +354,18 @@ TEST(AzureCatalogClientTest, SkipsModelsWithInvalidVersions) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
   const char* response = R"({"summaries":[
-    {"assetId":"azureml://registries/azureml/models/missing/versions/1","name":"missing","alias":"test","variantInformation":{}},
-    {"assetId":"azureml://registries/azureml/models/negative/versions/-1","name":"negative","alias":"test","version":"-1","variantInformation":{}},
-    {"assetId":"azureml://registries/azureml/models/nonnumeric/versions/a","name":"nonnumeric","alias":"test","version":"abc","variantInformation":{}},
-    {"assetId":"azureml://registries/azureml/models/trailing/versions/1x","name":"trailing","alias":"test","version":"1x","variantInformation":{}},
-    {"assetId":"azureml://registries/azureml/models/overflow/versions/999999999999999999999","name":"overflow","alias":"test","version":"999999999999999999999","variantInformation":{}},
-    {"assetId":"azureml://registries/azureml/models/valid/versions/7","name":"valid","alias":"test","version":"7","variantInformation":{}}
+    {"assetId":"azureml://registries/azureml/models/missing/versions/1",
+     "name":"missing","alias":"test","foundryLocal":"","variantInformation":{}},
+    {"assetId":"azureml://registries/azureml/models/negative/versions/-1",
+     "name":"negative","alias":"test","foundryLocal":"","version":"-1","variantInformation":{}},
+    {"assetId":"azureml://registries/azureml/models/nonnumeric/versions/a",
+     "name":"nonnumeric","alias":"test","foundryLocal":"","version":"abc","variantInformation":{}},
+    {"assetId":"azureml://registries/azureml/models/trailing/versions/1x",
+     "name":"trailing","alias":"test","foundryLocal":"","version":"1x","variantInformation":{}},
+    {"assetId":"azureml://registries/azureml/models/overflow/versions/999999999999999999999",
+     "name":"overflow","alias":"test","foundryLocal":"","version":"999999999999999999999","variantInformation":{}},
+    {"assetId":"azureml://registries/azureml/models/valid/versions/7",
+     "name":"valid","alias":"test","foundryLocal":"","version":"7","variantInformation":{}}
   ]})";
   AzureCatalogClient client("https://test.com", "", ep, logger,
                             [&](const std::string&, const std::string&) { return MakeOkResponse(response); });
@@ -314,6 +438,92 @@ TEST(AzureCatalogClientTest, ParsesFullServiceMetadataWithoutPromptOrDelimiterFi
   EXPECT_TRUE(public_info.IsTestModel());
 }
 
+TEST(AzureCatalogClientTest, ContextLengthTagFallbackPreservesValidCatalogLimits) {
+  struct ContextLengthCase {
+    const char* name;
+    nlohmann::json tag_value;
+    std::optional<int64_t> structured_limit;
+    std::optional<int64_t> direct_limit;
+    std::optional<int64_t> expected;
+  };
+
+  const std::vector<ContextLengthCase> cases = {
+      {"integer", 262144, {}, {}, 262144},
+      {"string", "262144", {}, {}, 262144},
+      {"minimum", 1, {}, {}, 1},
+      {"maximum integer", std::numeric_limits<int64_t>::max(), {}, {}, std::numeric_limits<int64_t>::max()},
+      {"maximum string", "9223372036854775807", {}, {}, std::numeric_limits<int64_t>::max()},
+      {"zero", 0, {}, {}, {}},
+      {"negative", -1, {}, {}, {}},
+      {"fraction", 262144.5, {}, {}, {}},
+      {"integral float", 262144.0, {}, {}, {}},
+      {"boolean", true, {}, {}, {}},
+      {"null", nullptr, {}, {}, {}},
+      {"object", nlohmann::json::object(), {}, {}, {}},
+      {"array", nlohmann::json::array(), {}, {}, {}},
+      {"empty string", "", {}, {}, {}},
+      {"nonnumeric string", "unknown", {}, {}, {}},
+      {"trailing characters", "262144tokens", {}, {}, {}},
+      {"leading plus", "+262144", {}, {}, {}},
+      {"leading whitespace", " 262144", {}, {}, {}},
+      {"negative string", "-262144", {}, {}, {}},
+      {"zero string", "0", {}, {}, {}},
+      {"fractional string", "262144.0", {}, {}, {}},
+      {"overflow string", "9223372036854775808", {}, {}, {}},
+      {"overflow integer", std::numeric_limits<uint64_t>::max(), {}, {}, {}},
+      {"structured limit", 262144, 4096, {}, 4096},
+      {"direct limit", 262144, {}, 8192, 8192},
+      {"direct limit overrides structured limit", 262144, 4096, 8192, 8192},
+      {"zero direct limit preserves structured limit", 262144, 4096, 0, 4096},
+      {"negative direct limit preserves structured limit", 262144, 4096, -1, 4096},
+      {"zero structured limit", 262144, 0, {}, 262144},
+      {"negative structured limit", 262144, -1, {}, 262144},
+      {"zero direct limit", 262144, {}, 0, 262144},
+      {"invalid tag with structured limit", false, 4096, {}, 4096},
+  };
+  const auto base_response = nlohmann::json::parse(R"({
+    "value": [{
+      "assetId": "azureml://registries/azureml/models/qwen3.5-2b-text-generic-cpu/versions/1",
+      "annotations": {
+        "tags": {"foundryLocal": ""},
+        "systemCatalogData": {
+          "alias": "qwen3.5-2b-text",
+          "maxOutputTokens": 2048,
+          "deploymentOptions": ["Foundry Local on Devices"]
+        }
+      },
+      "properties": {
+        "name": "qwen3.5-2b-text-generic-cpu", "version": 1,
+        "variantInfo": {"variantMetadata": {"modelType": "ONNX", "device": "cpu"}}
+      }
+    }]
+  })");
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  for (const auto& test_case : cases) {
+    SCOPED_TRACE(test_case.name);
+    auto response = base_response;
+    auto& annotations = response["value"][0]["annotations"];
+    annotations["tags"]["contextLength"] = test_case.tag_value;
+    auto& system_data = annotations["systemCatalogData"];
+    if (test_case.structured_limit) {
+      system_data["modelLimits"]["textLimits"]["inputContextWindow"] = *test_case.structured_limit;
+    }
+
+    if (test_case.direct_limit) {
+      system_data["textContextWindow"] = *test_case.direct_limit;
+    }
+
+    AzureCatalogClient client("https://test.com", "", ep, logger,
+                              [&](const std::string&, const std::string&) { return MakeOkResponse(response.dump()); });
+    const auto models = client.FetchAllModelInfos();
+    ASSERT_EQ(models.size(), 1u);
+    const foundry_local::ModelInfo public_info(*AsHandle<flModelInfo>(&models.front()));
+    EXPECT_EQ(public_info.ContextLength(), test_case.expected);
+    EXPECT_EQ(public_info.MaxOutputTokens(), 2048);
+  }
+}
+
 TEST(AzureCatalogClientTest, ParsesToolCallingCapabilityFromHistoricalTag) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
@@ -321,7 +531,7 @@ TEST(AzureCatalogClientTest, ParsesToolCallingCapabilityFromHistoricalTag) {
     "value": [{
       "assetId": "azureml://registries/azureml/models/qwen2.5-coder-3b/versions/1",
       "annotations": {
-        "tags": {"supportsToolCalling": " true "},
+        "tags": {"supportsToolCalling": " true ", "foundryLocal": ""},
         "systemCatalogData": {"alias": "qwen2.5-coder-3b"}
       },
       "properties": {
@@ -331,7 +541,7 @@ TEST(AzureCatalogClientTest, ParsesToolCallingCapabilityFromHistoricalTag) {
     }, {
       "assetId": "azureml://registries/azureml/models/modern-model/versions/2",
       "annotations": {
-        "tags": {"supportsToolCalling": "true"},
+        "tags": {"supportsToolCalling": "true", "foundryLocal": ""},
         "systemCatalogData": {"alias": "modern-model", "supportsToolCalling": false}
       },
       "properties": {
@@ -354,6 +564,116 @@ TEST(AzureCatalogClientTest, ParsesToolCallingCapabilityFromHistoricalTag) {
   EXPECT_EQ(model_infos[1].int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT), 0);
 }
 
+TEST(AzureCatalogClientTest, PreservesContextLengthAndCapabilitiesFromCatalogTags) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  const char* response = R"({
+    "value": [{
+      "assetId": "azureml://registries/azureml/models/gemma-4-e2b-it-generic-cpu/versions/3",
+      "annotations": {
+        "tags": {
+          "alias": "gemma-4-e2b-it", "foundryLocal": "",
+          "contextLength": "131072", "capabilities": "reasoning,tool-calling"
+        },
+        "systemCatalogData": {"textContextWindow": null, "modelCapabilities": null}
+      },
+      "properties": {
+        "name": "gemma-4-e2b-it-generic-cpu", "version": 3,
+        "variantInfo": {"variantMetadata": {"modelType": "ONNX", "device": "cpu"}}
+      }
+    }]
+  })";
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string&) { return MakeOkResponse(response); });
+
+  const auto model_infos = client.FetchAllModelInfos();
+  ASSERT_EQ(model_infos.size(), 1u);
+  const auto& info = model_infos.front();
+  const foundry_local::ModelInfo public_info(*AsHandle<flModelInfo>(&info));
+  EXPECT_EQ(public_info.GetIntProperty(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, -1), 131072);
+  EXPECT_EQ(public_info.GetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR), "reasoning,tool-calling");
+  EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT), 1);
+  EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT), 1);
+}
+
+TEST(AzureCatalogClientTest, StructuredMetadataTakesPrecedenceOverCatalogTags) {
+  auto record = nlohmann::json::parse(R"({
+    "assetId": "azureml://registries/azureml/models/test-model/versions/1",
+    "annotations": {
+      "tags": {"contextLength": "131072", "capabilities": "reasoning,tool-calling"},
+      "systemCatalogData": {
+        "textContextWindow": 4096, "modelCapabilities": ["embedding"],
+        "supportsToolCalling": false, "supportsReasoning": false
+      }
+    },
+    "properties": {"name": "test-model", "version": 1, "variantInfo": {}}
+  })");
+
+  auto converted = CatalogModelToModelInfo(record.get<CatalogLocalModel>());
+  ASSERT_TRUE(converted.has_value());
+  EXPECT_EQ(converted->int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT), 4096);
+  EXPECT_EQ(converted->string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR), "embedding");
+  EXPECT_EQ(converted->int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT), 0);
+  EXPECT_EQ(converted->int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT), 0);
+
+  auto& system_data = record["annotations"]["systemCatalogData"];
+  system_data.erase("textContextWindow");
+  system_data["modelLimits"]["textLimits"]["inputContextWindow"] = 8192;
+  system_data["modelCapabilities"] = nlohmann::json::array();
+  converted = CatalogModelToModelInfo(record.get<CatalogLocalModel>());
+  ASSERT_TRUE(converted.has_value());
+  EXPECT_EQ(converted->int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT), 8192);
+  EXPECT_FALSE(converted->string_properties.contains(FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR));
+
+  system_data.erase("modelCapabilities");
+  converted = CatalogModelToModelInfo(record.get<CatalogLocalModel>());
+  ASSERT_TRUE(converted.has_value());
+  EXPECT_EQ(converted->string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR), "reasoning,tool-calling");
+  EXPECT_EQ(converted->int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT), 0);
+  EXPECT_EQ(converted->int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT), 0);
+
+  system_data["textContextWindow"] = 0;
+  converted = CatalogModelToModelInfo(record.get<CatalogLocalModel>());
+  ASSERT_TRUE(converted.has_value());
+  EXPECT_EQ(converted->int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT), 8192);
+}
+
+TEST(AzureCatalogClientTest, HandlesOptionalCatalogTagsWithoutDroppingModels) {
+  auto record = nlohmann::json::parse(R"({
+    "assetId": "azureml://registries/azureml/models/test-model/versions/1",
+    "annotations": {"tags": {}, "systemCatalogData": {}},
+    "properties": {"name": "test-model", "version": 1, "variantInfo": {}}
+  })");
+  auto& tags = record["annotations"]["tags"];
+  tags["capabilities"] = " reasoning, , tool-calling, ";
+  for (const auto& value : {nlohmann::json("4294967296"), nlohmann::json("9223372036854775807"),
+                            nlohmann::json(4096)}) {
+    tags["contextLength"] = value;
+    const auto converted = CatalogModelToModelInfo(record.get<CatalogLocalModel>());
+    ASSERT_TRUE(converted.has_value()) << value;
+    const auto expected = value.is_string() ? std::stoll(value.get<std::string>()) : value.get<int64_t>();
+    EXPECT_EQ(converted->int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT), expected);
+  }
+
+  for (const auto& value : {nlohmann::json(), nlohmann::json(""), nlohmann::json("0"), nlohmann::json("-1"),
+                            nlohmann::json("4096tokens"), nlohmann::json("9223372036854775808")}) {
+    tags["contextLength"] = value;
+    const auto converted = CatalogModelToModelInfo(record.get<CatalogLocalModel>());
+    ASSERT_TRUE(converted.has_value()) << value;
+    EXPECT_FALSE(converted->int_properties.contains(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT)) << value;
+    EXPECT_EQ(converted->string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR), "reasoning,tool-calling");
+  }
+
+  tags.erase("contextLength");
+  for (const auto& value : {nlohmann::json(), nlohmann::json(""), nlohmann::json(4096)}) {
+    tags["capabilities"] = value;
+    const auto converted = CatalogModelToModelInfo(record.get<CatalogLocalModel>());
+    ASSERT_TRUE(converted.has_value()) << value;
+    EXPECT_FALSE(converted->int_properties.contains(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT));
+    EXPECT_FALSE(converted->string_properties.contains(FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR));
+  }
+}
+
 TEST(AzureCatalogClientTest, PreservesMinFlVersionForCatalogLevelFiltering) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
@@ -362,12 +682,12 @@ TEST(AzureCatalogClientTest, PreservesMinFlVersionForCatalogLevelFiltering) {
                               return MakeOkResponse(R"({"summaries":[
                                 {
                                   "assetId":"azureml://registries/azureml/models/future/versions/1",
-                                  "name":"future", "alias":"future", "version":"1",
+                                  "name":"future", "alias":"future", "version":"1", "foundryLocal":"",
                                   "minFLVersion":"999.0.0", "variantInformation":{}
                                 },
                                 {
                                   "assetId":"azureml://registries/azureml/models/current/versions/1",
-                                  "name":"current", "alias":"current", "version":"1",
+                                  "name":"current", "alias":"current", "version":"1", "foundryLocal":"",
                                   "variantInformation":{}
                                 }
                               ]})");
@@ -469,7 +789,7 @@ TEST(AzureCatalogClientTest, SkipsAbstractParentModels) {
                             [&](const std::string&, const std::string&) {
                               return MakeOkResponse(R"({"summaries":[{
                                 "assetId":"azureml://registries/azureml/models/parent/versions/1",
-                                "name":"parent", "version":"1"
+                                "name":"parent", "version":"1", "foundryLocal":""
                               }]})");
                             });
 
@@ -483,7 +803,7 @@ TEST(AzureCatalogClientTest, DerivesAliasFromParentWhenExplicitAliasIsMissing) {
                             [&](const std::string&, const std::string&) {
                               return MakeOkResponse(R"({"summaries":[{
                                 "assetId":"azureml://registries/azureml/models/child/versions/1",
-                                "name":"child", "version":"1",
+                                "name":"child", "version":"1", "foundryLocal":"",
                                 "variantInformation":{"parents":[{
                                   "assetId":"azureml://registries/azureml/models/parent/versions/1"
                                 }]}
@@ -501,9 +821,9 @@ TEST(AzureCatalogClientTest, SkipsEntriesMissingAssetIdOrName) {
   AzureCatalogClient client("https://test.com", "", ep, logger,
                             [&](const std::string&, const std::string&) {
                               return MakeOkResponse(R"({"summaries":[
-                                {"name":"missing-asset","version":"1","variantInformation":{}},
+                                {"name":"missing-asset","version":"1","foundryLocal":"","variantInformation":{}},
                                 {"assetId":"azureml://registries/azureml/models/missing-name/versions/1",
-                                 "version":"1","variantInformation":{}}
+                                 "version":"1","foundryLocal":"","variantInformation":{}}
                               ]})");
                             });
 
@@ -623,6 +943,7 @@ TEST(AzureCatalogClientTest, FetchModelsByIdsHonorsLegacyScopeAndKeepsRecordsWit
         {{"phi", 1}, {"phi", 2}, {"phi", 3}, {"phi", 4}}));
     response["summaries"][0]["foundryLocal"] = "Private Ring";
     response["summaries"][1]["foundryLocal"] = "Other Ring";
+    response["summaries"][2].erase("foundryLocal");
     response["summaries"][3]["foundryLocal"] = "Private Ring";
     AzureCatalogClient client("https://test.com", filter_override, ep, logger,
                               [&](const std::string&, const std::string& body) {
@@ -728,7 +1049,7 @@ TEST(AzureCatalogClientTest, FetchAllVersionsUsesLegacyTagAliasFromFullServiceRe
       {
         "assetId": "azureml://registries/azureml/models/qwen2.5-0.5b-cpu/versions/1",
         "annotations": {
-          "tags": {"alias": "qwen2.5-0.5b"},
+          "tags": {"alias": "qwen2.5-0.5b", "foundryLocal": ""},
           "systemCatalogData": {}
         },
         "properties": {
@@ -741,7 +1062,7 @@ TEST(AzureCatalogClientTest, FetchAllVersionsUsesLegacyTagAliasFromFullServiceRe
       },
       {
         "assetId": "azureml://registries/azureml/models/qwen2.5-0.5b-cpu/versions/2",
-        "annotations": {"systemCatalogData": {"alias": "qwen2.5-0.5b"}},
+        "annotations": {"tags": {"foundryLocal": ""}, "systemCatalogData": {"alias": "qwen2.5-0.5b"}},
         "properties": {
           "name": "qwen2.5-0.5b-cpu", "version": 2,
           "variantInfo": {"variantMetadata": {"modelType": "ONNX", "device": "cpu"}}
@@ -749,7 +1070,7 @@ TEST(AzureCatalogClientTest, FetchAllVersionsUsesLegacyTagAliasFromFullServiceRe
       },
       {
         "assetId": "azureml://registries/azureml/models/qwen2.5-0.5b-cpu/versions/3",
-        "annotations": {"systemCatalogData": {"alias": "qwen2.5-0.5b"}},
+        "annotations": {"tags": {"foundryLocal": ""}, "systemCatalogData": {"alias": "qwen2.5-0.5b"}},
         "properties": {
           "name": "qwen2.5-0.5b-cpu", "version": 3,
           "variantInfo": {"variantMetadata": {"modelType": "ONNX", "device": "cpu"}}
@@ -986,6 +1307,7 @@ TEST(AzureCatalogClientTest, FetchAllVersionsHonorsLegacyFilterAndKeepsRecordsWi
   }
   response["summaries"][0]["foundryLocal"] = "Private Ring";
   response["summaries"][1]["foundryLocal"] = "Other Ring";
+  response["summaries"][2].erase("foundryLocal");
 
   AzureCatalogClient client("https://test.com", "foundryLocal=Private Ring", ep, logger,
                             [&](const std::string&, const std::string& body) {

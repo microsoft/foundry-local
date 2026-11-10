@@ -11,6 +11,7 @@ and output, see [Inference with the Foundry Local SDK](../INFERENCING.md).
 - **Model Management** – download, cache, load, and unload models
 - **Chat Completions** – streaming and non-streaming, with first-class tool calling
 - **Embeddings** – text embeddings via a typed tensor API
+- **Ranking and Typed Decisions** – typed wrappers over the native `/v1/rank` and `/v1/systemone` contracts
 - **Audio Transcription** – speech-to-text (offline and live streaming)
 - **Explicit EP Management** – discover, download, and register execution providers on demand
 - **Built-in Web Service** – optional HTTP endpoint for multi-process scenarios
@@ -147,6 +148,25 @@ config = Configuration(
 FoundryLocalManager.initialize(config)
 manager = FoundryLocalManager.instance
 ```
+
+### Native shared hosting
+
+Set `use_shared_host=True` on `Configuration` to route existing model/session APIs through the native host included
+in the wheel. The default remains in-process. Metadata, discovery and model downloads do not start the host;
+execution, cache removal, EP download/registration or `manager.start_web_service()` starts or joins it. Clients must
+match the Foundry native build, IPC protocol, platform and effective catalog, data/cache, provider, web, logs
+directory/level, telemetry and additional settings other than `UserAgent`. Dependency hashes and packaging paths do
+not split hosts; the first starter's verified runtime serves all clients. Shared hosting cannot be combined with
+`web.external_url`, and never silently falls back to in-process execution.
+
+`manager.close()` releases only this client. After the final owner, the host drains admitted work, allows a
+five-second reconnect grace and exits normally. Keep the manager alive while using its HTTP endpoint; HTTP
+connections are not owners. Explicit model unload stays shared and rejects in-use models. Web-service Stop rejects
+other owners or active HTTP work.
+
+The read-only `manager.urls` property observes listeners without starting the service and rejects access after
+`close()`. See the [shared-host requirements](../cpp/README.md#quick-start) for inherited environment/cwd and Linux
+prerequisites.
 
 ### Discovering models
 
@@ -420,9 +440,61 @@ with EmbeddingsSession(model) as session:
 model.unload()
 ```
 
+### Ranking and typed decisions
+
+`RankingSession` requires a loaded `text-ranking` model and `DecisionSession`
+requires a loaded `typed-decision` model. Their task payloads match
+`POST /catalogs/local/v1/rank` and
+`POST /catalogs/local/v1/systemone`. Both models must be registered in the
+local catalog, cached, and explicitly loaded before session creation. Reuse
+one session for multiple requests, close it, and then unload the model.
+
+```python
+from foundry_local_sdk import CatalogType, DecisionRequest, DecisionSession, RankingRequest, RankingSession
+
+local_catalog = manager.get_catalog(CatalogType.LOCAL)
+ranking_model = local_catalog.get_model("clm")
+decision_model = local_catalog.get_model("kev")
+if ranking_model is None or decision_model is None:
+    raise RuntimeError("Register the CLM and KEV packages in the local catalog first")
+if not ranking_model.is_cached or not decision_model.is_cached:
+    raise RuntimeError("Download and review the CLM and KEV packages first")
+
+ranking_model.load()
+decision_model.load()
+try:
+    with RankingSession(ranking_model) as session:
+        for weather in ("rain", "snow"):
+            ranking = session.rank(RankingRequest(
+                context={"weather": weather},
+                question="Which activity is better?",
+                answers=["picnic", "museum"],
+            ))
+            print(ranking.ranked)
+
+    with DecisionSession(decision_model) as session:
+        decision = session.decide(DecisionRequest(
+            state={"weather": "rain"},
+            questions={"umbrella": {"type": "noul", "instructions": "Take one?"}},
+        ))
+        print(decision.answers["umbrella"])
+finally:
+    ranking_model.unload()
+    decision_model.unload()
+```
+
+`RankingRequest` and `DecisionRequest` are typed payloads, not cancellation
+handles. To cancel in-flight work, create a lower-level `Request` containing
+the JSON text item and call
+`session.process_request(request, cancel_event=threading.Event())`.
+
+See [`examples/ranking_and_decision.py`](examples/ranking_and_decision.py) for reusable helper functions.
+
 ### Audio transcription
 
-`AudioSession` accepts `AudioItem` input (PCM bytes + sample rate / channels) and produces `TextItem` output. See [`samples/python/audio-transcription/`](https://github.com/microsoft/Foundry-Local/tree/main/samples/python/audio-transcription) and [`live-audio-transcription/`](https://github.com/microsoft/Foundry-Local/tree/main/samples/python/live-audio-transcription) for runnable end-to-end examples covering offline files and live PCM streaming through an `ItemQueue`.
+`AudioSession` accepts `AudioItem` input (PCM bytes + sample rate / channels) and produces `TextItem` output. See
+[`samples/python/realtime-transcription/`](https://github.com/microsoft/Foundry-Local/tree/main/samples/python/realtime-transcription)
+for a runnable live PCM streaming example.
 
 ### Web service (optional)
 
@@ -467,10 +539,19 @@ All sessions wrap a native `flSession*` and are context managers. Closing a sess
 
 Common session methods:
 
-- `process_request(request) -> Response` — run synchronously, return the full response.
-- `process_streaming_request(request) -> Iterator[Item]` — yield items as the model produces them. Requires `set_streaming(True)` first. Abandoning the iterator (`break`, exception, `gen.close()`) automatically cancels the request and joins the worker thread.
+- `process_request(request, *, cancel_event=None) -> Response` — run synchronously, return the full response.
+- `process_streaming_request(request, *, cancel_event=None) -> StreamingResponse` — yield items as the model produces them. Requires `set_streaming(True)` first. Abandoning the iterator (`break`, exception, `gen.close()`) automatically cancels the request and joins the worker thread.
 - `set_options(RequestOptions)` — apply session-level inference parameters (typed `SearchOptions` for sampling, optional `tool_choice`, and `additional_options` for passthrough).
 - `set_streaming(enabled)` — install or remove the native streaming callback.
+
+Pass a `threading.Event` as `cancel_event` and set it from another thread to cancel inference. A pre-set event
+prevents submission. Cancellation also interrupts waits for a busy session or request without canceling its current
+owner. Cancellation raises `FoundryLocalException` with `error_code == 5`; native completion may win the race and
+return normally. The compatibility chat, audio, and embedding methods accept the same keyword argument.
+Cancellation helpers stop before the call returns, so the request can be reused without a late cancellation.
+Cancellation is cooperative: native generator construction and an individual embedding forward pass may not be
+interruptible. Cancellation and cleanup (including closing a stream or session) wait for native processing to exit;
+the event is not a hard execution deadline.
 
 ### Requests and responses
 

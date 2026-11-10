@@ -1,48 +1,44 @@
-# 🚀 Foundry Local Python Samples
+# Foundry Local Python samples
 
-These samples demonstrate how to use Foundry Local with Python.
+These seven samples use the published `foundry-local-sdk` **2.2.1** package. Except for
+`web-server`, inference runs in-process without an HTTP service.
+
+| Sample | What it demonstrates |
+| --- | --- |
+| [`hello-world`](hello-world/) | Manager, execution providers, catalog/model lifecycle, and native chat |
+| [`realtime-transcription`](realtime-transcription/) | Live microphone PCM input and native streaming transcription |
+| [`embeddings`](embeddings/) | Native batched embeddings with `EmbeddingsSession` |
+| [`tool-calling`](tool-calling/) | Native chat tool definitions, calls, and results |
+| [`web-server`](web-server/) | Built-in server and its OpenAI-compatible endpoint |
+| [`vision`](vision/) | Native chat with text and a local image |
+| [`byom`](byom/) | Registering local model assets and running native chat |
+
+> [!IMPORTANT]
+> Every sample pins [`foundry-local-sdk` from PyPI](https://pypi.org/project/foundry-local-sdk/2.2.1/) to 2.2.1.
+> Installation supplies the native runtime; no local SDK source build is required. See the
+> [get-started documentation](https://learn.microsoft.com/en-us/azure/foundry-local/get-started) for versioned setup
+> guidance and additional examples.
 
 ## Prerequisites
 
-- [Python](https://www.python.org/) 3.11 or later
+- Python 3.11 or later.
+- A supported Foundry Local platform.
+- Microphone access for `realtime-transcription`.
 
-## Samples
+## Run a sample from the repository
 
-| Sample | Description |
-|--------|-------------|
-| [native-chat-completions](native-chat-completions/) | Initialize the SDK, start the local service, and run streaming chat completions. |
-| [embeddings](embeddings/) | Generate single and batch text embeddings using the Foundry Local SDK. |
-| [audio-transcription](audio-transcription/) | Transcribe audio files using the Whisper model. |
-| [web-server](web-server/) | Start a local OpenAI-compatible web server and call it with the OpenAI Python SDK. |
-| [web-server-responses](web-server-responses/) | Call a running local OpenAI-compatible web server with the Responses API, including streaming and tool calling. |
-| [tool-calling](tool-calling/) | Tool calling with custom function definitions (get_weather, calculate). |
-| [langchain-integration](langchain-integration/) | LangChain integration for building translation and text generation chains. |
-| [tutorial-chat-assistant](tutorial-chat-assistant/) | Build an interactive multi-turn chat assistant (tutorial). |
-| [tutorial-document-summarizer](tutorial-document-summarizer/) | Summarize documents with AI (tutorial). |
-| [tutorial-tool-calling](tutorial-tool-calling/) | Create a tool-calling assistant (tutorial). |
-| [tutorial-voice-to-text](tutorial-voice-to-text/) | Transcribe and summarize audio (tutorial). |
+Each directory pins the released SDK in `requirements.txt`:
 
-## Running a Sample
+```bash
+cd samples/python/hello-world
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+python -m pip install -r requirements.txt
+python src/app.py
+```
 
-1. Clone the repository:
+Use the same commands from any of the other sample directories. The first run
+may download execution providers and a model. Subsequent runs reuse the local
+cache.
 
-   ```bash
-   git clone https://github.com/microsoft/Foundry-Local.git
-   cd Foundry-Local/samples/python
-   ```
-
-2. Navigate to a sample and install dependencies:
-
-   ```bash
-   cd native-chat-completions
-   pip install -r requirements.txt
-   ```
-
-3. Run the sample:
-
-   ```bash
-   python src/app.py
-   ```
-
-> [!TIP]
-> Each sample's `requirements.txt` installs the single `foundry-local-sdk` package. On **Windows**, it bundles WinML hardware acceleration automatically. Just run `pip install -r requirements.txt` — no separate package or flag is needed.
+All samples set the SDK application name to `foundry_local_samples`.

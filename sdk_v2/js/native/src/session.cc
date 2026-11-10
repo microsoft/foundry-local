@@ -200,6 +200,26 @@ class SessionWorkerGate {
   Napi::ThreadSafeFunction tsfn_;
 };
 
+struct QueuedCancellation {
+  std::shared_ptr<SessionScheduler> scheduler;
+  std::atomic_bool requested = false;
+  uint64_t id = 0;
+};
+
+std::shared_ptr<QueuedCancellation> AttachQueuedCancellation(
+    Napi::Env env, Napi::Promise promise, std::shared_ptr<SessionScheduler> scheduler) {
+  auto cancellation = std::make_shared<QueuedCancellation>();
+  cancellation->scheduler = std::move(scheduler);
+  promise.As<Napi::Object>().Set(
+      "cancelQueued", Napi::Function::New(env, [cancellation](const Napi::CallbackInfo& info) {
+        cancellation->requested.store(true, std::memory_order_release);
+        const bool canceled = cancellation->id != 0 && cancellation->scheduler != nullptr &&
+                              cancellation->scheduler->Cancel(cancellation->id);
+        return Napi::Boolean::New(info.Env(), canceled);
+      }));
+  return cancellation;
+}
+
 // Process a Request on a worker thread, converting to JS after completion. Chat/audio workers are queued by their
 // per-session scheduler before consuming a libuv worker; embeddings workers start immediately.
 template <typename SessT>
@@ -221,9 +241,12 @@ class SessionPromiseWorker : public Napi::AsyncWorker {
       worker->activity_->Start();
     }
     Napi::Promise promise = worker->deferred_.Promise();
+    auto queued_cancellation = AttachQueuedCancellation(env, promise, worker->scheduler_);
+    worker->queued_cancellation_ = queued_cancellation;
     try {
       if (worker->scheduler_ != nullptr) {
-        worker->scheduler_->Enqueue([worker] { worker->Start(); });
+        queued_cancellation->id = worker->scheduler_->Enqueue(
+            [worker] { worker->Start(); }, [worker] { worker->CancelBeforeStart(); });
       } else {
         worker->Start();
       }
@@ -239,6 +262,14 @@ class SessionPromiseWorker : public Napi::AsyncWorker {
   void Execute() override {
     try {
       if (worker_gate_ != nullptr) worker_gate_->SignalAndWait();
+      if (queued_cancellation_->requested.load(std::memory_order_acquire)) {
+        err_code_ = FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED;
+        err_msg_ = "request canceled before native processing";
+        tagged_ = true;
+        SetError(err_msg_);
+        return;
+      }
+
       response_ = std::make_shared<foundry_local::Response>(sess_->ProcessRequest(*req_));
     } catch (const foundry_local::Error& e) {
       err_code_ = static_cast<int>(e.Code());
@@ -344,6 +375,15 @@ class SessionPromiseWorker : public Napi::AsyncWorker {
     delete this;
   }
 
+  void CancelBeforeStart() {
+    scheduler_.reset();
+    err_code_ = FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED;
+    err_msg_ = "request canceled before native processing";
+    tagged_ = true;
+    OnError(Napi::Error::New(Env(), err_msg_));
+    delete this;
+  }
+
   Napi::Promise::Deferred deferred_;
   std::shared_ptr<SessT> sess_;
   foundry_local::Request* req_;
@@ -353,6 +393,7 @@ class SessionPromiseWorker : public Napi::AsyncWorker {
   std::shared_ptr<SessionScheduler> scheduler_;
   std::shared_ptr<SessionActivity> activity_;
   std::shared_ptr<SessionWorkerGate> worker_gate_;
+  std::shared_ptr<QueuedCancellation> queued_cancellation_;
   Result response_;
   std::string err_msg_;
   int err_code_ = 0;
@@ -505,12 +546,6 @@ struct StreamCtx {
   bool errored = false;
 };
 
-struct QueuedCancellation {
-  std::shared_ptr<SessionScheduler> scheduler;
-  std::atomic_bool requested = false;
-  uint64_t id = 0;
-};
-
 class StreamFinalizeGuard {
  public:
   explicit StreamFinalizeGuard(StreamCtx* ctx) : ctx_(ctx) {}
@@ -564,16 +599,7 @@ class StreamWorker : public Napi::AsyncWorker {
                            Napi::Function jsCallback, StreamCtx* ctx,
                            std::shared_ptr<SessionScheduler> scheduler) {
     Napi::Promise p = ctx->deferred.Promise();
-    auto queued_cancellation = std::make_shared<QueuedCancellation>();
-    queued_cancellation->scheduler = scheduler;
-    p.As<Napi::Object>().Set(
-        "cancelQueued",
-        Napi::Function::New(env, [queued_cancellation](const Napi::CallbackInfo& info) {
-          queued_cancellation->requested.store(true, std::memory_order_release);
-          const bool canceled = queued_cancellation->id != 0 && queued_cancellation->scheduler != nullptr &&
-                                queued_cancellation->scheduler->Cancel(queued_cancellation->id);
-          return Napi::Boolean::New(info.Env(), canceled);
-        }));
+    auto queued_cancellation = AttachQueuedCancellation(env, p, scheduler);
 
     StreamWorker* w = nullptr;
     try {
@@ -786,6 +812,121 @@ Napi::Value ProcessStreamingRequestOn(Napi::Env env, std::shared_ptr<SessT> sess
 }  // namespace
 
 }  // namespace
+
+// ──────────────────────────────────────────────────────────────────────────
+// Generic Session
+// ──────────────────────────────────────────────────────────────────────────
+
+Napi::Function GenericSession::Init(Napi::Env env) {
+  return DefineClass(env, "Session",
+                     {
+                         InstanceMethod("processRequest", &GenericSession::ProcessRequest),
+                         InstanceMethod("setOptions", &GenericSession::SetOptions),
+                         InstanceMethod("dispose", &GenericSession::Dispose),
+                         InstanceMethod("isDisposed", &GenericSession::IsDisposed),
+                     });
+}
+
+GenericSession::GenericSession(const Napi::CallbackInfo& info)
+    : Napi::ObjectWrap<GenericSession>(info),
+      scheduler_(std::make_shared<SessionScheduler>()) {
+  Napi::Env env = info.Env();
+  auto* data = env.GetInstanceData<AddonData>();
+  if (info.Length() != 1 || !info[0].IsObject() || data == nullptr ||
+      !info[0].As<Napi::Object>().InstanceOf(data->model_ctor.Value())) {
+    Napi::TypeError::New(env, "Session: expected a Model as the first argument")
+        .ThrowAsJavaScriptException();
+    return;
+  }
+  Napi::Object model_obj = info[0].As<Napi::Object>();
+  Model* model = Napi::ObjectWrap<Model>::Unwrap(model_obj);
+  foundry_local::IModel* native = model != nullptr ? model->native_impl(env) : nullptr;
+  if (native == nullptr) {
+    Napi::TypeError::New(env, "Session: Model is not initialized")
+        .ThrowAsJavaScriptException();
+    return;
+  }
+  auto manager_lifetime = model->LockManager(env);
+  if (manager_lifetime == nullptr) return;
+  try {
+    impl_ = std::make_shared<foundry_local::Session>(*native);
+  } catch (const foundry_local::Error& e) {
+    ThrowFoundryLocalError(env, static_cast<int>(e.Code()), e.what());
+    return;
+  } catch (const std::exception& e) {
+    Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+    return;
+  }
+  manager_lifetime_ = std::move(manager_lifetime);
+  manager_disposed_ = model->disposed_state();
+  manager_ = Napi::Reference<Napi::Object>::New(model->manager().Value(), 1);
+}
+
+bool GenericSession::ThrowIfDisposed(Napi::Env env) {
+  if (impl_ == nullptr) {
+    ThrowFoundryLocalError(env, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Session has been disposed");
+    return true;
+  }
+  if (manager_disposed_->load()) {
+    ThrowFoundryLocalError(env, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Manager has been disposed");
+    return true;
+  }
+  return false;
+}
+
+Napi::Value GenericSession::ProcessRequest(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (ThrowIfDisposed(env)) return env.Undefined();
+  if (info.Length() < 1) {
+    Napi::TypeError::New(env, "processRequest(request: Request)").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  Napi::Function worker_started;
+  if (info.Length() >= 2 && !info[1].IsUndefined()) {
+    if (!info[1].IsFunction()) {
+      Napi::TypeError::New(env, "Internal worker-start hook must be a function")
+          .ThrowAsJavaScriptException();
+      return env.Undefined();
+    }
+    worker_started = info[1].As<Napi::Function>();
+  }
+  Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
+  auto impl = impl_;
+  auto scheduler = scheduler_;
+  return ProcessRequestOn(env, std::move(impl), info[0], manager_lifetime_,
+                          std::move(owner), std::move(scheduler), nullptr,
+                          worker_started);
+}
+
+Napi::Value GenericSession::SetOptions(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (ThrowIfDisposed(env)) return env.Undefined();
+  if (info.Length() < 1 || !info[0].IsObject()) {
+    Napi::TypeError::New(env, "setOptions(options: RequestOptions)").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  if (scheduler_->Busy()) {
+    ThrowFoundryLocalError(env, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                           "setOptions is unavailable while session work is active");
+    return env.Undefined();
+  }
+  Napi::Object opts = info[0].As<Napi::Object>();
+  return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
+    impl_->SetOptions(JsToRequestOptions(env, opts));
+    return env.Undefined();
+  });
+}
+
+Napi::Value GenericSession::Dispose(const Napi::CallbackInfo& info) {
+  impl_.reset();
+  manager_lifetime_.reset();
+  manager_.Reset();
+  return info.Env().Undefined();
+}
+
+Napi::Value GenericSession::IsDisposed(const Napi::CallbackInfo& info) {
+  return Napi::Boolean::New(info.Env(), impl_ == nullptr);
+}
 
 // ──────────────────────────────────────────────────────────────────────────
 // ChatSession

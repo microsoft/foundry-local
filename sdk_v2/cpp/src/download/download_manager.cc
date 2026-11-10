@@ -481,7 +481,7 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
     }
 
     DownloadBlobsToDirectory(*blob_downloader_, container.blob_sas_uri,
-                             model_path, download_opts, stats);
+                             model_path, download_opts, stats, logger_);
 
     record_stats(stats);
     tracker.SetDownloadWaitResult("Completed");
@@ -527,6 +527,14 @@ std::string DownloadManager::GetModelCachePath(const ModelInfo& info) const {
   }
 
   return {};
+}
+
+std::string DownloadManager::GetCompletedModelCachePath(const ModelInfo& info) const {
+  if (!IsModelCached(info)) {
+    return {};
+  }
+
+  return ResolveEffectiveModelPath(ComputeModelPath(info));
 }
 
 void DownloadManager::RemoveModelFromCache(const ModelInfo& info, const std::string& local_path,

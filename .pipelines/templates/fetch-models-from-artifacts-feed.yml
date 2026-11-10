@@ -11,12 +11,15 @@ parameters:
 - name: modelSet
   type: string
   default: all
-  values: ['all', 'streaming-asr']
+  values: ['all', 'streaming-asr', 'non-generative']
 
 steps:
+# Downloads are immutable and can be retried; a stalled transfer must not consume the whole job budget.
 - ${{ if eq(parameters.modelSet, 'all') }}:
   - task: UniversalPackages@0
     displayName: 'Fetch Qwen 2.5 0.5B Instruct test model'
+    timeoutInMinutes: 20
+    retryCountOnTaskFailure: 2
     inputs:
       command: download
       feedsToUse: internal
@@ -28,6 +31,8 @@ steps:
 - ${{ if eq(parameters.modelSet, 'all') }}:
   - task: UniversalPackages@0
     displayName: 'Fetch OpenAI Whisper Tiny test model'
+    timeoutInMinutes: 20
+    retryCountOnTaskFailure: 2
     inputs:
       command: download
       feedsToUse: internal
@@ -36,19 +41,24 @@ steps:
       vstsPackageVersion: '4.0.0'
       downloadDirectory: '${{ parameters.destinationPath }}/Microsoft/openai-whisper-tiny-generic-cpu-4'
 
-- task: UniversalPackages@0
-  displayName: 'Fetch Nemotron Speech Streaming test model'
-  inputs:
-    command: download
-    feedsToUse: internal
-    vstsFeed: 'AIFoundryLocal/AIFoundryLocal_PublicPackages'
-    vstsFeedPackage: 'foundry-local-nemotron-speech-streaming-en-0-6b-generic-cpu'
-    vstsPackageVersion: '3.0.0'
-    downloadDirectory: '${{ parameters.destinationPath }}/Microsoft/nemotron-speech-streaming-en-0.6b-generic-cpu-3'
+- ${{ if or(eq(parameters.modelSet, 'all'), eq(parameters.modelSet, 'streaming-asr')) }}:
+  - task: UniversalPackages@0
+    displayName: 'Fetch Nemotron Speech Streaming test model'
+    timeoutInMinutes: 20
+    retryCountOnTaskFailure: 2
+    inputs:
+      command: download
+      feedsToUse: internal
+      vstsFeed: 'AIFoundryLocal/AIFoundryLocal_PublicPackages'
+      vstsFeedPackage: 'foundry-local-nemotron-speech-streaming-en-0-6b-generic-cpu'
+      vstsPackageVersion: '3.0.0'
+      downloadDirectory: '${{ parameters.destinationPath }}/Microsoft/nemotron-speech-streaming-en-0.6b-generic-cpu-3'
 
 - ${{ if eq(parameters.modelSet, 'all') }}:
   - task: UniversalPackages@0
     displayName: 'Fetch Qwen3 Embedding test model'
+    timeoutInMinutes: 20
+    retryCountOnTaskFailure: 2
     inputs:
       command: download
       feedsToUse: internal
@@ -60,6 +70,8 @@ steps:
 - ${{ if eq(parameters.modelSet, 'all') }}:
   - task: UniversalPackages@0
     displayName: 'Fetch Qwen3.5 0.8B test model'
+    timeoutInMinutes: 20
+    retryCountOnTaskFailure: 2
     inputs:
       command: download
       feedsToUse: internal
@@ -71,6 +83,8 @@ steps:
 - ${{ if eq(parameters.modelSet, 'all') }}:
   - task: UniversalPackages@0
     displayName: 'Fetch DeepSeek R1 Distill Qwen 14B test model'
+    timeoutInMinutes: 20
+    retryCountOnTaskFailure: 2
     inputs:
       command: download
       feedsToUse: internal
@@ -78,3 +92,28 @@ steps:
       vstsFeedPackage: 'foundry-local-deepseek-r1-distill-qwen-14b-generic-cpu'
       vstsPackageVersion: '4.0.0'
       downloadDirectory: '${{ parameters.destinationPath }}/Microsoft/deepseek-r1-distill-qwen-14b-generic-cpu-4'
+
+- ${{ if eq(parameters.modelSet, 'non-generative') }}:
+  - task: UniversalPackages@0
+    displayName: 'Fetch CLM 8B mixed CPU integration model'
+    timeoutInMinutes: 20
+    retryCountOnTaskFailure: 2
+    inputs:
+      command: download
+      feedsToUse: internal
+      vstsFeed: 'AIFoundryLocal/AIFoundryLocal_PublicPackages'
+      vstsFeedPackage: 'foundry-local-clm-v0-1-8b-mixed-generic-cpu'
+      vstsPackageVersion: '1.0.0'
+      downloadDirectory: '${{ parameters.destinationPath }}/Microsoft/clm-v0.1-8b-mixed-generic-cpu-1'
+
+  - task: UniversalPackages@0
+    displayName: 'Fetch KEV 0.8B mixed CPU integration model'
+    timeoutInMinutes: 20
+    retryCountOnTaskFailure: 2
+    inputs:
+      command: download
+      feedsToUse: internal
+      vstsFeed: 'AIFoundryLocal/AIFoundryLocal_PublicPackages'
+      vstsFeedPackage: 'foundry-local-kev-0-8b-mixed-generic-cpu'
+      vstsPackageVersion: '1.0.0'
+      downloadDirectory: '${{ parameters.destinationPath }}/Microsoft/kev-0.8b-mixed-generic-cpu-1'

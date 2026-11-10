@@ -6,11 +6,11 @@
 #   1. Install a stable Rust toolchain (clippy + rustfmt), plus the cross target
 #      when `crossTarget` is set (win-arm64 is cross-compiled from an x64 host).
 #   2. Assemble a native runtime directory:
-#        * `foundry_local`, ONNX Runtime, and GenAI taken from the matching
-#          `cpp-native-<rid>` pipeline artifact
+#        * `foundry_local`, its native host and manifest, ONNX Runtime, and GenAI
+#          taken from the matching `cpp-native-<rid>` pipeline artifact
 #        * the reg-free WinML DLL included by the Windows native artifacts
 #      The directory is handed to build.rs via `FOUNDRY_LOCAL_NATIVE_BIN_DIR`,
-#      which copies every platform library into OUT_DIR and bakes the path into
+#      which copies the native payload into OUT_DIR and bakes the path into
 #      the crate, so both unit and integration tests resolve the native by that
 #      baked path.
 #   3. Stamp the crate version from the shared `version-info` artifact.
@@ -20,9 +20,8 @@
 #      integration suite (serialised: the native core enforces a single manager
 #      per process).
 #
-# For a cross build (`crossTarget` set) only fmt + `cargo clippy --target`
-# (check-level) run: the arm64 binaries can't execute on the x64 host, matching
-# the build-only treatment win-arm64 gets in the C# / Python matrices.
+# Cross builds check the SDK against the matching native runtime, but do not
+# execute ARM64 binaries on the x64 agent.
 
 parameters:
 - name: rid
@@ -38,6 +37,10 @@ parameters:
   type: string
   default: ''
   # e.g. 'aarch64-pc-windows-msvc' for the win-arm64 cross build; '' for native.
+- name: runRequiredNonGenerativeTests
+  type: boolean
+  default: false
+  # Enable only on one supported x64 lane that fetched the non-generative model set.
 
 steps:
 
@@ -121,6 +124,16 @@ steps:
       foreach ($f in $nativeFiles) {
         Copy-Item $f.FullName (Join-Path $assembled $f.Name) -Force
         Write-Host "  native : $($f.Name)"
+      }
+      $hostName = if ($rid.StartsWith('win')) { 'foundry-local-host.exe' } else { 'foundry-local-host' }
+      foreach ($name in @($hostName, 'foundry-local-runtime.json')) {
+        $files = @(Get-ChildItem -Path $nativeSrc -Recurse -File | Where-Object Name -eq $name)
+        if ($files.Count -ne 1) { throw "Expected one '$name' under '$nativeSrc'." }
+        Copy-Item $files[0].FullName (Join-Path $assembled $name) -Force
+      }
+      if (-not $IsWindows) {
+        & chmod +x (Join-Path $assembled $hostName)
+        if ($LASTEXITCODE -ne 0) { throw 'Failed to preserve native host executable permissions' }
       }
 
       Write-Host "Assembled native dir: $assembled"
@@ -252,10 +265,46 @@ steps:
           $ErrorActionPreference = 'Stop'
           # Serialise: the native core enforces a single FoundryLocalManager per
           # process, so tests that each create one must not run concurrently.
-          cargo test --tests -- --test-threads=1 --nocapture
+          $testArgs = @('--tests', '--', '--test-threads=1', '--nocapture')
+          if ('${{ parameters.runRequiredNonGenerativeTests }}' -eq 'true') {
+            # The required real-model task below runs these once with strict
+            # package presence and discovery checks.
+            $testArgs += @('--skip', 'non_generative_test::')
+          }
+          cargo test @testArgs
           if ($LASTEXITCODE -ne 0) { throw "cargo test --tests failed" }
       env:
         FOUNDRY_LOCAL_NATIVE_BIN_DIR: $(flNativeDir)
         FOUNDRY_LOCAL_LIB_DIR: $(flNativeDir)
         FOUNDRY_TEST_DATA_DIR: '$(Build.SourcesDirectory)/test-data-shared'
         TF_BUILD: 'true'
+
+    - ${{ if parameters.runRequiredNonGenerativeTests }}:
+      - task: PowerShell@2
+        displayName: 'cargo test predictive real models (required)'
+        inputs:
+          targetType: inline
+          pwsh: true
+          workingDirectory: '$(Build.SourcesDirectory)/sdk_v2/rust'
+          script: |
+            $ErrorActionPreference = 'Stop'
+            $root = '$(Build.SourcesDirectory)/test-data-shared/Microsoft'
+            $required = @(
+              (Join-Path $root 'clm-v0.1-8b-mixed-generic-cpu-1'),
+              (Join-Path $root 'kev-0.8b-mixed-generic-cpu-1')
+            )
+            foreach ($package in $required) {
+              if (-not (Test-Path -LiteralPath $package -PathType Container)) {
+                throw "Required predictive model package directory is missing: $package"
+              }
+              Write-Host "Found required predictive model package: $package"
+            }
+
+            cargo test --test integration non_generative_test:: -- --test-threads=1 --nocapture
+            if ($LASTEXITCODE -ne 0) { throw "required predictive real-model tests failed" }
+        env:
+          FOUNDRY_LOCAL_NATIVE_BIN_DIR: $(flNativeDir)
+          FOUNDRY_LOCAL_LIB_DIR: $(flNativeDir)
+          FOUNDRY_TEST_DATA_DIR: '$(Build.SourcesDirectory)/test-data-shared'
+          FOUNDRY_REQUIRE_NON_GENERATIVE_MODELS: 'true'
+          TF_BUILD: 'true'

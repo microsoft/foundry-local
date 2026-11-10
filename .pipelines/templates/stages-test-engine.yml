@@ -25,35 +25,42 @@ stages:
 
     - template: steps-prefetch-vcpkg.yml
 
-    - task: UsePythonVersion@0
-      displayName: 'Use Python 3.12'
-      inputs:
-        versionSpec: '3.12'
-        architecture: x64
+    - template: steps-cache-vcpkg.yml
+      parameters:
+        platform: 'engine-linux-x64'
 
     - task: PipAuthenticate@1
-      displayName: 'Authenticate AIFoundryLocal_PublicPackages for pip'
+      displayName: 'Authenticate Lotus for pip'
       inputs:
-        artifactFeeds: 'AIFoundryLocal/AIFoundryLocal_PublicPackages'
+        artifactFeeds: 'Lotus'
 
     - template: steps-prefetch-nuget.yml
       parameters:
         ortVersion: ${{ parameters.ortVersion }}
         genaiVersion: ${{ parameters.genaiVersion }}
 
+    - task: PipAuthenticate@1
+      displayName: 'Authenticate AIFoundryLocal_PublicPackages for pip'
+      inputs:
+        artifactFeeds: 'AIFoundryLocal/AIFoundryLocal_PublicPackages'
+
     - bash: |
         set -euo pipefail
+        # Match Ubuntu's OpenSSL rather than using a toolcache Python built for another distribution.
+        /usr/bin/python3 -c "import ssl, sys; assert sys.version_info[:2] == (3, 12), sys.version; ssl.create_default_context(); print(sys.executable); print(sys.version); print(ssl.OPENSSL_VERSION)"
         git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
-        python -m venv "$ENGINE_VENV"
+        /usr/bin/python3 -m venv "$ENGINE_VENV"
         python="$ENGINE_VENV/bin/python"
         export PATH="$ENGINE_VENV/bin:$PATH"
+        : "${PIP_INDEX_URL:?PipAuthenticate did not set PIP_INDEX_URL}"
         "$python" -m pip install "cmake==3.31.6"
         "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
-        git clone --depth 1 --branch v3.10.281.1 \
+        git clone --depth 1 --branch v3.10.309.1 \
           https://github.com/microsoft/cpp_client_telemetry.git "$TELEMETRY_SOURCE"
-        test "$(git -C "$TELEMETRY_SOURCE" rev-parse HEAD)" = 29d0083644f6450fec037f8afc1ad8d8a3b3c830
+        test "$(git -C "$TELEMETRY_SOURCE" rev-parse HEAD)" = 114a2c5469f898f970e85eac6f5d82595a550588
         git -C "$TELEMETRY_SOURCE" apply "$PWD/ports/cpp-client-telemetry/apple-system-libraries.patch"
         git -C "$TELEMETRY_SOURCE" apply "$PWD/ports/cpp-client-telemetry/sdk-version-lifetime.patch"
+        git -C "$TELEMETRY_SOURCE" apply "$PWD/ports/cpp-client-telemetry/apple-delegate-namespace.patch"
         "$python" build.py --configure --build --skip_examples \
           --config "$BUILD_CONFIG" \
           --cmake_path "$ENGINE_VENV/bin/cmake" \

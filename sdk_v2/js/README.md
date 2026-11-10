@@ -17,11 +17,29 @@ For a user-facing introduction to the inference API and cross-language examples,
 
 - **Model catalog** — browse public models and inspect cached or loaded state
 - **Bring your own model (BYOM)** — register existing local model assets without copying or taking ownership of them
-- **Native inference** — run chat, embeddings, and audio sessions directly through the C++ engine
+- **Native inference** — run chat, embeddings, audio, ranking, and typed-decision sessions directly through the C++ engine
 - **Streaming and tool calling** — consume streamed items and run multi-turn tool-enabled chat
 - **Embedded web service** — optionally expose OpenAI-compatible HTTP endpoints
 
 ---
+
+## Native shared hosting
+
+Set `useSharedHost: true` in `FoundryLocalManager` configuration to route existing model/session APIs through the
+native host included in the npm package. The default remains in-process. Metadata, discovery and model downloads do
+not start the host; execution, cache removal, EP download/registration or `manager.startWebService()` starts or joins it.
+Clients must match the Foundry native build, IPC protocol, platform and effective catalog, data/cache, provider, web,
+logs directory/level, telemetry and additional settings other than `UserAgent`. Dependency hashes and packaging paths
+do not split hosts; the first starter's verified runtime serves all clients. This cannot be combined with
+`serviceEndpoint`; hosted mode never falls back to in-process execution.
+
+`manager.dispose()` releases only this client. After the final owner, the host drains admitted work, allows a
+five-second reconnect grace and exits normally. Keep the manager alive while using its HTTP endpoint; HTTP
+connections are not owners. Explicit model unload stays shared and rejects in-use models. Web-service Stop rejects
+other owners or active HTTP work.
+
+`manager.urls` observes listeners without starting the service and returns `[]` after disposal. See the
+[shared-host requirements](../cpp/README.md#quick-start) for inherited environment/cwd and Linux prerequisites.
 
 ## 1. Architecture in 30 seconds
 
@@ -51,6 +69,103 @@ Request preflight captures state synchronously, executes token counting on a wor
 manager-owned runtime alive until completion.
 `contextLimitTokens` is the Engine's structural request capacity or the Generator's model context.
 `fits` does not reserve cache or guarantee immediate admission while other requests are active.
+
+Both `session.processRequest(request, { signal })` and `session.processStreamingRequest(request, { signal })`
+accept an `AbortSignal`. Pre-aborted signals prevent submission; aborting removes queued requests or cancels active
+inference. Cancellation rejects with `AbortError`, but a completed native response can win the race. Compatibility
+chat, audio, and embedding methods accept the same options as their last argument; for chat without tools, use
+`client.completeChat(messages, undefined, { signal })`.
+Cancellation is cooperative once a worker is active, so that worker can temporarily keep `model.unload()` blocked.
+Await the request's settlement before disposing the session and unloading the model.
+
+### Ranking and typed decisions
+
+`RankingSession` and `DecisionSession` use the same contracts as
+`POST /v1/rank` and `POST /v1/systemone`:
+
+```ts
+import { DecisionSession, RankingSession } from "foundry-local-sdk";
+
+let ranking: RankingSession | undefined;
+let rankingFailure: unknown;
+try {
+  await cachedRankingModel.load();
+  ranking = new RankingSession(cachedRankingModel);
+  const ranked = await ranking.rank({
+    context: { weather: "rain" },
+    question: "Which activity is best?",
+    answers: ["picnic", "museum"],
+  });
+  console.log(ranked.ranked.map(({ candidate, rank, prob }) => ({ candidate, rank, prob })));
+} catch (error) {
+  rankingFailure = error;
+  throw error;
+} finally {
+  try {
+    ranking?.dispose();
+  } catch (error) {
+    rankingFailure ??= error;
+  }
+  try {
+    await cachedRankingModel.unload();
+  } catch (error) {
+    rankingFailure ??= error;
+  }
+  if (rankingFailure !== undefined) throw rankingFailure;
+}
+
+let decisions: DecisionSession | undefined;
+let decisionFailure: unknown;
+try {
+  await cachedDecisionModel.load();
+  decisions = new DecisionSession(cachedDecisionModel);
+  const result = await decisions.decide({
+    state: { weather: "rain" },
+    questions: {
+      umbrella: { type: "noul", instructions: "Should I take an umbrella?" },
+      activity: {
+        type: "choice",
+        criteria: { indoors: "Visit a museum", outdoors: "Have a picnic" },
+      },
+      suitability: {
+        type: "score",
+        criteria: ["unsuitable", "acceptable", "ideal"],
+      },
+    },
+  });
+  for (const [id, answer] of Object.entries(result.answers)) {
+    if (answer.type === "noul") console.log(id, answer.noul);
+    if (answer.type === "choice") console.log(id, answer.choice);
+    if (answer.type === "score") console.log(id, answer.score);
+  }
+} catch (error) {
+  decisionFailure = error;
+  throw error;
+} finally {
+  try {
+    decisions?.dispose();
+  } catch (error) {
+    decisionFailure ??= error;
+  }
+  try {
+    await cachedDecisionModel.unload();
+  } catch (error) {
+    decisionFailure ??= error;
+  }
+  if (decisionFailure !== undefined) throw decisionFailure;
+}
+```
+
+Obtain each model from a catalog/cache (or register a local model), then load it before constructing the session.
+Sessions are reusable for sequential requests against that loaded model. Dispose the session before awaiting
+`model.unload()`; a session borrows its caller-owned model and never unloads it. Construct the session inside the
+protected scope because construction can fail, and preserve the original request/construction error while still
+attempting both disposal and unload, as above.
+
+The inherited low-level `processRequest()` API accepts exactly one
+`Item.text(JSON.stringify(payload), "openai-json")` item and returns one OpenAI JSON text item.
+Sessions validate the model task before native construction and must be disposed like chat and
+embeddings sessions.
 
 ---
 

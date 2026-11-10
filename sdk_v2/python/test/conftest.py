@@ -22,6 +22,8 @@ process by the session-scoped ``manager`` fixture.
 from __future__ import annotations
 
 import os
+import threading
+from pathlib import Path
 
 import pytest
 
@@ -29,6 +31,7 @@ import pytest
 # ---------------------------------------------------------------------------
 # CI detection
 # ---------------------------------------------------------------------------
+
 
 def is_running_in_ci() -> bool:
     azure_devops = os.environ.get("TF_BUILD", "false").lower() == "true"
@@ -42,9 +45,61 @@ IS_CI: bool = is_running_in_ci()
 FOUNDRY_TEST_DATA_DIR: str | None = os.environ.get("FOUNDRY_TEST_DATA_DIR") or None
 
 
+@pytest.fixture
+def cancel_on_native_processing(monkeypatch):
+    """Cancel a synchronous request while a native callback holds it in flight."""
+    from foundry_local_sdk._native import ffi
+    from foundry_local_sdk._native.api import api
+    from foundry_local_sdk.request import Request
+    from foundry_local_sdk.session import Session
+
+    event = threading.Event()
+    cancel_attempted = threading.Event()
+    callback_timed_out = threading.Event()
+    original_cancel = Request.cancel
+    original_process = Session.process_request
+
+    def cancel(request):
+        original_cancel(request)
+        cancel_attempted.set()
+
+    @ffi.callback("flStreamingCallback")
+    def on_native_processing(data, _user_data):
+        event.set()
+        if not cancel_attempted.wait(timeout=5):
+            callback_timed_out.set()
+        if data.item_queue != ffi.NULL:
+            item = ffi.new("flItem**")
+            while api.item.ItemQueue_TryPop(data.item_queue, item):
+                api.item.Item_Release(item[0])
+        return 0
+
+    def process(session, request, *, cancel_event=None):
+        if cancel_event is not event or event.is_set():
+            return original_process(session, request, cancel_event=cancel_event)
+
+        # Hold a native output callback until the dispatcher cancels the synchronous request.
+        assert not session._streaming_enabled
+        api.check_status(api.inference.Session_SetStreamingCallback(session._ptr, on_native_processing, ffi.NULL))
+        try:
+            return original_process(session, request, cancel_event=cancel_event)
+        finally:
+            api.check_status(
+                api.inference.Session_SetStreamingCallback(
+                    session._ptr, ffi.cast("flStreamingCallback", 0), ffi.NULL
+                )
+            )
+            assert not callback_timed_out.is_set(), "Cancellation did not reach the in-flight native request"
+
+    monkeypatch.setattr(Request, "cancel", cancel)
+    monkeypatch.setattr(Session, "process_request", process)
+    return event
+
+
 # ---------------------------------------------------------------------------
 # Session-scoped manager — singleton, created exactly once per test process
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(scope="session")
 def manager():
@@ -97,6 +152,7 @@ def manager():
                 # hides real native shutdown bugs. Surface as a warning so it
                 # appears in pytest's warnings summary without failing the run.
                 import warnings
+
                 warnings.warn(
                     f"FoundryLocalManager teardown raised: {e!r}",
                     RuntimeWarning,
@@ -108,7 +164,10 @@ def manager():
 # Model discovery helpers
 # ---------------------------------------------------------------------------
 
-def _find_smallest_cached_model_for_task(manager, task: str, *, name_substr: str | None = None):
+
+def _find_smallest_cached_model_for_task(
+    manager, task: str, *, name_substr: str | None = None, catalog=None, require_size: bool = True
+):
     """Return the smallest cached model variant whose task matches.
 
     Walks each alias and its variants — selecting a CPU variant when the default selection has the wrong task
@@ -128,7 +187,7 @@ def _find_smallest_cached_model_for_task(manager, task: str, *, name_substr: str
 
     best = None
     best_size = None
-    for model in manager.catalog.list_models():
+    for model in (catalog or manager.catalog).list_models():
         info = model.info
         if info.task != task:
             # Try variants for a matching task. Only swallow SDK errors —
@@ -154,7 +213,7 @@ def _find_smallest_cached_model_for_task(manager, task: str, *, name_substr: str
         if not _name_matches(model):
             continue
         size = info.file_size_mb or 0
-        if size <= 0:
+        if require_size and size <= 0:
             continue
         if best_size is None or size < best_size:
             best = model
@@ -180,6 +239,21 @@ def _model_fixture_or_skip(manager, task: str, role: str, *, load: bool, name_su
         except FoundryLocalException as e:
             pytest.skip(f"Could not load {role} model {model.alias!r}: {e}")
     return model
+
+
+def _register_staged_model(catalog, directory: str, model_id: str, task: str):
+    if not FOUNDRY_TEST_DATA_DIR:
+        return None
+
+    package = Path(FOUNDRY_TEST_DATA_DIR) / "Microsoft" / directory
+    if not package.is_dir():
+        return None
+
+    from foundry_local_sdk import ModelInfoBuilder
+
+    with ModelInfoBuilder() as metadata:
+        metadata.set_string_property("task", task)
+        return catalog.register_model(package, model_id, metadata)
 
 
 # Pinned chat model for deterministic streaming/content assertions. Matches the
@@ -212,6 +286,50 @@ def chat_model(manager):
 def embedding_model(manager):
     """Smallest cached embeddings model, loaded. Skips if none cached."""
     return _model_fixture_or_skip(manager, "embeddings", "embedding", load=True)
+
+
+@pytest.fixture(scope="session")
+def ranking_model(manager):
+    """Smallest cached and explicitly loaded ranking model."""
+    from foundry_local_sdk import CatalogType
+
+    catalog = manager.get_catalog(CatalogType.LOCAL)
+    model = _find_smallest_cached_model_for_task(
+        manager, "text-ranking", catalog=catalog, require_size=False
+    )
+    if model is None:
+        model = _register_staged_model(
+            catalog,
+            "clm-v0.1-8b-mixed-generic-cpu-1",
+            "clm-v0.1-8b-mixed-generic-cpu:1",
+            "text-ranking",
+        )
+    if model is None:
+        pytest.skip("No cached local ranking model is registered.")
+    model.load()
+    return model
+
+
+@pytest.fixture(scope="session")
+def decision_model(manager):
+    """Smallest cached and explicitly loaded typed-decision model."""
+    from foundry_local_sdk import CatalogType
+
+    catalog = manager.get_catalog(CatalogType.LOCAL)
+    model = _find_smallest_cached_model_for_task(
+        manager, "typed-decision", catalog=catalog, require_size=False
+    )
+    if model is None:
+        model = _register_staged_model(
+            catalog,
+            "kev-0.8b-mixed-generic-cpu-1",
+            "kev-0.8b-mixed-generic-cpu:1",
+            "typed-decision",
+        )
+    if model is None:
+        pytest.skip("No cached local decision model is registered.")
+    model.load()
+    return model
 
 
 @pytest.fixture(scope="session")
@@ -258,6 +376,7 @@ def streaming_audio_model(manager):
 # was not built or is incompatible with the current Python.
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="session")
 def native_api():
     try:
@@ -265,4 +384,5 @@ def native_api():
     except Exception as e:
         pytest.skip(f"native cffi extension not loadable: {e}")
     from foundry_local_sdk._native.api import api, ffi
+
     return api, ffi

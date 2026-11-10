@@ -1,4 +1,4 @@
-// --------------------------------------------------------------------------------------------------------------------
+﻿// --------------------------------------------------------------------------------------------------------------------
 // <copyright company="Microsoft">
 //   Copyright (c) Microsoft. All rights reserved.
 // </copyright>
@@ -30,37 +30,15 @@ internal sealed class ManagerLifetimeTests
     }
 
     [Test]
-    public async Task Dispose_ShutsDownThenWaitsForSessionLease_AndRejectsNewCalls()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Dispose_WaitsForLeaseRelease_AndRejectsNewCalls(bool capturedPreflight)
     {
         using var lifetime = new ManagerLifetime();
-        using var shutdownCalled = new ManualResetEventSlim(false);
-        var sessionLease = lifetime.Acquire(this);
-
-        var disposeTask = Task.Run(() =>
-        {
-            if (!lifetime.TryBeginDispose())
-            {
-                throw new InvalidOperationException("Disposal did not begin.");
-            }
-
-            shutdownCalled.Set();
-            lifetime.WaitForLeases();
-        });
-
-        shutdownCalled.Wait();
-
-        await Assert.That(disposeTask.IsCompleted).IsFalse();
-        await Assert.That(() => lifetime.Acquire(this)).Throws<ObjectDisposedException>();
-
-        sessionLease.Dispose();
-        await disposeTask;
-    }
-
-    [Test]
-    public async Task Dispose_WaitsForCapturedPreflightRelease()
-    {
-        using var lifetime = new ManagerLifetime();
-        using var preflight = new RequestPreflightOperation(IntPtr.Zero, lifetime.Acquire(this));
+        var lease = lifetime.Acquire(this);
+        using IDisposable heldResource = capturedPreflight
+            ? new RequestPreflightOperation(IntPtr.Zero, lease)
+            : lease;
         using var disposeStarted = new ManualResetEventSlim(false);
 
         var disposeTask = Task.Run(() =>
@@ -74,12 +52,21 @@ internal sealed class ManagerLifetimeTests
             lifetime.WaitForLeases();
         });
 
-        disposeStarted.Wait();
-        await Task.Delay(100);
-        await Assert.That(disposeTask.IsCompleted).IsFalse();
-
-        preflight.Dispose();
-        await disposeTask;
+        try
+        {
+            await Assert.That(disposeStarted.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+            var observationWindow = Task.Delay(TimeSpan.FromMilliseconds(100));
+            var completed = await Task.WhenAny(disposeTask, observationWindow);
+            await Assert.That(ReferenceEquals(completed, observationWindow)).IsTrue();
+            await Assert.That(() => lifetime.Acquire(this)).Throws<ObjectDisposedException>();
+        }
+        finally
+        {
+            heldResource.Dispose();
+            var completed = await Task.WhenAny(disposeTask, Task.Delay(TimeSpan.FromSeconds(5)));
+            await Assert.That(ReferenceEquals(completed, disposeTask)).IsTrue();
+            await disposeTask;
+        }
     }
 
     [Test]
@@ -127,6 +114,47 @@ internal sealed class ManagerLifetimeTests
 
         operation.Dispose();
         await disposeTask;
+    }
+
+    [Test]
+    public async Task SessionOperationGate_QueuedAdmissionIsAsyncAndCancelable()
+    {
+        var gate = new SessionOperationGate();
+        using var active = gate.Acquire(this, assignCurrentThread: false);
+        using var cts = new CancellationTokenSource();
+        var queued = gate.AcquireAsync(this, cts.Token);
+        await Assert.That(queued.IsCompleted).IsFalse();
+        cts.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => queued);
+
+        active.Dispose();
+        using var reuse = await gate.AcquireAsync(this, CancellationToken.None);
+    }
+
+    [Test]
+    public async Task SessionOperationGate_PreCanceledAdmissionDoesNotWaitOrTakeOwnership()
+    {
+        var gate = new SessionOperationGate();
+        using var active = gate.Acquire(this, assignCurrentThread: false);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => gate.AcquireAsync(this, cts.Token));
+
+        active.Dispose();
+        using var reuse = await gate.AcquireAsync(this, CancellationToken.None);
+    }
+
+    [Test]
+    public async Task SessionOperationGate_CloseWakesQueuedAsyncAdmission()
+    {
+        var gate = new SessionOperationGate();
+        using var active = gate.Acquire(this, assignCurrentThread: false);
+        var queued = gate.AcquireAsync(this, CancellationToken.None);
+        await Assert.That(queued.IsCompleted).IsFalse();
+        gate.BeginClose();
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => queued);
+        active.Dispose();
+        gate.WaitForOperations();
     }
 
     [Test]

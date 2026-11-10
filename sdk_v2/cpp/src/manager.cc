@@ -8,6 +8,8 @@
 
 #include <atomic>
 #include <DebugEvents.hpp>
+#include <charconv>
+#include <limits>
 #include <string_view>
 
 #include "catalog.h"
@@ -71,6 +73,21 @@ bool IsGenAIVerboseLoggingEnabled() {
 bool IsAdditionalOptionEnabled(const Configuration& config, const std::string& option_name) {
   const auto it = config.additional_options.find(option_name);
   return it != config.additional_options.cend() && IsTruthyConfigValue(it->second);
+}
+
+uint64_t UnsignedAdditionalOption(const Configuration& config,
+                                  const std::string& name,
+                                  uint64_t fallback) {
+  const auto found = config.additional_options.find(name);
+  if (found == config.additional_options.end()) return fallback;
+  uint64_t value{};
+  const auto& text = found->second;
+  const auto [end, error] =
+      std::from_chars(text.data(), text.data() + text.size(), value);
+  if (error != std::errc{} || end != text.data() + text.size() || !value)
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, name,
+             " must be a positive integer");
+  return value;
 }
 
 OrtLoggingLevel GetDefaultOrtLoggingLevel(bool genai_verbose_logging_enabled) {
@@ -210,8 +227,32 @@ struct Manager::InstanceOwner {
   std::unique_ptr<Manager> instance;
 };
 
+void Manager::PrepareOrtEnvironment() {
+#ifdef _WIN32
+  // Temporary workaround until our ORT core and EP bundles include microsoft/onnxruntime#33291.
+  // Suppress uploader initialization before any ORT/GenAI calls, including in subsequently loaded EP libraries.
+  if (!::SetEnvironmentVariableW(L"ORT_DISABLE_TELEMETRY", L"1")) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+             fmt::format("Failed to disable ORT telemetry (Windows error {}).", ::GetLastError()));
+  }
+#endif
+}
+
 Manager::Manager(const Configuration& config) : config_(config) {
   config_.Validate();
+  const auto non_generative_memory_budget_bytes =
+      UnsignedAdditionalOption(
+          config_, "NonGenerativeMemoryBudgetBytes",
+          (std::numeric_limits<uint64_t>::max)());
+  const auto non_generative_readiness_concurrency =
+      UnsignedAdditionalOption(
+          config_, "NonGenerativeReadinessConcurrency", 1);
+  if (non_generative_readiness_concurrency >
+      (std::numeric_limits<size_t>::max)())
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "NonGenerativeReadinessConcurrency exceeds size_t");
+  PrepareOrtEnvironment();
+
   const auto user_agent = config_.additional_options.find("UserAgent");
   SetDefaultUserAgent(user_agent == config_.additional_options.end() ? std::string_view{}
                                                                      : std::string_view(user_agent->second));
@@ -268,6 +309,26 @@ Manager::Manager(const Configuration& config) : config_(config) {
     }
 
     registered_ep_libraries_.push_back(registration_name);
+    if (registration_name == "Foundry.WebGPU") {
+      constexpr std::string_view oga_registration_name =
+          "WebGpuExecutionProvider";
+      try {
+        OgaRegisterExecutionProviderLibrary(oga_registration_name.data(),
+                                            library_path.string().c_str());
+        oga_registered_ep_libraries_.emplace_back(oga_registration_name);
+      } catch (const std::exception& error) {
+        OrtStatus* unregister_status =
+            ort_api_->UnregisterExecutionProviderLibrary(
+                ort_env_, registration_name.c_str());
+        if (unregister_status != nullptr)
+          ort_api_->ReleaseStatus(unregister_status);
+        registered_ep_libraries_.pop_back();
+        log.Log(LogLevel::Warning,
+                std::string("EP registration: ORT GenAI registration failed for '") +
+                    registration_name + "': " + error.what());
+        return false;
+      }
+    }
 
     auto version = GetEpVersion(*ort_api_, *ort_env_, registration_name);
     log.Log(LogLevel::Information, std::string("EP registration: '") + registration_name +
@@ -363,7 +424,9 @@ Manager::Manager(const Configuration& config) : config_(config) {
   download_manager_ =
       std::make_unique<DownloadManager>(*config_.model_cache_dir, config_.catalog_region.value_or("auto"),
                                         download_concurrency, *logger_, *telemetry_, disable_region_fallback);
-  model_load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
+  model_load_manager_ = std::make_unique<ModelLoadManager>(
+      *ep_detector_, *logger_, non_generative_memory_budget_bytes,
+      static_cast<size_t>(non_generative_readiness_concurrency));
   session_manager_ = std::make_unique<SessionManager>(*logger_);
 
   public_catalog_ = std::make_unique<AzureModelCatalog>(
@@ -401,12 +464,27 @@ Manager::~Manager() {
   web_service_.reset();
 #endif
   session_manager_.reset();
+  if (model_load_manager_) {
+    model_load_manager_->WaitForPredictiveRequests();
+    model_load_manager_->ReleasePredictiveSessions();
+  }
   model_load_manager_.reset();
   download_manager_.reset();
   local_catalog_.reset();
   public_catalog_.reset();
   telemetry_.reset();
 
+  for (auto it = oga_registered_ep_libraries_.rbegin();
+       it != oga_registered_ep_libraries_.rend(); ++it) {
+    try {
+      OgaUnregisterExecutionProviderLibrary(it->c_str());
+    } catch (const std::exception& error) {
+      safe_log(LogLevel::Warning,
+               std::string("EP unregister: ORT GenAI unregister failed for '") +
+                   *it + "': " + error.what());
+    }
+  }
+  oga_registered_ep_libraries_.clear();
   OgaShutdown();
 
   if (ort_api_ != nullptr && ort_env_ != nullptr) {
@@ -527,17 +605,19 @@ void Manager::StartWebService() {
   ActionTracker tracker(Action::kCoreServiceStart, *telemetry_);
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
-  web_service_ = std::make_unique<WebService>(*public_catalog_, *local_catalog_, *logger_, *config_.model_cache_dir,
-                                              *model_load_manager_,
-                                              *session_manager_, *telemetry_,
-                                              [this]() { Shutdown(); });
+  web_service_ = std::make_unique<WebService>(*public_catalog_, *local_catalog_, *logger_, *config_.model_cache_dir, *model_load_manager_, *session_manager_, *telemetry_, [this]() { RequestShutdown(); }, shared_host_lifetime_);
 
   auto endpoints = config_.web_service_endpoints;
   if (endpoints.empty()) {
     endpoints.push_back("http://127.0.0.1:0");
   }
 
-  bound_urls_ = web_service_->Start(endpoints);
+  auto urls = web_service_->Start(endpoints);
+  {
+    std::lock_guard lock(urls_mutex_);
+    bound_urls_ = std::move(urls);
+  }
+
   web_service_running_ = true;
   try {
     telemetry_->StartSession();
@@ -554,11 +634,19 @@ void Manager::StartWebService() {
 #endif
 }
 
+void Manager::SetSharedHostLifetime(std::shared_ptr<hosting::HostLifetime> lifetime) {
+  if (!lifetime || web_service_running_ ||
+      (shared_host_lifetime_ && shared_host_lifetime_ != lifetime)) {
+    FL_LOG_AND_THROW(*logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                     "shared-host HTTP admission must be configured once before starting the web service");
+  }
+
+  shared_host_lifetime_ = std::move(lifetime);
+}
+
 const std::vector<std::string>& Manager::GetWebServiceUrls() const {
-  // No "not running" check: bound_urls_ is cleared in StopWebService() and is empty before
-  // StartWebService(), so the empty vector is the documented "service is not running" signal
-  // (see GetWebServiceEndpoints() docstring in foundry_local_cpp.h).
-  return bound_urls_;
+  std::lock_guard lock(urls_mutex_);
+  return *url_snapshots_.insert(bound_urls_).first;
 }
 
 void Manager::StopWebService() {
@@ -583,7 +671,10 @@ void Manager::StopWebService() {
   }
   web_service_.reset();
   web_service_running_ = false;
-  bound_urls_.clear();
+  {
+    std::lock_guard lock(urls_mutex_);
+    bound_urls_.clear();
+  }
   tracker.SetStatus(ActionStatus::kSuccess);
 #else
   FL_LOG_AND_THROW(*logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
@@ -591,13 +682,25 @@ void Manager::StopWebService() {
 #endif
 }
 
-void Manager::Shutdown() {
+void Manager::RequestShutdown() {
   bool expected = false;
   if (!shutdown_requested_.compare_exchange_strong(expected, true)) {
     return;  // already shutting down
   }
 
   logger_->Log(LogLevel::Information, "Shutdown requested");
+
+  model_load_manager_->RejectNewLoads();
+  session_manager_->CancelAll();
+}
+
+void Manager::Shutdown() {
+  RequestShutdown();
+
+  bool expected = false;
+  if (!shutdown_started_.compare_exchange_strong(expected, true)) {
+    return;
+  }
 
   // Order matters:
   //   1. Reject new loads so callers gated on IsShutdownRequested can stop early.
@@ -608,9 +711,6 @@ void Manager::Shutdown() {
   //   3. Stop the web service (JoinAll now unblocks), then drain HTTP-tracked sessions.
   //   4. Unload all models, polling per-model session refcount for direct-API users who haven't
   //      dropped their flSession* yet. Bounded by timeout so a stuck caller can't block shutdown.
-  model_load_manager_->RejectNewLoads();
-  session_manager_->CancelAll();
-
   if (web_service_running_) {
     StopWebService();
   }

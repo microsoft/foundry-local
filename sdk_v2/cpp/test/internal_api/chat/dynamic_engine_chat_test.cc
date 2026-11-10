@@ -550,7 +550,7 @@ TEST_F(DynamicEngineChatTest, AutomaticWholeTurnRequiresAnExplicitTextOrToolMode
 }
 
 TEST_F(DynamicEngineChatTest, NativeCAbiPreflightCapturesAndExecutesExactlyOnce) {
-  const auto* api = FoundryLocalGetApi(FOUNDRY_LOCAL_API_VERSION);
+  const auto* api = FoundryLocalGetApi(2);
   ASSERT_NE(api, nullptr);
   const auto* inference_api = api->GetInferenceApi();
 
@@ -561,19 +561,29 @@ TEST_F(DynamicEngineChatTest, NativeCAbiPreflightCapturesAndExecutesExactlyOnce)
   EXPECT_FALSE(request->CaptureChatSnapshot().IsCancellationRequested());
   const auto expected_prompt_tokens =
       static_cast<int64_t>(EncodeUserPrompt("Count this exact prompt.", ModelInstance()).size());
+  auto session_backend = fl::api::CreateEmbeddedSession(std::move(session));
 
   flRequestPreflight* preflight = nullptr;
   ASSERT_EQ(inference_api->Session_CreateRequestPreflight(
-                AsHandle<flSession>(session.get()), AsHandle<flRequest>(request.get()), &preflight),
+                AsHandle<flSession>(session_backend.get()), AsHandle<flRequest>(request.get()), &preflight),
             nullptr);
   ASSERT_NE(preflight, nullptr);
 
   request.reset();
-  session.reset();
+  session_backend.reset();
 
   flRequestPreflightResult result{};
-  result.version = FOUNDRY_LOCAL_API_VERSION;
+  for (const uint32_t unsupported : {0u, FOUNDRY_LOCAL_REQUEST_PREFLIGHT_RESULT_VERSION + 1u}) {
+    result.version = unsupported;
+    auto* invalid = inference_api->RequestPreflight_Execute(preflight, &result);
+    ASSERT_NE(invalid, nullptr);
+    EXPECT_EQ(api->Status_GetErrorCode(invalid), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+    api->Status_Release(invalid);
+  }
+
+  result.version = 2;
   ASSERT_EQ(inference_api->RequestPreflight_Execute(preflight, &result), nullptr);
+  EXPECT_EQ(result.version, 2u);
   EXPECT_EQ(result.prompt_tokens, expected_prompt_tokens);
   EXPECT_EQ(result.output_reserve_tokens, 17);
   EXPECT_EQ(result.required_tokens, result.prompt_tokens + result.output_reserve_tokens);
@@ -1015,6 +1025,7 @@ TEST_F(DynamicEngineChatTest, SessionOptionsFromStreamingCallbackFailWithoutBloc
   const auto* api = FoundryLocalGetApi(FOUNDRY_LOCAL_API_VERSION);
   ASSERT_NE(api, nullptr);
   ChatSession session(CatalogModel(), ModelInstance(), *logger_, telemetry_);
+  auto session_backend = fl::api::BorrowEmbeddedSession(session);
   KeyValuePairs initial_options;
   initial_options.Add("max_output_tokens", "11");
   session.SetSessionOptions(initial_options);
@@ -1029,7 +1040,7 @@ TEST_F(DynamicEngineChatTest, SessionOptionsFromStreamingCallbackFailWithoutBloc
     (void)queue->TryPop();
     ++callback_count;
     auto* status = api->GetInferenceApi()->Session_SetOptions(
-        AsHandle<flSession>(&session), AsHandle<flKeyValuePairs>(&changed_options));
+        AsHandle<flSession>(session_backend.get()), AsHandle<flKeyValuePairs>(&changed_options));
     if (status) {
       error_code = api->Status_GetErrorCode(status);
       api->Status_Release(status);

@@ -2,7 +2,10 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include <algorithm>
+#include <cctype>
 #include <string>
+#include <string_view>
 
 namespace fl {
 
@@ -18,6 +21,7 @@ enum class ExecutionProvider {
   kVitisAI = 7,
   kRyzenAI = 8,
   kQNN = 9,
+  kAMDGPU = 10,
 };
 
 struct EPUtils {
@@ -57,6 +61,13 @@ struct EPUtils {
                ep == "QNNExecutionProvider") {
       return ExecutionProvider::kQNN;
     } else {
+      std::string normalized(ep);
+      std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                     [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+      if (normalized == "amdgpu" || normalized == "amdgpuexecutionprovider") {
+        return ExecutionProvider::kAMDGPU;
+      }
+
       return ExecutionProvider::kUnknown;
     }
   }
@@ -79,6 +90,8 @@ struct EPUtils {
         return "RyzenAI";
       case ExecutionProvider::kQNN:
         return "QNN";
+      case ExecutionProvider::kAMDGPU:
+        return "AMDGPU";
       default:
         return "";
     }
@@ -104,9 +117,55 @@ struct EPUtils {
         return "RyzenAIExecutionProvider";
       case ExecutionProvider::kQNN:
         return "QNNExecutionProvider";
+      case ExecutionProvider::kAMDGPU:
+        return "AMDGPUExecutionProvider";
       default:
         return "";
     }
+  }
+
+  static std::string NormalizeRegistrationName(std::string_view provider) {
+    const auto ep = StringtoEP(provider);
+    if (ep != ExecutionProvider::kUnknown) {
+      return std::string(EPtoRegistrationName(ep));
+    }
+
+    if (provider == "dml" || provider == "DML" || provider == "DMLExecutionProvider") {
+      return "DmlExecutionProvider";
+    }
+
+    return std::string(provider);
+  }
+
+  static std::string_view RequiredEpForModelId(std::string_view model_id) {
+    constexpr struct {
+      std::string_view model_id_substr;
+      std::string_view required_ep;
+    } requirements[] = {
+        {"cuda-gpu", "CUDAExecutionProvider"},
+        {"openvino-npu", "OpenVINOExecutionProvider"},
+        {"openvino-gpu", "OpenVINOExecutionProvider"},
+        {"qnn-npu", "QNNExecutionProvider"},
+        {"trtrtx-gpu", "NvTensorRTRTXExecutionProvider"},
+        {"vitis-npu", "VitisAIExecutionProvider"},
+    };
+    for (const auto& requirement : requirements) {
+      if (model_id.find(requirement.model_id_substr) != std::string_view::npos) {
+        return requirement.required_ep;
+      }
+    }
+
+    return {};
+  }
+
+  /// CPU needs no bootstrapper; DirectML is supplied by WinML.
+  static std::string RequiredEpForConfigProvider(std::string_view provider) {
+    const auto normalized = NormalizeRegistrationName(provider);
+    if (normalized == "CPUExecutionProvider" || normalized == "DmlExecutionProvider") {
+      return {};
+    }
+
+    return normalized.ends_with("ExecutionProvider") ? normalized : std::string{};
   }
 
   /// Telemetry names the effective provider, while runtime mappings must preserve GenAI's empty/default sentinel.

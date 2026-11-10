@@ -24,6 +24,10 @@ steps:
 
 - template: steps-prefetch-vcpkg.yml
 
+- template: steps-cache-vcpkg.yml
+  parameters:
+    platform: 'manylinux-${{ parameters.arch }}'
+
 - task: PipAuthenticate@1
   displayName: 'Authenticate AIFoundryLocal_PublicPackages for pip'
   inputs:
@@ -68,6 +72,12 @@ steps:
     parameters:
       destinationPath: '$(Agent.BuildDirectory)/test-data-shared'
 
+- ${{ if and(eq(parameters.runTests, true), eq(parameters.arch, 'x64')) }}:
+  - template: fetch-models-from-artifacts-feed.yml
+    parameters:
+      destinationPath: '$(Agent.BuildDirectory)/test-data-shared'
+      modelSet: non-generative
+
 - bash: |
     set -euo pipefail
     version=$(tr -d '[:space:]' < "$(Pipeline.Workspace)/version-info/sdkVersion.txt")
@@ -84,6 +94,7 @@ steps:
       --env "HOME=$home_dir" \
       --env "VCPKG_ROOT=$(Build.BinariesDirectory)/vcpkg" \
       --env "VCPKG_DOWNLOADS=$(Build.BinariesDirectory)/vcpkg-downloads" \
+      --env VCPKG_BINARY_SOURCES \
       --env "NUGET_CACHE=$(Build.BinariesDirectory)/nuget_packages" \
       --env "SDK_VERSION=$version" \
       --env PIP_INDEX_URL \
@@ -129,6 +140,7 @@ steps:
         --env "VCPKG_ROOT=$(Build.BinariesDirectory)/vcpkg" \
         --env "FOUNDRY_TEST_DATA_DIR=$(Agent.BuildDirectory)/test-data-shared" \
         --env "TF_BUILD=true" \
+        --env "CTEST_PARALLEL_LEVEL=4" \
         --workdir "$(Build.SourcesDirectory)/sdk_v2/cpp" \
         "$(manylinuxImage)" \
         "$(Build.BinariesDirectory)/manylinux-home/venv/bin/python" build.py --test \
@@ -136,6 +148,25 @@ steps:
           --cmake_path "$(Build.BinariesDirectory)/manylinux-home/venv/bin/cmake" \
           --ctest_path "$(Build.BinariesDirectory)/manylinux-home/venv/bin/ctest"
     displayName: 'Run tests in manylinux'
+
+- ${{ if and(eq(parameters.runTests, true), eq(parameters.arch, 'x64')) }}:
+  - bash: |
+      set -euo pipefail
+      user_id=$(id -u)
+      group_id=$(id -g)
+      docker run --rm \
+        --user "$user_id:$group_id" \
+        --volume "$(Build.SourcesDirectory):$(Build.SourcesDirectory)" \
+        --volume "$(Build.BinariesDirectory):$(Build.BinariesDirectory)" \
+        --volume "$(Agent.BuildDirectory)/test-data-shared:$(Agent.BuildDirectory)/test-data-shared:ro" \
+        --env "HOME=$(Build.BinariesDirectory)/manylinux-home" \
+        --env "FOUNDRY_TEST_DATA_DIR=$(Agent.BuildDirectory)/test-data-shared" \
+        --env "LD_LIBRARY_PATH=$(Build.SourcesDirectory)/sdk_v2/cpp/build/Linux/${{ parameters.buildConfig }}/bin" \
+        --workdir "$(Build.SourcesDirectory)/sdk_v2/cpp" \
+        "$(manylinuxImage)" \
+        build/Linux/${{ parameters.buildConfig }}/bin/non_generative_sdk_tests \
+          '--gtest_filter=NonGenerativeSdkTest.Required*'
+    displayName: 'Run required non-generative real-model integration'
 
 - bash: |
     echo "=== vcpkg buildtrees error logs ==="
@@ -161,6 +192,15 @@ steps:
     fi
     cp -P "$primary" "$dst/"
     echo "  staged libfoundry_local.so"
+
+    for required in foundry-local-host foundry-local-runtime.json; do
+      if [ ! -f "$src/$required" ]; then
+        echo "ERROR: $required not found at $src/$required" >&2
+        exit 1
+      fi
+      cp -P "$src/$required" "$dst/"
+    done
+    chmod u+x "$dst/foundry-local-host"
 
     for required in libonnxruntime.so libonnxruntime-genai.so; do
       if [ ! -e "$src/$required" ]; then

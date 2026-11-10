@@ -13,6 +13,7 @@
 - [Model Catalog](#model-catalog)
   - [Catalog](#catalog)
   - [Model](#model)
+- [Shared Serving](#shared-serving)
 - [OpenAI Clients](#openai-clients)
   - [ChatClient](#chatclient)
   - [ChatCompletionStream](#chatcompletionstream)
@@ -28,6 +29,18 @@
   - [Session](#session)
   - [ChatSession](#chatsession)
   - [RequestPreflightResult](#requestpreflightresult)
+  - [RankingSession](#rankingsession)
+  - [RankingRequest](#rankingrequest)
+  - [RankedCandidate](#rankedcandidate)
+  - [RankingResult](#rankingresult)
+  - [DecisionSession](#decisionsession)
+  - [DecisionQuestionType](#decisionquestiontype)
+  - [DecisionQuestion](#decisionquestion)
+  - [DecisionRequest](#decisionrequest)
+  - [DecisionAnswer](#decisionanswer)
+  - [DecisionAnswerValue](#decisionanswervalue)
+  - [DecisionUsage](#decisionusage)
+  - [DecisionResult](#decisionresult)
   - [EmbeddingsSession](#embeddingssession)
   - [AudioSession](#audiosession)
   - [ItemQueue](#itemqueue)
@@ -69,11 +82,31 @@ pub struct FoundryLocalManager { /* private fields */ }
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `create` | `fn create(config: FoundryLocalConfig) -> Result<Arc<Self>, FoundryLocalError>` | Initialise the SDK. Returns a shared handle: while any handle is alive, all calls return the same instance (config ignored after the first). Once the last handle is dropped the native manager is torn down via `Drop`, and a later call builds a fresh instance. |
+| `create` | `fn create(config: FoundryLocalConfig) -> Result<Arc<Self>, FoundryLocalError>` | Initialise the SDK. Live handles reuse the same instance; conflicting hosted/in-process modes are rejected, including when derived handles retain it. Other settings remain those of the first configuration. Once the final native handle is dropped, a later call builds a fresh instance. |
 | `catalog` | `fn catalog(&self) -> &Catalog` | Access the model catalog. |
-| `urls` | `fn urls(&self) -> Result<Vec<String>, FoundryLocalError>` | URLs the local web service is listening on. Empty until `start_web_service` is called. |
+| `urls` | `fn urls(&self) -> Result<Vec<String>, FoundryLocalError>` | Observe current listening URLs without starting the service or acquiring shared-host ownership. Empty when no listener is running. |
 | `start_web_service` | `async fn start_web_service(&self) -> Result<(), FoundryLocalError>` | Start the local web service. Retrieve listening URLs via `urls()`. |
 | `stop_web_service` | `async fn stop_web_service(&self) -> Result<(), FoundryLocalError>` | Stop the local web service. |
+| `is_shutdown_requested` | `fn is_shutdown_requested(&self) -> bool` | Observe shutdown requested by native code or a web-service handler. |
+
+---
+
+## Shared Serving
+
+Use `FoundryLocalConfig::new("my-app").use_shared_host(true)` to route the normal manager, model and session APIs
+through the native host shipped with the runtime. In-process remains the default. Metadata, discovery and model
+downloads do not start the host; execution, cache removal, EP download/registration or `start_web_service()` starts or
+joins it. Clients must match the Foundry native build, IPC protocol, platform and effective catalog, data/cache,
+provider, web, logs directory/level, telemetry and additional settings other than `UserAgent`. Dependency hashes and
+packaging paths do not split hosts; the first starter's verified runtime serves all clients. Hosted mode cannot be
+combined with `service_endpoint` and never falls back to in-process execution.
+
+Manager shutdown/drop releases only this client's ownership. After the final owner, the host drains admitted work,
+allows a five-second reconnect grace and exits normally. Keep the manager alive while using its HTTP endpoint:
+HTTP connections are not owners. Explicit model unload stays shared and rejects in-use models. Web-service Stop
+rejects other owners or active HTTP work.
+
+See the [shared-host requirements](../../cpp/README.md#quick-start) for inherited environment/cwd and Linux prerequisites.
 
 ---
 
@@ -95,6 +128,7 @@ pub struct FoundryLocalConfig { /* private fields */ }
 | `log_level` | `fn log_level(self, level: LogLevel) -> Self` | Set the log level. |
 | `web_service_urls` | `fn web_service_urls(self, urls: impl Into<String>) -> Self` | Set the web-service listen URLs. |
 | `service_endpoint` | `fn service_endpoint(self, endpoint: impl Into<String>) -> Self` | Set an external service endpoint URL. |
+| `use_shared_host` | `fn use_shared_host(self, enabled: bool) -> Self` | Route existing APIs through the packaged native host; defaults to `false`. |
 | `catalog_url` | `fn catalog_url(self, url: impl Into<String>) -> Self` | Add a catalog source URL (no filter override). May be called multiple times. |
 | `catalog_url_with_filter` | `fn catalog_url_with_filter(self, url: impl Into<String>, filter_override: impl Into<String>) -> Self` | Add a catalog source URL with a filter override. |
 | `catalog_region` | `fn catalog_region(self, region: impl Into<String>) -> Self` | Set the Azure region used by the catalog service. |
@@ -181,7 +215,7 @@ pub struct Model { /* private fields */ }
 | `download` | `async fn download<F>(&self, progress: Option<F>) -> Result<(), FoundryLocalError>` | Download the selected variant. `F: FnMut(f64) + Send + 'static` — receives progress as a percentage (0.0–100.0). |
 | `path` | `async fn path(&self) -> Result<PathBuf, FoundryLocalError>` | Local file-system path of the selected variant. |
 | `load` | `async fn load(&self) -> Result<(), FoundryLocalError>` | Load the selected variant into memory. |
-| `unload` | `async fn unload(&self) -> Result<(), FoundryLocalError>` | Unload the selected variant from memory. |
+| `unload` | `async fn unload(&self) -> Result<(), FoundryLocalError>` | Unload the selected variant from memory after dropping every session and session clone created from it. |
 | `remove_from_cache` | `async fn remove_from_cache(&self) -> Result<(), FoundryLocalError>` | Remove the selected variant from the local cache. |
 | `create_chat_client` | `fn create_chat_client(&self) -> ChatClient` | **Deprecated** — use `ChatSession::new(&model)`. Create a ChatClient bound to the selected variant. |
 | `create_audio_client` | `fn create_audio_client(&self) -> AudioClient` | **Deprecated** — use `AudioSession::new(&model)`. Create an AudioClient bound to the selected variant. |
@@ -451,6 +485,203 @@ The limit is the Engine's structural request capacity or the Generator's model c
 Request and session state is captured synchronously before the future is returned.
 URI-backed media is resolved during execution. The captured operation executes
 once on the SDK's blocking worker.
+
+### RankingSession
+
+A typed session for loaded models whose task is `text-ranking`. Requests and
+results use the same JSON contract as `POST /v1/rank`. Dereferences to
+[`Session`](#session).
+
+Call `model.load().await` before construction. Clones share the underlying
+native session, so every clone must be dropped before `model.unload().await`.
+Dropping `rank` signals cancellation through the base session. Queued work is
+skipped; active native inference may finish before observing the signal and can
+temporarily block unload. Drain or reuse the session, drop every handle, and
+retry unload with a bounded wait.
+
+```rust
+pub struct RankingSession { /* private fields */ }
+impl Deref for RankingSession { type Target = Session; }
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `new` | `async fn new(model: &Model) -> Result<RankingSession, FoundryLocalError>` | Open a ranking session on a loaded `text-ranking` model. Returns `Validation` for any other task. |
+| `rank` | `async fn rank(&self, request: &RankingRequest) -> Result<RankingResult, FoundryLocalError>` | Validate and rank the request's candidate answers; validates the native response before returning it. |
+| `into_session` | `fn into_session(self) -> Session` | Consume this handle, yielding the base session. |
+
+### RankingRequest
+
+```rust
+pub struct RankingRequest {
+    pub context: serde_json::Value,
+    pub question: String,
+    pub answers: Vec<String>,
+    pub model: Option<String>,
+    pub temperature: Option<f32>,
+}
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `new` | `fn new(question: impl Into<String>, answers: Vec<String>) -> Self` | Create a request with null context that inherits the bound model and temperature. |
+
+`answers` must be non-empty and contain only non-empty strings without embedded
+NUL bytes. `None` model and temperature values are omitted from JSON. An
+explicit model must be non-empty and match the session's bound model; an
+explicit temperature must be finite and in `(0, 100]`. Invalid requests return
+`FoundryLocalError::Validation` before native submission.
+
+### RankedCandidate
+
+```rust
+pub struct RankedCandidate {
+    pub rank: usize,
+    pub id: String,
+    pub index: usize,
+    pub candidate: String,
+    pub probability: f64,
+}
+```
+
+`probability` maps to the endpoint's `prob` JSON field. `rank` is one-based;
+`index` is the zero-based position in the submitted answers and `id` is its
+string representation.
+
+### RankingResult
+
+```rust
+pub struct RankingResult {
+    pub model: String,
+    pub ranked: Vec<RankedCandidate>,
+}
+```
+
+### DecisionSession
+
+A typed session for loaded models whose task is `typed-decision`. Requests and
+results use the same JSON contract as `POST /v1/systemone`. Dereferences to
+[`Session`](#session).
+
+Call `model.load().await` before construction. Clones share the underlying
+native session, so every clone must be dropped before `model.unload().await`.
+Dropping `decide` signals cancellation through the base session. Queued work is
+skipped; active native inference may finish before observing the signal and can
+temporarily block unload. Drain or reuse the session, drop every handle, and
+retry unload with a bounded wait.
+
+```rust
+pub struct DecisionSession { /* private fields */ }
+impl Deref for DecisionSession { type Target = Session; }
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `new` | `async fn new(model: &Model) -> Result<DecisionSession, FoundryLocalError>` | Open a decision session on a loaded `typed-decision` model. Returns `Validation` for any other task. |
+| `decide` | `async fn decide(&self, request: &DecisionRequest) -> Result<DecisionResult, FoundryLocalError>` | Validate and evaluate all keyed typed questions; validates the native response before returning it. |
+| `into_session` | `fn into_session(self) -> Session` | Consume this handle, yielding the base session. |
+
+### DecisionQuestionType
+
+```rust
+pub enum DecisionQuestionType {
+    Noul,
+    Choice,
+    Score,
+}
+```
+
+Serializes as the lowercase values `noul`, `choice`, and `score`.
+
+### DecisionQuestion
+
+```rust
+pub struct DecisionQuestion {
+    pub kind: DecisionQuestionType,
+    pub criteria: serde_json::Value,
+    pub instructions: serde_json::Value,
+}
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `new` | `fn new(kind: DecisionQuestionType) -> Self` | Create a question with null criteria and instructions. |
+| `choice` | `fn choice(criteria: BTreeMap<String, serde_json::Value>) -> Self` | Create a choice question with object-shaped criteria. |
+| `score` | `fn score(criteria: Vec<serde_json::Value>) -> Self` | Create a score question with array-shaped criteria. |
+
+The `kind` field maps to the endpoint's `type` JSON field.
+
+### DecisionRequest
+
+```rust
+pub struct DecisionRequest {
+    pub state: serde_json::Value,
+    pub questions: BTreeMap<String, DecisionQuestion>,
+    pub model: Option<String>,
+    pub temperature: Option<f32>,
+}
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `new` | `fn new(questions: BTreeMap<String, DecisionQuestion>) -> Self` | Create a request with null state that inherits the bound model and temperature. |
+
+`questions` must be non-empty. Choice criteria must be an object and score
+criteria an array, each with 1–255 entries. Question IDs cannot contain embedded
+NUL bytes. `None` model and temperature values are omitted from JSON. An
+explicit model must be non-empty and match the session's bound model; an
+explicit decision temperature must be finite and exactly `1.0`. Invalid
+requests return `FoundryLocalError::Validation` before native submission.
+
+### DecisionAnswer
+
+```rust
+pub struct DecisionAnswer {
+    pub kind: DecisionQuestionType,
+    pub noul: Option<f64>,
+    pub choice: Option<String>,
+    pub score: Option<f64>,
+    pub confidence: Option<f64>,
+    pub probabilities: BTreeMap<String, f64>,
+    pub legend: BTreeMap<String, String>,
+}
+```
+
+The `kind` field maps to the response's `type` JSON field. The result-specific
+field (`noul`, `choice`, or `score`) is populated according to that type.
+`value()` returns the matching `DecisionAnswerValue::{Noul, Choice, Score}`
+variant while preserving the metadata fields and JSON representation.
+
+### DecisionAnswerValue
+
+```rust
+pub enum DecisionAnswerValue<'a> {
+    Noul(f64),
+    Choice(&'a str),
+    Score(f64),
+}
+```
+
+The tagged value view returned by `DecisionAnswer::value`; callers do not need
+to interpret the three optional value fields manually.
+
+### DecisionUsage
+
+```rust
+pub struct DecisionUsage {
+    pub billing_units: u64,
+}
+```
+
+### DecisionResult
+
+```rust
+pub struct DecisionResult {
+    pub model: String,
+    pub answers: BTreeMap<String, DecisionAnswer>,
+    pub usage: DecisionUsage,
+}
+```
 
 ### EmbeddingsSession
 

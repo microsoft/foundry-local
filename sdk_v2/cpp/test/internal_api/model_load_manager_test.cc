@@ -4,10 +4,12 @@
 
 #include "ep_detection/ep_detector.h"
 #include "exception.h"
+#include "inferencing/generative/chat/onnx_chat_engine.h"
 #include "inferencing/generative/genai_model_instance.h"
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
 #include "logger.h"
+#include "util/path_safety.h"
 #include "utils/temp_path.h"
 
 #include <gtest/gtest.h>
@@ -69,6 +71,22 @@ class CpuOnlyDetector : public fl::IEpDetector {
   std::string prepared_ep;
 };
 
+// Stops at preparation so tests do not create an actual GPU session.
+class AmdGpuEpDetector : public fl::IEpDetector {
+ public:
+  std::map<std::string, std::vector<std::string>> GetAvailableDevicesToEPs() const override {
+    return {{"GPU", providers}};
+  }
+
+  bool PrepareForModelLoad(std::string_view ep_name) override {
+    prepared_ep = ep_name;
+    return false;
+  }
+
+  std::vector<std::string> providers{"AMDGPUExecutionProvider"};
+  std::string prepared_ep;
+};
+
 /// Creates a minimal model directory with a dummy genai_config.json.
 /// Cleans up on destruction.
 class TempModelDir {
@@ -100,6 +118,28 @@ class TempModelDir {
 // ---------------------------------------------------------------------------
 // EP Guard Tests
 // ---------------------------------------------------------------------------
+
+TEST(ModelPathIdentityTest, MissingPathsNormalizeDotSegmentsAndTrailingSeparatorsWithoutMatchingOtherArtifacts) {
+  auto root = fl::test::TempPath::CreateTempDir("fl_model_path_identity_");
+  const auto model_path = root.path() / "missing model+%2F";
+  const auto alternate = root.path() / "absent" / ".." / model_path.filename() / ".";
+  ASSERT_FALSE(std::filesystem::exists(model_path));
+  EXPECT_TRUE(fl::ModelPathsEqual(model_path.string(), alternate.string()));
+  EXPECT_EQ(fl::NormalizeModelPath(alternate.string()), fl::NormalizeModelPath(model_path.string()));
+  EXPECT_FALSE(fl::ModelPathsEqual(model_path.string(), (model_path / "child").string()));
+  EXPECT_FALSE(fl::ModelPathsEqual(model_path.string(), (root.path() / "other-model").string()));
+}
+
+#ifdef _WIN32
+TEST(ModelPathIdentityTest, MissingWindowsExtendedDrivePathMatchesPlainPath) {
+  auto root = fl::test::TempPath::CreateTempDir("fl_extended_model_path_");
+  const auto model_path = root.path() / "removed-artifact";
+  const auto extended = std::filesystem::path(L"\\\\?\\" + model_path.wstring());
+  ASSERT_FALSE(std::filesystem::exists(model_path));
+  EXPECT_TRUE(fl::ModelPathsEqual(model_path.string(), extended.string()));
+  EXPECT_EQ(fl::NormalizeModelPath(model_path.string()), fl::NormalizeModelPath(extended.string()));
+}
+#endif
 
 TEST(ModelLoadManagerTest, LoadWithCudaOverride_CudaNotAvailable_Throws) {
   CpuOnlyDetector ep;
@@ -198,10 +238,20 @@ TEST(ModelLoadManagerTest, LoadRuntimeIdWithCudaConfig_CudaAvailable_PreparesCud
   EXPECT_EQ(ep.prepared_ep, "CUDAExecutionProvider");
 }
 
+TEST(ModelLoadManagerTest, SharedProviderPreparationHandlesTypedCudaLoad) {
+  GpuEpDetector ep;
+  fl::StderrLogger logger;
+  fl::ModelLoadManager mgr(ep, logger);
+
+  mgr.PrepareProviderForModelLoad("CUDAExecutionProvider", "typed-model:1");
+
+  EXPECT_EQ(ep.prepared_ep, "CUDAExecutionProvider");
+}
+
 TEST(ModelLoadManagerTest, LoadRuntimeIdWithCanonicalWinMlProvider_NotAvailable_Throws) {
   CpuOnlyDetector ep;
   fl::StderrLogger logger;
-  TempModelDir dir("alias-migraphx-config", "MIGraphXExecutionProvider");
+  TempModelDir dir("alias-amdgpu-config", "AMDGPUExecutionProvider");
   fl::ModelLoadManager mgr(ep, logger);
 
   try {
@@ -209,7 +259,85 @@ TEST(ModelLoadManagerTest, LoadRuntimeIdWithCanonicalWinMlProvider_NotAvailable_
     FAIL() << "Expected exception";
   } catch (const fl::Exception& e) {
     EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
-    EXPECT_NE(std::string(e.what()).find("MIGraphXExecutionProvider"), std::string::npos);
+    EXPECT_NE(std::string(e.what()).find("AMDGPUExecutionProvider"), std::string::npos);
+  }
+}
+
+TEST(ModelLoadManagerTest, LoadAmdGpuConfigAliases_NotAvailable_ThrowsBeforePreparation) {
+  for (const auto provider : {"AMDGPU", "amdgpu", "AmDgPuExecutionProvider"}) {
+    SCOPED_TRACE(provider);
+    CpuOnlyDetector ep;
+    fl::StderrLogger logger;
+    TempModelDir dir("amdgpu-alias", provider);
+    fl::ModelLoadManager mgr(ep, logger);
+    try {
+      mgr.LoadModel(dir.path(), "local/test-registration");
+      FAIL() << "Expected EP guard failure";
+    } catch (const fl::Exception& e) {
+      EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+      EXPECT_NE(std::string(e.what()).find("AMDGPUExecutionProvider"), std::string::npos);
+    }
+    EXPECT_TRUE(ep.prepared_ep.empty());
+  }
+}
+
+TEST(ModelLoadManagerTest, LoadAmdGpuOverride_NotAvailable_Throws) {
+  CpuOnlyDetector ep;
+  fl::StderrLogger logger;
+  TempModelDir dir("amdgpu-override");
+  fl::ModelLoadManager mgr(ep, logger);
+  try {
+    mgr.LoadModel(dir.path(), "local/test-registration", fl::ExecutionProvider::kAMDGPU);
+    FAIL() << "Expected EP guard failure";
+  } catch (const fl::Exception& e) {
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+    EXPECT_NE(std::string(e.what()).find("AMDGPUExecutionProvider"), std::string::npos);
+  }
+}
+
+TEST(ModelLoadManagerTest, LoadAmdGpuConfigOrOverride_PreparesCanonicalProvider) {
+  for (const auto override_ep : {fl::ExecutionProvider::kDefault, fl::ExecutionProvider::kAMDGPU}) {
+    AmdGpuEpDetector ep;
+    fl::StderrLogger logger;
+    TempModelDir dir("amdgpu-available",
+                     override_ep == fl::ExecutionProvider::kDefault ? "AMDGPUExecutionProvider" : "cuda");
+    fl::ModelLoadManager mgr(ep, logger);
+    try {
+      mgr.LoadModel(dir.path(), "local/test-registration", override_ep);
+      FAIL() << "Expected injected preparation failure";
+    } catch (const fl::Exception& e) {
+      EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INTERNAL);
+      EXPECT_NE(std::string(e.what()).find("failed to prepare AMDGPUExecutionProvider"), std::string::npos);
+    }
+    EXPECT_EQ(ep.prepared_ep, "AMDGPUExecutionProvider");
+  }
+}
+
+TEST(ModelLoadManagerTest, GenericGpuAutoSelectionDoesNotSelectAmdGpu) {
+  AmdGpuEpDetector ep;
+  fl::StderrLogger logger;
+  TempModelDir dir("generic-gpu-amdgpu-only");
+  fl::ModelLoadManager mgr(ep, logger);
+  try {
+    mgr.LoadModel(dir.path(), "model-generic-gpu:1");
+  } catch (const fl::Exception& e) {
+    EXPECT_NE(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+  }
+  EXPECT_TRUE(ep.prepared_ep.empty());
+}
+
+TEST(ModelLoadManagerTest, GenericGpuAutoSelectionStillPrefersCudaThenWebGpuWithAmdGpuAvailable) {
+  for (const auto preferred : {"CUDAExecutionProvider", "WebGpuExecutionProvider"}) {
+    AmdGpuEpDetector ep;
+    ep.providers.push_back("WebGpuExecutionProvider");
+    if (std::string_view(preferred) == "CUDAExecutionProvider") {
+      ep.providers.push_back("CUDAExecutionProvider");
+    }
+    fl::StderrLogger logger;
+    TempModelDir dir("generic-gpu-priority");
+    fl::ModelLoadManager mgr(ep, logger);
+    EXPECT_THROW(mgr.LoadModel(dir.path(), "model-generic-gpu:1"), fl::Exception);
+    EXPECT_EQ(ep.prepared_ep, preferred);
   }
 }
 
@@ -392,4 +520,59 @@ TEST_F(ModelLoadManagerUnloadTest, SameIdRequiresSameCanonicalPathForLoadLookupA
 
   EXPECT_TRUE(mgr_->UnloadModel(fl::test::kTestChatModelAlias, equivalent_path.string()));
   EXPECT_EQ(mgr_->GetLoadedModel(fl::test::kTestChatModelAlias), nullptr);
+}
+
+TEST(ModelLoadManagerTest, LoadedConfigSnapshotRequiresMatchingIdAndPathAndSurvivesUnload) {
+  fl::test::FakeServiceBindings bindings;
+  auto& manager = bindings.model_load_manager;
+  const auto model_path = fl::test::GetTestDataPath("tiny-paged-attention");
+  ASSERT_TRUE(std::filesystem::exists(model_path));
+  ASSERT_EQ(manager.LoadModel(model_path.string(), "snapshot-model:1").status,
+            fl::ModelLoadManager::LoadStatus::kSuccess);
+  const auto equivalent_path = model_path / ".";
+  const auto snapshot = manager.GetLoadedModelState("snapshot-model:1", equivalent_path.string());
+  ASSERT_TRUE(snapshot.has_value());
+  ASSERT_TRUE(snapshot->config.model.has_value());
+  ASSERT_TRUE(snapshot->config.search.has_value());
+  EXPECT_EQ(snapshot->config.model->context_length, 1024);
+  EXPECT_EQ(snapshot->config.search->max_length, 128);
+  EXPECT_EQ(snapshot->config.GetChatBackendKind(), fl::ChatBackendKind::kEngine);
+  ASSERT_TRUE(snapshot->context_length.has_value());
+  EXPECT_EQ(*snapshot->context_length, 1024u);
+  EXPECT_EQ(snapshot->model_path, fl::NormalizeModelPath(model_path.string()));
+  auto* instance = manager.GetLoadedModel("snapshot-model:1");
+  ASSERT_NE(instance, nullptr);
+  EXPECT_EQ(instance->SessionRefCount(), 0);
+  const auto* engine = instance->GetChatEngine();
+  ASSERT_NE(engine, nullptr);
+  EXPECT_EQ(engine->MaxRequestLength(), 1024u);
+  EXPECT_EQ(*snapshot->context_length, engine->MaxRequestLength());
+  EXPECT_FALSE(manager.GetLoadedModelState("unknown-model:1", model_path.string()).has_value());
+  EXPECT_FALSE(manager.GetLoadedModelState("snapshot-model:1", model_path.parent_path().string()).has_value());
+
+  EXPECT_TRUE(manager.UnloadModel("snapshot-model:1"));
+  EXPECT_FALSE(manager.GetLoadedModelState("snapshot-model:1", model_path.string()).has_value());
+  EXPECT_EQ(snapshot->config.model->context_length, 1024);
+  EXPECT_EQ(snapshot->config.search->max_length, 128);
+  EXPECT_EQ(*snapshot->context_length, 1024u);
+  EXPECT_EQ(snapshot->model_path, fl::NormalizeModelPath(model_path.string()));
+}
+
+TEST(ModelLoadManagerTest, SessionConstructionReferenceRejectsUnloadUntilAcquisitionCompletes) {
+  fl::test::FakeServiceBindings bindings;
+  auto& manager = bindings.model_load_manager;
+  const auto path = fl::test::GetTestDataPath("tiny-paged-attention");
+  ASSERT_EQ(manager.LoadModel(path.string(), "session-admission:1").status,
+            fl::ModelLoadManager::LoadStatus::kSuccess);
+  EXPECT_FALSE(manager.AcquireSessionModel("missing:1", path.string()));
+  EXPECT_FALSE(manager.AcquireSessionModel("session-admission:1", (path / "other").string()));
+  {
+    auto admitted = manager.AcquireSessionModel("session-admission:1", path.string());
+    ASSERT_TRUE(admitted);
+    EXPECT_EQ(admitted->SessionRefCount(), 1);
+    EXPECT_THROW(manager.UnloadModel("session-admission:1", path.string()), fl::Exception);
+  }
+
+  EXPECT_TRUE(manager.UnloadModel("session-admission:1", path.string()));
+  EXPECT_FALSE(manager.AcquireSessionModel("session-admission:1", path.string()));
 }

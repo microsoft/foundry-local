@@ -120,6 +120,8 @@ bool ShouldInvalidateRetainedGenerationStateAfterSuccessfulTurn(const ToolCallCo
                                                                 bool reasoning_was_active, bool stop_sequence_matched,
                                                                 bool host_output_limit_reached);
 bool ShouldInvalidateRetainedGeneratorForUndo(bool undo_all, bool has_pre_turn_boundary, bool can_rewind);
+bool ResolveToolCallingSupport(std::optional<int64_t> catalog_support,
+                               bool inferred_support) noexcept;
 std::vector<ToolDefinition> BuildJsonRequestToolDefinitions(
     std::vector<ToolDefinition> definitions, const std::vector<ToolDefinition>& session_snapshot);
 void PopulateToolDefinitions(const std::vector<ToolDefinition>& definitions, ToolCallContext& context);
@@ -138,7 +140,8 @@ ToolCallStreamAccumulator::Output PushToolOutputSegment(
 ToolCallStreamAccumulator::Output FlushToolOutput(
     RawEnvelopeDetector* raw_detector,
     ToolCallStreamAccumulator& structured_accumulator,
-    bool natural_end = true);
+    bool natural_end = true,
+    bool discard_interrupted_selected_payload = false);
 ToolCallStreamAccumulator::Output AbortRawToolOutput(
     RawEnvelopeDetector* raw_detector);
 bool InsideToolOutput(const RawEnvelopeDetector* raw_detector,
@@ -196,7 +199,8 @@ class ChatSession : public Session {
   /// Blocks until any in-flight request on this session completes.
   ///
   /// @param count  Number of turns to undo. Must be <= TurnCount().
-  void UndoTurns(size_t count) override;
+  /// @return Number of completed turns remaining.
+  size_t UndoTurns(size_t count) override;
 
  private:
   // populate session_options_

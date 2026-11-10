@@ -16,6 +16,37 @@ from foundry_local_sdk.exception import FoundryLocalException
 from foundry_local_sdk.logging_helper import set_default_logger_severity
 
 
+def _build_ep_download_result(
+    before_eps: list[EpInfo],
+    after_eps: list[EpInfo],
+    requested_names: list[str] | None,
+) -> EpDownloadResult:
+    before_by_name = {ep.name: ep.is_registered for ep in before_eps}
+    after_by_name = {ep.name: ep for ep in after_eps}
+    requested = list(
+        dict.fromkeys(
+            requested_names if requested_names is not None else (ep.name for ep in before_eps)
+        )
+    )
+    registered = [
+        ep.name
+        for ep in after_eps
+        if ep.is_registered and not before_by_name.get(ep.name, False)
+    ]
+    failed = [
+        name
+        for name in requested
+        if name not in after_by_name or not after_by_name[name].is_registered
+    ]
+
+    return EpDownloadResult(
+        success=len(failed) == 0,
+        status="All EPs registered" if not failed else "Some EPs failed",
+        registered_eps=registered,
+        failed_eps=failed,
+    )
+
+
 class FoundryLocalManager:
     """Singleton manager for Foundry Local SDK operations.
 
@@ -25,7 +56,7 @@ class FoundryLocalManager:
     Attributes:
         instance: The singleton ``FoundryLocalManager`` instance.
         catalog: The model ``Catalog`` for discovering and managing models.
-        urls: Bound URL(s) after ``start_web_service()`` is called, or ``None``.
+        urls: Current native listening URL(s), or ``None`` when not running.
     """
 
     _lock = threading.RLock()
@@ -53,7 +84,6 @@ class FoundryLocalManager:
         self._sessions: weakref.WeakSet[object] = weakref.WeakSet()
         self._close_started = threading.Event()
         self._close_started_lock = threading.Lock()
-        self.urls: list[str] | None = None
 
         with FoundryLocalManager._lock:
             if FoundryLocalManager.instance is not None:
@@ -271,30 +301,34 @@ class FoundryLocalManager:
                 )
             )
 
-        # Determine which EPs were newly registered.
         after_eps = self.discover_eps()
-        registered = [
-            ep.name
-            for ep in after_eps
-            if ep.is_registered and not before_eps.get(ep.name, False)
-        ]
-        failed = [
-            ep.name
-            for ep in after_eps
-            if not ep.is_registered and ep.name in (names or [])
-        ]
 
         # Native owns catalog cache invalidation after EP registration; no Python-side action needed.
-        return EpDownloadResult(
-            success=len(failed) == 0,
-            status="Completed",
-            registered_eps=registered,
-            failed_eps=failed,
+        return _build_ep_download_result(
+            [EpInfo(name=name, is_registered=is_registered) for name, is_registered in before_eps.items()],
+            after_eps,
+            names,
         )
 
     # ------------------------------------------------------------------
     # Web service lifecycle
     # ------------------------------------------------------------------
+
+    @property
+    def urls(self) -> list[str] | None:
+        """Observe native URLs without starting the service or owning the shared host."""
+        from foundry_local_sdk._native.api import api, ffi
+
+        with self._native_call() as native_manager:
+            urls_out = ffi.new("char***")
+            count_out = ffi.new("size_t*")
+            api.check_status(
+                api.root.Manager_WebServiceUrls(native_manager, urls_out, count_out)
+            )
+            urls = [
+                ffi.string(urls_out[0][i]).decode("utf-8") for i in range(int(count_out[0]))
+            ]
+            return urls or None
 
     def start_web_service(self) -> None:
         """Start the optional built-in web service.
@@ -303,19 +337,10 @@ class FoundryLocalManager:
         or ``http://127.0.0.1:0`` (a random ephemeral port) if not specified.
         ``FoundryLocalManager.urls`` is updated with the actual bound URL(s).
         """
-        from foundry_local_sdk._native.api import api, ffi
+        from foundry_local_sdk._native.api import api
 
         with self._native_call() as native_manager:
             api.check_status(api.root.Manager_WebServiceStart(native_manager))
-
-            urls_out = ffi.new("char***")
-            count_out = ffi.new("size_t*")
-            api.check_status(
-                api.root.Manager_WebServiceUrls(native_manager, urls_out, count_out)
-            )
-            self.urls = [
-                ffi.string(urls_out[0][i]).decode("utf-8") for i in range(int(count_out[0]))
-            ]
 
     def stop_web_service(self) -> None:
         """Stop the optional built-in web service.
@@ -330,7 +355,6 @@ class FoundryLocalManager:
                 raise FoundryLocalException("Web service is not running.")
 
             api.check_status(api.root.Manager_WebServiceStop(native_manager))
-            self.urls = None
 
     # ------------------------------------------------------------------
     # Shutdown

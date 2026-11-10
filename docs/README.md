@@ -25,11 +25,13 @@ Foundry Local is a unified local AI runtime that supports both **text generation
 
 ## Samples
 
-- [C++: Native SDK Examples](../sdk_v2/cpp/examples/) — Chat completions, tool calling, embeddings, and real-time audio transcription
-- [C++: Live Audio Transcription](../samples/cpp/live-audio-transcription/) — Microphone input and streaming transcription
-- [JavaScript: Native Chat Completions](../samples/js/native-chat-completions/) — Chat completions using the native SDK API
-- [JavaScript: Audio Transcription](../samples/js/audio-transcription-example/) — Speech-to-text with Whisper
-- [JavaScript: Chat + Audio](../samples/js/chat-and-audio-foundry-local/) — Unified chat and audio in one app
-- [JavaScript: Tool Calling](../samples/js/tool-calling-foundry-local/) — Function calling with local models
-- [JavaScript: Electron Chat App](../samples/js/electron-chat-application/) — Desktop chat application
-- [C#: Getting Started](../samples/cs/GettingStarted/) — C# SDK examples including audio transcription
+Each v2 SDK language provides the same five focused samples:
+
+- [C++ samples](../samples/cpp/)
+- [C# samples](../samples/cs/)
+- [JavaScript samples](../samples/js/)
+- [Python samples](../samples/python/)
+- [Rust samples](../samples/rust/)
+
+The sample set covers the complete model lifecycle, real-time transcription, embeddings, tool calling, and the
+built-in OpenAI-compatible web server.
