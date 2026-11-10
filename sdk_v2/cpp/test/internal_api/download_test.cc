@@ -2461,6 +2461,9 @@ class ListedAzureBlobDownloader : public AzureBlobDownloader {
   std::vector<BlobItemInfo> blobs;
 
   std::vector<BlobItemInfo> ListBlobs(const std::string&) override { return blobs; }
+  std::vector<BlobItemInfo> ListBlobs(const std::string& sas_uri, const std::string&) override {
+    return ListBlobs(sas_uri);
+  }
 };
 
 /// Test double for AzureBlobDownloader. Overrides the protected virtuals so
@@ -2700,6 +2703,9 @@ TEST(AzureBlobDownloaderIntegrityTest, DirectoryRepairVerifiesReceiptOnlyOnce) {
     using FakeChunkAzureDownloader::FakeChunkAzureDownloader;
 
     std::vector<BlobItemInfo> ListBlobs(const std::string&) override { return {{"blob.bin", blob_size}}; }
+    std::vector<BlobItemInfo> ListBlobs(const std::string& sas_uri, const std::string&) override {
+      return ListBlobs(sas_uri);
+    }
   };
 
   auto tmpdir = TempPath::CreateTempDir();

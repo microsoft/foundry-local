@@ -112,7 +112,7 @@ class TestBuildNative:
 
         monkeypatch.setattr(native, "_lib", SimpleNamespace(FoundryLocalGetApi=legacy_get_api))
         api = native._Api()
-        assert requested == [3, 2]
+        assert requested == [4, 3, 2]
         assert api.api_version == 2
         output = native.ffi.new("flConfiguration**")
         api.check_status(api.config.Create(b"LegacyNativeTest", output))
