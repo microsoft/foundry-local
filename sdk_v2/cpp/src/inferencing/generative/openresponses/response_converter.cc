@@ -170,8 +170,7 @@ namespace {
 /// What a stored message contributes to replay.
 struct StoredMessageContent {
   std::string text;
-  /// The message carried image or audio parts. Their bytes are not stored and cannot be replayed, but the turn
-  /// itself still happened and must not vanish from the rebuilt conversation.
+  /// Media messages use the typed input converter so their parts and byte buffers are replayed in order.
   bool has_media = false;
 };
 
@@ -324,6 +323,8 @@ flMessageRole ReplayRole(const std::string& role) {
 
 }  // namespace
 
+static void AddTypedInputMessage(Request& request, const InputMessage& msg);
+
 /// Replay a hop's own input items — the request the caller sent for that hop, in the shape they sent it.
 static void AddJsonItemsToRequest(Request& request, const nlohmann::json& items) {
   if (!items.is_array()) {
@@ -378,17 +379,9 @@ static void AddJsonItemsToRequest(Request& request, const nlohmann::json& items)
     auto r = ReplayRole(role);
 
     auto content = ReadStoredContent(entry);
-    if (content.text.empty() && content.has_media) {
-      // A media-only message. The placeholder is not an invention standing in for the image: it is exactly what the
-      // live path recorded for this turn. A media-only message has no text of its own, so AddTypedInputItems gives
-      // it this single space to satisfy the chat template, and that space — not the bytes — is what reached the
-      // transcript. Replaying it therefore reproduces the live record verbatim.
-      //
-      // The bytes are absent on both sides: a media turn drops its generator, so the very next turn of the live
-      // session also rebuilds its prompt from a transcript that never held them. Dropping the message instead would
-      // silently remove a user turn the model saw; failing here would make the cold path reject a continuation the
-      // warm path serves.
-      content.text = kMediaOnlyPlaceholder;
+    if (content.has_media) {
+      AddTypedInputMessage(request, entry.get<InputMessage>());
+      continue;
     }
 
     if (content.text.empty()) {
@@ -464,7 +457,7 @@ static void AddHopOutputToRequest(Request& request, const nlohmann::json& output
 static void AddChainContextToRequest(Request& request, const ResponseChainContext& context) {
   for (const auto& hop : context) {
     request.BeginItemSegment();
-    AddJsonItemsToRequest(request, hop.input_items);
+    AddJsonItemsToRequest(request, hop.replay_input_items ? *hop.replay_input_items : hop.input_items);
     request.BeginItemSegment();
     AddHopOutputToRequest(request, hop.output_items, hop.raw_envelope_call_ids);
   }
@@ -605,6 +598,40 @@ std::unique_ptr<AudioItem> MakeAudioItemFromInputAudio(const InputAudioContent& 
 // Helper: add typed InputItems to a session request
 // ---------------------------------------------------------------------------
 
+static void AddTypedInputMessage(Request& request, const InputMessage& msg) {
+  std::vector<std::unique_ptr<Item>> parts;
+  bool has_text = false;
+  for (const auto& c : msg.content) {
+    if (auto* tc = std::get_if<InputTextContent>(&c)) {
+      if (!tc->text.empty()) {
+        parts.push_back(std::make_unique<TextItem>(tc->text));
+        has_text = true;
+      }
+    } else if (auto* ic = std::get_if<InputImageContent>(&c)) {
+      parts.push_back(MakeImageItemFromInputImage(*ic));
+    } else if (auto* ac = std::get_if<InputAudioContent>(&c)) {
+      parts.push_back(MakeAudioItemFromInputAudio(*ac));
+    } else {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED,
+               "input message content type not supported (only input_text, input_image, and input_audio)");
+    }
+  }
+
+  if (parts.empty()) {
+    if (ReplayRole(msg.role) == FOUNDRY_LOCAL_ROLE_ASSISTANT) {
+      request.AddOwnedItem(MakeAssistantTurnBoundary());
+    }
+
+    return;
+  }
+
+  if (!has_text) {
+    parts.push_back(std::make_unique<TextItem>(kMediaOnlyPlaceholder));
+  }
+
+  request.AddOwnedItem(std::make_unique<MessageItem>(ReplayRole(msg.role), std::move(parts)));
+}
+
 static void AddTypedInputItems(Request& request,
                                const std::vector<InputItem>& input_items) {
   for (const auto& input_item : input_items) {
@@ -631,47 +658,7 @@ static void AddTypedInputItems(Request& request,
                                               ToolKind::kCustom);
       request.AddOwnedItem(std::move(i));
     } else if (auto* msg = std::get_if<InputMessage>(&input_item)) {
-      // Build typed parts from the message's content array.
-      std::vector<std::unique_ptr<Item>> parts;
-      bool has_text = false;
-      for (const auto& c : msg->content) {
-        if (auto* tc = std::get_if<InputTextContent>(&c)) {
-          if (!tc->text.empty()) {
-            parts.push_back(std::make_unique<TextItem>(tc->text));
-            has_text = true;
-          }
-        } else if (auto* ic = std::get_if<InputImageContent>(&c)) {
-          parts.push_back(MakeImageItemFromInputImage(*ic));
-        } else if (auto* ac = std::get_if<InputAudioContent>(&c)) {
-          parts.push_back(MakeAudioItemFromInputAudio(*ac));
-        } else {
-          FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED,
-                   "input message content type not supported (only input_text, input_image, and input_audio)");
-        }
-      }
-
-      // A message with no replayable content is normally nothing to say. An assistant message is the exception: it
-      // is the boundary of a turn whose output did not survive replay (a reasoning-only turn, or one truncated
-      // before any visible text), and the live session commits that boundary.
-      if (parts.empty()) {
-        if (ReplayRole(msg->role) == FOUNDRY_LOCAL_ROLE_ASSISTANT) {
-          request.AddOwnedItem(MakeAssistantTurnBoundary());
-        }
-
-        continue;
-      }
-
-      // The chat template requires every message to carry at least one
-      // text part. A pure-image message (e.g. "input_image" with no
-      // accompanying "input_text") would render as an empty content
-      // string. Inject the placeholder so the template still renders the
-      // message and the model receives the image sentinel.
-      if (!has_text) {
-        parts.push_back(std::make_unique<TextItem>(kMediaOnlyPlaceholder));
-      }
-
-      auto i = std::make_unique<MessageItem>(ReplayRole(msg->role), std::move(parts));
-      request.AddOwnedItem(std::move(i));
+      AddTypedInputMessage(request, *msg);
     }
   }
 }
@@ -1208,6 +1195,92 @@ nlohmann::json ToInputItems(const nlohmann::json& req_json) {
   }
 
   return items;
+}
+
+std::shared_ptr<const nlohmann::json> SnapshotReplayInputItems(const nlohmann::json& input_items,
+                                                               const Request& request) {
+  const auto visit_images = [](auto& items, auto&& visit) {
+    if (!items.is_array()) {
+      return;
+    }
+
+    for (auto& item : items) {
+      if (!item.is_object()) {
+        continue;
+      }
+      const auto type = item.value("type", "");
+      if (type == "function_call" || type == "function_call_output" || type == "custom_tool_call" ||
+          type == "custom_tool_call_output" || type == "reasoning" || item.value("role", "").empty()) {
+        continue;
+      }
+      const auto content = item.find("content");
+      if (content == item.end() || !content->is_array()) {
+        continue;
+      }
+      for (auto& part : *content) {
+        if (part.is_object() && part.value("type", "") == "input_image") {
+          visit(part);
+        }
+      }
+    }
+  };
+  const auto is_local_image = [](const nlohmann::json& part) {
+    const auto url = part.find("image_url");
+    if (url == part.end() || !url->is_string()) {
+      return false;
+    }
+    const auto& value = url->get_ref<const std::string&>();
+    return !value.empty() && !value.starts_with(kDataUrlPrefix);
+  };
+
+  bool needs_snapshot = false;
+  visit_images(input_items, [&](const auto& part) { needs_snapshot |= is_local_image(part); });
+  if (!needs_snapshot) {
+    return {};
+  }
+
+  const size_t current_start = request.item_segment_starts.empty() ? 0 : request.item_segment_starts.back();
+  if (current_start > request.items.size()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot match stored image input to the current request segment");
+  }
+
+  std::vector<const ImageItem*> images;
+  for (size_t i = current_start; i < request.items.size(); ++i) {
+    const auto* item = request.items[i];
+    if (!item || item->type != FOUNDRY_LOCAL_ITEM_MESSAGE) {
+      continue;
+    }
+    for (const auto& part : static_cast<const MessageItem&>(*item).content) {
+      if (part.view && part.view->type == FOUNDRY_LOCAL_ITEM_IMAGE) {
+        images.push_back(static_cast<const ImageItem*>(part.view));
+      }
+    }
+  }
+
+  auto replay = std::make_shared<nlohmann::json>(input_items);
+  size_t image_index = 0;
+  visit_images(*replay, [&](nlohmann::json& part) {
+    if (image_index >= images.size()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot match stored image input to resolved request images");
+    }
+    const auto& image = *images[image_index++];
+    if (!is_local_image(part)) {
+      return;
+    }
+    if (!image.data || image.data_size == 0) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "local image input was not resolved to owned bytes");
+    }
+
+    auto mime = image.format;
+    if (mime.empty() || mime.find_first_of(";,") != std::string::npos) {
+      mime = "application/octet-stream";
+    }
+    part["image_url"] = "data:" + mime + ";base64," + Azure::Core::Convert::Base64Encode(image.ReadBytes());
+  });
+  if (image_index != images.size()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot match stored image input to resolved request images");
+  }
+  return replay;
 }
 
 }  // namespace ResponseConverter

@@ -9,6 +9,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -115,6 +116,11 @@ ToolCallStreamOutput BuildToolCallStreamOutput(const ToolCallItem& call,
 /// canonicalized to a string. `instructions` is request-scoped state and is deliberately not stored: /input_items
 /// reports what the caller sent, and a replayed chain takes its instructions from the current request.
 nlohmann::json ToInputItems(const nlohmann::json& req_json);
+
+/// Snapshot local image references using the already-resolved bytes in this request's own input segment. The public
+/// input items remain unchanged. Returns null when no local image needs a private replay representation.
+std::shared_ptr<const nlohmann::json> SnapshotReplayInputItems(const nlohmann::json& input_items,
+                                                               const Request& request);
 
 }  // namespace ResponseConverter
 }  // namespace fl

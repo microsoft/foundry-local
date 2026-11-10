@@ -3,8 +3,27 @@
 #include "inferencing/generative/chat/media_input.h"
 
 #include "exception.h"
+#include "items/text_item.h"
 
 namespace fl {
+
+bool RequestHasMedia(const Request& request) {
+  for (const auto* item : request.items) {
+    if (item == nullptr || item->type != FOUNDRY_LOCAL_ITEM_MESSAGE) {
+      continue;
+    }
+
+    const auto& message = static_cast<const MessageItem&>(*item);
+    for (const auto& part : message.content) {
+      if (part.view && (part.view->type == FOUNDRY_LOCAL_ITEM_IMAGE ||
+                        part.view->type == FOUNDRY_LOCAL_ITEM_AUDIO)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
 
 MediaInput CollectMediaInput(const Request& request) {
   MediaInput media;
@@ -43,6 +62,53 @@ MediaInput CollectMediaInput(const Request& request) {
   return media;
 }
 
+MediaInput CollectMediaInput(const std::vector<TranscriptMessage>& messages) {
+  MediaInput media;
+  if (!CarriesMedia(messages)) {
+    return media;
+  }
+
+  media.messages.reserve(messages.size());
+  for (const auto& message : messages) {
+    MessageItem projected;
+    projected.role = message.role;
+    projected.name = message.name;
+    for (const auto& entry : message.entries) {
+      switch (entry.kind) {
+        case TranscriptEntry::Kind::kText:
+          projected.content.push_back(MessagePart::Own(std::make_unique<TextItem>(entry.text)));
+          break;
+        case TranscriptEntry::Kind::kReasoning:
+          projected.content.push_back(
+              MessagePart::Own(std::make_unique<TextItem>(entry.text, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING)));
+          break;
+        case TranscriptEntry::Kind::kImage:
+          media.images.push_back(static_cast<const ImageItem*>(entry.media.get()));
+          projected.content.push_back(MessagePart::Borrow(*entry.media));
+          break;
+        case TranscriptEntry::Kind::kAudio:
+          media.audios.push_back(static_cast<const AudioItem*>(entry.media.get()));
+          projected.content.push_back(MessagePart::Borrow(*entry.media));
+          break;
+        case TranscriptEntry::Kind::kToolCall:
+          break;
+      }
+    }
+
+    media.messages.push_back(std::move(projected));
+  }
+
+  return media;
+}
+
+void ValidateMediaToolDefinitions(bool tools_declared) {
+  if (tools_declared) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "image or audio input cannot be combined with tool definitions; the multimodal prompt does not "
+             "support tool calls or results");
+  }
+}
+
 void ValidateMediaTurn(const MediaInput& media,
                        const std::vector<TranscriptMessage>& inputs,
                        const MediaTurnContext& context) {
@@ -50,18 +116,10 @@ void ValidateMediaTurn(const MediaInput& media,
     return;
   }
 
-  if (context.session_has_history || CarriesPriorTurnHistory(inputs)) {
+  ValidateMediaToolDefinitions(context.tools_declared);
+  if (CarriesToolActivity(inputs)) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             "image or audio input is only allowed on the first turn of a conversation; the bytes are not part of "
-             "the conversation record, so no later prompt can show them to the model again. Start a new "
-             "conversation to send media.");
-  }
-
-  if (context.tools_declared) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             "image or audio input cannot be combined with tool definitions; the model could answer with a tool "
-             "call, and the turn carrying that call's result could no longer show it the media. Send the media in a "
-             "request that declares no tools.");
+             "image or audio input cannot be combined with tool calls or results in the conversation");
   }
 }
 

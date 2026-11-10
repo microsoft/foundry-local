@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -45,30 +46,36 @@ struct TranscriptEntry {
     kText,       // visible assistant/user text
     kReasoning,  // chain-of-thought text
     kToolCall,   // a tool invocation
+    kImage,
+    kAudio,
   };
 
   Kind kind = Kind::kText;
   std::string text;
   TranscriptToolCall tool_call;
+  std::shared_ptr<const Item> media;
 
   static TranscriptEntry Text(std::string value) {
-    return {Kind::kText, std::move(value), {}};
+    return {Kind::kText, std::move(value), {}, {}};
   }
 
   static TranscriptEntry Reasoning(std::string value) {
-    return {Kind::kReasoning, std::move(value), {}};
+    return {Kind::kReasoning, std::move(value), {}, {}};
   }
 
   static TranscriptEntry ToolCall(TranscriptToolCall call) {
-    return {Kind::kToolCall, {}, std::move(call)};
+    return {Kind::kToolCall, {}, std::move(call), {}};
+  }
+
+  static TranscriptEntry Media(Kind kind, std::shared_ptr<const Item> value) {
+    return {kind, {}, {}, std::move(value)};
   }
 };
 
 /// A message in the authoritative transcript.
 ///
-/// Unlike MessageItem (the API-facing type) a transcript message keeps visible text, reasoning, and tool calls as
-/// separate ordered events rather than folding everything into modality content parts. Media parts are intentionally
-/// absent: media input is single-shot and is fed to the generator directly from the request items.
+/// Visible text, reasoning, media, and tool calls remain separate ordered events. Media owns an immutable snapshot
+/// shared by transcript copies, so later turns and preflight operations see the original bytes.
 struct TranscriptMessage {
   flMessageRole role = FOUNDRY_LOCAL_ROLE_NONE;
   std::vector<TranscriptEntry> entries;
@@ -91,6 +98,7 @@ struct TranscriptMessage {
   void AppendToolCall(TranscriptToolCall call);
 
   bool HasToolCalls() const;
+  bool HasMedia() const;
 
   /// True when the message carries visible text that follows a tool call and is more than whitespace.
   ///
@@ -155,10 +163,9 @@ struct TranscriptIngest {
 
 /// Convert request items into transcript messages, preserving the order in which they were supplied.
 ///
-/// - MESSAGE items become role-tagged messages; typed TextItem parts keep their visible / reasoning distinction and
-///   non-text parts are skipped (media is handled separately by the caller). A message with neither content nor a
-///   participant name carries nothing and is dropped; a content-free named message survives to attribute the tool
-///   calls that follow it.
+/// - MESSAGE items become role-tagged messages; text keeps its visible / reasoning distinction and image and audio
+///   parts retain owned byte snapshots in their original positions. A message with neither content nor a participant
+///   name carries nothing and is dropped; a content-free named message survives to attribute following tool calls.
 /// - TOOL_CALL items become assistant messages, merged into an open assistant turn when there is one, so replayed
 ///   assistant content and its calls stay together exactly as the model produced them.
 /// - TOOL_RESULT items become role="tool" messages carrying the call ID. An empty result string is preserved.
@@ -209,6 +216,9 @@ std::vector<TranscriptMessage> BuildTranscriptMessages(
 /// relative to the surrounding conversation — and the media prompt path cannot render it at all.
 bool CarriesToolActivity(const std::vector<TranscriptMessage>& messages);
 
+/// True when any message contains image or audio input.
+bool CarriesMedia(const std::vector<TranscriptMessage>& messages);
+
 /// True when `text` is empty or contains nothing but whitespace.
 ///
 /// Shared by the transcript's ordering invariant and by generation. Whitespace after a tool call does not end the
@@ -219,14 +229,13 @@ bool IsWhitespaceOnly(std::string_view text);
 /// whatever the caller is sending now, whether it came from a live transcript or from a replayed chain.
 bool CarriesPriorTurnHistory(const std::vector<TranscriptMessage>& messages);
 
-/// True when `messages` carry something the model can actually respond to: visible text, a tool call, or a tool
-/// result. Assistant turn boundaries alone are not — they only say a turn happened.
+/// True when `messages` carry something the model can actually respond to: visible text, media, a tool call, or a
+/// tool result. Assistant turn boundaries alone are not — they only say a turn happened.
 bool CarriesRespondableContent(const std::vector<TranscriptMessage>& messages);
 
 /// Everything outside a turn's messages that can still give the model something to generate from.
 struct TurnContent {
-  /// The request carries image or audio bytes. They reach the generator directly rather than as message text, so a
-  /// media-only turn has no entries at all — the bytes are the question.
+  /// The request carries image or audio bytes.
   bool media = false;
   /// The session transcript already holds a conversation, so an empty request asks for the next turn of it.
   bool history = false;

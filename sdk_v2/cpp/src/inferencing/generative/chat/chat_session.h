@@ -191,10 +191,7 @@ class ChatSession : public Session {
   /// each turn's input messages and assistant reply from the transcript.
   /// If all turns are undone, the cached generator is destroyed.
   ///
-  /// Vision turns: image input is only allowed while the conversation has no
-  /// history. UndoTurns rolls back messages, so undoing every turn does make
-  /// the session accept media again — but the media bytes of an undone turn
-  /// are gone either way, because they never entered the transcript.
+  /// Media retained by an undone turn is removed with that turn; earlier media remains available to future prompts.
   ///
   /// Blocks until any in-flight request on this session completes.
   ///

@@ -16,8 +16,12 @@
 // that CI on machines without vision-model storage stays green.
 
 #include "model_fixture.h"
+#include "utils/temp_path.h"
 #include "web_service_fixture.h"
 
+#include <atomic>
+#include <filesystem>
+#include <fstream>
 #include <regex>
 #include <sstream>
 #include <string>
@@ -34,6 +38,16 @@ constexpr const char* kRedPngBase64 =
     "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAb0lEQVR4nO3PAQkAAAyEwO9feoshgnABdLep8QUNyPEFDcjxBQ3I"
     "8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3IPanc"
     "8OLDQitxAAAAAElFTkSuQmCC";
+constexpr char kRedPngBytes[] =
+    "\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x40"
+    "\x00\x00\x00\x40\x08\x02\x00\x00\x00\x25\x0b\xe6\x89\x00\x00\x00\x6f\x49\x44\x41"
+    "\x54\x78\x9c\xed\xcf\x01\x09\x00\x00\x0c\x84\xc0\xef\x5f\x7a\x8b\x21\x82\x70\x01"
+    "\x74\xb7\xa9\xf1\x05\x0d\xc8\xf1\x05\x0d\xc8\xf1\x05\x0d\xc8\xf1\x05\x0d\xc8\xf1"
+    "\x05\x0d\xc8\xf1\x05\x0d\xc8\xf1\x05\x0d\xc8\xf1\x05\x0d\xc8\xf1\x05\x0d\xc8\xf1"
+    "\x05\x0d\xc8\xf1\x05\x0d\xc8\xf1\x05\x0d\xc8\xf1\x05\x0d\xc8\xf1\x05\x0d\xc8\xf1"
+    "\x05\x0d\xc8\xf1\x05\x0d\xc8\xf1\x05\x0d\xc8\xf1\x05\x0d\xc8\xf1\x05\x0d\xc8\xf1"
+    "\x05\x0d\xc8\xf1\x05\x0d\xc8\x3d\xa9\xdc\xf0\xe2\xc3\x42\x2b\x71\x00\x00\x00\x00"
+    "\x49\x45\x4e\x44\xae\x42\x60\x82";
 constexpr const char* kBluePngBase64 =
     "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAb0lEQVR4nO3PAQkAAAyEwO9feoshgnABdNvJ8QUNyPEFDcjxBQ3I"
     "8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ2oPcf8"
@@ -76,6 +90,26 @@ std::string ReadChatStream(const std::string& body) {
   EXPECT_TRUE(done) << body;
   EXPECT_TRUE(has_usage) << body;
   return text;
+}
+
+json ReadCompletedResponse(const std::string& body) {
+  json response;
+  std::istringstream stream(body);
+  std::string line;
+  while (std::getline(stream, line)) {
+    if (line.rfind("data: ", 0) != 0 || line.substr(6) == "[DONE]") {
+      continue;
+    }
+
+    const auto event = json::parse(line.substr(6));
+    const auto type = event.value("type", "");
+    EXPECT_NE(type, "response.failed") << body;
+    if (type == "response.completed" || type == "response.incomplete") {
+      response = event.at("response");
+    }
+  }
+
+  return response;
 }
 
 }  // namespace
@@ -169,6 +203,7 @@ TEST_F(ResponsesVisionIntegrationTest, ChatCompletionsUsesImageColorIncludingStr
           {"messages", json::array({{{"role", "user"}, {"content", content}}})},
           {"max_completion_tokens", 32},
           {"temperature", 0},
+          {"reasoning_effort", "none"},
           {"stream", streaming},
           {"stream_options", {{"include_usage", true}}},
       };
@@ -183,6 +218,91 @@ TEST_F(ResponsesVisionIntegrationTest, ChatCompletionsUsesImageColorIncludingStr
       EXPECT_FALSE(std::regex_search(normalized, std::regex("\\b" + std::string(other_color) + "\\b"))) << text;
     }
   }
+}
+
+TEST_F(ResponsesVisionIntegrationTest, ChatCompletionsRetainsImagesAcrossUserTurns) {
+  auto client = MakeClient(600);
+  for (const bool streaming : {false, true}) {
+    for (const bool reverse : {false, true}) {
+      SCOPED_TRACE(std::string(streaming ? "streaming" : "nonstreaming") + (reverse ? " blue first" : " red first"));
+      auto first = ChatImageContent(reverse ? kBluePngBase64 : kRedPngBase64);
+      first.insert(first.begin(), json{{"type", "text"}, {"text", "Picture 1. Remember this image. Reply only OK."}});
+      auto second = ChatImageContent(reverse ? kRedPngBase64 : kBluePngBase64);
+      second.insert(second.begin(),
+                    json{{"type", "text"},
+                         {"text", "Picture 2. What color was the first image? Answer with one word."}});
+      const json body = {
+          {"model", vision_model_id()},
+          {"messages", json::array({{{"role", "user"}, {"content", first}},
+                                    {{"role", "assistant"}, {"content", "OK"}},
+                                    {{"role", "user"}, {"content", second}}})},
+          {"max_completion_tokens", 32},
+          {"temperature", 0},
+          {"reasoning_effort", "none"},
+          {"stream", streaming},
+          {"stream_options", {{"include_usage", true}}},
+      };
+      const auto result = client.Post(VisionEndpoint("/v1/chat/completions"), body.dump(), "application/json");
+      ASSERT_TRUE(result) << httplib::to_string(result.error());
+      ASSERT_EQ(result->status, 200) << result->body;
+      const auto text = streaming ? ReadChatStream(result->body)
+                                  : json::parse(result->body)["choices"][0]["message"]["content"].get<std::string>();
+      const auto normalized = fl::test::ToLower(text);
+      EXPECT_TRUE(std::regex_search(normalized, std::regex(reverse ? "\\bblue\\b" : "\\bred\\b"))) << text;
+      EXPECT_FALSE(std::regex_search(normalized, std::regex(reverse ? "\\bred\\b" : "\\bblue\\b"))) << text;
+    }
+  }
+}
+
+TEST_F(ResponsesVisionIntegrationTest, CancelledAndUndoneImageTurnsLeaveRetainedHistoryIntact) {
+  using namespace foundry_local;
+
+  ChatSession session(*SharedTestEnv::Get().vision_model());
+  RequestOptions options;
+  options.search.temperature = 0.0f;
+  options.search.max_output_tokens = 32;
+  options.additional_options.Set("chat_template_kwargs", R"({"enable_thinking":false})");
+  session.SetOptions(options);
+
+  const auto image_request = [](const char* text) {
+    std::vector<Item> content;
+    content.push_back(Item::Text(text));
+    content.push_back(Item::ImageFromData("png", kRedPngBytes, sizeof(kRedPngBytes) - 1));
+    return Request{MessageItem(FOUNDRY_LOCAL_ROLE_USER, std::move(content))};
+  };
+  const auto first = image_request("Remember this image. Reply only OK.");
+  const auto first_text = fl::test::ToLower(CollectResponseText(session.ProcessRequest(first)));
+  ASSERT_EQ(session.TurnCount(), 1u);
+  ASSERT_EQ(first_text.find("red"), std::string::npos) << first_text;
+
+  const Request probe{UserMessage("What color was the image? Answer with one word.")};
+  const auto baseline = session.PreflightRequest(probe);
+  ASSERT_TRUE(baseline.fits);
+
+  const auto second = image_request("Describe the second image in one sentence.");
+  std::atomic<int> callbacks{0};
+  session.SetStreamingCallback([&](Item) {
+    ++callbacks;
+    return 1;
+  });
+  try {
+    (void)session.ProcessRequest(second);
+    FAIL() << "Expected streaming callback cancellation";
+  } catch (const Error& error) {
+    EXPECT_EQ(error.Code(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED) << error.what();
+  }
+  session.SetStreamingCallback(nullptr);
+  EXPECT_GT(callbacks.load(), 0);
+  EXPECT_EQ(session.TurnCount(), 1u);
+  EXPECT_EQ(session.PreflightRequest(probe).prompt_tokens, baseline.prompt_tokens);
+
+  (void)session.ProcessRequest(second);
+  ASSERT_EQ(session.TurnCount(), 2u);
+  session.UndoTurns(1);
+  EXPECT_EQ(session.TurnCount(), 1u);
+  EXPECT_EQ(session.PreflightRequest(probe).prompt_tokens, baseline.prompt_tokens);
+  const auto answer = CollectResponseText(session.ProcessRequest(probe));
+  EXPECT_TRUE(std::regex_search(fl::test::ToLower(answer), std::regex("\\bred\\b"))) << answer;
 }
 
 TEST_F(ResponsesVisionIntegrationTest, ChatCompletionsImageOnlyProducesOutput) {
@@ -403,8 +523,7 @@ TEST_F(ResponsesVisionIntegrationTest, TwoImagesProduceOutput) {
 TEST_F(ResponsesVisionIntegrationTest, ImageWithDeclaredToolsIsRejected) {
   auto client = MakeClient();
 
-  // The model could answer an image turn with a tool call, and the turn carrying that call's result could no longer
-  // show it the image. The combination is rejected before any generation happens.
+  // The multimodal prompt does not represent tool calls or results, so reject this combination before generation.
   json request_body = {
       {"model", vision_model_id()},
       {"input", json::array({
@@ -430,7 +549,7 @@ TEST_F(ResponsesVisionIntegrationTest, ImageWithDeclaredToolsIsRejected) {
   EXPECT_NE(result->body.find("tool definitions"), std::string::npos) << result->body;
 }
 
-TEST_F(ResponsesVisionIntegrationTest, ImageOnAContinuationIsRejected) {
+TEST_F(ResponsesVisionIntegrationTest, ImagesAndTextContinueWarmAndColdConversations) {
   auto client = MakeClient();
   client.set_read_timeout(600, 0);
 
@@ -440,6 +559,7 @@ TEST_F(ResponsesVisionIntegrationTest, ImageOnAContinuationIsRejected) {
       {"store", true},
       {"max_output_tokens", 64},
       {"temperature", 0},
+      {"reasoning", {{"effort", "none"}}},
   };
 
   auto first_result = client.Post(VisionEndpoint("/v1/responses"), first.dump(), "application/json");
@@ -447,36 +567,122 @@ TEST_F(ResponsesVisionIntegrationTest, ImageOnAContinuationIsRejected) {
   ASSERT_EQ(first_result->status, 200) << first_result->body;
   const std::string first_id = json::parse(first_result->body)["id"].get<std::string>();
 
-  auto send_image_continuation = [&]() {
-    json body = {
-        {"model", vision_model_id()},
-        {"previous_response_id", first_id},
-        {"input", json::array({
-                      {{"role", "user"},
-                       {"content", json::array({
-                                       {{"type", "input_text"}, {"text", "And this image?"}},
-                                       {{"type", "input_image"},
-                                        {"detail", "low"},
-                                        {"image_url", std::string("data:image/png;base64,") + kTinyPngBase64}},
-                                   })}},
-                  })},
-        {"max_output_tokens", 64},
-        {"store", false},
-    };
-    return client.Post(VisionEndpoint("/v1/responses"), body.dump(), "application/json");
+  const json red_turn = {
+      {"model", vision_model_id()},
+      {"previous_response_id", first_id},
+      {"input", json::array({{{"role", "user"},
+                              {"content", json::array({{{"type", "input_text"},
+                                                        {"text", "Picture 1. Remember this image. Reply only OK."}},
+                                                       {{"type", "input_image"},
+                                                        {"image_url", std::string("data:image/png;base64,") +
+                                                                          kRedPngBase64}}})}}})},
+      {"max_output_tokens", 32},
+      {"temperature", 0},
+      {"reasoning", {{"effort", "none"}}},
+      {"store", true},
   };
+  const auto red_result = client.Post(VisionEndpoint("/v1/responses"), red_turn.dump(), "application/json");
+  ASSERT_TRUE(red_result);
+  ASSERT_EQ(red_result->status, 200) << red_result->body;
+  const auto red_response = json::parse(red_result->body);
+  const auto remembered_reply = fl::test::ToLower(red_response.value("output_text", ""));
+  ASSERT_EQ(remembered_reply.find("red"), std::string::npos) << remembered_reply;
+  ASSERT_EQ(remembered_reply.find("blue"), std::string::npos) << remembered_reply;
+  const auto red_id = red_response["id"].get<std::string>();
 
-  // Warm: the session cached under first_id still holds the conversation.
-  auto warm = send_image_continuation();
-  ASSERT_TRUE(warm) << "HTTP request failed";
-  EXPECT_EQ(warm->status, 400) << "media on a continuation must be a client error: " << warm->body;
-  EXPECT_NE(warm->body.find("first turn of a conversation"), std::string::npos) << warm->body;
+  const json blue_turn = {
+      {"model", vision_model_id()},
+      {"previous_response_id", red_id},
+      {"input", json::array({{{"role", "user"},
+                              {"content", json::array({{{"type", "input_text"},
+                                                        {"text", "Picture 2. What color was the first image? One word."}},
+                                                       {{"type", "input_image"},
+                                                        {"image_url", std::string("data:image/png;base64,") +
+                                                                          kBluePngBase64}}})}}})},
+      {"max_output_tokens", 32},
+      {"temperature", 0},
+      {"reasoning", {{"effort", "none"}}},
+      {"store", false},
+  };
+  for (const char* path : {"warm", "cold"}) {
+    SCOPED_TRACE(path);
+    const auto result = client.Post(VisionEndpoint("/v1/responses"), blue_turn.dump(), "application/json");
+    ASSERT_TRUE(result);
+    ASSERT_EQ(result->status, 200) << result->body;
+    const auto text = json::parse(result->body).value("output_text", "");
+    const auto normalized = fl::test::ToLower(text);
+    EXPECT_TRUE(std::regex_search(normalized, std::regex("\\bred\\b"))) << text;
+    EXPECT_FALSE(std::regex_search(normalized, std::regex("\\bblue\\b"))) << text;
+  }
 
-  // Cold: that request checked the session out and the failure did not put it back, so this one rebuilds the chain
-  // from the store. The rejection must be identical.
-  auto cold = send_image_continuation();
-  ASSERT_TRUE(cold) << "HTTP request failed";
-  EXPECT_EQ(cold->status, warm->status) << "warm and cold must reject a media continuation identically: "
-                                        << cold->body;
-  EXPECT_NE(cold->body.find("first turn of a conversation"), std::string::npos) << cold->body;
+  const json text_turn = {{"model", vision_model_id()},
+                          {"previous_response_id", red_id},
+                          {"input", "What color was the image? Answer with one word."},
+                          {"max_output_tokens", 32},
+                          {"temperature", 0},
+                          {"reasoning", {{"effort", "none"}}},
+                          {"store", false}};
+  const auto text_result = client.Post(VisionEndpoint("/v1/responses"), text_turn.dump(), "application/json");
+  ASSERT_TRUE(text_result);
+  ASSERT_EQ(text_result->status, 200) << text_result->body;
+  const auto text = json::parse(text_result->body).value("output_text", "");
+  EXPECT_TRUE(std::regex_search(fl::test::ToLower(text), std::regex("\\bred\\b"))) << text;
+}
+
+TEST_F(ResponsesVisionIntegrationTest, LocalImageReplaySurvivesDeletionForStreamingAndNonStreaming) {
+  auto client = MakeClient(600);
+  for (const bool streaming : {false, true}) {
+    SCOPED_TRACE(streaming ? "streaming" : "nonstreaming");
+    const auto dir = fl::test::TempPath::CreateTempDir("fl_vision_replay_");
+    const auto image_path = dir.path() / "red.png";
+    {
+      std::ofstream file(image_path, std::ios::binary);
+      file.write(kRedPngBytes, static_cast<std::streamsize>(sizeof(kRedPngBytes) - 1));
+      ASSERT_TRUE(file.good());
+    }
+
+    const json first = {
+        {"model", vision_model_id()},
+        {"input", json::array({{{"role", "user"},
+                                {"content", json::array({{{"type", "input_text"},
+                                                          {"text", "Remember this image. Reply only OK."}},
+                                                         {{"type", "input_image"},
+                                                          {"image_url", image_path.string()}}})}}})},
+        {"stream", streaming},
+        {"store", true},
+        {"max_output_tokens", 32},
+        {"temperature", 0},
+        {"reasoning", {{"effort", "none"}}},
+    };
+    const auto first_result = client.Post(VisionEndpoint("/v1/responses"), first.dump(), "application/json");
+    ASSERT_TRUE(first_result);
+    ASSERT_EQ(first_result->status, 200) << first_result->body;
+    const auto first_response = streaming ? ReadCompletedResponse(first_result->body) : json::parse(first_result->body);
+    ASSERT_TRUE(first_response.is_object()) << first_result->body;
+    const auto id = first_response.at("id").get<std::string>();
+    const auto first_text = fl::test::ToLower(first_response.value("output_text", ""));
+    ASSERT_EQ(first_text.find("red"), std::string::npos) << first_text;
+    ASSERT_TRUE(std::filesystem::remove(image_path));
+
+    const auto public_items = client.Get(VisionEndpoint("/v1/responses") + "/" + id + "/input_items");
+    ASSERT_TRUE(public_items);
+    ASSERT_EQ(public_items->status, 200) << public_items->body;
+    EXPECT_EQ(json::parse(public_items->body)["data"][0]["content"][1]["image_url"], image_path.string());
+
+    const json followup = {{"model", vision_model_id()},
+                           {"previous_response_id", id},
+                           {"input", "What color was the image? Answer with one word."},
+                           {"store", false},
+                           {"max_output_tokens", 32},
+                           {"temperature", 0},
+                           {"reasoning", {{"effort", "none"}}}};
+    for (const char* path : {"warm", "cold"}) {
+      SCOPED_TRACE(path);
+      const auto result = client.Post(VisionEndpoint("/v1/responses"), followup.dump(), "application/json");
+      ASSERT_TRUE(result);
+      ASSERT_EQ(result->status, 200) << result->body;
+      const auto text = json::parse(result->body).value("output_text", "");
+      EXPECT_TRUE(std::regex_search(fl::test::ToLower(text), std::regex("\\bred\\b"))) << text;
+    }
+  }
 }

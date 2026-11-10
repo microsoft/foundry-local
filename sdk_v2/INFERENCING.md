@@ -228,8 +228,10 @@ For complete setup and inference examples, see the native vision samples:
 #### Current limitations
 
 Remote HTTP(S) image fetching and image `file_id` references are not supported.
-Image input is restricted to the first conversation turn and cannot be combined
-with tool definitions. Start a new conversation to submit another image turn.
+Images may appear in any user turn. Earlier images are retained and replayed until
+the conversation history is discarded, increasing memory usage. Multi-image support
+and input limits depend on the model and its chat template. Media cannot be combined
+with tool definitions or a conversation containing tool calls or results.
 
 ## Run a request, then stream a follow-up
 

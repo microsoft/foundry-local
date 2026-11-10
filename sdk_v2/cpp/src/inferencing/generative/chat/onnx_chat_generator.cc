@@ -312,11 +312,8 @@ void OnnxChatGenerator::ResetTurnState() {
 // Media helpers
 // ---------------------------------------------------------------------------
 
-std::string OnnxChatGenerator::TransformMessagesForMedia(const std::vector<MessageItem>& messages) {
-  // Find the index of the last user message so we can rewrite only that one
-  // into structured content, preserving the positions of text and media.
-  // Other messages are emitted in plain `{"role","content"}` form so the chat
-  // template renders them the same way it does for text-only requests.
+std::string OnnxChatGenerator::TransformMessagesForMedia(const std::vector<MessageItem>& messages,
+                                                         bool preserve_reasoning_history) {
   size_t last_user_idx = messages.size();
   for (size_t i = messages.size(); i-- > 0;) {
     if (messages[i].role == FOUNDRY_LOCAL_ROLE_USER) {
@@ -330,8 +327,15 @@ std::string OnnxChatGenerator::TransformMessagesForMedia(const std::vector<Messa
     const auto& msg = messages[i];
     nlohmann::json entry;
     entry["role"] = Utils::RoleToString(msg.role);
+    const bool has_media = std::any_of(msg.content.begin(), msg.content.end(), [](const MessagePart& part) {
+      return part.view && (part.view->type == FOUNDRY_LOCAL_ITEM_IMAGE ||
+                           part.view->type == FOUNDRY_LOCAL_ITEM_AUDIO);
+    });
+    if (has_media && msg.role != FOUNDRY_LOCAL_ROLE_USER) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "image or audio input must belong to a user message");
+    }
 
-    if (i == last_user_idx) {
+    if (i == last_user_idx || has_media) {
       auto content = nlohmann::json::array();
       for (const auto& part : msg.content) {
         if (!part.view) {
@@ -351,15 +355,24 @@ std::string OnnxChatGenerator::TransformMessagesForMedia(const std::vector<Messa
 
       entry["content"] = std::move(content);
     } else {
+      entry["content"] = RenderMessageForPrompt(msg);
+    }
+
+    if (preserve_reasoning_history && msg.role == FOUNDRY_LOCAL_ROLE_ASSISTANT) {
+      std::string reasoning;
       for (const auto& part : msg.content) {
-        if (part.view &&
-            (part.view->type == FOUNDRY_LOCAL_ITEM_IMAGE || part.view->type == FOUNDRY_LOCAL_ITEM_AUDIO)) {
-          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-                   "media input must belong to the final user message");
+        if (part.view && part.view->type == FOUNDRY_LOCAL_ITEM_TEXT) {
+          const auto& text = static_cast<const TextItem&>(*part.view);
+          if (text.text_type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING) {
+            reasoning += text.text;
+          }
         }
       }
-      // Non-final message: render visible text parts only via the canonical helper.
-      entry["content"] = RenderMessageForPrompt(msg);
+
+      entry["reasoning_content"] = std::move(reasoning);
+    }
+    if (!msg.name.empty()) {
+      entry["name"] = msg.name;
     }
 
     arr.push_back(std::move(entry));

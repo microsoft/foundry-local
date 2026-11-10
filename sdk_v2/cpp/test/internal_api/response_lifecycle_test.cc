@@ -235,6 +235,42 @@ TEST(ResponseContinuationTest, NormalCompactionAndLeaseSnapshotDoNotDuplicateRep
   EXPECT_EQ((*context)[2].input_items[0]["content"], "child");
 }
 
+TEST(ResponseContinuationTest, PrivateMediaReplaySurvivesLeaseSnapshotAndDeletion) {
+  ResponseStore store(1);
+  const auto public_items = json::array({{{"role", "user"},
+                                          {"content", json::array({{{"type", "input_image"},
+                                                                    {"image_url", "/local/image.png"}}})}}});
+  auto private_items = public_items;
+  private_items[0]["content"][0]["image_url"] = "data:image/png;base64,AQID";
+  const auto snapshot = std::make_shared<const json>(std::move(private_items));
+
+  auto root = store.BeginResponse("", "model-a");
+  ASSERT_TRUE(store.Commit(root.lease,
+                           ResponseStore::StoredResponse{"parent", "model-a", ResponseJson("parent"), public_items, {}, snapshot},
+                           nullptr));
+  const auto visible = store.GetInputItems("parent");
+  ASSERT_TRUE(visible);
+  EXPECT_EQ(*visible, public_items);
+
+  auto child = store.BeginResponse("parent", "model-a");
+  ASSERT_EQ(child.status, ContinuationStatus::kOk);
+  store.Store("other", ResponseJson("other"), json::array(), "model-a");
+  ASSERT_FALSE(store.Get("parent").has_value());
+  ASSERT_TRUE(store.Commit(child.lease,
+                           ResponseStore::StoredResponse{"child", "model-a", ResponseJson("child", "parent"),
+                                                         json::array()},
+                           nullptr));
+
+  const auto context = store.BuildChainContext("child");
+  ASSERT_TRUE(context);
+  ASSERT_EQ(context->size(), 2u);
+  EXPECT_EQ((*context)[0].input_items, public_items);
+  ASSERT_TRUE((*context)[0].replay_input_items);
+  EXPECT_EQ((*context)[0].replay_input_items.get(), snapshot.get());
+  EXPECT_TRUE(store.Delete("parent"));
+  EXPECT_FALSE(store.BuildChainContext("child").has_value());
+}
+
 // ========================================================================
 // Lease lifetime
 // ========================================================================

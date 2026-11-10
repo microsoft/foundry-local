@@ -115,7 +115,8 @@ PreparedChatPrompt PrepareMediaChatPrompt(const std::vector<MessageItem>& messag
   }
 
   PreparedChatPrompt prepared;
-  const auto messages_json = OnnxChatGenerator::TransformMessagesForMedia(messages);
+  const auto messages_json =
+      OnnxChatGenerator::TransformMessagesForMedia(messages, tool_ctx.supports_reasoning_history);
   const char* tools = tool_ctx.tools_json.empty() ? nullptr : tool_ctx.tools_json.c_str();
   const char* kwargs = tool_ctx.template_kwargs_json.empty() ? nullptr : tool_ctx.template_kwargs_json.c_str();
   prepared.prompt =

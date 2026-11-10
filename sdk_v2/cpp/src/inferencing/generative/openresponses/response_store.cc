@@ -117,6 +117,7 @@ void ResponseStore::StoreLocked(StoredResponse response, MetadataState& state) {
                                  .response = std::move(response.response),
                                  .input_items = std::move(response.input_items),
                                  .raw_envelope_call_ids = std::move(response.raw_envelope_call_ids),
+                                 .replay_input_items = std::move(response.replay_input_items),
                                  .replay_prefix = std::move(replay_prefix),
                                  .insertion_sequence = state.next_insertion_sequence++});
   state.index[response.id] = state.entries.begin();
@@ -592,6 +593,7 @@ ResponseChainHop ResponseStore::ToReplayHop(const Entry& entry) {
   if (entry.input_items.is_array()) {
     replay.input_items = entry.input_items;
   }
+  replay.replay_input_items = entry.replay_input_items;
 
   const auto output = entry.response.find("output");
   if (output != entry.response.end() && output->is_array()) {

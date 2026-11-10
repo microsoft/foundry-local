@@ -4,6 +4,8 @@
 
 #include "exception.h"
 #include "inferencing/session/tool_registry.h"
+#include "items/audio_item.h"
+#include "items/image_item.h"
 #include "items/message_item.h"
 #include "items/text_item.h"
 #include "items/tool_call_item.h"
@@ -147,6 +149,12 @@ bool TranscriptMessage::HasToolCalls() const {
   return false;
 }
 
+bool TranscriptMessage::HasMedia() const {
+  return std::any_of(entries.begin(), entries.end(), [](const TranscriptEntry& entry) {
+    return entry.kind == TranscriptEntry::Kind::kImage || entry.kind == TranscriptEntry::Kind::kAudio;
+  });
+}
+
 bool TranscriptMessage::HasVisibleTextAfterToolCall() const {
   bool seen_call = false;
   for (const auto& entry : entries) {
@@ -225,6 +233,10 @@ void MergeAssistantTurn(TranscriptMessage& open, TranscriptMessage&& next) {
       case TranscriptEntry::Kind::kToolCall:
         open.AppendToolCall(std::move(entry.tool_call));
         break;
+      case TranscriptEntry::Kind::kImage:
+      case TranscriptEntry::Kind::kAudio:
+        open.entries.push_back(std::move(entry));
+        break;
     }
   }
 }
@@ -286,15 +298,33 @@ TranscriptIngest IngestRequestItems(const std::vector<Item*>& items, const std::
       message.name = message_item.name;
 
       for (const auto& part : message_item.content) {
-        if (!part.view || part.view->type != FOUNDRY_LOCAL_ITEM_TEXT) {
+        if (!part.view) {
           continue;
         }
 
-        const auto& text_item = static_cast<const TextItem&>(*part.view);
-        if (text_item.text_type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING) {
-          message.AppendReasoning(text_item.text);
-        } else {
-          message.AppendText(text_item.text);
+        if (part.view->type == FOUNDRY_LOCAL_ITEM_TEXT) {
+          const auto& text_item = static_cast<const TextItem&>(*part.view);
+          if (text_item.text_type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING) {
+            message.AppendReasoning(text_item.text);
+          } else {
+            message.AppendText(text_item.text);
+          }
+        } else if (part.view->type == FOUNDRY_LOCAL_ITEM_IMAGE) {
+          const auto& image = static_cast<const ImageItem&>(*part.view);
+          auto snapshot = std::make_shared<ImageItem>(image.ReadBytes(), image.format);
+          message.entries.push_back(TranscriptEntry::Media(TranscriptEntry::Kind::kImage, std::move(snapshot)));
+        } else if (part.view->type == FOUNDRY_LOCAL_ITEM_AUDIO) {
+          const auto& audio = static_cast<const AudioItem&>(*part.view);
+          if (audio.data == nullptr || audio.data_size == 0) {
+            FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "audio entry must contain bytes");
+          }
+
+          const auto* begin = static_cast<const std::uint8_t*>(audio.data);
+          auto snapshot =
+              std::make_shared<AudioItem>(std::vector<std::uint8_t>(begin, begin + audio.data_size), audio.format);
+          snapshot->sample_rate = audio.sample_rate;
+          snapshot->channels = audio.channels;
+          message.entries.push_back(TranscriptEntry::Media(TranscriptEntry::Kind::kAudio, std::move(snapshot)));
         }
       }
 
@@ -366,6 +396,11 @@ bool CarriesToolActivity(const std::vector<TranscriptMessage>& messages) {
   });
 }
 
+bool CarriesMedia(const std::vector<TranscriptMessage>& messages) {
+  return std::any_of(messages.begin(), messages.end(),
+                     [](const TranscriptMessage& message) { return message.HasMedia(); });
+}
+
 bool CarriesPriorTurnHistory(const std::vector<TranscriptMessage>& messages) {
   return std::any_of(messages.begin(), messages.end(), [](const TranscriptMessage& message) {
     return message.role == FOUNDRY_LOCAL_ROLE_ASSISTANT || message.role == FOUNDRY_LOCAL_ROLE_TOOL;
@@ -374,7 +409,8 @@ bool CarriesPriorTurnHistory(const std::vector<TranscriptMessage>& messages) {
 
 bool CarriesRespondableContent(const std::vector<TranscriptMessage>& messages) {
   return std::any_of(messages.begin(), messages.end(), [](const TranscriptMessage& message) {
-    return !message.VisibleText().empty() || message.HasToolCalls() || message.role == FOUNDRY_LOCAL_ROLE_TOOL;
+    return !message.VisibleText().empty() || message.HasMedia() || message.HasToolCalls() ||
+           message.role == FOUNDRY_LOCAL_ROLE_TOOL;
   });
 }
 

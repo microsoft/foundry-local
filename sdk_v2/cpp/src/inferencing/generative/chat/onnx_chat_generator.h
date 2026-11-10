@@ -140,14 +140,9 @@ class OnnxChatGenerator : public ChatGenerator {
 
   // ---- Static helpers exposed for unit testing ----
 
-  /// Build the JSON messages array fed to OgaTokenizer::ApplyChatTemplate when
-  /// the request includes one or more images. The last user message's content
-  /// is rewritten to the structured form
-  /// `[{"type":"image"},{"type":"text","text":"..."}]` so that the model's
-  /// chat template inserts the appropriate vision sentinel tokens. Other
-  /// messages are emitted in their plain `{"role","content"}` form.
-  ///
-  static std::string TransformMessagesForMedia(const std::vector<MessageItem>& messages);
+  /// Project all media-bearing user messages and the final user message into structured template content.
+  static std::string TransformMessagesForMedia(const std::vector<MessageItem>& messages,
+                                               bool preserve_reasoning_history = false);
 
  private:
   OnnxChatGenerator(std::unique_ptr<OgaGeneratorParams> gen_params,

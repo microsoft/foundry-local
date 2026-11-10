@@ -1951,7 +1951,7 @@ TEST_F(WebServiceTest, ChatCompletionsAppliesMediaPolicyBeforeInference) {
 
     const auto result = PostJson(base_url_ + "/v1/chat/completions", body);
     EXPECT_EQ(result.status, 400) << result.body.dump(2);
-    EXPECT_NE(ErrorMessageOf(result.body).find(with_tools ? "tool definitions" : "first turn"), std::string::npos)
+    EXPECT_NE(ErrorMessageOf(result.body).find(with_tools ? "tool definitions" : "multimodal model"), std::string::npos)
         << result.body.dump(2);
   }
 

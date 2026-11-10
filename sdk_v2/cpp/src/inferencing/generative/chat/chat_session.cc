@@ -1015,8 +1015,8 @@ bool IsGuidedToolRetryEligible(
     int attempted_tokens,
     std::optional<int> output_budget) {
   return tool_ctx.tool_plan && natural_tool_output_end &&
-           (!semantic_output_seen || safe_prefix_available || !tool_ctx.text_output) &&
-           !tool_call_published &&
+         (!semantic_output_seen || safe_prefix_available || !tool_ctx.text_output) &&
+         !tool_call_published &&
          (!output_budget || attempted_tokens < *output_budget) &&
          options.stop_sequences.empty() &&
          tool_ctx.tool_output &&
@@ -1372,13 +1372,10 @@ std::unique_ptr<PreparedChatRequest> PrepareChatRequest(
     }
 
     const auto effective_kvp = MergeKeyValuePairs(base_session_options, internal_request.options);
-    auto media = CollectMediaInput(internal_request);
-    const bool media_turn = !media.Empty();
-    if (media_turn) {
+    if (RequestHasMedia(internal_request)) {
       ToolCallContext declarations;
       chat_session_internal::PopulateToolDefinitions(request_definitions, declarations);
-      ValidateMediaTurn(media, BuildTranscriptMessages(internal_request.items),
-                        {.tools_declared = declarations.HasTools()});
+      ValidateMediaToolDefinitions(declarations.HasTools());
     }
 
     prepared->tool_context = BuildToolCallContextForRequest(internal_request, effective_kvp, request_definitions,
@@ -1390,7 +1387,10 @@ std::unique_ptr<PreparedChatRequest> PrepareChatRequest(
     const ChatTranscript payload_transcript;
     payload_transcript.ValidateInputs(messages);
     prepared->messages.emplace(message_preparer(std::move(messages), model.HasPositionalToolResults()));
+    auto media = CollectMediaInput(prepared->messages->Messages());
+    const bool media_turn = !media.Empty();
     if (media_turn) {
+      ValidateMediaTurn(media, prepared->messages->Messages(), {});
       prepared->prompt =
           PrepareMediaChatPrompt(media.messages, model, media.images, media.audios, prepared->tool_context);
     } else {
@@ -1404,13 +1404,11 @@ std::unique_ptr<PreparedChatRequest> PrepareChatRequest(
 
   auto effective_kvp = MergeKeyValuePairs(base_session_options, request.options);
   chat_completions::ApplyCatalogDefaults(effective_kvp, model_info.model_settings);
-  auto media = CollectMediaInput(request);
-  const bool media_turn = !media.Empty();
-  if (media_turn) {
+  const bool request_has_media = RequestHasMedia(request);
+  if (request_has_media || CarriesMedia(transcript.Messages())) {
     ToolCallContext declarations;
     chat_session_internal::PopulateToolDefinitions(tool_definitions, declarations);
-    ValidateMediaTurn(media, BuildTranscriptMessages(request.items),
-                      {.session_has_history = !transcript.Empty(), .tools_declared = declarations.HasTools()});
+    ValidateMediaToolDefinitions(declarations.HasTools());
   }
 
   prepared->tool_context = BuildToolCallContextForRequest(request, effective_kvp, tool_definitions,
@@ -1423,7 +1421,7 @@ std::unique_ptr<PreparedChatRequest> PrepareChatRequest(
   prepared->system_prompt = GetOptionOrEmpty(effective_kvp, kSystemPromptOption);
 
   if (!TurnCanGenerate(prepared->ingest.messages,
-                       {.media = media_turn,
+                       {.media = request_has_media,
                         .history = !transcript.Empty(),
                         .system_prefix = !prepared->system_prompt.empty()})) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
@@ -1440,15 +1438,12 @@ std::unique_ptr<PreparedChatRequest> PrepareChatRequest(
   all_messages = WithSystemPrompt(prepared->system_prompt, std::move(all_messages));
   prepared->messages.emplace(message_preparer(std::move(all_messages), model.HasPositionalToolResults()));
 
+  auto media = CollectMediaInput(prepared->messages->Messages());
+  const bool media_turn = !media.Empty();
   if (media_turn) {
-    auto media_messages = std::move(media.messages);
-    if (!prepared->system_prompt.empty()) {
-      media_messages.insert(media_messages.begin(),
-                            MessageItem(FOUNDRY_LOCAL_ROLE_SYSTEM, prepared->system_prompt));
-    }
-
+    ValidateMediaTurn(media, prepared->messages->Messages(), {});
     prepared->prompt =
-        PrepareMediaChatPrompt(media_messages, model, media.images, media.audios, prepared->tool_context);
+        PrepareMediaChatPrompt(media.messages, model, media.images, media.audios, prepared->tool_context);
   } else {
     prepared->prompt = PrepareTextChatPrompt(*prepared->messages, model, prepared->tool_context);
   }
@@ -1651,7 +1646,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       !cached_tool_ctx_.HasSameTools(turn_tool_ctx);
 
   if (cached_generator_ &&
-      (turn_system_prompt != system_prompt_ || retained_tool_context_changed ||
+      (media_turn || turn_system_prompt != system_prompt_ || retained_tool_context_changed ||
        (backend_kind == ChatBackendKind::kGenerator && (inputs.empty() || CarriesToolActivity(inputs))))) {
     InvalidateCachedGenerator();
   }
@@ -2081,8 +2076,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   // from plain text turns, so a rebuild restores correct behavior. This matches C#, which always applies the full
   // template per turn.
   //
-  // Media is single-shot too: AppendMessages cannot extend a media-decoded sequence, so any text follow-up must
-  // rebuild rather than silently feed text into a state that includes media-derived tokens.
+  // AppendMessages cannot extend a media-decoded sequence. Rebuild later turns from the retained media transcript.
   //
   // A turn stopped at a tool call because the model kept talking afterwards is truncated mid-sequence with no turn
   // terminator, so its KV cache is no basis for the next turn either.
