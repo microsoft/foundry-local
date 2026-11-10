@@ -19,6 +19,12 @@ class TestModelCatalog final : public AzureModelCatalog {
                    ModelLoadManager& load_manager, ILogger& logger, ITelemetry& telemetry,
                    std::unique_ptr<AzureMlRegistryClient> client = nullptr);
 
+  std::vector<Model*> ListModels() const override;
+  Model* GetModel(const std::string& alias) const override;
+  Model* GetModelVariant(const std::string& model_id) const override;
+  std::vector<Model*> GetCachedModels() const override;
+  std::vector<Model*> GetLoadedModels() const override;
+
  protected:
   std::vector<Model> FetchModels() const override;
   std::optional<std::vector<Model>> FetchLookupModels() const override;
@@ -42,9 +48,13 @@ class TestModelCatalog final : public AzureModelCatalog {
   std::string credential_mode_;
   ILogger& logger_;
   ModelLoadManager& load_manager_;
+  mutable std::mutex snapshot_mutex_;
   mutable std::mutex client_mutex_;
   mutable std::unique_ptr<AzureMlRegistryClient> client_;
   std::unique_ptr<DownloadManager> downloader_;
+  mutable std::mutex exact_models_mutex_;
+  // Exact handles remain usable independently of latest-only listing reconciliation.
+  mutable std::map<std::string, std::unique_ptr<Model>> exact_models_;
 };
 
 }  // namespace fl

@@ -10,6 +10,7 @@
 
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -22,7 +23,7 @@ class AzureMlRegistryClient {
                         std::shared_ptr<Azure::Core::Http::HttpTransport> transport = nullptr);
 
   std::vector<nlohmann::json> ListModelVersions();
-  nlohmann::json GetModelVersion(const std::string& name, const std::string& version);
+  std::optional<nlohmann::json> GetModelVersion(const std::string& name, const std::string& version);
   ModelContainer ResolveArtifacts(const std::string& name, int version);
 
   const std::string& Registry() const { return registry_; }
@@ -31,8 +32,9 @@ class AzureMlRegistryClient {
 
  private:
   void Discover();
-  nlohmann::json Request(const Azure::Core::Http::HttpMethod& method, const std::string& url,
-                         bool discovery = false, const nlohmann::json* body = nullptr);
+  std::optional<nlohmann::json> Request(const Azure::Core::Http::HttpMethod& method, const std::string& url,
+                                       bool discovery = false, const nlohmann::json* body = nullptr,
+                                       bool allow_not_found = false);
   std::vector<nlohmann::json> List(const std::string& url);
 
   std::string registry_;

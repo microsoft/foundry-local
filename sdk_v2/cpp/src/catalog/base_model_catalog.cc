@@ -386,6 +386,13 @@ std::vector<Model*> BaseModelCatalog::ListModels() const {
   return result;
 }
 
+std::optional<ModelInfo> BaseModelCatalog::FindIndexedModelInfo(const std::string& model_id) const {
+  const auto index = GetIndex();
+  if (!index) return std::nullopt;
+  const auto found = index->id_index.find(model_id);
+  return found == index->id_index.end() ? std::nullopt : std::optional<ModelInfo>(found->second->Info());
+}
+
 Model* BaseModelCatalog::GetModel(const std::string& alias) const {
   EnsurePopulated();
 
@@ -402,7 +409,8 @@ Model* BaseModelCatalog::GetModel(const std::string& alias) const {
   }
 
   if (GetType() == CatalogType::kTest) {
-    auto fetched = FetchModelVersions(alias, "", 0);
+    auto fetched = FetchModels();
+    std::erase_if(fetched, [&](const Model& model) { return model.Alias() != alias; });
     if (!fetched.empty()) {
       IntegrateVariants(std::move(fetched));
       idx = GetIndex();

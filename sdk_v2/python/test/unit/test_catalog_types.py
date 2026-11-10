@@ -34,6 +34,9 @@ def mock_catalog_manager(monkeypatch):
     manager._native_manager = object()
     manager._catalogs = {}
     manager._close_started = threading.Event()
+    manager._active_native_calls = 0
+    manager._native_call_state = threading.local()
+    manager._lifetime_changed = threading.Condition(FoundryLocalManager._lock)
     name = ffi.new("char[]", b"Mock catalog")
 
     def get_test_catalog(_manager, _registry, out):
@@ -149,3 +152,27 @@ def test_closed_manager_cannot_return_a_cached_test_catalog(mock_catalog_manager
     with pytest.raises(RuntimeError, match="closed"):
         manager.get_catalog(CatalogType.TEST, registry_name="mock-registry")
     api.root.Manager_GetTestCatalog.assert_called_once()
+
+
+def test_missing_test_model_variant_returns_none(mock_catalog_manager):
+    manager, api = mock_catalog_manager
+    catalog = manager.get_catalog(CatalogType.TEST, registry_name="mock-registry")
+
+    def get_variant(_catalog, _model_id, out):
+        out[0] = ffi.NULL
+        return ffi.NULL
+
+    api.catalog.GetModelVariant = Mock(side_effect=get_variant)
+    assert catalog.get_model_variant("tiny-generic-cpu:999") is None
+    api.catalog.GetModelVariant.assert_called_once()
+    assert api.catalog.GetModelVariant.call_args.args[1] == b"tiny-generic-cpu:999"
+
+
+@pytest.mark.parametrize("message", ["HTTP 401", "HTTP 403", "authentication failed", "transport failed"])
+def test_test_model_lookup_errors_are_not_missing_variants(mock_catalog_manager, message):
+    manager, api = mock_catalog_manager
+    catalog = manager.get_catalog(CatalogType.TEST, registry_name="mock-registry")
+    api.catalog.GetModelVariant = Mock(return_value=ffi.NULL)
+    api.check_status.side_effect = FoundryLocalException(message)
+    with pytest.raises(FoundryLocalException, match=message):
+        catalog.get_model_variant("tiny-generic-cpu:999")

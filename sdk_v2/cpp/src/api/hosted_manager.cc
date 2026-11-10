@@ -93,7 +93,7 @@ class HostedState {
              context->Call(Operation::IsLoaded, {{"model", EncodeModelSelection({CatalogType::kLocal, info, path})}})
                  .get<bool>();
     });
-    if (catalog == CatalogType::kPublic) {
+    if (catalog == CatalogType::kPublic || catalog == CatalogType::kTest) {
       const auto context = Connect(false);
       metadata->SetCatalogRuntimeDevices(
           context ? context->Call(Operation::RuntimeDevices, Json::object()).get<DeviceProviders>()

@@ -94,9 +94,17 @@ For existing registries such as `azureml-dev`, an asset marked with `foundryLoca
 
 The adapter logs the legacy mapping and leaves final platform admission to the runtime when loading the actual package. Listings include only variants matching a registered device and execution provider; OpenVINO GPU and NPU are checked separately. Cached snapshots retain all adapted metadata so registering another provider can expose its variants without rewriting registry assets. Legacy entries missing `alias`/`task` or using unsupported versions are skipped with warnings. If any hardware/platform tag is supplied, all six tags are still required. This compatibility path does not modify registry metadata.
 
+In shared-host mode, PUBLIC and TEST queries refresh device/provider eligibility from the host without acquiring an owner or registering providers in the client. A changed device map invalidates existing catalogs, and newly created TEST registry catalogs inherit the current map. When no host is running, eligibility uses the client's registered providers.
+
 Discovery reads model versions and tags, following pagination. Default discovery returns only the highest numeric version of each compatible model name (hardware variant), while retaining each hardware backend under its alias. Exact `<variant-name>:<version>` lookup can still request older versions, using a completed cached package first or querying that registry version otherwise. Explicit version-history queries retain all versions, subject to their requested limit. Cache-only discovery returns the latest downloaded version per variant; exact IDs can still select older downloaded versions. Ignore untagged assets and report incomplete or invalid tags. Return an explicit error when no compatible variant exists.
 
 ## 5. Using the catalog
+
+Latest-only listings and retained exact-version handles have separate ownership. Looking up an older version never adds it to listing alias containers, and listing or refreshing never retires that exact handle. Exact handles remain available for download/load/unload for the catalog's lifetime; cached/loaded queries include them without duplicate IDs. Already-indexed metadata is reused without an extra registry request.
+
+Discovery preserves resource-group names containing parentheses and Unicode, validating UTF-8, length and ASCII naming boundaries locally while leaving Unicode categories to ARM. The group is URL-encoded as one path segment, independently of model-name validation.
+
+An exact model-version HTTP 404 returns no variant (`None` from Python's `get_model_variant()`), without changing existing model metadata. Authentication, authorization and transport failures still propagate. Discovery/listing 404s and missing model versions or artifact grants during downloads remain errors.
 
 With the manager already initialized using the updated native library (C API version 4):
 
@@ -162,6 +170,8 @@ Follow the existing local catalog precedent: **keep catalog views separate rathe
 On a test-source transfer network error, reacquire temporary access once and resume through the existing downloader. SAS URLs are not persisted. Repeated failures remain explicit errors; this is not unlimited renewal for arbitrarily long downloads. Failed or cancelled downloads remain incomplete. Cache lookup and removal stay scoped to registry + variant + version, never affecting public models or registry assets.
 
 Completed packages remain available after restart. By default, exact-ID and alias lookups first resolve completed packages from the registry's saved metadata snapshot, without constructing Azure credentials or contacting Azure. A cached alias selects the best eligible cached variant, not the newest remote version. On a cache miss, exact-ID lookup fetches that version directly; alias lookup queries the registry. Exact fetches are merged into the saved snapshot so downloaded packages are recoverable after restart. Metadata alone or an incomplete download is not a cache hit.
+
+Each registry-bound catalog serializes snapshot reads, exact-ID read/merge/write transactions, and listing/history saves with one mutex. Concurrent requests therefore cannot overwrite one another's additions or write the same PID-based temporary file simultaneously. Different registries remain independent.
 
 Explicit `list_models()` still queries the registry (subject to the existing in-process refresh interval), even after a cache-first lookup. `get_cached_models()` does not force online discovery. Optional native `TestModelCacheOnly=true` prohibits registry access altogether, but is unnecessary for ordinary cached inference. Registry authentication/network failures on misses or explicit listing remain actionable errors, not silent empty results. Public/local catalog behavior is unchanged.
 
@@ -252,9 +262,11 @@ After latest-only discovery was added, the script passed again with cached CPU i
 
 ### Mocked unit tests
 
-Native coverage lives in `sdk_v2/cpp/test/internal_api/test_model_catalog_test.cc`. It runs the real TEST catalog and Azure ML protocol adapter against an injected HTTP transport and fake credential, with temporary package metadata instead of model weights. It covers backend/device filtering, strict and legacy metadata, numeric latest-version selection, exact older-version lookup, history limits, cache-first lookup and restart, registry isolation, pagination, artifact grants/prefixes, and surfaced authentication/HTTP/JSON failures.
+Native coverage lives in `sdk_v2/cpp/test/internal_api/test_model_catalog_test.cc`. It runs the real TEST catalog and Azure ML protocol adapter against an injected HTTP transport and fake credential, with temporary package metadata for discovery. Handle-lifetime regressions use the bundled tiny CPU model to verify download/load/unload after exact-first and listing-first queries, from completed cache and mocked registry metadata, including forced refresh. It also covers backend/device filtering, strict and legacy metadata, numeric latest-version selection, history limits, cache-first lookup and restart, registry isolation, pagination, artifact grants/prefixes, and surfaced authentication/HTTP/JSON failures.
 
 Python selection tests in `sdk_v2/python/test/unit/test_catalog_types.py` mock the native vtable to check registry-bound wrappers, registry-name validation, native API compatibility, error propagation, and unchanged public/local routing. Neither suite needs `az login`, registry access, model downloads, or physical GPU/NPU hardware.
+
+Shared-host regressions in `sdk_v2/cpp/test/internal_api/sdk_session_test.cc` use cached TEST metadata and a fake provider backend over local IPC. They cover existing/new registry catalogs, GPU/NPU visibility after host registration, invalidation when host devices change, and unchanged client provider registrations.
 
 Build native tests with `build.py`, then run only the mocked catalog cases:
 

@@ -58,6 +58,9 @@ class BaseModelCatalog : public ICatalog {
   /// Append a newly registered active model. Inactive tombstones are never revived.
   Model* AppendActiveModel(Model model);
 
+  /// Read already-indexed immutable metadata without fetching or exposing a refresh-owned model handle.
+  std::optional<ModelInfo> FindIndexedModelInfo(const std::string& model_id) const;
+
   /// Remove a model from catalog lookup while retaining its storage for pointer safety.
   bool RetireModel(const std::string& alias_or_model_id);
 

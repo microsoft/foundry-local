@@ -5,7 +5,9 @@
 #include "api/request_admission.h"
 #include "c_api_types.h"
 #include "catalog.h"
+#include "catalog/catalog_cache.h"
 #include "catalog/local_model_catalog.h"
+#include "catalog/test_model_catalog.h"
 #include "configuration.h"
 #include "download/download_manager.h"
 #include "exception.h"
@@ -18,11 +20,13 @@
 #include "hosting/session_dispatcher.h"
 #include "inferencing/generative/chat/search_options.h"
 #include "inferencing/session/session.h"
+#include "internal_api/test_helpers.h"
 #include "items/message_item.h"
 #include "items/text_item.h"
 #include "model_info.h"
 #include "manager.h"
 #include "util/scope_guard.h"
+#include "util/sha256.h"
 #include "utils/temp_path.h"
 
 #include <gtest/gtest.h>
@@ -31,8 +35,10 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <future>
 #include <mutex>
+#include <set>
 #include <thread>
 #include <vector>
 
@@ -72,9 +78,7 @@ class ProviderBackend final : public api::ManagerBackend {
   const std::vector<std::string>& GetWebServiceUrls() const override { return urls_; }
   void StopWebService() override {}
   std::span<const flEpInfo> GetDiscoverableEps() const override { return eps_; }
-  api::DeviceProviders GetRuntimeDevices() const override {
-    return {{"CPU", {"CPUExecutionProvider"}}, {"GPU", {"wire-ep"}}};
-  }
+  api::DeviceProviders GetRuntimeDevices() const override { return devices; }
   void SetCatalogRuntimeDevices(api::DeviceProviders) override {}
   EpDownloadResult DownloadAndRegisterEps(const std::vector<std::string>* names,
                                           const api::EpProgressCallback& progress) override {
@@ -96,6 +100,7 @@ class ProviderBackend final : public api::ManagerBackend {
   bool IsShutdownRequested() const override { return false; }
 
   std::atomic<bool> reporting_download{false};
+  api::DeviceProviders devices{{"CPU", {"CPUExecutionProvider"}}, {"GPU", {"wire-ep"}}};
 
  private:
   std::vector<std::string> urls_;
@@ -212,6 +217,7 @@ class SdkSessionTest : public testing::Test {
     config.model_cache_dir = (root_ / "models").string();
     config.logs_dir = (root_ / "logs").string();
     config.disable_nonessential_telemetry = true;
+    config.additional_options["TestModelCacheOnly"] = "true";
     manager_ = api::CreateEmbeddedBackend(config);
     ModelInfo metadata;
     metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "coding");
@@ -334,6 +340,43 @@ class SdkSessionTest : public testing::Test {
 
   std::shared_ptr<api::HostedContext> ClientContext() const {
     return std::make_shared<api::HostedContext>(client_, "session-test-host", 1);
+  }
+
+  void WriteTestCatalogSnapshot(const std::string& registry) {
+    const auto cache = root_ / "models" / (registry + "-" + Sha256String("azureml://registries/" + registry));
+    struct Variant {
+      const char* name;
+      DeviceType device;
+      const char* provider;
+    };
+    std::vector<ModelInfo> models;
+    for (const auto& variant : {Variant{"shared-generic-cpu", DeviceType::kCPU, "CPUExecutionProvider"},
+                                Variant{"shared-generic-gpu", DeviceType::kGPU, "WebGpuExecutionProvider"},
+                                Variant{"shared-qnn-npu", DeviceType::kNPU, "QNNExecutionProvider"}}) {
+      ModelInfo info;
+      info.name = variant.name;
+      info.model_id = info.name + ":1";
+      info.version = 1;
+      info.alias = "shared";
+      info.device_type = variant.device;
+      info.execution_provider = variant.provider;
+      info.string_properties[TestModelCatalog::kRegistryProperty] = registry;
+      models.push_back(std::move(info));
+      const auto path = cache / (std::string(variant.name) + "-1");
+      std::filesystem::create_directories(path);
+      std::ofstream(path / "genai_config.json") << "{}";
+      std::ofstream(path / "inference_model.json") << "{}";
+    }
+    CatalogCache(cache.string(), test::NullLog()).Save(models, true);
+    ASSERT_TRUE(std::filesystem::exists(cache / "foundry.modelinfo.json"));
+  }
+
+  static std::set<std::string> CatalogVariantIds(api::CatalogBackend& catalog) {
+    std::set<std::string> ids;
+    for (const auto* model : catalog.ListModels()) {
+      for (const auto* variant : model->Variants()) ids.insert(variant->Info().model_id);
+    }
+    return ids;
   }
 
   static std::string AssistantText(const Response& response) {
@@ -854,6 +897,74 @@ TEST_F(SdkSessionTest, HostedRuntimeDeviceObservationDoesNotAcquireOrRegisterPro
   EXPECT_FALSE(hosted->IsEpDownloadInProgress());
   hosted->Shutdown();
   EXPECT_FALSE(hosted->IsEpDownloadInProgress());
+}
+
+TEST_F(SdkSessionTest, CatalogRuntimeDevicesInvalidateExistingTestRegistriesAndApplyToNewOnes) {
+  WriteTestCatalogSnapshot("existing-registry");
+  WriteTestCatalogSnapshot("new-registry");
+  const auto local_devices = manager_->GetRuntimeDevices();
+  const api::DeviceProviders cpu_only{{"CPU", {"CPUExecutionProvider"}}};
+  const api::DeviceProviders host_devices{{"CPU", {"CPUExecutionProvider"}},
+                                         {"GPU", {"WebGpuExecutionProvider"}},
+                                         {"NPU", {"QNNExecutionProvider"}}};
+  const std::set<std::string> cpu_ids{"shared-generic-cpu:1"};
+  const std::set<std::string> all_ids{"shared-generic-cpu:1", "shared-generic-gpu:1", "shared-qnn-npu:1"};
+  manager_->SetCatalogRuntimeDevices(cpu_only);
+  auto& existing = manager_->GetTestCatalog("existing-registry");
+  EXPECT_EQ(CatalogVariantIds(existing), cpu_ids);
+
+  manager_->SetCatalogRuntimeDevices(host_devices);
+  EXPECT_EQ(CatalogVariantIds(existing), all_ids);
+  auto& created_later = manager_->GetTestCatalog("new-registry");
+  EXPECT_EQ(CatalogVariantIds(created_later), all_ids);
+  EXPECT_EQ(manager_->GetRuntimeDevices(), local_devices);
+
+  manager_->SetCatalogRuntimeDevices(cpu_only);
+  EXPECT_EQ(CatalogVariantIds(existing), cpu_ids);
+  EXPECT_EQ(CatalogVariantIds(created_later), cpu_ids);
+}
+
+TEST_F(SdkSessionTest, HostedTestDiscoveryRefreshesProvidersAfterHostRegistrationWithoutRegisteringInClient) {
+  WriteTestCatalogSnapshot("existing-registry");
+  WriteTestCatalogSnapshot("new-registry");
+  const auto local_devices = manager_->GetRuntimeDevices();
+  const api::DeviceProviders cpu_only{{"CPU", {"CPUExecutionProvider"}}};
+  const api::DeviceProviders host_devices{{"CPU", {"CPUExecutionProvider"}},
+                                         {"GPU", {"WebGpuExecutionProvider"}},
+                                         {"NPU", {"QNNExecutionProvider"}}};
+  const std::set<std::string> cpu_ids{"shared-generic-cpu:1"};
+  const std::set<std::string> all_ids{"shared-generic-cpu:1", "shared-generic-gpu:1", "shared-qnn-npu:1"};
+  manager_->SetCatalogRuntimeDevices(cpu_only);
+  auto provider = std::make_shared<ProviderBackend>();
+  provider->devices = cpu_only;
+  manager_dispatcher_ = std::make_unique<ManagerDispatcher>(provider, *lifetime_);
+  auto context = ClientContext();
+  int acquired = 0;
+  auto hosted = api::CreateHostedBackend(manager_, [&](bool acquire) {
+    acquired += acquire;
+    return context;
+  });
+  auto& existing = hosted->GetTestCatalog("existing-registry");
+  EXPECT_EQ(CatalogVariantIds(existing), cpu_ids);
+  EXPECT_EQ(acquired, 0);
+
+  provider->devices = host_devices;
+  const std::vector<std::string> names{"wire-ep"};
+  ASSERT_TRUE(hosted->DownloadAndRegisterEps(&names, {}).success);
+  EXPECT_EQ(acquired, 1);
+  auto* alias = existing.GetModel("shared");
+  ASSERT_NE(alias, nullptr);
+  EXPECT_EQ(alias->Variants().size(), 3);
+  EXPECT_EQ(CatalogVariantIds(existing), all_ids);
+  EXPECT_EQ(existing.GetModelVersions("shared", "", 0).size(), 3);
+  auto& created_later = hosted->GetTestCatalog("new-registry");
+  EXPECT_EQ(CatalogVariantIds(created_later), all_ids);
+  EXPECT_EQ(manager_->GetRuntimeDevices(), local_devices);
+
+  provider->devices = cpu_only;
+  EXPECT_EQ(CatalogVariantIds(existing), cpu_ids);
+  EXPECT_EQ(CatalogVariantIds(created_later), cpu_ids);
+  EXPECT_EQ(acquired, 1);
 }
 
 TEST_F(SdkSessionTest, HostedSessionAndCapturedPreflightKeepTheClientDependencyGraphAlive) {

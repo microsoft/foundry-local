@@ -606,8 +606,20 @@ ICatalog& Manager::GetTestCatalog(const std::string& registry_name) {
   if (!catalog) {
     catalog = std::make_unique<TestModelCatalog>(registry, config_, *ep_detector_, *model_load_manager_,
                                                 *logger_, *telemetry_);
+    if (catalog_runtime_devices_) {
+      static_cast<AzureModelCatalog&>(*catalog).SetRuntimeDevices(*catalog_runtime_devices_);
+    }
   }
   return *catalog;
+}
+
+void Manager::SetCatalogRuntimeDevices(std::map<std::string, std::vector<std::string>> devices) {
+  std::lock_guard lock(test_catalogs_mutex_);
+  static_cast<AzureModelCatalog&>(*public_catalog_).SetRuntimeDevices(devices);
+  for (auto& [registry, catalog] : test_catalogs_) {
+    static_cast<AzureModelCatalog&>(*catalog).SetRuntimeDevices(devices);
+  }
+  catalog_runtime_devices_ = std::move(devices);
 }
 
 void Manager::StartWebService() {

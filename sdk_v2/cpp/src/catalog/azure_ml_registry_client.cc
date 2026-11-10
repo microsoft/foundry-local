@@ -47,6 +47,18 @@ void ValidateSegment(const std::string& value) {
   }
 }
 
+void ValidateResourceGroup(const std::string& value) {
+  // ARM discovery owns Unicode category validation; preserve its names without locale-dependent classification.
+  if (value.empty() || !IsValidUtf8(value) || value.back() == '.' ||
+      std::count_if(value.begin(), value.end(), [](unsigned char ch) { return (ch & 0xC0) != 0x80; }) > 90 ||
+      !std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+        return ch >= 0x80 || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+               (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.' || ch == '(' || ch == ')';
+      })) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "invalid Azure ML resource group name");
+  }
+}
+
 void ValidateHost(const Url& url, const std::string& suffix) {
   const auto host = ToLower(url.GetHost());
   if (url.GetScheme() != "https" || host.size() <= suffix.size() ||
@@ -112,8 +124,8 @@ AzureMlRegistryClient::AzureMlRegistryClient(
   registry_pipeline_ = MakePipeline(credential, "https://management.azure.com/.default", transport);
 }
 
-Json AzureMlRegistryClient::Request(const HttpMethod& method, const std::string& url,
-                                    bool discovery, const Json* body) {
+std::optional<Json> AzureMlRegistryClient::Request(const HttpMethod& method, const std::string& url,
+                                                  bool discovery, const Json* body, bool allow_not_found) {
   const auto context = Azure::Core::Context{}.WithDeadline(
       Azure::DateTime(std::chrono::system_clock::now() + std::chrono::seconds(90)));
   const auto text = body ? body->dump() : std::string{};
@@ -126,6 +138,9 @@ Json AzureMlRegistryClient::Request(const HttpMethod& method, const std::string&
   try {
     auto response = (discovery ? discovery_pipeline_ : registry_pipeline_)->Send(request, context);
     const auto status = static_cast<int>(response->GetStatusCode());
+    if (allow_not_found && response->GetStatusCode() == Azure::Core::Http::HttpStatusCode::NotFound) {
+      return std::nullopt;
+    }
     if (status < 200 || status >= 300) {
       std::string request_id;
       for (const auto* header : {"x-ms-request-id", "x-ms-correlation-request-id"}) {
@@ -173,11 +188,11 @@ void AzureMlRegistryClient::Discover() {
   std::lock_guard lock(discovery_mutex_);
   if (!base_url_.empty()) return;
   const auto discovery = Request(HttpMethod::Get,
-      "https://eastus.api.azureml.ms/registrymanagement/v1.0/registries/" + registry_ + "/discovery", true);
+      "https://eastus.api.azureml.ms/registrymanagement/v1.0/registries/" + registry_ + "/discovery", true).value();
   const auto subscription = RequiredString(discovery, "subscriptionId");
   const auto group = RequiredString(discovery, "resourceGroup");
   ValidateSegment(subscription);
-  ValidateSegment(group);
+  ValidateResourceGroup(group);
   Url endpoint(RequiredString(discovery, "primaryRegionResourceProviderUri"));
   ValidateHost(endpoint, ToLower(endpoint.GetHost()).ends_with(".experiments.azureml-test.net")
       ? ".experiments.azureml-test.net" : ".experiments.azureml.net");
@@ -186,7 +201,8 @@ void AzureMlRegistryClient::Discover() {
   }
   resource_id_ = "/subscriptions/" + subscription + "/resourceGroups/" + group +
       "/providers/Microsoft.MachineLearningServices/registries/" + registry_;
-  endpoint.AppendPath("mferp/managementfrontend" + resource_id_);
+  endpoint.AppendPath("mferp/managementfrontend/subscriptions/" + subscription + "/resourceGroups/" +
+      Url::Encode(group) + "/providers/Microsoft.MachineLearningServices/registries/" + registry_);
   base_url_ = endpoint.GetAbsoluteUrl();
 }
 
@@ -207,7 +223,7 @@ std::vector<Json> AzureMlRegistryClient::List(const std::string& url) {
         !visited.insert(next).second) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK, "Azure ML returned an invalid pagination link");
     }
-    auto response = Request(HttpMethod::Get, next);
+    auto response = Request(HttpMethod::Get, next).value();
     if (!response.contains("value") || !response["value"].is_array()) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK, "Azure ML list response missing value array");
     }
@@ -232,18 +248,23 @@ std::vector<Json> AzureMlRegistryClient::ListModelVersions() {
   return versions;
 }
 
-Json AzureMlRegistryClient::GetModelVersion(const std::string& name, const std::string& version) {
+std::optional<Json> AzureMlRegistryClient::GetModelVersion(const std::string& name, const std::string& version) {
   ValidateSegment(name);
   ValidateSegment(version);
   Discover();
-  auto model = Request(HttpMethod::Get, base_url_ + "/models/" + name + "/versions/" + version + kApiQuery);
-  model["foundryVariantName"] = name;
+  auto model = Request(HttpMethod::Get, base_url_ + "/models/" + name + "/versions/" + version + kApiQuery,
+                       false, nullptr, true);
+  if (model) (*model)["foundryVariantName"] = name;
   return model;
 }
 
 ModelContainer AzureMlRegistryClient::ResolveArtifacts(const std::string& name, int version) {
   const auto model = GetModelVersion(name, std::to_string(version));
-  const auto artifact_uri = RequiredString(model.at("properties"), "modelUri");
+  if (!model) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK, "Azure ML model/artifact request failed: HTTP 404; model version not found: ",
+             name, ":", version);
+  }
+  const auto artifact_uri = RequiredString(model->at("properties"), "modelUri");
   const Url artifact(artifact_uri);
   ValidateHost(artifact, ".blob.core.windows.net");
   const auto path = CleanPath(artifact);
@@ -254,7 +275,7 @@ ModelContainer AzureMlRegistryClient::ResolveArtifacts(const std::string& name, 
   const Json body{{"assetId", "azureml://registries/" + registry_ + "/models/" + name +
                              "/versions/" + std::to_string(version)}, {"blobUri", artifact_uri}};
   const auto access = Request(HttpMethod::Post,
-      base_url_ + "/datarefs/" + name + "/versions/" + std::to_string(version) + kApiQuery, false, &body);
+      base_url_ + "/datarefs/" + name + "/versions/" + std::to_string(version) + kApiQuery, false, &body).value();
   const auto& grant = access.at("blobReferenceForConsumption").at("credential");
   if (RequiredString(grant, "credentialType") != "SAS") {
     FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK, "Azure ML test catalog requires SAS artifact access");
@@ -279,7 +300,7 @@ ModelContainer AzureMlRegistryClient::ResolveArtifacts(const std::string& name, 
   if (slash != std::string::npos) {
     result.path_prefix = path.substr(slash + 1) + "/";
   } else {
-    const auto& tags = model.at("properties").at("tags");
+    const auto& tags = model->at("properties").at("tags");
     if (tags.contains("directoryPath")) {
       const auto directory = RequiredString(tags, "directoryPath");
       ValidateSegment(directory);

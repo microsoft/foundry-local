@@ -207,6 +207,71 @@ std::optional<ModelInfo> TestModelCatalog::Adapt(const nlohmann::json& model) co
   return info;
 }
 
+std::vector<Model*> TestModelCatalog::ListModels() const {
+  auto models = AzureModelCatalog::ListModels();
+  for (auto* model : models) {
+    for (auto* variant : model->Variants()) RefreshRetainedVariantCache(*variant);
+  }
+  return models;
+}
+
+Model* TestModelCatalog::GetModel(const std::string& alias) const {
+  auto* model = AzureModelCatalog::GetModel(alias);
+  if (model) {
+    for (auto* variant : model->Variants()) RefreshRetainedVariantCache(*variant);
+  }
+  return model;
+}
+
+Model* TestModelCatalog::GetModelVariant(const std::string& model_id) const {
+  if (model_id.find(':') == std::string::npos) return AzureModelCatalog::GetModelVariant(model_id);
+
+  {
+    std::lock_guard lock(exact_models_mutex_);
+    if (const auto found = exact_models_.find(model_id); found != exact_models_.end()) {
+      RefreshRetainedVariantCache(*found->second);
+      return found->second.get();
+    }
+  }
+
+  const auto indexed = FindIndexedModelInfo(model_id);
+  auto models = indexed ? CreateModels({*indexed}) : FetchModelsByIds({model_id});
+  if (models.empty()) {
+    logger_.Log(LogLevel::Information, "GetModelVariant: '" + model_id + "' not found in the test catalog.");
+    return nullptr;
+  }
+  auto model = std::make_unique<Model>(std::move(models.front()));
+  std::lock_guard lock(exact_models_mutex_);
+  return exact_models_.emplace(model_id, std::move(model)).first->second.get();
+}
+
+std::vector<Model*> TestModelCatalog::GetCachedModels() const {
+  auto models = AzureModelCatalog::GetCachedModels();
+  std::lock_guard lock(exact_models_mutex_);
+  for (const auto& [id, model] : exact_models_) {
+    RefreshRetainedVariantCache(*model);
+    if (model->IsCached() && std::none_of(models.begin(), models.end(), [&](const Model* value) {
+          return value->Id() == id;
+        })) {
+      models.push_back(model.get());
+    }
+  }
+  return models;
+}
+
+std::vector<Model*> TestModelCatalog::GetLoadedModels() const {
+  auto models = AzureModelCatalog::GetLoadedModels();
+  std::lock_guard lock(exact_models_mutex_);
+  for (const auto& [id, model] : exact_models_) {
+    if (model->IsLoaded() && std::none_of(models.begin(), models.end(), [&](const Model* value) {
+          return value->Id() == id;
+        })) {
+      models.push_back(model.get());
+    }
+  }
+  return models;
+}
+
 std::vector<Model> TestModelCatalog::CreateModels(const std::vector<ModelInfo>& infos) const {
   std::vector<Model> models;
   for (const auto& info : infos) {
@@ -237,6 +302,7 @@ std::vector<Model> TestModelCatalog::FetchModels() const {
 }
 
 std::vector<Model> TestModelCatalog::FetchAvailableModels() const {
+  std::lock_guard snapshot_lock(snapshot_mutex_);
   CatalogCache cache(cache_dir_, logger_);
   std::vector<ModelInfo> infos;
   if (cache_only_) {
@@ -279,6 +345,7 @@ BaseModelCatalog::VariantEligibility TestModelCatalog::MakeVariantEligibility() 
 }
 
 std::optional<std::vector<Model>> TestModelCatalog::FetchLookupModels() const {
+  std::lock_guard snapshot_lock(snapshot_mutex_);
   CatalogCache cache(cache_dir_, logger_);
   cache.Load();
   const auto infos = cache.GetCachedModels();
@@ -305,6 +372,7 @@ std::vector<Model> TestModelCatalog::FetchModelVersions(const std::string& alias
 }
 
 std::vector<Model> TestModelCatalog::FetchModelsByIds(const std::vector<std::string>& ids) const {
+  std::lock_guard snapshot_lock(snapshot_mutex_);
   CatalogCache cache(cache_dir_, logger_);
   cache.Load();
   auto snapshot = cache.GetCachedModels().value_or(std::vector<ModelInfo>{});
@@ -320,7 +388,9 @@ std::vector<Model> TestModelCatalog::FetchModelsByIds(const std::vector<std::str
     if (cached != snapshot.end()) {
       infos.push_back(*cached);
     } else if (!cache_only_) {
-      if (auto info = Adapt(Client().GetModelVersion(name, std::to_string(version)))) infos.push_back(std::move(*info));
+      if (const auto model = Client().GetModelVersion(name, std::to_string(version))) {
+        if (auto info = Adapt(*model)) infos.push_back(std::move(*info));
+      }
     }
   }
   for (const auto& info : infos) {

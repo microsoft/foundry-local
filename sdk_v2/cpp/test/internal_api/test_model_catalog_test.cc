@@ -5,6 +5,7 @@
 #include "catalog/catalog_cache.h"
 #include "exception.h"
 #include "internal_api/test_helpers.h"
+#include "internal_api/test_model_cache.h"
 #include "util/sha256.h"
 #include "utils/temp_path.h"
 
@@ -19,7 +20,10 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <future>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -65,17 +69,24 @@ class MockRegistryTransport final : public Azure::Core::Http::HttpTransport {
     HttpMethod method;
     HttpStatusCode status;
     std::optional<Json> request_body;
+    std::vector<uint8_t> bytes;
   };
 
   void Queue(const std::string& url, const Json& body, HttpMethod method = HttpMethod::Get,
              HttpStatusCode status = HttpStatusCode::Ok, std::optional<Json> request_body = std::nullopt) {
-    responses.push_back({url, body.dump(), method, status, std::move(request_body)});
+    responses.push_back({url, body.dump(), method, status, std::move(request_body), {}});
   }
 
   std::unique_ptr<Azure::Core::Http::RawResponse> Send(
       Azure::Core::Http::Request& request, const Azure::Core::Context& context) override {
-    if (calls >= responses.size()) throw std::runtime_error("unexpected mocked Azure ML request");
-    const auto& expected = responses[calls++];
+    size_t index;
+    {
+      std::lock_guard lock(mutex_);
+      if (calls >= responses.size()) throw std::runtime_error("unexpected mocked Azure ML request");
+      index = calls++;
+    }
+    if (before_response) before_response(index);
+    auto& expected = responses[index];
     EXPECT_EQ(request.GetUrl().GetAbsoluteUrl(), expected.url);
     EXPECT_EQ(request.GetMethod(), expected.method);
     if (expected.request_body) {
@@ -84,16 +95,17 @@ class MockRegistryTransport final : public Azure::Core::Http::HttpTransport {
     }
     auto response = std::make_unique<Azure::Core::Http::RawResponse>(1, 1, expected.status, "mock");
     response->SetHeader("x-ms-request-id", "mock-request-id");
-    body_.assign(expected.body.begin(), expected.body.end());
-    response->SetBodyStream(std::make_unique<Azure::Core::IO::MemoryBodyStream>(body_));
+    expected.bytes.assign(expected.body.begin(), expected.body.end());
+    response->SetBodyStream(std::make_unique<Azure::Core::IO::MemoryBodyStream>(expected.bytes));
     return response;
   }
 
   size_t calls = 0;
   std::vector<Response> responses;
+  std::function<void(size_t)> before_response;
 
  private:
-  std::vector<uint8_t> body_;
+  std::mutex mutex_;
 };
 
 class FakeCatalogDevices final : public IEpDetector {
@@ -150,14 +162,15 @@ class TestModelCatalogTest : public ::testing::Test {
 
   void TearDown() override { EXPECT_EQ(transport_->calls, transport_->responses.size()); }
 
-  void Discovery(const std::string& endpoint = "https://region.experiments.azureml.net/") {
+  void Discovery(const std::string& endpoint = "https://region.experiments.azureml.net/",
+                 const std::string& resource_group = "group") {
     transport_->Queue("https://eastus.api.azureml.ms/registrymanagement/v1.0/registries/mock-registry/discovery",
-                      {{"subscriptionId", "sub"}, {"resourceGroup", "group"},
+                      {{"subscriptionId", "sub"}, {"resourceGroup", resource_group},
                        {"primaryRegionResourceProviderUri", endpoint}});
   }
 
-  void Inventory(const std::vector<Json>& models) {
-    Discovery();
+  void Inventory(const std::vector<Json>& models, bool discover = true) {
+    if (discover) Discovery();
     Json names = Json::array();
     std::set<std::string> seen;
     for (const auto& model : models) {
@@ -244,6 +257,153 @@ TEST_F(TestModelCatalogTest, OlderExactIdFetchesOnlyTheRequestedVersion) {
   auto* older = catalog->GetModelVariant("tiny-generic-cpu:2");
   ASSERT_NE(older, nullptr);
   EXPECT_EQ(older->Info().version, 2);
+}
+
+class TestModelCatalogExactHandleTest : public TestModelCatalogTest,
+                                        public ::testing::WithParamInterface<std::pair<bool, bool>> {};
+
+TEST_P(TestModelCatalogExactHandleTest, OlderHandlesSurviveLatestOnlyListingsAndRemainUsable) {
+  const auto [listing_first, cached_first] = GetParam();
+  const auto package = [&] {
+    const auto path = CachePath() / (kCpuName + "-2");
+    std::filesystem::copy(test::GetTestDataPath("tiny-paged-attention"), path,
+                          std::filesystem::copy_options::recursive);
+    std::ofstream(path / "inference_model.json") << "{}";
+    return path;
+  };
+  if (cached_first) {
+    Snapshot({CachedInfo(2)});
+    package();
+  }
+  const std::vector<Json> inventory{LegacyModel(kCpuName, 2), LegacyModel(kCpuName, 10)};
+  if (!listing_first && !cached_first) {
+    Discovery();
+    transport_->Queue(kBase + "/models/" + kCpuName + "/versions/2" + kApi, LegacyModel(kCpuName, 2));
+    Inventory(inventory, false);
+  } else {
+    Inventory(inventory);
+    if (!cached_first) {
+      transport_->Queue(kBase + "/models/" + kCpuName + "/versions/2" + kApi, LegacyModel(kCpuName, 2));
+    }
+  }
+  auto catalog = Catalog();
+  const auto expect_latest_only = [&] {
+    EXPECT_EQ(VariantIds(catalog->ListModels()), (std::set<std::string>{kCpuName + ":10"}));
+  };
+  if (listing_first) expect_latest_only();
+  auto* older = catalog->GetModelVariant(kCpuName + ":2");
+  ASSERT_NE(older, nullptr);
+  expect_latest_only();
+  ASSERT_EQ(catalog->GetModelVariant(kCpuName + ":2"), older);
+  if (!cached_first) package();
+  ASSERT_NO_THROW(older->RefreshCachedState());
+  int progress = 0;
+  ASSERT_NO_THROW(older->Download([&](float percent) {
+    EXPECT_EQ(percent, 100);
+    ++progress;
+    return 0;
+  }));
+  EXPECT_EQ(progress, 1);
+  EXPECT_EQ(catalog->GetCachedModels(), (std::vector<Model*>{older}));
+  ASSERT_NO_THROW(older->Load());
+  EXPECT_TRUE(older->IsLoaded());
+  EXPECT_EQ(catalog->GetLoadedModels(), (std::vector<Model*>{older}));
+
+  Inventory(inventory, false);
+  catalog->InvalidateCache();
+  expect_latest_only();
+  EXPECT_EQ(catalog->GetModelVariant(kCpuName + ":2"), older);
+  EXPECT_TRUE(older->IsLoaded());
+  auto* latest = catalog->GetLatestVersion(older);
+  ASSERT_NE(latest, nullptr);
+  EXPECT_EQ(latest->Id(), kCpuName + ":10");
+  ASSERT_NO_THROW(older->Unload());
+  EXPECT_TRUE(catalog->GetLoadedModels().empty());
+  EXPECT_NO_THROW(older->Download());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    CallOrders, TestModelCatalogExactHandleTest,
+    ::testing::Values(std::pair{false, false}, std::pair{false, true},
+                      std::pair{true, false}, std::pair{true, true}),
+    [](const ::testing::TestParamInfo<std::pair<bool, bool>>& info) {
+      return std::string(info.param.first ? "ListingFirst" : "ExactFirst") +
+          (info.param.second ? "Cached" : "Registry");
+    });
+
+TEST_F(TestModelCatalogTest, ExactLookupOfListedVersionKeepsListingCacheStateCurrentWithoutDuplicateCacheEntries) {
+  Inventory({LegacyModel(kCpuName, 10)});
+  auto catalog = Catalog();
+  ASSERT_EQ(catalog->ListModels().size(), 1);
+  auto* exact = catalog->GetModelVariant(kCpuName + ":10");
+  ASSERT_NE(exact, nullptr);
+  Package(10);
+  exact->RefreshCachedState();
+  ASSERT_NO_THROW(exact->Download());
+  auto* alias = catalog->GetModel("tiny");
+  ASSERT_NE(alias, nullptr);
+  EXPECT_TRUE(alias->IsCached());
+  EXPECT_TRUE(catalog->ListModels().front()->IsCached());
+  const auto cached = catalog->GetCachedModels();
+  ASSERT_EQ(cached.size(), 1);
+  EXPECT_EQ(cached.front()->Id(), kCpuName + ":10");
+}
+
+TEST_F(TestModelCatalogTest, MissingExactVersionReturnsNullOnColdCatalog) {
+  Discovery();
+  transport_->Queue(kBase + "/models/" + kCpuName + "/versions/2" + kApi, Json{},
+                    HttpMethod::Get, HttpStatusCode::NotFound);
+  transport_->responses.back().body = "not-json";
+  auto catalog = Catalog();
+  EXPECT_EQ(catalog->GetModelVariant(kCpuName + ":2"), nullptr);
+}
+
+TEST_F(TestModelCatalogTest, MissingExactVersionReturnsNullWithoutChangingListedModels) {
+  Inventory({LegacyModel(kCpuName, 10)});
+  transport_->Queue(kBase + "/models/" + kCpuName + "/versions/2" + kApi, Json{},
+                    HttpMethod::Get, HttpStatusCode::NotFound);
+  auto catalog = Catalog();
+  const std::set<std::string> expected{kCpuName + ":10"};
+  EXPECT_EQ(VariantIds(catalog->ListModels()), expected);
+  EXPECT_EQ(catalog->GetModelVariant(kCpuName + ":2"), nullptr);
+  EXPECT_EQ(VariantIds(catalog->ListModels()), expected);
+  CatalogCache snapshot(CachePath().string(), services_.logger);
+  snapshot.Load();
+  ASSERT_TRUE(snapshot.GetCachedModels().has_value());
+  ASSERT_EQ(snapshot.GetCachedModels()->size(), 1);
+  EXPECT_EQ(snapshot.GetCachedModels()->front().version, 10);
+}
+
+TEST_F(TestModelCatalogTest, ExactVersionLookupPropagatesAuthorizationAndAuthenticationFailures) {
+  for (const auto status : {HttpStatusCode::Unauthorized, HttpStatusCode::Forbidden}) {
+    Discovery();
+    transport_->Queue(kBase + "/models/" + kCpuName + "/versions/2" + kApi, Json{}, HttpMethod::Get, status);
+    auto catalog = Catalog();
+    try {
+      catalog->GetModelVariant(kCpuName + ":2");
+      FAIL() << "Expected exact-version HTTP failure";
+    } catch (const Exception& error) {
+      EXPECT_NE(std::string(error.what()).find(std::to_string(static_cast<int>(status))), std::string::npos);
+    }
+  }
+  credential_->fail = true;
+  auto catalog = Catalog();
+  EXPECT_THROW(catalog->GetModelVariant(kCpuName + ":2"), Exception);
+}
+
+TEST_F(TestModelCatalogTest, ExactVersionLookupPropagatesTransportFailures) {
+  Discovery();
+  auto client = Client();
+  client->ResourceId();
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    transport_->Queue(kBase + "/models/" + kCpuName + "/versions/2" + kApi, Json{});
+  }
+  transport_->before_response = [](size_t) {
+    throw Azure::Core::Http::TransportException("mock connection failure");
+  };
+  auto catalog = std::make_unique<TestModelCatalog>(kRegistry, config_, devices_, services_.model_load_manager,
+                                                    services_.logger, services_.telemetry, std::move(client));
+  EXPECT_THROW(catalog->GetModelVariant(kCpuName + ":2"), Exception);
 }
 
 TEST_F(TestModelCatalogTest, VersionHistoryPreservesOlderVersionsAndAppliesPerNameLimit) {
@@ -396,6 +556,7 @@ TEST_F(TestModelCatalogTest, AliasCacheMissQueriesRegistryAndGroupsLatestVariant
   auto* model = catalog->GetModel("tiny");
   ASSERT_NE(model, nullptr);
   EXPECT_EQ(model->Id(), "tiny-generic-cpu:10");
+  EXPECT_EQ(model->Variants().size(), 1);
 }
 
 TEST_F(TestModelCatalogTest, ExactLookupMergesSnapshotAndSurvivesRestartWithoutCredentials) {
@@ -414,6 +575,87 @@ TEST_F(TestModelCatalogTest, ExactLookupMergesSnapshotAndSurvivesRestartWithoutC
   ASSERT_NE(cached, nullptr);
   EXPECT_FALSE(cached->LocalPathSnapshot().empty());
 }
+
+class TestModelCatalogConcurrencyTest : public TestModelCatalogTest,
+                                        public ::testing::WithParamInterface<std::string> {};
+
+TEST_P(TestModelCatalogConcurrencyTest, SnapshotTransactionsPreserveExactIdsAcrossOfflineRestart) {
+  Snapshot({CachedInfo(10)});
+  Package(10);
+  Discovery();
+  transport_->Queue(kBase + "/models/" + kCpuName + "/versions/2" + kApi, LegacyModel(kCpuName, 2));
+  if (GetParam() == "ExactId") {
+    transport_->Queue(kBase + "/models/" + kCpuName + "/versions/3" + kApi, LegacyModel(kCpuName, 3));
+  } else {
+    transport_->Queue(kBase + "/models" + kApi, {{"value", {{{"name", kCpuName}}}}});
+    transport_->Queue(kBase + "/models/" + kCpuName + "/versions" + kApi,
+                      {{"value", {LegacyModel(kCpuName, 10), LegacyModel(kCpuName, 2), LegacyModel(kCpuName, 3)}}});
+  }
+  auto catalog = Catalog();
+  ASSERT_NE(catalog->GetModelVariant("tiny-generic-cpu:10"), nullptr);
+
+  std::promise<void> first_entered;
+  auto first_entered_future = first_entered.get_future();
+  std::promise<void> release_first;
+  auto release_first_future = release_first.get_future().share();
+  std::promise<void> second_entered;
+  auto second_entered_future = second_entered.get_future();
+  transport_->before_response = [&](size_t index) {
+    if (index == 1) {
+      first_entered.set_value();
+      EXPECT_EQ(release_first_future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    } else if (index == 2) {
+      second_entered.set_value();
+    }
+  };
+  auto first = std::async(std::launch::async, [&] {
+    EXPECT_NE(catalog->GetModelVariant("tiny-generic-cpu:2"), nullptr);
+  });
+  ASSERT_EQ(first_entered_future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+  std::promise<void> second_started;
+  auto second_started_future = second_started.get_future();
+  auto second = std::async(std::launch::async, [&] {
+    second_started.set_value();
+    if (GetParam() == "ExactId") {
+      EXPECT_NE(catalog->GetModelVariant("tiny-generic-cpu:3"), nullptr);
+    } else if (GetParam() == "Listing") {
+      EXPECT_FALSE(catalog->ListModels().empty());
+    } else {
+      EXPECT_EQ(catalog->GetModelVersions("tiny", kCpuName, 0).size(), 3);
+    }
+  });
+  EXPECT_EQ(second_started_future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+  const auto second_status = second_entered_future.wait_for(std::chrono::milliseconds(200));
+  EXPECT_EQ(second_status, std::future_status::timeout);
+  if (second_status == std::future_status::ready) second.get();
+  release_first.set_value();
+  first.get();
+  if (second_status != std::future_status::ready) second.get();
+
+  CatalogCache snapshot(CachePath().string(), services_.logger);
+  snapshot.Load();
+  const auto saved_models = snapshot.GetCachedModels();
+  ASSERT_TRUE(saved_models.has_value());
+  std::set<std::string> saved_ids;
+  for (const auto& info : *saved_models) saved_ids.insert(info.model_id);
+  EXPECT_EQ(saved_ids, (std::set<std::string>{"tiny-generic-cpu:2", "tiny-generic-cpu:3", "tiny-generic-cpu:10"}));
+
+  const auto second_path = Package(2);
+  const auto third_path = Package(3);
+  config_.additional_options["TestModelCacheOnly"] = "true";
+  auto restarted = Catalog(false);
+  ASSERT_FALSE(restarted->ListModels().empty());
+  auto* second_model = restarted->GetModelVariant("tiny-generic-cpu:2");
+  auto* third_model = restarted->GetModelVariant("tiny-generic-cpu:3");
+  ASSERT_NE(second_model, nullptr);
+  ASSERT_NE(third_model, nullptr);
+  EXPECT_EQ(second_model->LocalPathSnapshot(), second_path.string());
+  EXPECT_EQ(third_model->LocalPathSnapshot(), third_path.string());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ConcurrentWriters, TestModelCatalogConcurrencyTest, ::testing::Values("ExactId", "Listing", "History"),
+    [](const ::testing::TestParamInfo<std::string>& info) { return info.param; });
 
 TEST_F(TestModelCatalogTest, CacheOnlyListsLatestDownloadedButAllowsOlderDownloadedExactIds) {
   config_.additional_options["TestModelCacheOnly"] = "true";
@@ -450,6 +692,69 @@ TEST_F(TestModelCatalogTest, PaginationUsesBothModelAndVersionNextLinksAndCorrec
   EXPECT_EQ(versions[1].at("foundryVariantName"), kCpuName);
   EXPECT_EQ(credential_->scopes,
             (std::set<std::string>{"https://ml.azure.com/.default", "https://management.azure.com/.default"}));
+}
+
+TEST_F(TestModelCatalogTest, DiscoveryEncodesParenthesizedAndUnicodeResourceGroupsAsOneSegment) {
+  std::string unicode_limit;
+  std::string encoded_limit;
+  for (int i = 0; i < 90; ++i) {
+    unicode_limit += "\xC3\xA9";
+    encoded_limit += "%C3%A9";
+  }
+  const std::vector<std::pair<std::string, std::string>> groups{
+      {"rg(test)", "rg%28test%29"},
+      {"rg(\xE6\xB5\x8B\xE8\xAF\x95)", "rg%28%E6%B5%8B%E8%AF%95%29"},
+      {unicode_limit, encoded_limit}};
+  for (const auto& [group, encoded] : groups) {
+    SCOPED_TRACE(group);
+    Discovery("https://region.experiments.azureml.net/", group);
+    auto base = kBase;
+    base.replace(base.find("/resourceGroups/group") + std::string("/resourceGroups/").size(), 5, encoded);
+    transport_->Queue(base + "/models/" + kCpuName + "/versions/1" + kApi, LegacyModel(kCpuName));
+    auto client = Client();
+    const auto model = client->GetModelVersion(kCpuName, "1");
+    ASSERT_TRUE(model.has_value());
+    EXPECT_EQ(model->at("foundryVariantName"), kCpuName);
+    EXPECT_EQ(client->ResourceId(), "/subscriptions/sub/resourceGroups/" + group +
+        "/providers/Microsoft.MachineLearningServices/registries/mock-registry");
+  }
+}
+
+TEST_F(TestModelCatalogTest, DiscoveryRejectsInvalidResourceGroupBoundariesAndAsciiCharacters) {
+  for (const auto& group : std::vector<std::string>{
+           "", "rg.", "..", "rg/test", "rg\\test", "rg%2Ftest", "rg?test", "rg#test",
+           "rg test", std::string("rg\0test", 7), std::string(91, 'a')}) {
+    SCOPED_TRACE(group);
+    Discovery("https://region.experiments.azureml.net/", group);
+    auto client = Client();
+    EXPECT_THROW(client->ResourceId(), Exception);
+  }
+}
+
+TEST_F(TestModelCatalogTest, DiscoveryAndListingNotFoundRemainErrors) {
+  Discovery();
+  transport_->responses.back().status = HttpStatusCode::NotFound;
+  auto undiscovered = Client();
+  EXPECT_THROW(undiscovered->ListModelVersions(), Exception);
+
+  Discovery();
+  transport_->Queue(kBase + "/models" + kApi, Json{}, HttpMethod::Get, HttpStatusCode::NotFound);
+  auto client = Client();
+  EXPECT_THROW(client->ListModelVersions(), Exception);
+}
+
+TEST_F(TestModelCatalogTest, MissingModelAndArtifactGrantRemainDownloadErrors) {
+  for (const bool missing_model : {true, false}) {
+    Discovery();
+    transport_->Queue(kBase + "/models/" + kCpuName + "/versions/1" + kApi, LegacyModel(kCpuName),
+                      HttpMethod::Get, missing_model ? HttpStatusCode::NotFound : HttpStatusCode::Ok);
+    if (!missing_model) {
+      transport_->Queue(kBase + "/datarefs/" + kCpuName + "/versions/1" + kApi, Json{},
+                        HttpMethod::Post, HttpStatusCode::NotFound);
+    }
+    auto client = Client();
+    EXPECT_THROW(client->ResolveArtifacts(kCpuName, 1), Exception);
+  }
 }
 
 TEST_F(TestModelCatalogTest, RejectsPaginationOutsideRegistryAndCycles) {
