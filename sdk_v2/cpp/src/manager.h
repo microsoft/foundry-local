@@ -60,6 +60,7 @@ class Manager {
   /// (web service, C API, etc.) so model state (e.g. IsLoaded) is consistent.
   ICatalog& GetCatalog();
   ICatalog& GetCatalog(CatalogType type);
+  ICatalog& GetTestCatalog(const std::string& registry_name = "");
 
   /// Get the configuration used to create this manager.
   const Configuration& GetConfiguration() const;
@@ -153,6 +154,8 @@ class Manager {
   std::unique_ptr<IEpDetector> ep_detector_;
   std::unique_ptr<ICatalog> public_catalog_;
   std::unique_ptr<ICatalog> local_catalog_;
+  std::map<std::string, std::unique_ptr<ICatalog>> test_catalogs_;
+  std::mutex test_catalogs_mutex_;
   std::unique_ptr<DownloadManager> download_manager_;
   std::unique_ptr<ModelLoadManager> model_load_manager_;
   std::unique_ptr<SessionManager> session_manager_;

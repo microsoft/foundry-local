@@ -61,6 +61,9 @@ class IBlobDownloader {
 
   /// List all blobs in the container at the given SAS URI.
   virtual std::vector<BlobItemInfo> ListBlobs(const std::string& sas_uri) = 0;
+  virtual std::vector<BlobItemInfo> ListBlobs(const std::string& sas_uri, const std::string& /*prefix*/) {
+    return ListBlobs(sas_uri);
+  }
 
   /// Download a single blob to a local file path.
   /// The sas_uri is the container SAS URI; blob_name identifies the blob within it.
@@ -99,6 +102,7 @@ class AzureBlobDownloader : public IBlobDownloader {
                                FileWriter::CloseFileFn close_file = nullptr);
 
   std::vector<BlobItemInfo> ListBlobs(const std::string& sas_uri) override;
+  std::vector<BlobItemInfo> ListBlobs(const std::string& sas_uri, const std::string& prefix) override;
 
   void DownloadBlob(const std::string& sas_uri,
                     const std::string& blob_name,

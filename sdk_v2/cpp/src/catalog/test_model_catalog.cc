@@ -1,0 +1,338 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+#include "catalog/test_model_catalog.h"
+
+#include "catalog/azure_catalog_models.h"
+#include "catalog/catalog_cache.h"
+#include "inferencing/execution_provider.h"
+#include "telemetry/telemetry_environment.h"
+#include "util/sha256.h"
+#include "utils.h"
+
+#include <azure/identity/azure_cli_credential.hpp>
+#include <azure/identity/workload_identity_credential.hpp>
+
+#include <algorithm>
+#include <charconv>
+#include <filesystem>
+#include <map>
+
+namespace fl {
+namespace {
+
+std::string Setting(const Configuration& config, const char* key, const char* fallback) {
+  const auto it = config.additional_options.find(key);
+  return it == config.additional_options.end() ? fallback : it->second;
+}
+
+std::string CacheDirectory(const std::string& registry, const Configuration& config) {
+  return (std::filesystem::path(*config.model_cache_dir) /
+          (registry + "-" + Sha256String("azureml://registries/" + registry))).string();
+}
+
+std::shared_ptr<Azure::Core::Credentials::TokenCredential> Credential(const std::string& mode) {
+  if (mode == "workload_identity") {
+    return std::make_shared<Azure::Identity::WorkloadIdentityCredential>();
+  }
+  if ((mode == "azure_cli" || mode.empty()) && !TelemetryEnvironment::IsCiEnvironment()) {
+    return std::make_shared<Azure::Identity::AzureCliCredential>();
+  }
+  FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+           "Set TestModelCredential to azure_cli or workload_identity; CI must explicitly select workload_identity.");
+}
+
+const char* HostOS() {
+#if defined(_WIN32)
+  return "windows";
+#elif defined(__APPLE__)
+  return "macos";
+#elif defined(__ANDROID__)
+  return "android";
+#else
+  return "linux";
+#endif
+}
+
+const char* HostArchitecture() {
+#if defined(_M_ARM64) || defined(__aarch64__)
+  return "arm64";
+#elif defined(_M_X64) || defined(__x86_64__)
+  return "x64";
+#else
+  return "unsupported";
+#endif
+}
+
+std::optional<VariantMetadata> LegacyVariantMetadata(const std::string& name) {
+  const auto device_separator = name.rfind('-');
+  if (device_separator == std::string::npos || device_separator == 0) return std::nullopt;
+  const auto backend_separator = name.rfind('-', device_separator - 1);
+  if (backend_separator == std::string::npos) return std::nullopt;
+  const auto device = ToLower(name.substr(device_separator + 1));
+  const auto backend = ToLower(name.substr(backend_separator + 1, device_separator - backend_separator - 1));
+  VariantMetadata variant;
+  if (device == "cpu") variant.device = "CPU";
+  else if (device == "gpu") variant.device = "GPU";
+  else if (device == "npu") variant.device = "NPU";
+  else return std::nullopt;
+
+  auto provider = std::string(EPUtils::RequiredEpForModelId(backend + "-" + device));
+  if (provider.empty()) {
+    if (backend == "generic") {
+      if (device == "cpu") provider = "CPUExecutionProvider";
+      else if (device == "gpu") provider = "DmlExecutionProvider";
+    } else {
+      provider = EPUtils::NormalizeRegistrationName(backend);
+    }
+  }
+  if (provider != "DmlExecutionProvider" && EPUtils::StringtoEP(provider) == ExecutionProvider::kUnknown) {
+    return std::nullopt;
+  }
+  variant.execution_provider = std::move(provider);
+  variant.model_type = "ONNX";
+  return variant;
+}
+
+}  // namespace
+
+TestModelCatalog::TestModelCatalog(std::string registry, const Configuration& config,
+                                   const IEpDetector& ep_detector, ModelLoadManager& load_manager,
+                                   ILogger& logger, ITelemetry& telemetry,
+                                   std::unique_ptr<AzureMlRegistryClient> client)
+    : AzureModelCatalog({}, CacheDirectory(registry, config),
+          [this](ModelInfo info, std::string path) {
+            return Model::FromModelInfo(std::move(info), std::move(path), *downloader_, load_manager_);
+          }, ep_detector, logger, false, telemetry, CatalogType::kTest),
+      registry_(std::move(registry)),
+      cache_dir_(CacheDirectory(registry_, config)),
+      cache_only_(Setting(config, "TestModelCacheOnly", "false") == "true"),
+      credential_mode_(Setting(config, "TestModelCredential", "")),
+      logger_(logger),
+      load_manager_(load_manager),
+      client_(std::move(client)) {
+  downloader_ = std::make_unique<DownloadManager>(cache_dir_, "", 64, logger, telemetry, true, nullptr, nullptr,
+      [this](const ModelInfo& info) {
+        return Client().ResolveArtifacts(info.name, info.version);
+      });
+}
+
+AzureMlRegistryClient& TestModelCatalog::Client() const {
+  if (cache_only_) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot access the registry in cache-only mode");
+  }
+  std::lock_guard lock(client_mutex_);
+  if (!client_) client_ = std::make_unique<AzureMlRegistryClient>(registry_, Credential(credential_mode_));
+  return *client_;
+}
+
+std::optional<ModelInfo> TestModelCatalog::Adapt(const nlohmann::json& model) const {
+  const auto& properties = model.at("properties");
+  if (!properties.contains("tags") || properties["tags"].is_null()) return std::nullopt;
+  const auto& tags = properties["tags"];
+  if (!tags.is_object()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Azure ML model tags must be an object");
+  }
+  bool tagged = tags.contains("foundryLocal");
+  for (const auto* key : {"device", "execution_provider", "os", "architecture"}) {
+    tagged = tagged || tags.contains(key);
+  }
+  if (!tagged) return std::nullopt;
+  const auto tag = [&](const char* name) {
+    const auto it = tags.find(name);
+    if (it == tags.end() || !it->is_string() || it->get_ref<const std::string&>().empty()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "test model ",
+               model.at("foundryVariantName").get<std::string>(), " missing required tag: ", name);
+    }
+    return it->get<std::string>();
+  };
+  CatalogLocalModel normalized;
+  normalized.name = model.at("foundryVariantName").get<std::string>();
+  const bool legacy = tags.contains("foundryLocal") && !tags.contains("device") &&
+      !tags.contains("execution_provider") && !tags.contains("os") && !tags.contains("architecture");
+  VariantMetadata variant;
+  if (legacy) {
+    auto metadata = LegacyVariantMetadata(*normalized.name);
+    if (!metadata) {
+      logger_.Log(LogLevel::Information, "Skipping legacy model without a supported backend suffix: " +
+          *normalized.name);
+      return std::nullopt;
+    }
+    variant = std::move(*metadata);
+    for (const auto* key : {"alias", "task"}) {
+      const auto it = tags.find(key);
+      if (it == tags.end() || !it->is_string() || it->get_ref<const std::string&>().empty()) {
+        logger_.Log(LogLevel::Warning, "Skipping legacy model " + *normalized.name +
+            ": missing or invalid " + key + " tag.");
+        return std::nullopt;
+      }
+    }
+    logger_.Log(LogLevel::Information, "Using legacy backend metadata for " + *normalized.name +
+        "; platform compatibility will be validated when the package is loaded.");
+  } else {
+    const auto os = ToLower(tag("os"));
+    const auto architecture = ToLower(tag("architecture"));
+    if (os != "windows" && os != "linux" && os != "macos" && os != "android") {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "invalid os tag");
+    }
+    if (architecture != "x64" && architecture != "arm64") {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "invalid architecture tag");
+    }
+    if (os != HostOS() || architecture != HostArchitecture()) return std::nullopt;
+    variant.device = tag("device");
+    variant.execution_provider = tag("execution_provider");
+    variant.model_type = "ONNX";
+  }
+  normalized.asset_id = model.at("id").get<std::string>();
+  const auto prefix = "azureml://registries/" + registry_ + "/models/" + *normalized.name + "/versions/";
+  if (!normalized.asset_id->starts_with(prefix)) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "test model asset ID does not match its registry and variant");
+  }
+  normalized.version = normalized.asset_id->substr(prefix.size());
+  normalized.alias = tag("alias");
+  normalized.inference_tasks = {tag("task")};
+  normalized.variant_information = VariantInformation{{}, variant};
+  auto info = CatalogModelToModelInfo(normalized);
+  if (!info || info->version <= 0 || info->device_type == DeviceType::kNotSet ||
+      (EPUtils::StringtoEP(info->execution_provider) == ExecutionProvider::kUnknown &&
+       EPUtils::NormalizeRegistrationName(info->execution_provider) != "DmlExecutionProvider")) {
+    if (legacy) {
+      logger_.Log(LogLevel::Warning, "Skipping legacy model " + *normalized.name +
+          ": unsupported version " + *normalized.version + ".");
+      return std::nullopt;
+    }
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "test model has invalid version, device or execution provider");
+  }
+  info->string_properties[kRegistryProperty] = registry_;
+  info->string_properties["test.registryResourceId"] = Client().ResourceId();
+  return info;
+}
+
+std::vector<Model> TestModelCatalog::CreateModels(const std::vector<ModelInfo>& infos) const {
+  std::vector<Model> models;
+  for (const auto& info : infos) {
+    const auto* registry = info.GetPropertyStr(kRegistryProperty);
+    if (!registry || *registry != registry_) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "test catalog cache contains another registry's metadata");
+    }
+    const auto path = downloader_->GetCompletedModelCachePath(info);
+    if (!cache_only_ || !path.empty()) {
+      models.push_back(Model::FromModelInfo(info, path, *downloader_, load_manager_));
+    }
+  }
+  return models;
+}
+
+std::vector<Model> TestModelCatalog::FetchModels() const {
+  auto models = FetchAvailableModels();
+  std::map<std::string, int> latest_versions;
+  for (const auto& model : models) {
+    const auto& info = model.Info();
+    auto& latest = latest_versions[info.name];
+    latest = std::max(latest, info.version);
+  }
+  std::erase_if(models, [&](const Model& model) {
+    return model.Info().version < latest_versions.at(model.Info().name);
+  });
+  return models;
+}
+
+std::vector<Model> TestModelCatalog::FetchAvailableModels() const {
+  CatalogCache cache(cache_dir_, logger_);
+  std::vector<ModelInfo> infos;
+  if (cache_only_) {
+    cache.Load();
+    const auto cached = cache.GetCachedModels();
+    if (!cached) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "no test catalog snapshot; run online with this registry and cache first");
+    }
+    infos = *cached;
+  } else {
+    for (const auto& model : Client().ListModelVersions()) {
+      try {
+        if (auto info = Adapt(model)) infos.push_back(std::move(*info));
+      } catch (const nlohmann::json::exception&) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Azure ML returned malformed model metadata");
+      }
+    }
+    cache.Save(infos, true);
+  }
+  auto models = CreateModels(infos);
+  const auto eligible = MakeVariantEligibility();
+  std::erase_if(models, [&](const Model& model) { return !eligible(model); });
+  return models;
+}
+
+BaseModelCatalog::VariantEligibility TestModelCatalog::MakeVariantEligibility() const {
+  return [devices = AvailableDevicesToEPs(), eligible = AzureModelCatalog::MakeVariantEligibility()](
+             const Model& model) {
+    const auto& info = model.Info();
+    const auto device = devices.find(DeviceTypeToString(info.device_type));
+    if (device == devices.end() || device->second.empty() || !eligible(model)) return false;
+    const bool generic_gpu = info.model_id.find("-generic-gpu:") != std::string::npos;
+    const auto provider = ToLower(EPUtils::NormalizeRegistrationName(info.execution_provider));
+    return std::any_of(device->second.begin(), device->second.end(), [&](const std::string& ep) {
+      const auto available = ToLower(EPUtils::NormalizeRegistrationName(ep));
+      return available == provider ||
+          (generic_gpu && (available == "cudaexecutionprovider" || available == "webgpuexecutionprovider"));
+    });
+  };
+}
+
+std::optional<std::vector<Model>> TestModelCatalog::FetchLookupModels() const {
+  CatalogCache cache(cache_dir_, logger_);
+  cache.Load();
+  const auto infos = cache.GetCachedModels();
+  if (!infos && cache_only_) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "no test catalog snapshot; run online with this registry and cache first");
+  }
+  auto models = infos ? CreateModels(*infos) : std::vector<Model>{};
+  std::erase_if(models, [](const Model& model) { return model.LocalPathSnapshot().empty(); });
+  return models;
+}
+
+std::vector<Model> TestModelCatalog::FetchModelVersions(const std::string& alias, const std::string& name,
+                                                       int max_versions) const {
+  auto models = FetchAvailableModels();
+  std::erase_if(models, [&](const Model& model) {
+    return model.Alias() != alias || (!name.empty() && model.Info().name != name);
+  });
+  std::sort(models.begin(), models.end(), Model::CompareBestFirst);
+  std::map<std::string, int> counts;
+  if (max_versions > 0) {
+    std::erase_if(models, [&](const Model& model) { return ++counts[model.Info().name] > max_versions; });
+  }
+  return models;
+}
+
+std::vector<Model> TestModelCatalog::FetchModelsByIds(const std::vector<std::string>& ids) const {
+  CatalogCache cache(cache_dir_, logger_);
+  cache.Load();
+  auto snapshot = cache.GetCachedModels().value_or(std::vector<ModelInfo>{});
+  std::vector<ModelInfo> infos;
+  for (const auto& id : ids) {
+    const auto [name, version] = Utils::SplitModelNameAndVersion(id);
+    if (version <= 0) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "test model ID must use <variant-name>:<positive-version>");
+    }
+    const auto cached = std::find_if(snapshot.begin(), snapshot.end(), [&](const ModelInfo& info) {
+      return info.model_id == id && !downloader_->GetCompletedModelCachePath(info).empty();
+    });
+    if (cached != snapshot.end()) {
+      infos.push_back(*cached);
+    } else if (!cache_only_) {
+      if (auto info = Adapt(Client().GetModelVersion(name, std::to_string(version)))) infos.push_back(std::move(*info));
+    }
+  }
+  for (const auto& info : infos) {
+    std::erase_if(snapshot, [&](const ModelInfo& cached) { return cached.model_id == info.model_id; });
+    snapshot.push_back(info);
+  }
+  if (!cache_only_) cache.Save(snapshot, true);
+  return CreateModels(infos);
+}
+
+void TestModelCatalog::RefreshRetainedVariantCache(Model& model) const {
+  model.UpdateCachedState(downloader_->GetCompletedModelCachePath(model.Info()));
+}
+
+}  // namespace fl

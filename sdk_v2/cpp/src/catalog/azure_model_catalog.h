@@ -33,7 +33,8 @@ class AzureModelCatalog : public BaseModelCatalog {
                     const IEpDetector& ep_detector,
                     ILogger& logger,
                     bool cache_only,
-                    ITelemetry& telemetry);
+                    ITelemetry& telemetry,
+                    CatalogType type = CatalogType::kPublic);
   ~AzureModelCatalog() override;
 
   // Metadata-only override for hosted clients; never changes the native runtime's registered providers.
@@ -48,6 +49,7 @@ class AzureModelCatalog : public BaseModelCatalog {
   virtual std::unique_ptr<ICatalogClient> CreateCatalogClient(const std::string& url,
                                                               const std::string& filter) const;
   VariantEligibility MakeVariantEligibility() const override;
+  std::map<std::string, std::vector<std::string>> AvailableDevicesToEPs() const;
   void RefreshRetainedVariantCache(Model& model) const override;
 
  private:

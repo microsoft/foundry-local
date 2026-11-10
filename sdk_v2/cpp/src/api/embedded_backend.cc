@@ -219,9 +219,19 @@ class EmbeddedManager final : public ManagerBackend {
         return public_catalog_;
       case CatalogType::kLocal:
         return local_catalog_;
+      case CatalogType::kTest:
+        return GetTestCatalog("");
     }
 
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
+  }
+
+  CatalogBackend& GetTestCatalog(const std::string& registry) override {
+    auto& source = owner_.manager.GetTestCatalog(registry);
+    std::lock_guard lock(catalogs_mutex_);
+    auto& catalog = test_catalogs_[&source];
+    if (!catalog) catalog = std::make_unique<EmbeddedCatalog>(source, models_);
+    return *catalog;
   }
 
   std::unique_ptr<ModelBackend> CaptureModel(
@@ -275,6 +285,8 @@ class EmbeddedManager final : public ManagerBackend {
   ModelHandles models_;
   EmbeddedCatalog public_catalog_;
   EmbeddedCatalog local_catalog_;
+  std::mutex catalogs_mutex_;
+  std::map<ICatalog*, std::unique_ptr<EmbeddedCatalog>> test_catalogs_;
 };
 
 }  // namespace

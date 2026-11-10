@@ -4,6 +4,7 @@
   "description": "Foundry Local C++ SDK",
   "builtin-baseline": "67e816ef4b11c01fa923a18d16ecf863216fda55",
   "dependencies": [
+    "azure-identity-cpp",
     {
       "name": "azure-core-cpp",
       "default-features": false,

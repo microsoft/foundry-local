@@ -350,8 +350,8 @@ void BaseModelCatalog::EnsurePopulated(bool allow_refresh) const {
   // not worth the complexity to optimise.)
   std::lock_guard<std::mutex> lock(mutex_);
 
-  const bool needs_refresh = IsAuthoritativeSnapshot() || next_refresh_at_ == std::chrono::steady_clock::time_point{} ||
-                             (allow_refresh && std::chrono::steady_clock::now() >= next_refresh_at_);
+  const bool needs_refresh = RefreshOnEveryAccess() || next_refresh_at_ == std::chrono::steady_clock::time_point{} ||
+                             (allow_refresh && (lookup_only_ || std::chrono::steady_clock::now() >= next_refresh_at_));
 
   if (populated_ && !needs_refresh) {
     return;
@@ -362,8 +362,10 @@ void BaseModelCatalog::EnsurePopulated(bool allow_refresh) const {
                 fmt::format("Catalog '{}' refreshing (cache expired).", name_));
   }
 
-  auto variants = FetchModels();
-  PopulateModels(std::move(variants));
+  auto cached = !allow_refresh ? FetchLookupModels() : std::nullopt;
+  const bool lookup_only = cached.has_value();
+  PopulateModels(cached ? std::move(*cached) : FetchModels());
+  lookup_only_ = lookup_only;
   next_refresh_at_ = std::chrono::steady_clock::now() + kCacheDuration;
 }
 
@@ -396,7 +398,19 @@ Model* BaseModelCatalog::GetModel(const std::string& alias) const {
 
     logger_.Log(LogLevel::Information,
                 fmt::format("GetModel: '{}' has no variant with an available execution provider.", alias));
-    return nullptr;
+    if (GetType() != CatalogType::kTest) return nullptr;
+  }
+
+  if (GetType() == CatalogType::kTest) {
+    auto fetched = FetchModelVersions(alias, "", 0);
+    if (!fetched.empty()) {
+      IntegrateVariants(std::move(fetched));
+      idx = GetIndex();
+      alias_it = idx->alias_index.find(alias);
+      if (alias_it != idx->alias_index.end() && alias_it->second->HasEligibleDefaultVariant()) {
+        return alias_it->second;
+      }
+    }
   }
 
   logger_.Log(LogLevel::Information,
@@ -427,11 +441,13 @@ Model* BaseModelCatalog::GetModelVariant(const std::string& model_id) const {
     try {
       fetched = FetchModelsByIds({model_id});
     } catch (const std::exception& ex) {
+      if (GetType() == CatalogType::kTest) throw;
       logger_.Log(LogLevel::Warning,
                   fmt::format("GetModelVariant: direct fetch for '{}' failed — {}",
                               model_id, ex.what()));
       return nullptr;
     } catch (...) {
+      if (GetType() == CatalogType::kTest) throw;
       logger_.Log(LogLevel::Warning,
                   fmt::format("GetModelVariant: direct fetch for '{}' failed — unknown error",
                               model_id));
@@ -589,11 +605,13 @@ std::vector<Model*> BaseModelCatalog::GetModelVersions(const std::string& model_
   try {
     fetched = FetchModelVersions(model_alias, variant_name, max_versions);
   } catch (const std::exception& ex) {
+    if (GetType() == CatalogType::kTest) throw;
     logger_.Log(LogLevel::Warning,
                 fmt::format("GetModelVersions: fetch for alias '{}' failed — {}",
                             model_alias, ex.what()));
     return {};
   } catch (...) {
+    if (GetType() == CatalogType::kTest) throw;
     logger_.Log(LogLevel::Warning,
                 fmt::format("GetModelVersions: fetch for alias '{}' failed — unknown error",
                             model_alias));

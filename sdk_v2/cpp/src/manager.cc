@@ -15,6 +15,7 @@
 #include "catalog.h"
 #include "catalog/azure_model_catalog.h"
 #include "catalog/local_model_catalog.h"
+#include "catalog/test_model_catalog.h"
 #include "download/download_manager.h"
 #if FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS
 #include "ep_detection/cuda_ep_bootstrapper.h"
@@ -472,6 +473,7 @@ Manager::~Manager() {
   download_manager_.reset();
   local_catalog_.reset();
   public_catalog_.reset();
+  test_catalogs_.clear();
   telemetry_.reset();
 
   for (auto it = oga_registered_ep_libraries_.rbegin();
@@ -587,9 +589,25 @@ ICatalog& Manager::GetCatalog(CatalogType type) {
       return *public_catalog_;
     case CatalogType::kLocal:
       return *local_catalog_;
+    case CatalogType::kTest:
+      return GetTestCatalog();
     default:
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
   }
+}
+
+ICatalog& Manager::GetTestCatalog(const std::string& registry_name) {
+  const auto configured = config_.additional_options.find("TestModelRegistry");
+  auto registry = AzureMlRegistryClient::ValidateRegistryName(registry_name.empty()
+      ? (configured == config_.additional_options.end() ? TestModelCatalog::kDefaultRegistry : configured->second)
+      : registry_name);
+  std::lock_guard lock(test_catalogs_mutex_);
+  auto& catalog = test_catalogs_[registry];
+  if (!catalog) {
+    catalog = std::make_unique<TestModelCatalog>(registry, config_, *ep_detector_, *model_load_manager_,
+                                                *logger_, *telemetry_);
+  }
+  return *catalog;
 }
 
 void Manager::StartWebService() {
@@ -755,6 +773,8 @@ EpDownloadResult Manager::DownloadAndRegisterEps(const std::vector<std::string>*
   // another EP failed — so the next catalog query re-fetches with the updated filters.
   if (!result.registered_eps.empty()) {
     public_catalog_->InvalidateCache();
+    std::lock_guard lock(test_catalogs_mutex_);
+    for (auto& [registry, catalog] : test_catalogs_) catalog->InvalidateCache();
   }
 
   // Warn if any EPs failed to download or register, but keep going: CPU is always available and

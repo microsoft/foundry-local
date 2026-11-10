@@ -180,8 +180,10 @@ AzureModelCatalog::AzureModelCatalog(std::vector<std::pair<std::string, std::opt
                                      const IEpDetector& ep_detector,
                                      ILogger& logger,
                                      bool cache_only,
-                                     ITelemetry& telemetry)
-    : BaseModelCatalog(catalog_urls.empty() ? kDefaultCatalogUrl : catalog_urls.front().first, logger),
+                                     ITelemetry& telemetry,
+                                     CatalogType type)
+    : BaseModelCatalog(type == CatalogType::kTest ? "test" :
+                           (catalog_urls.empty() ? kDefaultCatalogUrl : catalog_urls.front().first), type, logger),
       catalog_urls_(std::move(catalog_urls)),
       cache_dir_(std::move(cache_dir)),
       model_factory_(std::move(model_factory)),
@@ -204,6 +206,10 @@ void AzureModelCatalog::SetRuntimeDevices(std::map<std::string, std::vector<std:
   if (catalog_devices_->Set(std::move(devices))) {
     InvalidateCache();
   }
+}
+
+std::map<std::string, std::vector<std::string>> AzureModelCatalog::AvailableDevicesToEPs() const {
+  return catalog_devices_->GetAvailableDevicesToEPs();
 }
 
 BaseModelCatalog::VariantEligibility AzureModelCatalog::MakeVariantEligibility() const {

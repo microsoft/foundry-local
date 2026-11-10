@@ -32,6 +32,8 @@ const char* CatalogName(CatalogType catalog) {
       return "public";
     case CatalogType::kLocal:
       return "local";
+    case CatalogType::kTest:
+      return "test";
   }
 
   FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
@@ -393,12 +395,14 @@ const HostedModel& HostedModels::Unwrap(CatalogType catalog, const ModelBackend&
 
 class HostedCatalog final : public CatalogBackend {
  public:
-  HostedCatalog(CatalogType type, HostedModels& handles)
+  HostedCatalog(CatalogType type, HostedModels& handles, const std::string& registry = "")
       : CatalogBackend(BackendKind::Hosted),
         type_(type),
         handles_(handles),
         state_(handles.state),
-        source_(state_.metadata->GetCatalog(type)) {}
+        source_(type == CatalogType::kTest ? state_.metadata->GetTestCatalog(registry) :
+                                           state_.metadata->GetCatalog(type)),
+        registry_(registry) {}
 
   const std::string& GetName() const override { return source_.GetName(); }
   std::vector<ModelBackend*> ListModels() const override {
@@ -434,7 +438,8 @@ class HostedCatalog final : public CatalogBackend {
     }
 
     std::vector<ModelBackend*> models;
-    for (const auto& value : context->Call(Operation::LoadedModels, {{"catalog", CatalogName(type_)}})) {
+    for (const auto& value : context->Call(Operation::LoadedModels,
+                                         {{"catalog", CatalogName(type_)}, {"registry", registry_}})) {
       const auto selection = DecodeModelSelection(value);
       auto* source = source_.GetModelVariant(selection.info.model_id);
       if (!source || selection.catalog != type_) {
@@ -488,6 +493,7 @@ class HostedCatalog final : public CatalogBackend {
   HostedModels& handles_;
   HostedState& state_;
   CatalogBackend& source_;
+  std::string registry_;
 };
 
 class HostedManager final : public ManagerBackend {
@@ -507,9 +513,19 @@ class HostedManager final : public ManagerBackend {
         return public_catalog_;
       case CatalogType::kLocal:
         return local_catalog_;
+      case CatalogType::kTest:
+        return GetTestCatalog("");
     }
 
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
+  }
+
+  CatalogBackend& GetTestCatalog(const std::string& registry) override {
+    auto& source = state_->metadata->GetTestCatalog(registry);
+    std::lock_guard lock(catalogs_mutex_);
+    auto& catalog = test_catalogs_[&source];
+    if (!catalog) catalog = std::make_unique<HostedCatalog>(CatalogType::kTest, models_, registry);
+    return *catalog;
   }
 
   std::unique_ptr<ModelBackend> CaptureModel(
@@ -687,6 +703,8 @@ class HostedManager final : public ManagerBackend {
   HostedModels models_;
   HostedCatalog public_catalog_;
   HostedCatalog local_catalog_;
+  std::mutex catalogs_mutex_;
+  std::map<CatalogBackend*, std::unique_ptr<HostedCatalog>> test_catalogs_;
   mutable std::mutex urls_mutex_;
   mutable std::set<std::vector<std::string>> url_snapshots_;
 };

@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 #include "catalog/local_model_scanner.h"
 #include "catalog/non_generative_package.h"
+#include "util/sha256.h"
+#include "util/string_utils.h"
 
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
@@ -19,6 +21,15 @@ namespace {
 const char* kGenAIConfigFileName = "genai_config.json";
 const char* kDownloadSignalFileName = "download.tmp";
 const char* kInferenceModelFileName = "inference_model.json";
+
+bool IsTestRegistryDirectory(const fs::path& dir) {
+  const auto name = ToLower(dir.filename().string());
+  if (name == "_test_registries") return true;  // Exclude the previous cache layout too.
+  const auto separator = name.rfind('-');
+  if (separator == std::string::npos || name.size() - separator - 1 != 64) return false;
+  const auto registry = name.substr(0, separator);
+  return name.substr(separator + 1) == ToLower(Sha256String("azureml://registries/" + registry));
+}
 
 /// Try to read the model name from inference_model.json in the given directory.
 /// Returns the model name string, or empty string on failure.
@@ -98,7 +109,7 @@ void ScanDirectory(const fs::path& dir,
 
     // Recurse into subdirectories.
     for (const auto& entry : fs::directory_iterator(dir)) {
-      if (entry.is_directory()) {
+      if (entry.is_directory() && !IsTestRegistryDirectory(entry.path())) {
         ScanDirectory(entry.path(), results, logger);
       }
     }
@@ -129,7 +140,7 @@ std::map<std::string, std::string> ScanLocalModels(const std::string& cache_dire
   // Scan each top-level subdirectory (publisher directories).
   try {
     for (const auto& entry : fs::directory_iterator(cache_path)) {
-      if (entry.is_directory()) {
+      if (entry.is_directory() && !IsTestRegistryDirectory(entry.path())) {
         ScanDirectory(entry.path(), results, logger);
       }
     }

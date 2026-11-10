@@ -10,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -68,6 +69,8 @@ class BaseModelCatalog : public ICatalog {
   /// Maps to C# FetchModelInfoAsync.
   virtual std::vector<Model> FetchModels() const = 0;
 
+  virtual std::optional<std::vector<Model>> FetchLookupModels() const { return std::nullopt; }
+
   /// Derived classes implement this to fetch all versions of a model from the
   /// underlying catalog source, bypassing the "latest only" filter.
   /// Returns the variants for the given alias. AddVariant inserts them in
@@ -92,6 +95,8 @@ class BaseModelCatalog : public ICatalog {
 
   /// Authoritative catalogs reconcile removals and replacements from every fetched snapshot.
   virtual bool IsAuthoritativeSnapshot() const { return false; }
+
+  virtual bool RefreshOnEveryAccess() const { return IsAuthoritativeSnapshot(); }
 
   /// Reconcile a retained ID absent from metadata against the cache inventory collected by FetchModels().
   /// Called under the catalog mutex; the default leaves source-specific cache state unchanged.
@@ -127,6 +132,7 @@ class BaseModelCatalog : public ICatalog {
   std::shared_ptr<const ModelIndex> GetIndex() const;
 
   mutable bool populated_ = false;
+  mutable bool lookup_only_ = false;
   mutable std::mutex mutex_;
   mutable std::chrono::steady_clock::time_point next_refresh_at_{};
 

@@ -5,6 +5,7 @@
 #include "download/inference_model_writer.h"
 #include "exception.h"
 #include "inferencing/model_load_manager.h"
+#include "inferencing/generative/genai_config.h"
 #include "log_level.h"
 #include "logger.h"
 #include "telemetry/download_tracker.h"
@@ -262,7 +263,8 @@ std::string ResolveRegion(const std::string& config_region, const ModelInfo& inf
 DownloadManager::DownloadManager(std::string cache_directory, std::string_view catalog_region, int max_concurrency,
                                  ILogger& logger, ITelemetry& telemetry, bool disable_region_fallback,
                                  std::unique_ptr<ModelRegistryClient> registry_client,
-                                 std::unique_ptr<IBlobDownloader> blob_downloader)
+                                 std::unique_ptr<IBlobDownloader> blob_downloader,
+                                 std::function<ModelContainer(const ModelInfo&)> artifact_resolver)
     : cache_directory_(std::move(cache_directory)),
       config_region_(NormalizeConfiguredRegion(catalog_region)),
       max_concurrency_(max_concurrency),
@@ -272,6 +274,7 @@ DownloadManager::DownloadManager(std::string cache_directory, std::string_view c
                                              kDefaultRegistryRegion, logger,
                                              std::make_unique<RegionFallback>(logger, !disable_region_fallback))),
       blob_downloader_(blob_downloader ? std::move(blob_downloader) : std::make_unique<AzureBlobDownloader>(logger)),
+      artifact_resolver_(std::move(artifact_resolver)),
       telemetry_(telemetry) {}
 
 DownloadManager::~DownloadManager() = default;
@@ -461,7 +464,8 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
 
     // Step 1: Resolve SAS URI from the region that served this model's catalog entry
     // (or the explicit override / default registry-region fallback).
-    auto container = registry_client_->ResolveModelContainer(info.uri, ResolveRegion(config_region_, info));
+    auto container = artifact_resolver_ ? artifact_resolver_(info) :
+        registry_client_->ResolveModelContainer(info.uri, ResolveRegion(config_region_, info));
 
     if (container.blob_sas_uri.empty()) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model registry returned empty SAS URI for: " + info.uri);
@@ -469,9 +473,7 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
 
     // Step 2: Download blobs
     BlobDownloadOptions download_opts;
-    // The ModelInfo doesn't currently carry a path prefix, but the URI is the asset_id
-    // and the blob container has all files at the root or in variant subdirectories.
-    download_opts.path_prefix = "";
+    download_opts.path_prefix = container.path_prefix;
     download_opts.max_concurrency = max_concurrency_;
 
     if (progress_cb) {
@@ -480,8 +482,25 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
       };
     }
 
-    DownloadBlobsToDirectory(*blob_downloader_, container.blob_sas_uri,
-                             model_path, download_opts, stats, logger_);
+    try {
+      DownloadBlobsToDirectory(*blob_downloader_, container.blob_sas_uri,
+                               model_path, download_opts, stats, logger_);
+    } catch (const Exception& error) {
+      if (!artifact_resolver_ || error.code() != FOUNDRY_LOCAL_ERROR_NETWORK) throw;
+      logger_.Log(LogLevel::Information, "Refreshing test-model artifact access and resuming download.");
+      container = artifact_resolver_(info);
+      download_opts.path_prefix = container.path_prefix;
+      DownloadBlobsToDirectory(*blob_downloader_, container.blob_sas_uri,
+                               model_path, download_opts, stats, logger_);
+    }
+
+    if (artifact_resolver_) {
+      const auto config = GenAIConfig::LoadFromFile(
+          (std::filesystem::path(model_path) / kGenAIConfigFileName).string());
+      if (!config.model) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "test model package has no GenAI model configuration");
+      }
+    }
 
     record_stats(stats);
     tracker.SetDownloadWaitResult("Completed");
