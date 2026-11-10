@@ -393,7 +393,8 @@ stages:
       displayName: 'Use .NET 10 SDK for native package restore'
       inputs:
         packageType: sdk
-        version: '10.0.x'
+        # Pinned: SDK 10.0.404 requests net8.0 ref packs 8.0.34, which the mirrored feed lacks.
+        version: '10.0.403'
     - task: NuGetAuthenticate@1
       displayName: 'Authenticate NuGet feeds'
     - task: PowerShell@2
