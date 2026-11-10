@@ -14,6 +14,7 @@
 #include <chrono>
 #include <ctime>
 #include <iomanip>
+#include <limits>
 #include <regex>
 #include <sstream>
 
@@ -47,9 +48,10 @@ int64_t ParseIso8601ToUnix(const std::string& iso_str) {
   return t == static_cast<time_t>(-1) ? 0 : static_cast<int64_t>(t);
 }
 
-/// Parse a numeric string field (e.g. the catalog's string-typed "version"). Returns
+/// Parse a nonnegative integer string field (e.g. "version" or a "contextLength" tag). Returns
 /// nullopt on absence or malformed input.
-std::optional<int> ParseIntString(const std::optional<std::string>& value) {
+template <typename T>
+std::optional<T> ParseIntString(const std::optional<std::string>& value) {
   if (!value || value->empty() ||
       !std::all_of(value->begin(), value->end(), [](char character) {
         return character >= '0' && character <= '9';
@@ -57,7 +59,7 @@ std::optional<int> ParseIntString(const std::optional<std::string>& value) {
     return std::nullopt;
   }
 
-  int parsed = 0;
+  T parsed = 0;
   const auto [end, error] = std::from_chars(value->data(), value->data() + value->size(), parsed);
   if (error != std::errc{} || end != value->data() + value->size()) {
     return std::nullopt;
@@ -94,6 +96,37 @@ void UseLegacyBooleanTag(const nlohmann::json& tags, const char* key,
     value = true;
   } else if (normalized == "false") {
     value = false;
+  }
+}
+
+void UseLegacyContextLengthTag(const nlohmann::json& tags, std::optional<int64_t>& value) {
+  if (value.value_or(0) > 0 || !tags.contains("contextLength")) {
+    return;
+  }
+
+  const auto& context_length = tags["contextLength"];
+  int64_t parsed = 0;
+  if (context_length.is_number_unsigned()) {
+    const auto number = context_length.get<uint64_t>();
+    if (number > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+      return;
+    }
+
+    parsed = static_cast<int64_t>(number);
+  } else if (context_length.is_number_integer()) {
+    parsed = context_length.get<int64_t>();
+  } else if (context_length.is_string()) {
+    const auto& text = context_length.get_ref<const std::string&>();
+    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), parsed);
+    if (error != std::errc{} || end != text.data() + text.size()) {
+      return;
+    }
+  } else {
+    return;
+  }
+
+  if (parsed > 0) {
+    value = parsed;
   }
 }
 
@@ -231,6 +264,15 @@ void from_json(const nlohmann::json& j, CatalogLocalModel& m) {
     }
     if (system_data.contains("modelCapabilities") && system_data["modelCapabilities"].is_array()) {
       m.model_capabilities = system_data["modelCapabilities"].get<std::vector<std::string>>();
+    } else if (tags.contains("capabilities") && tags["capabilities"].is_string()) {
+      std::istringstream capabilities(tags["capabilities"].get<std::string>());
+      std::string capability;
+      while (std::getline(capabilities, capability, ',')) {
+        capability = Trim(capability);
+        if (!capability.empty()) {
+          m.model_capabilities.push_back(std::move(capability));
+        }
+      }
     }
     if (system_data.contains("deploymentOptions") && system_data["deploymentOptions"].is_array()) {
       m.deployment_options = system_data["deploymentOptions"].get<std::vector<std::string>>();
@@ -244,6 +286,12 @@ void from_json(const nlohmann::json& j, CatalogLocalModel& m) {
     TextLimits direct_text_limits = direct_limits.text_limits.value_or(TextLimits{});
     opt_int64(system_data, "textContextWindow", direct_text_limits.input_context_window);
     opt_int64(system_data, "maxOutputTokens", direct_text_limits.max_output_tokens);
+    if (direct_text_limits.input_context_window.value_or(0) <= 0 && m.model_limits && m.model_limits->text_limits &&
+        m.model_limits->text_limits->input_context_window.value_or(0) > 0) {
+      direct_text_limits.input_context_window = m.model_limits->text_limits->input_context_window;
+    }
+
+    UseLegacyContextLengthTag(tags, direct_text_limits.input_context_window);
     if (direct_text_limits.input_context_window || direct_text_limits.max_output_tokens) {
       direct_limits.text_limits = std::move(direct_text_limits);
     }
@@ -360,7 +408,7 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
     return std::nullopt;
   }
 
-  const auto version = ParseIntString(cm.version);
+  const auto version = ParseIntString<int>(cm.version);
   if (!version) {
     return std::nullopt;
   }

@@ -13,6 +13,7 @@
 #include <nlohmann/json.hpp>
 
 #include <chrono>
+#include <limits>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -277,8 +278,8 @@ TEST(AzureCatalogClientTest, LegacyTagOverridesBypassDefaultAllowlistAcrossCatal
       }
       std::sort(actual_ids.begin(), actual_ids.end());
       const std::vector<std::string> expected_ids = query == "list"
-                                                       ? std::vector<std::string>{"matching:3"}
-                                                       : std::vector<std::string>{"legacy:1", "matching:3"};
+                                                        ? std::vector<std::string>{"matching:3"}
+                                                        : std::vector<std::string>{"legacy:1", "matching:3"};
       EXPECT_EQ(actual_ids, expected_ids);
     }
   }
@@ -437,6 +438,92 @@ TEST(AzureCatalogClientTest, ParsesFullServiceMetadataWithoutPromptOrDelimiterFi
   EXPECT_TRUE(public_info.IsTestModel());
 }
 
+TEST(AzureCatalogClientTest, ContextLengthTagFallbackPreservesValidCatalogLimits) {
+  struct ContextLengthCase {
+    const char* name;
+    nlohmann::json tag_value;
+    std::optional<int64_t> structured_limit;
+    std::optional<int64_t> direct_limit;
+    std::optional<int64_t> expected;
+  };
+
+  const std::vector<ContextLengthCase> cases = {
+      {"integer", 262144, {}, {}, 262144},
+      {"string", "262144", {}, {}, 262144},
+      {"minimum", 1, {}, {}, 1},
+      {"maximum integer", std::numeric_limits<int64_t>::max(), {}, {}, std::numeric_limits<int64_t>::max()},
+      {"maximum string", "9223372036854775807", {}, {}, std::numeric_limits<int64_t>::max()},
+      {"zero", 0, {}, {}, {}},
+      {"negative", -1, {}, {}, {}},
+      {"fraction", 262144.5, {}, {}, {}},
+      {"integral float", 262144.0, {}, {}, {}},
+      {"boolean", true, {}, {}, {}},
+      {"null", nullptr, {}, {}, {}},
+      {"object", nlohmann::json::object(), {}, {}, {}},
+      {"array", nlohmann::json::array(), {}, {}, {}},
+      {"empty string", "", {}, {}, {}},
+      {"nonnumeric string", "unknown", {}, {}, {}},
+      {"trailing characters", "262144tokens", {}, {}, {}},
+      {"leading plus", "+262144", {}, {}, {}},
+      {"leading whitespace", " 262144", {}, {}, {}},
+      {"negative string", "-262144", {}, {}, {}},
+      {"zero string", "0", {}, {}, {}},
+      {"fractional string", "262144.0", {}, {}, {}},
+      {"overflow string", "9223372036854775808", {}, {}, {}},
+      {"overflow integer", std::numeric_limits<uint64_t>::max(), {}, {}, {}},
+      {"structured limit", 262144, 4096, {}, 4096},
+      {"direct limit", 262144, {}, 8192, 8192},
+      {"direct limit overrides structured limit", 262144, 4096, 8192, 8192},
+      {"zero direct limit preserves structured limit", 262144, 4096, 0, 4096},
+      {"negative direct limit preserves structured limit", 262144, 4096, -1, 4096},
+      {"zero structured limit", 262144, 0, {}, 262144},
+      {"negative structured limit", 262144, -1, {}, 262144},
+      {"zero direct limit", 262144, {}, 0, 262144},
+      {"invalid tag with structured limit", false, 4096, {}, 4096},
+  };
+  const auto base_response = nlohmann::json::parse(R"({
+    "value": [{
+      "assetId": "azureml://registries/azureml/models/qwen3.5-2b-text-generic-cpu/versions/1",
+      "annotations": {
+        "tags": {"foundryLocal": ""},
+        "systemCatalogData": {
+          "alias": "qwen3.5-2b-text",
+          "maxOutputTokens": 2048,
+          "deploymentOptions": ["Foundry Local on Devices"]
+        }
+      },
+      "properties": {
+        "name": "qwen3.5-2b-text-generic-cpu", "version": 1,
+        "variantInfo": {"variantMetadata": {"modelType": "ONNX", "device": "cpu"}}
+      }
+    }]
+  })");
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  for (const auto& test_case : cases) {
+    SCOPED_TRACE(test_case.name);
+    auto response = base_response;
+    auto& annotations = response["value"][0]["annotations"];
+    annotations["tags"]["contextLength"] = test_case.tag_value;
+    auto& system_data = annotations["systemCatalogData"];
+    if (test_case.structured_limit) {
+      system_data["modelLimits"]["textLimits"]["inputContextWindow"] = *test_case.structured_limit;
+    }
+
+    if (test_case.direct_limit) {
+      system_data["textContextWindow"] = *test_case.direct_limit;
+    }
+
+    AzureCatalogClient client("https://test.com", "", ep, logger,
+                              [&](const std::string&, const std::string&) { return MakeOkResponse(response.dump()); });
+    const auto models = client.FetchAllModelInfos();
+    ASSERT_EQ(models.size(), 1u);
+    const foundry_local::ModelInfo public_info(*AsHandle<flModelInfo>(&models.front()));
+    EXPECT_EQ(public_info.ContextLength(), test_case.expected);
+    EXPECT_EQ(public_info.MaxOutputTokens(), 2048);
+  }
+}
+
 TEST(AzureCatalogClientTest, ParsesToolCallingCapabilityFromHistoricalTag) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
@@ -475,6 +562,116 @@ TEST(AzureCatalogClientTest, ParsesToolCallingCapabilityFromHistoricalTag) {
   EXPECT_FALSE(model_infos[0].string_properties.contains(FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR));
   EXPECT_FALSE(model_infos[0].string_properties.contains(FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR));
   EXPECT_EQ(model_infos[1].int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT), 0);
+}
+
+TEST(AzureCatalogClientTest, PreservesContextLengthAndCapabilitiesFromCatalogTags) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  const char* response = R"({
+    "value": [{
+      "assetId": "azureml://registries/azureml/models/gemma-4-e2b-it-generic-cpu/versions/3",
+      "annotations": {
+        "tags": {
+          "alias": "gemma-4-e2b-it", "foundryLocal": "",
+          "contextLength": "131072", "capabilities": "reasoning,tool-calling"
+        },
+        "systemCatalogData": {"textContextWindow": null, "modelCapabilities": null}
+      },
+      "properties": {
+        "name": "gemma-4-e2b-it-generic-cpu", "version": 3,
+        "variantInfo": {"variantMetadata": {"modelType": "ONNX", "device": "cpu"}}
+      }
+    }]
+  })";
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string&) { return MakeOkResponse(response); });
+
+  const auto model_infos = client.FetchAllModelInfos();
+  ASSERT_EQ(model_infos.size(), 1u);
+  const auto& info = model_infos.front();
+  const foundry_local::ModelInfo public_info(*AsHandle<flModelInfo>(&info));
+  EXPECT_EQ(public_info.GetIntProperty(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, -1), 131072);
+  EXPECT_EQ(public_info.GetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR), "reasoning,tool-calling");
+  EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT), 1);
+  EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT), 1);
+}
+
+TEST(AzureCatalogClientTest, StructuredMetadataTakesPrecedenceOverCatalogTags) {
+  auto record = nlohmann::json::parse(R"({
+    "assetId": "azureml://registries/azureml/models/test-model/versions/1",
+    "annotations": {
+      "tags": {"contextLength": "131072", "capabilities": "reasoning,tool-calling"},
+      "systemCatalogData": {
+        "textContextWindow": 4096, "modelCapabilities": ["embedding"],
+        "supportsToolCalling": false, "supportsReasoning": false
+      }
+    },
+    "properties": {"name": "test-model", "version": 1, "variantInfo": {}}
+  })");
+
+  auto converted = CatalogModelToModelInfo(record.get<CatalogLocalModel>());
+  ASSERT_TRUE(converted.has_value());
+  EXPECT_EQ(converted->int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT), 4096);
+  EXPECT_EQ(converted->string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR), "embedding");
+  EXPECT_EQ(converted->int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT), 0);
+  EXPECT_EQ(converted->int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT), 0);
+
+  auto& system_data = record["annotations"]["systemCatalogData"];
+  system_data.erase("textContextWindow");
+  system_data["modelLimits"]["textLimits"]["inputContextWindow"] = 8192;
+  system_data["modelCapabilities"] = nlohmann::json::array();
+  converted = CatalogModelToModelInfo(record.get<CatalogLocalModel>());
+  ASSERT_TRUE(converted.has_value());
+  EXPECT_EQ(converted->int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT), 8192);
+  EXPECT_FALSE(converted->string_properties.contains(FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR));
+
+  system_data.erase("modelCapabilities");
+  converted = CatalogModelToModelInfo(record.get<CatalogLocalModel>());
+  ASSERT_TRUE(converted.has_value());
+  EXPECT_EQ(converted->string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR), "reasoning,tool-calling");
+  EXPECT_EQ(converted->int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT), 0);
+  EXPECT_EQ(converted->int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT), 0);
+
+  system_data["textContextWindow"] = 0;
+  converted = CatalogModelToModelInfo(record.get<CatalogLocalModel>());
+  ASSERT_TRUE(converted.has_value());
+  EXPECT_EQ(converted->int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT), 8192);
+}
+
+TEST(AzureCatalogClientTest, HandlesOptionalCatalogTagsWithoutDroppingModels) {
+  auto record = nlohmann::json::parse(R"({
+    "assetId": "azureml://registries/azureml/models/test-model/versions/1",
+    "annotations": {"tags": {}, "systemCatalogData": {}},
+    "properties": {"name": "test-model", "version": 1, "variantInfo": {}}
+  })");
+  auto& tags = record["annotations"]["tags"];
+  tags["capabilities"] = " reasoning, , tool-calling, ";
+  for (const auto& value : {nlohmann::json("4294967296"), nlohmann::json("9223372036854775807"),
+                            nlohmann::json(4096)}) {
+    tags["contextLength"] = value;
+    const auto converted = CatalogModelToModelInfo(record.get<CatalogLocalModel>());
+    ASSERT_TRUE(converted.has_value()) << value;
+    const auto expected = value.is_string() ? std::stoll(value.get<std::string>()) : value.get<int64_t>();
+    EXPECT_EQ(converted->int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT), expected);
+  }
+
+  for (const auto& value : {nlohmann::json(), nlohmann::json(""), nlohmann::json("0"), nlohmann::json("-1"),
+                            nlohmann::json("4096tokens"), nlohmann::json("9223372036854775808")}) {
+    tags["contextLength"] = value;
+    const auto converted = CatalogModelToModelInfo(record.get<CatalogLocalModel>());
+    ASSERT_TRUE(converted.has_value()) << value;
+    EXPECT_FALSE(converted->int_properties.contains(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT)) << value;
+    EXPECT_EQ(converted->string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR), "reasoning,tool-calling");
+  }
+
+  tags.erase("contextLength");
+  for (const auto& value : {nlohmann::json(), nlohmann::json(""), nlohmann::json(4096)}) {
+    tags["capabilities"] = value;
+    const auto converted = CatalogModelToModelInfo(record.get<CatalogLocalModel>());
+    ASSERT_TRUE(converted.has_value()) << value;
+    EXPECT_FALSE(converted->int_properties.contains(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT));
+    EXPECT_FALSE(converted->string_properties.contains(FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR));
+  }
 }
 
 TEST(AzureCatalogClientTest, PreservesMinFlVersionForCatalogLevelFiltering) {

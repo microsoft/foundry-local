@@ -45,24 +45,15 @@ def make_model(monkeypatch, invoke_callback):
     return model
 
 
-def test_download_cancel_event_returns_nonzero(monkeypatch):
+@pytest.mark.parametrize(
+    ("cancel_before_download", "with_progress"),
+    [(True, False), (True, True), (False, True)],
+    ids=["preset-without-progress", "preset-skips-progress", "cancel-from-progress"],
+)
+def test_download_cancel_event_returns_nonzero(monkeypatch, cancel_before_download, with_progress):
     cancel_event = Event()
-    cancel_event.set()
-
-    def invoke(callback, user_data):
-        assert callback(25.0, user_data) == 1
-        return object()
-
-    model = make_model(monkeypatch, invoke)
-
-    with pytest.raises(FoundryLocalException, match="download cancelled") as exc:
-        model.download(cancel_event=cancel_event)
-
-    assert exc.value.error_code == 5
-
-
-def test_download_cancel_event_is_checked_after_progress(monkeypatch):
-    cancel_event = Event()
+    if cancel_before_download:
+        cancel_event.set()
     progress: list[float] = []
 
     def on_progress(value: float) -> None:
@@ -75,10 +66,11 @@ def test_download_cancel_event_is_checked_after_progress(monkeypatch):
 
     model = make_model(monkeypatch, invoke)
 
-    with pytest.raises(FoundryLocalException, match="download cancelled"):
-        model.download(on_progress, cancel_event)
+    with pytest.raises(FoundryLocalException, match="download cancelled") as exc:
+        model.download(on_progress if with_progress else None, cancel_event)
 
-    assert progress == [50.0]
+    assert exc.value.error_code == 5
+    assert progress == ([] if cancel_before_download else [50.0])
 
 
 def test_download_preserves_progress_callback_exception(monkeypatch):

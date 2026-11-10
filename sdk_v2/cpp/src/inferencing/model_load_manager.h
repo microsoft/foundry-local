@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <future>
@@ -69,6 +70,22 @@ class ModelLoadManager {
 
   using SymbolResolver = void* (*)(const char* library_name, const char* symbol_name);
 
+  class PredictiveRequestLease {
+   public:
+    PredictiveRequestLease(PredictiveRequestLease&& other) noexcept;
+    PredictiveRequestLease& operator=(PredictiveRequestLease&&) = delete;
+    ~PredictiveRequestLease();
+
+    PredictiveRequestLease(const PredictiveRequestLease&) = delete;
+    PredictiveRequestLease& operator=(const PredictiveRequestLease&) = delete;
+
+   private:
+    friend class ModelLoadManager;
+    explicit PredictiveRequestLease(ModelLoadManager& manager)
+        : manager_(&manager) {}
+    ModelLoadManager* manager_;
+  };
+
   /// ExclusiveGenAICudaOwnership opts into automatic CUDA release; the application must ensure process-wide quiescence.
   /// A null resolver uses optional symbol lookup in the already-loaded GenAI runtime.
   ModelLoadManager(
@@ -99,6 +116,7 @@ class ModelLoadManager {
   std::shared_ptr<void> AcquireNonGenerativeRuntime(
       Model& model,
       const std::function<void()>& on_admitted = {});
+  std::shared_ptr<void> AcquireLoadedNonGenerativeRuntime(Model& model);
   bool UnloadNonGenerativeRuntime(Model& model);
   bool IsModelLoaded(const Model& model) const;
   bool IsModelLoading(const Model& model) const;
@@ -106,6 +124,13 @@ class ModelLoadManager {
                              std::string_view model_path) const;
   bool UnloadModelArtifact(std::string_view model_id,
                            std::string_view model_path);
+  void RegisterPredictiveSession(void* identity,
+                                 std::function<void()> cancel,
+                                 std::function<void()> release);
+  void UnregisterPredictiveSession(void* identity) noexcept;
+  PredictiveRequestLease AcquirePredictiveRequest();
+  void WaitForPredictiveRequests();
+  void ReleasePredictiveSessions();
 
   /// Unload a previously loaded model.
   /// @returns true if the model was found and unloaded; false if the model was not loaded
@@ -186,6 +211,7 @@ class ModelLoadManager {
       std::shared_ptr<const GenAIConfig> config = {});
 
   bool HasEP(const std::string& ep_name) const;
+  void ReleasePredictiveRequest() noexcept;
   NonGenerativePackageMetadata InspectNonGenerativePackage(Model& model);
   bool UnloadModel(std::string_view model_id, const std::string* normalized_model_path);
   GenAIModelInstance* GetLoadedModel(std::string_view model_id, const std::string* normalized_model_path);
@@ -206,6 +232,14 @@ class ModelLoadManager {
     std::shared_future<std::shared_ptr<ManagedModelRuntime>> runtime;
   };
   std::map<std::string, LoadingRuntimeEntry> loading_runtimes_;
+  std::mutex predictive_mutex_;
+  std::condition_variable predictive_condition_;
+  struct PredictiveSessionCallbacks {
+    std::function<void()> cancel;
+    std::function<void()> release;
+  };
+  std::map<void*, PredictiveSessionCallbacks> predictive_sessions_;
+  size_t active_predictive_requests_{};
   std::map<std::pair<std::string, std::string>,
            NonGenerativePackageMetadata>
       non_generative_packages_;

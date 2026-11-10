@@ -8,3 +8,5 @@
 # make sure .sh retains Unix line endings, even when checked out on windows.
 *.sh text eol=lf
 
+sdk_v2/cpp/ports/cpp-client-telemetry/sdk-version-lifetime.patch text eol=lf
+

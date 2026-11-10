@@ -4,7 +4,10 @@
 #include "contracts/non_generative.h"
 #include "inferencing/model_load_manager.h"
 #include "inferencing/predictive/non_generative_runtime.h"
+#include "inferencing/predictive/non_generative_session.h"
+#include "inferencing/predictive/session_executor.h"
 #include "internal_api/test_helpers.h"
+#include "items/text_item.h"
 #include "model.h"
 #include "service/non_generative_handlers.h"
 #include "utils/safe_getenv.h"
@@ -19,6 +22,7 @@
 #include <fstream>
 #include <future>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -58,6 +62,165 @@ class ModelLoadManagerTestAccess {
 };
 
 namespace {
+
+struct FakeExecutorSession {};
+
+TEST(PredictiveSessionExecutorTest, QueuedCancellationSkipsWork) {
+  detail::SessionExecutor<FakeExecutorSession> executor(
+      [] { return std::make_unique<FakeExecutorSession>(); });
+  std::promise<void> entered;
+  std::promise<void> release;
+  auto release_future = release.get_future().share();
+  auto blocking = std::async(std::launch::async, [&] {
+    executor.Invoke([&](FakeExecutorSession&) {
+      entered.set_value();
+      release_future.wait();
+    });
+  });
+  entered.get_future().wait();
+
+  std::atomic<bool> canceled{};
+  std::atomic<bool> invoked{};
+  auto queued = std::async(std::launch::async, [&] {
+    EXPECT_THROW(
+        executor.Invoke(
+            [&](FakeExecutorSession&) { invoked = true; },
+            [&] { return canceled.load(); }),
+        std::runtime_error);
+  });
+  EXPECT_TRUE(
+      executor.WaitForPendingTasks(1, std::chrono::seconds(1)));
+  canceled = true;
+  queued.get();
+  EXPECT_FALSE(invoked.load());
+
+  release.set_value();
+  blocking.get();
+  executor.Invoke([&](FakeExecutorSession&) { EXPECT_FALSE(invoked.load()); });
+}
+
+TEST(PredictiveSessionExecutorTest, CancellationAfterExecutionWaitsForWork) {
+  detail::SessionExecutor<FakeExecutorSession> executor(
+      [] { return std::make_unique<FakeExecutorSession>(); });
+  std::promise<void> entered;
+  std::promise<void> release;
+  auto release_future = release.get_future().share();
+  std::atomic<bool> canceled{};
+  auto running = std::async(std::launch::async, [&] {
+    executor.Invoke(
+        [&](FakeExecutorSession&) {
+          entered.set_value();
+          release_future.wait();
+        },
+        [&] { return canceled.load(); });
+  });
+  entered.get_future().wait();
+  canceled = true;
+  EXPECT_EQ(running.wait_for(std::chrono::milliseconds(20)),
+            std::future_status::timeout);
+  release.set_value();
+  EXPECT_EQ(running.wait_for(std::chrono::seconds(1)),
+            std::future_status::ready);
+}
+
+TEST(PredictiveSessionExecutorTest, RejectsBeyondQueueCapacity) {
+  detail::SessionExecutor<FakeExecutorSession> executor(
+      [] { return std::make_unique<FakeExecutorSession>(); });
+  std::promise<void> entered;
+  std::promise<void> release;
+  auto release_future = release.get_future().share();
+  auto blocking = std::async(std::launch::async, [&] {
+    executor.Invoke([&](FakeExecutorSession&) {
+      entered.set_value();
+      release_future.wait();
+    });
+  });
+  entered.get_future().wait();
+
+  std::vector<std::future<void>> queued;
+  queued.reserve(detail::kMaximumQueuedPredictiveRequests);
+  for (size_t index = 0;
+       index < detail::kMaximumQueuedPredictiveRequests; ++index) {
+    queued.push_back(std::async(std::launch::async, [&, index] {
+      if (index + 1 == detail::kMaximumQueuedPredictiveRequests)
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+      executor.Invoke([](FakeExecutorSession&) {});
+    }));
+  }
+  const bool all_queued = executor.WaitForPendingTasks(
+      detail::kMaximumQueuedPredictiveRequests,
+      std::chrono::seconds(5));
+  std::optional<std::future<bool>> overflow;
+  std::future_status overflow_status = std::future_status::deferred;
+  if (all_queued) {
+    overflow.emplace(std::async(std::launch::async, [&] {
+      try {
+        executor.Invoke([](FakeExecutorSession&) {});
+        return false;
+      } catch (const RuntimeCapacityError&) {
+        return true;
+      }
+    }));
+    overflow_status = overflow->wait_for(std::chrono::seconds(1));
+  }
+
+  release.set_value();
+  blocking.get();
+  for (auto& request : queued) request.get();
+  ASSERT_TRUE(all_queued);
+  ASSERT_EQ(overflow_status, std::future_status::ready);
+  EXPECT_TRUE(overflow->get());
+}
+
+void WriteRankingBundle(const std::filesystem::path& path,
+                        const std::string& model_id) {
+  std::filesystem::create_directories(path / "components");
+  std::ofstream(path / "genai_config.json")
+      << R"({"model":{"type":"component","context_length":4096,"decoder":{"session_options":{"provider_options":[]}}}})";
+  std::ofstream(path / "tokenizer.json") << "{}";
+  std::ofstream(path / "tokenizer_config.json") << "{}";
+  nlohmann::json components = nlohmann::json::object();
+  for (const auto& [name, role] :
+       {std::pair{"encoder", "backbone"}, std::pair{"state_head", "head"},
+        std::pair{"action_head", "head"}, std::pair{"scorer", "scorer"}}) {
+    const auto relative = "components/" + std::string(name) + ".onnx";
+    std::ofstream(path / relative) << "synthetic";
+    components[name] = {{"role", role}, {"filename", relative}};
+  }
+  std::ofstream(path / "component_manifest.json")
+      << nlohmann::json{{"schema_version", 1},
+                        {"model_type", "synthetic"},
+                        {"components", components}};
+  std::ofstream(path / "inference_model.json")
+      << nlohmann::json{
+             {"Name", model_id},
+             {"Alias", "clm"},
+             {"Task", "text-ranking"},
+             {"ComponentManifest", "component_manifest.json"},
+             {"License", "MIT"},
+             {"Provenance",
+              {{"source", "synthetic"},
+               {"artifact_revision", "revision"},
+               {"base_model", "synthetic/base"},
+               {"base_revision", "revision"}}},
+             {"Provider",
+              {{"execution_provider", "cpu"}, {"variant", "fp32"}}},
+             {"Capabilities", nlohmann::json::array({"structured-input"})}};
+}
+
+class FakeRankingRuntime final : public IRankingRuntime {
+ public:
+  nlohmann::json Rank(
+      const RankingRequest& request,
+      std::function<bool()> is_canceled) override {
+    if (is_canceled && is_canceled())
+      throw std::runtime_error("canceled");
+    last_request = request;
+    return {{"ranked", nlohmann::json::array()}};
+  }
+
+  RankingRequest last_request;
+};
 
 TEST(ManagedModelRuntimeTest, SameKeyColdLoadsAreCoalesced) {
   test::CpuOnlyEpDetector detector;
@@ -275,6 +438,30 @@ TEST(ManagedModelRuntimeTest, ShutdownRejectsNewAcquisitions) {
       std::exception);
 }
 
+TEST(ManagedModelRuntimeTest, ShutdownCancelsAndDrainsPredictiveRequests) {
+  test::CpuOnlyEpDetector detector;
+  ModelLoadManager manager(detector, test::NullLog());
+  bool canceled = false;
+  int session_identity;
+  manager.RegisterPredictiveSession(
+      &session_identity, [&] { canceled = true; }, [] {});
+  std::optional<ModelLoadManager::PredictiveRequestLease> active(
+      manager.AcquirePredictiveRequest());
+
+  manager.RejectNewLoads();
+  EXPECT_TRUE(canceled);
+  manager.UnloadAll(std::chrono::milliseconds(1));
+  auto destruction_wait = std::async(std::launch::async, [&] {
+    manager.WaitForPredictiveRequests();
+  });
+  EXPECT_EQ(destruction_wait.wait_for(std::chrono::milliseconds(20)),
+            std::future_status::timeout);
+  active.reset();
+  EXPECT_EQ(destruction_wait.wait_for(std::chrono::seconds(1)),
+            std::future_status::ready);
+  manager.UnregisterPredictiveSession(&session_identity);
+}
+
 TEST(ManagedModelRuntimeTest, SerializesReadinessWithinProviderGroup) {
   test::CpuOnlyEpDetector detector;
   ModelLoadManager manager(detector, test::NullLog(), 1000, 1);
@@ -310,6 +497,106 @@ TEST(ManagedModelRuntimeTest, SerializesReadinessWithinProviderGroup) {
   EXPECT_NE(first.get(), nullptr);
   EXPECT_NE(second.get(), nullptr);
   EXPECT_TRUE(second_entered.load());
+}
+
+TEST(NonGenerativeSessionTest,
+     DispatchesAndMergesOptionsWithoutRealModelWeights) {
+  test::FakeServiceBindings service;
+  const auto root =
+      test::TempPath::CreateTempDir("fl_predictive_session_");
+  const auto path = root.string();
+  constexpr std::string_view model_id = "clm-generic-cpu:1";
+  WriteRankingBundle(path, std::string(model_id));
+
+  ModelInfo info;
+  info.model_id = model_id;
+  info.name = "clm-generic-cpu";
+  info.alias = "clm";
+  info.task = "text-ranking";
+  auto model = Model::FromLocalRegistration(
+      std::move(info), path, service.download_manager,
+      service.model_load_manager);
+  const auto io = model.GetInputOutputInfo();
+  ASSERT_EQ(io.num_inputs, 1u);
+  ASSERT_EQ(io.num_outputs, 1u);
+  EXPECT_EQ(io.inputs[0]->type, FOUNDRY_LOCAL_ITEM_TEXT);
+  EXPECT_EQ(static_cast<const TextItem*>(io.inputs[0])->text_type,
+            FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON);
+  EXPECT_EQ(io.outputs[0]->type, FOUNDRY_LOCAL_ITEM_TEXT);
+  EXPECT_EQ(static_cast<const TextItem*>(io.outputs[0])->text_type,
+            FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON);
+  EXPECT_THROW(
+      NonGenerativeSession(model, service.model_load_manager, service.logger,
+                           service.telemetry),
+      std::exception);
+  EXPECT_FALSE(model.IsLoaded());
+  const auto canonical = std::filesystem::weakly_canonical(path).string();
+  const auto identity =
+      "non-generative|" + std::string(model_id) + "|" + canonical +
+      "||text-ranking";
+  auto fake = std::make_shared<FakeRankingRuntime>();
+  auto seeded = ModelLoadManagerTestAccess::AcquireArtifact(
+      service.model_load_manager, identity, std::string(model_id), canonical,
+      [fake]() -> std::shared_ptr<void> { return fake; });
+  seeded.reset();
+
+  {
+    auto session = std::make_unique<NonGenerativeSession>(
+        model, service.model_load_manager, service.logger, service.telemetry);
+    auto second_session = std::make_unique<NonGenerativeSession>(
+        model, service.model_load_manager, service.logger, service.telemetry);
+    KeyValuePairs defaults;
+    defaults.Add("temperature", "0.5");
+    session->SetSessionOptions(defaults);
+
+    Request request;
+    request.AddOwnedItem(std::make_unique<TextItem>(
+        nlohmann::json{{"answers", {"a", "b"}}}.dump(),
+        FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+    request.options.Add("temperature", "0.75");
+    Response response;
+    session->ProcessRequest(request, response);
+    EXPECT_FLOAT_EQ(fake->last_request.temperature, 0.75f);
+    ASSERT_EQ(response.items.size(), 1u);
+
+    Request mismatched;
+    mismatched.AddOwnedItem(std::make_unique<TextItem>(
+        nlohmann::json{{"model", "other"}, {"answers", {"a", "b"}}}.dump(),
+        FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+    Response ignored;
+    EXPECT_THROW(session->ProcessRequest(mismatched, ignored), std::exception);
+    EXPECT_THROW(
+        service.model_load_manager.UnloadNonGenerativeRuntime(model),
+        std::exception);
+    session.reset();
+    EXPECT_THROW(
+        service.model_load_manager.UnloadNonGenerativeRuntime(model),
+        std::exception);
+    second_session.reset();
+  }
+
+  EXPECT_TRUE(service.model_load_manager.UnloadNonGenerativeRuntime(model));
+}
+
+TEST(NonGenerativeSessionTest, RejectsPackageTaskMismatchBeforeAcquisition) {
+  test::FakeServiceBindings service;
+  const auto root =
+      test::TempPath::CreateTempDir("fl_predictive_task_mismatch_");
+  WriteRankingBundle(root.string(), "clm-generic-cpu:1");
+  ModelInfo info;
+  info.model_id = "clm-generic-cpu:1";
+  info.name = "clm-generic-cpu";
+  info.alias = "clm";
+  info.task = "typed-decision";
+  auto model = Model::FromLocalRegistration(
+      std::move(info), root.string(), service.download_manager,
+      service.model_load_manager);
+
+  EXPECT_THROW(
+      NonGenerativeSession(model, service.model_load_manager, service.logger,
+                           service.telemetry),
+      std::exception);
+  EXPECT_FALSE(model.IsLoaded());
 }
 
 TEST(NonGenerativeRuntimeTest, ExportedPackagesRunWhenConfigured) {

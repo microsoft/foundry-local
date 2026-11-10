@@ -64,12 +64,31 @@ export {
   ChatSession,
   EmbeddingsSession,
   AudioSession,
+  RankingSession,
+  DecisionSession,
+  TypedDecisionSession,
   type ToolDefinition,
   type ToolKind,
   type StreamOptions,
   type StreamingResponse,
   type RequestPreflightResult,
 } from "./session.js";
+export type {
+  DecisionAnswer,
+  DecisionQuestion,
+  DecisionQuestionType,
+  DecisionRequest,
+  DecisionResult,
+  RankedCandidate,
+  RankingRequest,
+  RankingResult,
+  StructuredValue,
+  TypedDecisionAnswer,
+  TypedDecisionQuestion,
+  TypedDecisionQuestionType,
+  TypedDecisionRequest,
+  TypedDecisionResult,
+} from "./non-generative.js";
 export { Request, type RequestOptions, type RequestToolChoice, type SearchOptions } from "./request.js";
 export type { Response, FinishReason, TokenUsage } from "./response.js";
 export { ItemQueue } from "./item-queue.js";
