@@ -157,9 +157,11 @@ class BaseModelCatalog : public ICatalog {
   /// Builds a complete new ModelIndex locally, then atomically swaps it into index_.
   void RebuildIndex() const;
 
+ protected:
   /// Thread-safe access: ensures catalog is populated, refreshes if allowed and stale.
   void EnsurePopulated(bool allow_refresh = false) const;
 
+ private:
   /// Append-only storage for GetModelVersions query results. Each call appends a new
   /// container, so all previously returned Model* pointers remain valid for the catalog's
   /// lifetime. These models are intentionally not integrated into the main lookup indices.

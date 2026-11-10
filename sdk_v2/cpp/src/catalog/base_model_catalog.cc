@@ -23,7 +23,7 @@ BaseModelCatalog::~BaseModelCatalog() = default;
 
 void BaseModelCatalog::SelectDefaultVariant(Model& model, const VariantEligibility& is_eligible,
                                             bool preserve_explicit_selection) const {
-  if (type_ == CatalogType::kPublic) {
+  if (type_ == CatalogType::kPublic || type_ == CatalogType::kTest) {
     model.SetDefaultVariantRefresh([this] { EnsurePopulated(); });
   }
 
@@ -405,20 +405,7 @@ Model* BaseModelCatalog::GetModel(const std::string& alias) const {
 
     logger_.Log(LogLevel::Information,
                 fmt::format("GetModel: '{}' has no variant with an available execution provider.", alias));
-    if (GetType() != CatalogType::kTest) return nullptr;
-  }
-
-  if (GetType() == CatalogType::kTest) {
-    auto fetched = FetchModels();
-    std::erase_if(fetched, [&](const Model& model) { return model.Alias() != alias; });
-    if (!fetched.empty()) {
-      IntegrateVariants(std::move(fetched));
-      idx = GetIndex();
-      alias_it = idx->alias_index.find(alias);
-      if (alias_it != idx->alias_index.end() && alias_it->second->HasEligibleDefaultVariant()) {
-        return alias_it->second;
-      }
-    }
+    return nullptr;
   }
 
   logger_.Log(LogLevel::Information,
@@ -507,13 +494,22 @@ std::vector<Model*> BaseModelCatalog::GetCachedModels() const {
 
   std::lock_guard<std::mutex> lock(mutex_);
   std::vector<Model*> result;
+  std::unordered_set<std::string> seen_ids;
   for (auto& stored : models_) {
     if (!stored.active) {
       continue;
     }
 
     for (auto* variant : stored.model->Variants()) {
-      if (variant->IsCached()) {
+      if (variant->IsCached() && seen_ids.insert(variant->Id()).second) {
+        result.push_back(variant);
+      }
+    }
+  }
+
+  for (auto& container : version_query_models_) {
+    for (auto* variant : container->Variants()) {
+      if (variant->IsCached() && seen_ids.insert(variant->Id()).second) {
         result.push_back(variant);
       }
     }
@@ -527,13 +523,22 @@ std::vector<Model*> BaseModelCatalog::GetLoadedModels() const {
 
   std::lock_guard<std::mutex> lock(mutex_);
   std::vector<Model*> result;
+  std::unordered_set<std::string> seen_ids;
   for (auto& stored : models_) {
     if (!stored.active) {
       continue;
     }
 
     for (auto* variant : stored.model->Variants()) {
-      if (variant->IsLoaded()) {
+      if (variant->IsLoaded() && seen_ids.insert(variant->Id()).second) {
+        result.push_back(variant);
+      }
+    }
+  }
+
+  for (auto& container : version_query_models_) {
+    for (auto* variant : container->Variants()) {
+      if (variant->IsLoaded() && seen_ids.insert(variant->Id()).second) {
         result.push_back(variant);
       }
     }

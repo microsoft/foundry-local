@@ -16,6 +16,7 @@
 #include <charconv>
 #include <filesystem>
 #include <map>
+#include <unordered_set>
 
 namespace fl {
 namespace {
@@ -110,8 +111,20 @@ TestModelCatalog::TestModelCatalog(std::string registry, const Configuration& co
       logger_(logger),
       load_manager_(load_manager),
       client_(std::move(client)) {
-  downloader_ = std::make_unique<DownloadManager>(cache_dir_, "", 64, logger, telemetry, true, nullptr, nullptr,
-      [this](const ModelInfo& info) {
+  int download_concurrency = 64;
+  const auto it = config.additional_options.find("NumModelDownloadThreads");
+  if (it != config.additional_options.end()) {
+    try {
+      download_concurrency = std::stoi(it->second);
+      if (download_concurrency < 1) {
+        download_concurrency = 1;
+      }
+    } catch (const std::exception&) {
+      // Ignore invalid values, use default
+    }
+  }
+  downloader_ = std::make_unique<DownloadManager>(cache_dir_, "", download_concurrency, logger, telemetry, true,
+      nullptr, nullptr, [this](const ModelInfo& info) {
         return Client().ResolveArtifacts(info.name, info.version);
       });
 }
@@ -216,11 +229,80 @@ std::vector<Model*> TestModelCatalog::ListModels() const {
 }
 
 Model* TestModelCatalog::GetModel(const std::string& alias) const {
-  auto* model = AzureModelCatalog::GetModel(alias);
-  if (model) {
-    for (auto* variant : model->Variants()) RefreshRetainedVariantCache(*variant);
+  std::lock_guard lock(alias_models_mutex_);
+  auto it = alias_models_.find(alias);
+  if (it != alias_models_.end()) {
+    for (auto* variant : it->second->Variants()) {
+      RefreshRetainedVariantCache(*variant);
+    }
+    it->second->SelectDefaultVariant(MakeVariantEligibility(), /*preserve_explicit_selection=*/true);
+    if (it->second->HasEligibleDefaultVariant()) {
+      return it->second.get();
+    }
+    return nullptr;
   }
-  return model;
+
+  // First, check completed packages in cache for this alias (cache-first alias behavior).
+  std::vector<Model> cached_variants;
+  {
+    std::lock_guard snapshot_lock(snapshot_mutex_);
+    CatalogCache cache(cache_dir_, logger_);
+    cache.Load();
+    if (const auto infos = cache.GetCachedModels()) {
+      for (const auto& info : *infos) {
+        if (info.alias == alias) {
+          const auto path = downloader_->GetCompletedModelCachePath(info);
+          if (!path.empty()) {
+            cached_variants.push_back(Model::FromModelInfo(info, path, *downloader_, load_manager_));
+          }
+        }
+      }
+    }
+  }
+
+  if (!cached_variants.empty()) {
+    std::sort(cached_variants.begin(), cached_variants.end(), Model::CompareBestFirst);
+    auto container = std::make_unique<Model>(Model::MakeContainer(std::move(cached_variants.front())));
+    for (size_t i = 1; i < cached_variants.size(); ++i) {
+      container->AddVariant(std::move(cached_variants[i]));
+    }
+    container->SetDefaultVariantRefresh([this, c = container.get()] {
+      EnsurePopulated();
+      c->SelectDefaultVariant(MakeVariantEligibility(), /*preserve_explicit_selection=*/true);
+    });
+    container->SelectDefaultVariant(MakeVariantEligibility());
+    if (container->HasEligibleDefaultVariant()) {
+      return alias_models_.emplace(alias, std::move(container)).first->second.get();
+    }
+    if (cache_only_) {
+      return nullptr;
+    }
+  }
+
+  if (cache_only_) {
+    return nullptr;
+  }
+
+  // Cache miss: query the registry for this alias.
+  auto fetched = FetchModels();
+  std::erase_if(fetched, [&](const Model& model) { return model.Alias() != alias; });
+  if (fetched.empty()) {
+    return nullptr;
+  }
+
+  auto container = std::make_unique<Model>(Model::MakeContainer(std::move(fetched.front())));
+  for (size_t i = 1; i < fetched.size(); ++i) {
+    container->AddVariant(std::move(fetched[i]));
+  }
+  container->SetDefaultVariantRefresh([this, c = container.get()] {
+    EnsurePopulated();
+    c->SelectDefaultVariant(MakeVariantEligibility(), /*preserve_explicit_selection=*/true);
+  });
+  container->SelectDefaultVariant(MakeVariantEligibility());
+  if (!container->HasEligibleDefaultVariant()) {
+    return nullptr;
+  }
+  return alias_models_.emplace(alias, std::move(container)).first->second.get();
 }
 
 Model* TestModelCatalog::GetModelVariant(const std::string& model_id) const {
@@ -245,28 +327,85 @@ Model* TestModelCatalog::GetModelVariant(const std::string& model_id) const {
   return exact_models_.emplace(model_id, std::move(model)).first->second.get();
 }
 
+Model* TestModelCatalog::GetLatestVersion(const Model* model) const {
+  if (!model) return nullptr;
+  if (!cache_only_) {
+    EnsurePopulated(/*allow_refresh=*/true);
+  }
+  return AzureModelCatalog::GetLatestVersion(model);
+}
+
 std::vector<Model*> TestModelCatalog::GetCachedModels() const {
-  auto models = AzureModelCatalog::GetCachedModels();
-  std::lock_guard lock(exact_models_mutex_);
-  for (const auto& [id, model] : exact_models_) {
-    RefreshRetainedVariantCache(*model);
-    if (model->IsCached() && std::none_of(models.begin(), models.end(), [&](const Model* value) {
-          return value->Id() == id;
-        })) {
-      models.push_back(model.get());
+  std::vector<std::string> completed_ids;
+  {
+    std::lock_guard snapshot_lock(snapshot_mutex_);
+    CatalogCache cache(cache_dir_, logger_);
+    cache.Load();
+    if (const auto infos = cache.GetCachedModels()) {
+      for (const auto& info : *infos) {
+        if (!downloader_->GetCompletedModelCachePath(info).empty()) {
+          completed_ids.push_back(info.model_id);
+        }
+      }
+    }
+  }
+  for (const auto& id : completed_ids) {
+    GetModelVariant(id);
+  }
+
+  std::vector<Model*> models = AzureModelCatalog::GetCachedModels();
+  std::unordered_set<std::string> seen_ids;
+  for (auto* m : models) seen_ids.insert(m->Id());
+
+  const auto add_if_cached = [&](Model* m) {
+    if (m) {
+      RefreshRetainedVariantCache(*m);
+      if (m->IsCached() && seen_ids.insert(m->Id()).second) {
+        models.push_back(m);
+      }
+    }
+  };
+
+  {
+    std::lock_guard lock(exact_models_mutex_);
+    for (const auto& [id, model] : exact_models_) {
+      add_if_cached(model.get());
+    }
+  }
+  {
+    std::lock_guard lock(alias_models_mutex_);
+    for (const auto& [alias, container] : alias_models_) {
+      for (auto* variant : container->Variants()) {
+        add_if_cached(variant);
+      }
     }
   }
   return models;
 }
 
 std::vector<Model*> TestModelCatalog::GetLoadedModels() const {
-  auto models = AzureModelCatalog::GetLoadedModels();
-  std::lock_guard lock(exact_models_mutex_);
-  for (const auto& [id, model] : exact_models_) {
-    if (model->IsLoaded() && std::none_of(models.begin(), models.end(), [&](const Model* value) {
-          return value->Id() == id;
-        })) {
-      models.push_back(model.get());
+  std::vector<Model*> models = AzureModelCatalog::GetLoadedModels();
+  std::unordered_set<std::string> seen_ids;
+  for (auto* m : models) seen_ids.insert(m->Id());
+
+  const auto add_if_loaded = [&](Model* m) {
+    if (m && m->IsLoaded() && seen_ids.insert(m->Id()).second) {
+      models.push_back(m);
+    }
+  };
+
+  {
+    std::lock_guard lock(exact_models_mutex_);
+    for (const auto& [id, model] : exact_models_) {
+      add_if_loaded(model.get());
+    }
+  }
+  {
+    std::lock_guard lock(alias_models_mutex_);
+    for (const auto& [alias, container] : alias_models_) {
+      for (auto* variant : container->Variants()) {
+        add_if_loaded(variant);
+      }
     }
   }
   return models;
@@ -304,25 +443,38 @@ std::vector<Model> TestModelCatalog::FetchModels() const {
 std::vector<Model> TestModelCatalog::FetchAvailableModels() const {
   std::lock_guard snapshot_lock(snapshot_mutex_);
   CatalogCache cache(cache_dir_, logger_);
-  std::vector<ModelInfo> infos;
+  std::vector<ModelInfo> live_infos;
   if (cache_only_) {
     cache.Load();
     const auto cached = cache.GetCachedModels();
     if (!cached) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "no test catalog snapshot; run online with this registry and cache first");
     }
-    infos = *cached;
+    live_infos = *cached;
   } else {
     for (const auto& model : Client().ListModelVersions()) {
       try {
-        if (auto info = Adapt(model)) infos.push_back(std::move(*info));
+        if (auto info = Adapt(model)) live_infos.push_back(std::move(*info));
       } catch (const nlohmann::json::exception&) {
         FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Azure ML returned malformed model metadata");
       }
     }
-    cache.Save(infos, true);
+    cache.Load();
+    auto snapshot_infos = live_infos;
+    if (const auto existing = cache.GetCachedModels()) {
+      for (const auto& old_info : *existing) {
+        if (std::none_of(snapshot_infos.begin(), snapshot_infos.end(), [&](const ModelInfo& m) {
+              return m.model_id == old_info.model_id;
+            })) {
+          if (!downloader_->GetCompletedModelCachePath(old_info).empty()) {
+            snapshot_infos.push_back(old_info);
+          }
+        }
+      }
+    }
+    cache.Save(snapshot_infos, true);
   }
-  auto models = CreateModels(infos);
+  auto models = CreateModels(live_infos);
   const auto eligible = MakeVariantEligibility();
   std::erase_if(models, [&](const Model& model) { return !eligible(model); });
   return models;

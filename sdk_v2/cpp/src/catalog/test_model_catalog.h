@@ -22,6 +22,7 @@ class TestModelCatalog final : public AzureModelCatalog {
   std::vector<Model*> ListModels() const override;
   Model* GetModel(const std::string& alias) const override;
   Model* GetModelVariant(const std::string& model_id) const override;
+  Model* GetLatestVersion(const Model* model) const override;
   std::vector<Model*> GetCachedModels() const override;
   std::vector<Model*> GetLoadedModels() const override;
 
@@ -55,6 +56,9 @@ class TestModelCatalog final : public AzureModelCatalog {
   mutable std::mutex exact_models_mutex_;
   // Exact handles remain usable independently of latest-only listing reconciliation.
   mutable std::map<std::string, std::unique_ptr<Model>> exact_models_;
+  mutable std::mutex alias_models_mutex_;
+  // Cache-first alias containers remain independently owned from latest-only listings.
+  mutable std::map<std::string, std::unique_ptr<Model>> alias_models_;
 };
 
 }  // namespace fl

@@ -576,15 +576,21 @@ TEST_F(TestModelCatalogTest, ExactLookupMergesSnapshotAndSurvivesRestartWithoutC
   EXPECT_FALSE(cached->LocalPathSnapshot().empty());
 }
 
+enum class ConcurrencyMode {
+  kExactId,
+  kListing,
+  kHistory,
+};
+
 class TestModelCatalogConcurrencyTest : public TestModelCatalogTest,
-                                        public ::testing::WithParamInterface<std::string> {};
+                                        public ::testing::WithParamInterface<ConcurrencyMode> {};
 
 TEST_P(TestModelCatalogConcurrencyTest, SnapshotTransactionsPreserveExactIdsAcrossOfflineRestart) {
   Snapshot({CachedInfo(10)});
   Package(10);
   Discovery();
   transport_->Queue(kBase + "/models/" + kCpuName + "/versions/2" + kApi, LegacyModel(kCpuName, 2));
-  if (GetParam() == "ExactId") {
+  if (GetParam() == ConcurrencyMode::kExactId) {
     transport_->Queue(kBase + "/models/" + kCpuName + "/versions/3" + kApi, LegacyModel(kCpuName, 3));
   } else {
     transport_->Queue(kBase + "/models" + kApi, {{"value", {{{"name", kCpuName}}}}});
@@ -616,9 +622,9 @@ TEST_P(TestModelCatalogConcurrencyTest, SnapshotTransactionsPreserveExactIdsAcro
   auto second_started_future = second_started.get_future();
   auto second = std::async(std::launch::async, [&] {
     second_started.set_value();
-    if (GetParam() == "ExactId") {
+    if (GetParam() == ConcurrencyMode::kExactId) {
       EXPECT_NE(catalog->GetModelVariant("tiny-generic-cpu:3"), nullptr);
-    } else if (GetParam() == "Listing") {
+    } else if (GetParam() == ConcurrencyMode::kListing) {
       EXPECT_FALSE(catalog->ListModels().empty());
     } else {
       EXPECT_EQ(catalog->GetModelVersions("tiny", kCpuName, 0).size(), 3);
@@ -654,8 +660,19 @@ TEST_P(TestModelCatalogConcurrencyTest, SnapshotTransactionsPreserveExactIdsAcro
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    ConcurrentWriters, TestModelCatalogConcurrencyTest, ::testing::Values("ExactId", "Listing", "History"),
-    [](const ::testing::TestParamInfo<std::string>& info) { return info.param; });
+    ConcurrentWriters, TestModelCatalogConcurrencyTest,
+    ::testing::Values(ConcurrencyMode::kExactId, ConcurrencyMode::kListing, ConcurrencyMode::kHistory),
+    [](const ::testing::TestParamInfo<ConcurrencyMode>& info) {
+      switch (info.param) {
+        case ConcurrencyMode::kExactId:
+          return "ExactId";
+        case ConcurrencyMode::kListing:
+          return "Listing";
+        case ConcurrencyMode::kHistory:
+          return "History";
+      }
+      return "Unknown";
+    });
 
 TEST_F(TestModelCatalogTest, CacheOnlyListsLatestDownloadedButAllowsOlderDownloadedExactIds) {
   config_.additional_options["TestModelCacheOnly"] = "true";
@@ -837,6 +854,188 @@ TEST_F(TestModelCatalogTest, ArtifactGrantForAnotherContainerIsRejected) {
                     HttpMethod::Post);
   auto client = Client();
   EXPECT_THROW(client->ResolveArtifacts(kCpuName, 1), Exception);
+}
+
+TEST_F(TestModelCatalogTest, CacheFirstAliasMaintainsIndependenceFromListingAndLoadedVersion) {
+  std::filesystem::create_directories(CachePath());
+  const auto package_path = CachePath() / (kCpuName + "-2");
+  std::filesystem::copy(test::GetTestDataPath("tiny-paged-attention"), package_path,
+                        std::filesystem::copy_options::recursive);
+  std::ofstream(package_path / "inference_model.json") << "{}";
+  Snapshot({CachedInfo(2)});
+
+  const std::vector<Json> inventory{LegacyModel(kCpuName, 2), LegacyModel(kCpuName, 10)};
+  Inventory(inventory);
+  auto catalog = Catalog();
+
+  // Test Order A: ListModels first, then GetModel returns cached version 2
+  const auto listed = catalog->ListModels();
+  ASSERT_EQ(listed.size(), 1);
+  EXPECT_EQ(listed.front()->Id(), kCpuName + ":10");
+
+  auto* alias = catalog->GetModel("tiny");
+  ASSERT_NE(alias, nullptr);
+  EXPECT_EQ(alias->Id(), kCpuName + ":2");
+
+  // Test Order B: Load cached version 2, then ListModels does not replace alias selection with version 10
+  ASSERT_NO_THROW(alias->Load());
+  EXPECT_TRUE(alias->IsLoaded());
+  EXPECT_EQ(catalog->GetLoadedModels(), (std::vector<Model*>{alias->SelectedLeaf()}));
+
+  catalog->ListModels();
+  EXPECT_EQ(alias->Id(), kCpuName + ":2");
+  ASSERT_NO_THROW(alias->Unload());
+  EXPECT_FALSE(alias->IsLoaded());
+  EXPECT_TRUE(catalog->GetLoadedModels().empty());
+}
+
+TEST_F(TestModelCatalogTest, RetainedUnloadedAliasRefreshesSelectionWhenDeviceMapChanges) {
+  devices_.devices["CPU"] = {"CPUExecutionProvider"};
+  devices_.devices["GPU"] = {"WebGpuExecutionProvider"};
+
+  ModelInfo gpu_info;
+  gpu_info.name = "tiny-generic-gpu";
+  gpu_info.model_id = "tiny-generic-gpu:2";
+  gpu_info.version = 2;
+  gpu_info.alias = "tiny";
+  gpu_info.device_type = DeviceType::kGPU;
+  gpu_info.execution_provider = "WebGpuExecutionProvider";
+  gpu_info.string_properties[TestModelCatalog::kRegistryProperty] = kRegistry;
+  Snapshot({CachedInfo(2), gpu_info});
+
+  // Pre-cache both packages on disk
+  Package(2);
+  const auto gpu_path = CachePath() / "tiny-generic-gpu-2";
+  std::filesystem::create_directories(gpu_path);
+  std::ofstream(gpu_path / "genai_config.json") << "{}";
+  std::ofstream(gpu_path / "inference_model.json") << "{}";
+
+  // Start with CPU only
+  auto catalog = Catalog();
+  catalog->SetRuntimeDevices({{"CPU", {"CPUExecutionProvider"}}});
+
+  auto* alias = catalog->GetModel("tiny");
+  ASSERT_NE(alias, nullptr);
+  EXPECT_EQ(alias->Id(), kCpuName + ":2");
+
+  // Register GPU and invalidate catalog
+  catalog->SetRuntimeDevices({{"CPU", {"CPUExecutionProvider"}}, {"GPU", {"WebGpuExecutionProvider"}}});
+
+  // Calling Download or Load on retained unloaded alias reselects GPU variant
+  int progress = 0;
+  alias->Download([&](float percent) {
+    if (percent == 100.0f) ++progress;
+    return 0;
+  });
+  EXPECT_EQ(alias->Id(), "tiny-generic-gpu:2");
+}
+
+TEST_F(TestModelCatalogTest, DownloadConcurrencyHonorsConfiguration) {
+  for (const auto* threads : {"4", "0", "-1", "invalid"}) {
+    config_.additional_options["NumModelDownloadThreads"] = threads;
+    auto catalog = Catalog();
+    EXPECT_NE(catalog, nullptr);
+  }
+}
+
+TEST_F(TestModelCatalogTest, LiveInventorySavesRetainCompletedLocalPackagesForDeletedRemoteVersions) {
+  std::filesystem::create_directories(CachePath());
+  const auto package_path = CachePath() / (kCpuName + "-2");
+  std::filesystem::copy(test::GetTestDataPath("tiny-paged-attention"), package_path,
+                        std::filesystem::copy_options::recursive);
+  std::ofstream(package_path / "inference_model.json") << "{}";
+  Snapshot({CachedInfo(2)});
+
+  // Remote registry only has version 10 (version 2 was deleted from remote registry)
+  Inventory({LegacyModel(kCpuName, 10)});
+  auto catalog = Catalog();
+
+  // Online listing must only return the live version 10
+  const auto listed = catalog->ListModels();
+  ASSERT_EQ(listed.size(), 1);
+  EXPECT_EQ(listed.front()->Id(), kCpuName + ":10");
+
+  // Disk snapshot must retain version 2 because its completed package is on disk
+  CatalogCache snapshot(CachePath().string(), services_.logger);
+  snapshot.Load();
+  ASSERT_TRUE(snapshot.GetCachedModels().has_value());
+  const auto saved = *snapshot.GetCachedModels();
+  std::set<std::string> saved_ids;
+  for (const auto& info : saved) saved_ids.insert(info.model_id);
+  EXPECT_EQ(saved_ids, (std::set<std::string>{kCpuName + ":2", kCpuName + ":10"}));
+
+  // Offline / cache-only mode recovers the deleted version from retained snapshot
+  config_.additional_options["TestModelCacheOnly"] = "true";
+  auto restarted = Catalog(false);
+  auto* recovered = restarted->GetModelVariant(kCpuName + ":2");
+  ASSERT_NE(recovered, nullptr);
+  EXPECT_TRUE(recovered->IsCached());
+}
+
+TEST_F(TestModelCatalogTest, GetCachedModelsAndGetLoadedModelsIncludeOlderCompletedAndHistoryModels) {
+  std::filesystem::create_directories(CachePath());
+  const auto package_path = CachePath() / (kCpuName + "-2");
+  std::filesystem::copy(test::GetTestDataPath("tiny-paged-attention"), package_path,
+                        std::filesystem::copy_options::recursive);
+  std::ofstream(package_path / "inference_model.json") << "{}";
+  Snapshot({CachedInfo(2)});
+
+  Inventory({LegacyModel(kCpuName, 10), LegacyModel(kCpuName, 2)});
+  auto catalog = Catalog();
+
+  // ListModels only indexes latest version 10
+  catalog->ListModels();
+
+  // GetCachedModels includes older completed package 2 without prior exact lookup
+  const auto cached = catalog->GetCachedModels();
+  ASSERT_EQ(cached.size(), 1);
+  EXPECT_EQ(cached.front()->Id(), kCpuName + ":2");
+
+  // Download and load through GetModelVersions
+  Inventory({LegacyModel(kCpuName, 10), LegacyModel(kCpuName, 2)}, false);
+  auto versions = catalog->GetModelVersions("tiny", "", 0);
+  ASSERT_GE(versions.size(), 2);
+  auto* v2 = versions[1];
+  ASSERT_EQ(v2->Info().version, 2);
+  ASSERT_NO_THROW(v2->Load());
+  EXPECT_TRUE(v2->IsLoaded());
+
+  // GetLoadedModels includes the version loaded through history
+  const auto loaded = catalog->GetLoadedModels();
+  ASSERT_EQ(loaded.size(), 1);
+  EXPECT_EQ(loaded.front()->Id(), kCpuName + ":2");
+  ASSERT_NO_THROW(v2->Unload());
+}
+
+TEST_F(TestModelCatalogTest, GetLatestVersionPopulatesLiveListingOnFreshCatalogAndPreservesCacheOnly) {
+  std::filesystem::create_directories(CachePath());
+  const auto package_path = CachePath() / (kCpuName + "-2");
+  std::filesystem::copy(test::GetTestDataPath("tiny-paged-attention"), package_path,
+                        std::filesystem::copy_options::recursive);
+  std::ofstream(package_path / "inference_model.json") << "{}";
+  Snapshot({CachedInfo(2)});
+
+  // Remote registry has version 10
+  Inventory({LegacyModel(kCpuName, 10), LegacyModel(kCpuName, 2)});
+  auto catalog = Catalog();
+
+  // Fresh lookup of version 2
+  auto* exact_v2 = catalog->GetModelVariant(kCpuName + ":2");
+  ASSERT_NE(exact_v2, nullptr);
+
+  // GetLatestVersion populates listing and returns remote latest (10), not 2
+  auto* latest = catalog->GetLatestVersion(exact_v2);
+  ASSERT_NE(latest, nullptr);
+  EXPECT_EQ(latest->Id(), kCpuName + ":10");
+
+  // In cache-only mode with only version 2 on disk, it preserves cache-only
+  config_.additional_options["TestModelCacheOnly"] = "true";
+  auto cache_only_catalog = Catalog(false);
+  auto* cached_exact = cache_only_catalog->GetModelVariant(kCpuName + ":2");
+  ASSERT_NE(cached_exact, nullptr);
+  auto* cached_latest = cache_only_catalog->GetLatestVersion(cached_exact);
+  ASSERT_NE(cached_latest, nullptr);
+  EXPECT_EQ(cached_latest->Id(), kCpuName + ":2");
 }
 
 }  // namespace
