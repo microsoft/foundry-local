@@ -162,8 +162,7 @@ public sealed class DecisionSession : NonGenerativeSession
         {
             throw InvalidResult("model, answers, and non-negative usage are required");
         }
-        if (result.Answers.Count != questions.Count ||
-            result.Answers.Keys.Any(key => !questions.ContainsKey(key)))
+        if (result.Answers.Count != questions.Count)
         {
             throw InvalidResult("answer keys must exactly match question keys");
         }
@@ -172,8 +171,9 @@ public sealed class DecisionSession : NonGenerativeSession
         {
             var questionId = entry.Key;
             var answer = entry.Value;
-            var question = questions[questionId];
-            if (answer == null || answer.Type != question.Type)
+            if (!questions.TryGetValue(questionId, out var question) ||
+                answer == null ||
+                answer.Type != question.Type)
             {
                 throw InvalidResult($"answer '{questionId}' type does not match its question");
             }
@@ -228,7 +228,7 @@ public sealed class DecisionSession : NonGenerativeSession
     private static FoundryLocalException InvalidResult(string detail) =>
         new($"Decision session returned an invalid result: {detail}.");
 
-    private sealed record QuestionSnapshot(
+    private readonly record struct QuestionSnapshot(
         string Type,
         HashSet<string>? ChoiceKeys,
         int? MaximumScore);

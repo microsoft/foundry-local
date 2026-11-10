@@ -61,12 +61,15 @@ public sealed class RankingSession : NonGenerativeSession
         {
             throw new ArgumentException("Ranking answers must be a non-empty collection.", nameof(request));
         }
-        if (request.Answers.Any(answer =>
-                answer == null || answer.Length == 0 || HasEmbeddedNul(answer)))
+        for (var index = 0; index < request.Answers.Count; index++)
         {
-            throw new ArgumentException(
-                "Ranking answers must contain only non-empty strings without embedded NUL characters.",
-                nameof(request));
+            var answer = request.Answers[index];
+            if (answer == null || answer.Length == 0 || HasEmbeddedNul(answer))
+            {
+                throw new ArgumentException(
+                    "Ranking answers must contain only non-empty strings without embedded NUL characters.",
+                    nameof(request));
+            }
         }
         if (request.Model != null && string.IsNullOrWhiteSpace(request.Model))
         {
@@ -90,14 +93,14 @@ public sealed class RankingSession : NonGenerativeSession
             throw InvalidResult("model and one ranked item per submitted answer are required");
         }
 
-        var ranks = new HashSet<int>();
-        var indexes = new HashSet<int>();
+        var ranks = new bool[answers.Length];
+        var indexes = new bool[answers.Length];
         foreach (var item in result.Ranked)
         {
             if (item == null ||
-                item.Rank < 1 || item.Rank > answers.Length || !ranks.Add(item.Rank) ||
-                item.Index < 0 || item.Index >= answers.Length || !indexes.Add(item.Index) ||
-                string.IsNullOrEmpty(item.Id) || item.Id != item.Index.ToString(System.Globalization.CultureInfo.InvariantCulture) ||
+                item.Rank < 1 || item.Rank > answers.Length || ranks[item.Rank - 1] ||
+                item.Index < 0 || item.Index >= answers.Length || indexes[item.Index] ||
+                !MatchesIndex(item.Id, item.Index) ||
                 item.Candidate != answers[item.Index] ||
                 !NonGenerativeValidation.IsFinite(item.Probability) ||
                 item.Probability < 0 || item.Probability > 1)
@@ -106,7 +109,35 @@ public sealed class RankingSession : NonGenerativeSession
                     "ranks and indexes must be unique and in range, candidates must match their indexes, " +
                     "IDs must equal indexes, and probabilities must be finite values in [0, 1]");
             }
+            ranks[item.Rank - 1] = true;
+            indexes[item.Index] = true;
         }
+    }
+
+    private static bool MatchesIndex(string id, int index)
+    {
+        var value = index;
+        var digits = 1;
+        while (value >= 10)
+        {
+            value /= 10;
+            digits++;
+        }
+        if (id == null || id.Length != digits)
+        {
+            return false;
+        }
+
+        value = index;
+        for (var position = digits - 1; position >= 0; position--)
+        {
+            if (id[position] != '0' + value % 10)
+            {
+                return false;
+            }
+            value /= 10;
+        }
+        return true;
     }
 
     private static bool HasEmbeddedNul(string value)
@@ -118,7 +149,6 @@ public sealed class RankingSession : NonGenerativeSession
                 return true;
             }
         }
-
         return false;
     }
 
