@@ -14,6 +14,7 @@ is explicitly scoped to Foundry HTTP and coding-agent behavior.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import ipaddress
 import json
@@ -318,7 +319,30 @@ def self_test() -> int:
         helper_output = (root / "timeout.log").read_text().splitlines()
         child_pid = int(helper_output[0])
         child_stopped = "child_reaped" in helper_output[1:]
-        if os.name != "nt":
+        if os.name == "nt":
+            from ctypes import wintypes
+
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel.OpenProcess.restype = wintypes.HANDLE
+            kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+            kernel.WaitForSingleObject.restype = wintypes.DWORD
+            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            handle = kernel.OpenProcess(0x00100000, False, child_pid)  # SYNCHRONIZE
+            if handle:
+                try:
+                    wait_result = kernel.WaitForSingleObject(handle, 5000)
+                    if wait_result == 0xFFFFFFFF:
+                        raise ctypes.WinError(ctypes.get_last_error())
+                    child_stopped = wait_result == 0
+                finally:
+                    kernel.CloseHandle(handle)
+            else:
+                error = ctypes.get_last_error()
+                if error != 87:  # ERROR_INVALID_PARAMETER: the process no longer exists.
+                    raise ctypes.WinError(error)
+                child_stopped = True
+        else:
             try:
                 os.kill(child_pid, 0)
                 child_stopped = False
