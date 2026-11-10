@@ -348,6 +348,10 @@ function generateRestoreProjectXml(artifacts) {
   return `<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
+    <!-- Only package files are needed. Without these, newer SDKs restore the latest net8.0 targeting packs,
+         which can be absent from mirrored feeds right after a .NET servicing release. -->
+    <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
+    <DisableTransitiveFrameworkReferenceDownloads>true</DisableTransitiveFrameworkReferenceDownloads>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <IsPackable>false</IsPackable>
   </PropertyGroup>

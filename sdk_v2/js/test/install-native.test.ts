@@ -322,6 +322,14 @@ describe("generateRestoreProjectXml", () => {
     const xml = generateRestoreProjectXml([{ name: "A", version: "1.0.0", expected: "a.dll" }]);
     expect(xml).toContain("<TargetFramework>net8.0</TargetFramework>");
   });
+
+  it("does not restore framework targeting packs", () => {
+    const xml = generateRestoreProjectXml([{ name: "A", version: "1.0.0", expected: "a.dll" }]);
+    expect(xml).toContain("<DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>");
+    expect(xml).toContain(
+      "<DisableTransitiveFrameworkReferenceDownloads>true</DisableTransitiveFrameworkReferenceDownloads>",
+    );
+  });
 });
 
 describe("buildDotnetRestoreArgs", () => {
