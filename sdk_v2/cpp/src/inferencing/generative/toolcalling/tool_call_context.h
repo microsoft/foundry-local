@@ -149,8 +149,8 @@ struct ToolCallContext {
     return names;
   }
 
-  GeneratedCallEncoding CallEncoding(const std::string& name, bool raw_envelope) const {
-    if (raw_envelope) return GeneratedCallEncoding::kRawEnvelope;
+  GeneratedCallEncoding CallEncoding(const std::string& name, bool uses_raw_envelope) const {
+    if (uses_raw_envelope) return GeneratedCallEncoding::kRawEnvelope;
     if (!harmony) return GeneratedCallEncoding::kStructured;
     return UsesNativeRawBody(name) ? GeneratedCallEncoding::kNativeRaw : GeneratedCallEncoding::kNativeJson;
   }

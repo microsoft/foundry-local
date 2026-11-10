@@ -92,13 +92,13 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
 
     prepared.prompt_token_count = static_cast<int64_t>(prepared.token_ids.size());
     if (tool_ctx.harmony) {
-      const auto& prefix = tool_ctx.harmony->assistant_prefix_tokens;
-      if (!rendered.ends_with(HarmonyProtocol::kAssistantPrefix) || prepared.token_ids.size() < prefix.size() ||
-          !std::equal(prefix.rbegin(), prefix.rend(), prepared.token_ids.rbegin())) {
+      const auto& assistant_prefix = tool_ctx.harmony->assistant_prefix_tokens;
+      if (!rendered.ends_with(HarmonyProtocol::kAssistantPrefix) || prepared.token_ids.size() < assistant_prefix.size() ||
+          !std::equal(assistant_prefix.rbegin(), assistant_prefix.rend(), prepared.token_ids.rbegin())) {
         FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Harmony template produced an unqualified generation continuation");
       }
       prepared.harmony_continuation = HarmonyContinuation{
-          "assistant", prefix.size(), std::char_traits<char>::length(HarmonyProtocol::kAssistantPrefix)};
+          "assistant", assistant_prefix.size(), std::char_traits<char>::length(HarmonyProtocol::kAssistantPrefix)};
     }
     return prepared;
   }
