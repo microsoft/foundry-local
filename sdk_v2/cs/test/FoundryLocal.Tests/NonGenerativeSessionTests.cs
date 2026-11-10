@@ -390,6 +390,12 @@ internal sealed class NonGenerativeSessionTests
           {"rank":2,"id":"1","index":1,"candidate":"b","prob":0.5}
         ]}
         """)]
+    [Arguments("""
+        {"model":"clm:1","ranked":[
+          {"rank":1,"id":"0","index":0,"candidate":"a"},
+          {"rank":2,"id":"1","index":1,"candidate":"b","prob":0.5}
+        ]}
+        """)]
     public async Task RankingSession_RejectsInvalidRanksAndNumbers(string response)
     {
         using var session = new RankingSession((_, _) => Task.FromResult(response));
