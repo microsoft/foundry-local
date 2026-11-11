@@ -17,6 +17,8 @@ class NonGenerativeAdmissionCoordinator {
   NonGenerativeAdmissionCoordinator(uint64_t memory_budget_bytes,
                                     size_t readiness_concurrency);
 
+  bool HasReservations();
+
  private:
   void Reserve(uint64_t bytes, const std::string& model_id);
   void Release(uint64_t bytes) noexcept;
@@ -25,6 +27,7 @@ class NonGenerativeAdmissionCoordinator {
 
   uint64_t memory_budget_bytes_;
   uint64_t reserved_bytes_{};
+  size_t reservation_count_{};
   size_t readiness_concurrency_;
   std::mutex mutex_;
   std::condition_variable readiness_condition_;

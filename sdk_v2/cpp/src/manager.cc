@@ -426,7 +426,7 @@ Manager::Manager(const Configuration& config) : config_(config) {
                                         download_concurrency, *logger_, *telemetry_, disable_region_fallback);
   model_load_manager_ = std::make_unique<ModelLoadManager>(
       *ep_detector_, *logger_, non_generative_memory_budget_bytes,
-      static_cast<size_t>(non_generative_readiness_concurrency));
+      static_cast<size_t>(non_generative_readiness_concurrency), config_);
   session_manager_ = std::make_unique<SessionManager>(*logger_);
 
   public_catalog_ = std::make_unique<AzureModelCatalog>(

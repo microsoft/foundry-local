@@ -73,4 +73,9 @@ std::shared_ptr<void> LoadSharedLibraryWithPathFallback(const std::filesystem::p
   return LoadSharedLibraryImpl(path, logger, true);
 }
 
+void* GetLoadedLibrarySymbol(const char* library_name, const char* symbol_name) {
+  HMODULE module = ::GetModuleHandleA(library_name);
+  return module == nullptr ? nullptr : reinterpret_cast<void*>(::GetProcAddress(module, symbol_name));
+}
+
 }  // namespace fl::platform

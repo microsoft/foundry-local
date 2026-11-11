@@ -295,6 +295,27 @@ else()
 endif()
 
 include(GoogleTest)
+
+if(NOT ANDROID AND NOT IOS)
+    # Isolate allocation-failure injection from the general unit-test executable.
+    add_executable(device-resource-release-tests test_main.cc internal_api/device_resource_release_test.cc)
+    target_include_directories(device-resource-release-tests PRIVATE ../src .)
+    target_compile_options(device-resource-release-tests PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+    target_link_libraries(device-resource-release-tests PRIVATE foundry_local_static GTest::gtest)
+    add_dependencies(device-resource-release-tests foundry_local)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_options(device-resource-release-tests PRIVATE
+            "LINKER:--disable-new-dtags" "LINKER:--exclude-libs,ALL")
+    endif()
+    target_compile_definitions(device-resource-release-tests PRIVATE
+        FOUNDRY_LOCAL_TEST_DATA_DIR="$<TARGET_FILE_DIR:device-resource-release-tests>/testdata")
+    add_custom_command(TARGET device-resource-release-tests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/testdata/tiny-paged-attention"
+            "$<TARGET_FILE_DIR:device-resource-release-tests>/testdata/tiny-paged-attention")
+    gtest_discover_tests(device-resource-release-tests DISCOVERY_MODE PRE_TEST DISCOVERY_TIMEOUT 60 PROPERTIES RUN_SERIAL TRUE)
+endif()
+
 if(WIN32)
     # Real DLL imports exercise Windows' dependency search and handle lifetime without CUDA or a GPU.
     add_library(loader-test-dependency SHARED windows_loader/dependency.cc)

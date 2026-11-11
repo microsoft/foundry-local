@@ -292,6 +292,7 @@ GenAIModelInstance::GenAIModelInstance(std::string model_id,
   // Create OGA Model
   try {
     oga_model_ = OgaModel::Create(*oga_config);
+    device_type_ = oga_model_->GetDeviceType().p_;
     const OgaString model_type = oga_model_->GetType();
     const auto* model_type_text = static_cast<const char*>(model_type);
     model_type_ = model_type_text == nullptr ? std::string{} : std::string{model_type_text};
