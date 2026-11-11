@@ -243,6 +243,7 @@ void CheckReferences(Json& document, const std::string& context) {
 
 std::string JsonGrammar() {
   // Whitespace is explicit at structural boundaries, never ignored inside string, escape or number terminals.
+  // Bound formatting runs so greedy decoding cannot spend the whole output budget on whitespace.
   // Escaped surrogates must be paired; all other BMP escapes and raw Unicode scalar values are accepted.
   return R"lark(
 tool_json_value: tool_json_object | tool_json_array | TOOL_JSON_STRING | TOOL_JSON_NUMBER | "true" | "false" | "null"
@@ -252,7 +253,7 @@ tool_json_array: "[" tool_json_ws (tool_json_value (tool_json_comma tool_json_va
 tool_json_comma: tool_json_ws "," tool_json_ws
 tool_json_colon: tool_json_ws ":" tool_json_ws
 tool_json_ws: TOOL_JSON_WS?
-TOOL_JSON_WS: /[ \t\r\n]+/
+TOOL_JSON_WS: /[ \t\r\n]{1,16}/
 TOOL_JSON_STRING: /)lark"
          R"regex("(?:[^"\\\x00-\x1f]|\\(?:["\\\/bfnrt]|u(?:)regex"
          R"regex([0-9a-cA-Ce-fE-F][0-9a-fA-F]{3}|[dD][0-7][0-9a-fA-F]{2}|)regex"
