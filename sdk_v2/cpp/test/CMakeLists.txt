@@ -313,7 +313,7 @@ if(NOT ANDROID AND NOT IOS)
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_CURRENT_SOURCE_DIR}/testdata/tiny-paged-attention"
             "$<TARGET_FILE_DIR:device-resource-release-tests>/testdata/tiny-paged-attention")
-    gtest_discover_tests(device-resource-release-tests DISCOVERY_MODE PRE_TEST DISCOVERY_TIMEOUT 60)
+    gtest_discover_tests(device-resource-release-tests DISCOVERY_MODE PRE_TEST DISCOVERY_TIMEOUT 60 PROPERTIES RUN_SERIAL TRUE)
 endif()
 
 if(WIN32)
