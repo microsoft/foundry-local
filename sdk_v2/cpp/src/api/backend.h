@@ -4,6 +4,7 @@
 
 #include <foundry_local/foundry_local_c.h>
 
+#include "ep_detection/execution_target.h"
 #include "inferencing/session/streaming_callback.h"
 
 #include <functional>
@@ -44,6 +45,11 @@ struct InputOutputInfo {
 
 using EpProgressCallback = std::function<bool(const std::string&, float)>;
 using DeviceProviders = std::map<std::string, std::vector<std::string>>;
+
+struct RuntimeDeviceSnapshot {
+  DeviceProviders devices;
+  std::vector<ExecutionTarget> execution_targets;
+};
 
 class BackendObject {
  public:
@@ -136,7 +142,9 @@ class ManagerBackend : public BackendObject {
   virtual void StopWebService() = 0;
   virtual std::span<const flEpInfo> GetDiscoverableEps() const = 0;
   virtual DeviceProviders GetRuntimeDevices() const = 0;
-  virtual void SetCatalogRuntimeDevices(DeviceProviders devices) = 0;
+  virtual RuntimeDeviceSnapshot GetRuntimeDeviceSnapshot() const { return {GetRuntimeDevices(), {}}; }
+  virtual void SetCatalogRuntimeDevices(DeviceProviders devices,
+                                       std::vector<ExecutionTarget> execution_targets = {}) = 0;
   virtual EpDownloadResult DownloadAndRegisterEps(const std::vector<std::string>* names,
                                                   const EpProgressCallback& progress) = 0;
   virtual bool IsEpDownloadInProgress() const = 0;

@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
+#include "api/backend.h"
 #include "exception.h"
 #include "hosting/sdk_values.h"
 #include "inferencing/generative/chat/chat_generator.h"
@@ -17,6 +18,43 @@ using nlohmann::json;
 using namespace fl::hosting;
 
 json ThroughCbor(const json& value) { return json::from_cbor(json::to_cbor(value)); }
+
+TEST(SdkValuesTest, RuntimeDeviceSnapshotPreservesHostTargetIdentityAndOptionalCapacity) {
+  const fl::api::RuntimeDeviceSnapshot snapshot{
+      {{"GPU", {"CUDAExecutionProvider"}}},
+      {{"CUDAExecutionProvider", 7, "GPU", {uint64_t{24} << 30}, {{"device_id", "1"}}},
+       {"CUDAExecutionProvider", 2, "GPU", {}},
+       {"CPUExecutionProvider", 0, "CPU", {0}}}};
+  const auto decoded = DecodeRuntimeDeviceSnapshot(ThroughCbor(EncodeRuntimeDeviceSnapshot(snapshot)));
+  EXPECT_EQ(decoded.devices, snapshot.devices);
+  EXPECT_EQ(decoded.execution_targets, snapshot.execution_targets);
+}
+
+TEST(SdkValuesTest, RuntimeDeviceSnapshotFromNamesOnlyHostHasUnknownCapacity) {
+  const fl::api::DeviceProviders names{{"GPU", {"CUDAExecutionProvider"}}};
+  const auto legacy = DecodeRuntimeDeviceSnapshot(ThroughCbor(json(names)));
+  EXPECT_EQ(legacy.devices, names);
+  EXPECT_TRUE(legacy.execution_targets.empty());
+  const auto missing = DecodeRuntimeDeviceSnapshot({{"devices", names}});
+  EXPECT_EQ(missing.devices, names);
+  EXPECT_TRUE(missing.execution_targets.empty());
+}
+
+TEST(SdkValuesTest, RuntimeDeviceSnapshotRejectsLossyIdentityAndCapacityIntegers) {
+  const fl::api::RuntimeDeviceSnapshot snapshot{
+      {{"GPU", {"CUDAExecutionProvider"}}}, {{"CUDAExecutionProvider", 0, "GPU", {8}}}};
+  for (const json& invalid : {json(-1), json(uint64_t{1} << 32), json(true)}) {
+    auto encoded = EncodeRuntimeDeviceSnapshot(snapshot);
+    encoded["execution_targets"][0]["device_id"] = invalid;
+    EXPECT_THROW(DecodeRuntimeDeviceSnapshot(encoded), fl::Exception);
+  }
+
+  for (const json& invalid : {json(-1), json(1.5), json(true)}) {
+    auto encoded = EncodeRuntimeDeviceSnapshot(snapshot);
+    encoded["execution_targets"][0]["capacity"]["total_vram_bytes"] = invalid;
+    EXPECT_THROW(DecodeRuntimeDeviceSnapshot(encoded), fl::Exception);
+  }
+}
 
 TEST(SdkValuesTest, CapturesReplayAndPreparedToolContextWithoutChangingPayloadText) {
   fl::Request request;

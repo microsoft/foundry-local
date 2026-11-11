@@ -98,7 +98,7 @@ steps:
       --config ${{ parameters.buildConfig }}
       --cmake_generator "Visual Studio 17 2022"
       --winml_sdk_version ${{ parameters.winmlVersion }}
-      --cmake_extra_defines $(cmakeFetchDefines)
+      --cmake_extra_defines $(cmakeFetchDefines) FOUNDRY_LOCAL_REQUIRE_DEVICE_MEMORY_CAPACITY=ON
     displayName: 'Configure and build (x64)'
     workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
     env:
@@ -114,7 +114,7 @@ steps:
       --config ${{ parameters.buildConfig }}
       --cmake_generator "Visual Studio 17 2022"
       --winml_sdk_version ${{ parameters.winmlVersion }}
-      --cmake_extra_defines $(cmakeFetchDefines)
+      --cmake_extra_defines $(cmakeFetchDefines) FOUNDRY_LOCAL_REQUIRE_DEVICE_MEMORY_CAPACITY=ON
     displayName: 'Configure and build (arm64)'
     workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
     env:

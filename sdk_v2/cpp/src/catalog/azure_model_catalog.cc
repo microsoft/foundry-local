@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "catalog/azure_model_catalog.h"
+#include "catalog/capacity_compatibility.h"
 #include "catalog/azure_catalog_client.h"
 #include "catalog/catalog_cache.h"
 #include "catalog/catalog_client.h"
@@ -160,16 +161,45 @@ class AzureModelCatalog::CatalogDevices final : public IEpDetector {
 
   std::map<std::string, std::vector<DeviceCapacity>> GetDeviceCapacities() const override {
     std::lock_guard lock(mutex_);
-    return hosted_ ? std::map<std::string, std::vector<DeviceCapacity>>{} : local_.GetDeviceCapacities();
+    if (!hosted_) {
+      return local_.GetDeviceCapacities();
+    }
+
+    std::map<std::string, std::vector<DeviceCapacity>> capacities;
+    for (const auto& target : execution_targets_) {
+      capacities[target.provider].push_back(target.capacity);
+    }
+
+    return capacities;
   }
 
-  bool Set(Devices devices) {
+  std::vector<ExecutionTarget> GetExecutionTargets() const override {
     std::lock_guard lock(mutex_);
-    if (hosted_ && *hosted_ == devices) {
+    if (!hosted_) {
+      return local_.GetExecutionTargets();
+    }
+    auto targets = execution_targets_;
+    for (const auto& [type, providers] : *hosted_) {
+      for (const auto& provider : providers) {
+        if (std::none_of(targets.begin(), targets.end(), [&](const auto& target) {
+              return ToLower(EPUtils::NormalizeRegistrationName(target.provider)) ==
+                     ToLower(EPUtils::NormalizeRegistrationName(provider));
+            })) {
+          targets.push_back({provider, 0, type, {}});
+        }
+      }
+    }
+    return targets;
+  }
+
+  bool Set(Devices devices, std::vector<ExecutionTarget> execution_targets) {
+    std::lock_guard lock(mutex_);
+    if (hosted_ && *hosted_ == devices && execution_targets_ == execution_targets) {
       return false;
     }
 
     hosted_ = std::move(devices);
+    execution_targets_ = std::move(execution_targets);
     return true;
   }
 
@@ -177,6 +207,7 @@ class AzureModelCatalog::CatalogDevices final : public IEpDetector {
   const IEpDetector& local_;
   mutable std::mutex mutex_;
   std::optional<Devices> hosted_;
+  std::vector<ExecutionTarget> execution_targets_;
 };
 
 AzureModelCatalog::AzureModelCatalog(std::vector<std::pair<std::string, std::optional<std::string>>> catalog_urls,
@@ -205,8 +236,9 @@ AzureModelCatalog::AzureModelCatalog(std::vector<std::pair<std::string, std::opt
 
 AzureModelCatalog::~AzureModelCatalog() = default;
 
-void AzureModelCatalog::SetRuntimeDevices(std::map<std::string, std::vector<std::string>> devices) {
-  if (catalog_devices_->Set(std::move(devices))) {
+void AzureModelCatalog::SetRuntimeDevices(std::map<std::string, std::vector<std::string>> devices,
+                                        std::vector<ExecutionTarget> execution_targets) {
+  if (catalog_devices_->Set(std::move(devices), std::move(execution_targets))) {
     InvalidateCache();
   }
 }
@@ -229,21 +261,14 @@ BaseModelCatalog::VariantEligibility AzureModelCatalog::MakeVariantVisibility() 
 }
 
 BaseModelCatalog::VariantEligibility AzureModelCatalog::MakeCompatibilityPredicate(bool capacity_only) const {
+  auto targets = catalog_devices_->GetExecutionTargets();
   std::unordered_set<std::string> providers;
-  for (const auto& [device, eps] : catalog_devices_->GetAvailableDevicesToEPs()) {
-    for (const auto& ep : eps) {
-      providers.insert(ToLower(EPUtils::NormalizeRegistrationName(ep)));
-    }
-  }
-
-  std::unordered_map<std::string, std::vector<DeviceCapacity>> capacities;
-  for (auto& [provider, devices] : catalog_devices_->GetDeviceCapacities()) {
-    auto& target = capacities[ToLower(EPUtils::NormalizeRegistrationName(provider))];
-    target.insert(target.end(), devices.begin(), devices.end());
+  for (const auto& target : targets) {
+    providers.insert(ToLower(EPUtils::NormalizeRegistrationName(target.provider)));
   }
 
   // Cache config requirements only within this pass so artifact edits and provider changes are seen on refresh.
-  return [this, capacity_only, providers = std::move(providers), capacities = std::move(capacities),
+  return [this, capacity_only, providers = std::move(providers), targets = std::move(targets),
           configured_providers = std::unordered_map<std::string, std::optional<std::string>>{}](
              const Model& variant) mutable {
     const auto& info = variant.Info();
@@ -254,15 +279,13 @@ BaseModelCatalog::VariantEligibility AzureModelCatalog::MakeCompatibilityPredica
     if (capacity_only && (info.device_type != DeviceType::kGPU || !requirements.minimum_vram_bytes)) {
       return true;
     }
-    const auto meets_capacity = [&](const std::string& provider) {
-      const auto found = capacities.find(provider);
-      return MeetsCapacityRequirements(info.device_type == DeviceType::kGPU, requirements,
-                                       found == capacities.end() ? std::span<const DeviceCapacity>{} : found->second);
+    const auto meets_capacity = [&](const std::string& provider, bool generic_gpu = false) {
+      return EvaluateProviderCapacity(info.device_type == DeviceType::kGPU, requirements, targets,
+                                      provider, generic_gpu).state != CompatibilityState::kDoesNotFit;
     };
     if (info.model_id.find("generic-gpu") != std::string::npos &&
         (providers.contains("cudaexecutionprovider") || providers.contains("webgpuexecutionprovider"))) {
-      return (providers.contains("cudaexecutionprovider") && meets_capacity("cudaexecutionprovider")) ||
-             (providers.contains("webgpuexecutionprovider") && meets_capacity("webgpuexecutionprovider"));
+      return meets_capacity({}, true);
     }
 
     auto provider = info.execution_provider;

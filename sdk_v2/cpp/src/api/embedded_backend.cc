@@ -256,9 +256,13 @@ class EmbeddedManager final : public ManagerBackend {
     return owner_.manager.GetEpDetector().GetAvailableDevicesToEPs();
   }
 
-  void SetCatalogRuntimeDevices(DeviceProviders devices) override {
+  RuntimeDeviceSnapshot GetRuntimeDeviceSnapshot() const override {
+    return {GetRuntimeDevices(), owner_.manager.GetEpDetector().GetExecutionTargets()};
+  }
+
+  void SetCatalogRuntimeDevices(DeviceProviders devices, std::vector<ExecutionTarget> execution_targets) override {
     static_cast<AzureModelCatalog&>(owner_.manager.GetCatalog(CatalogType::kPublic))
-        .SetRuntimeDevices(std::move(devices));
+        .SetRuntimeDevices(std::move(devices), std::move(execution_targets));
   }
 
   EpDownloadResult DownloadAndRegisterEps(const std::vector<std::string>* names,

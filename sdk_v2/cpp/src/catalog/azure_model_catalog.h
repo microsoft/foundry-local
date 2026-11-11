@@ -37,7 +37,8 @@ class AzureModelCatalog : public BaseModelCatalog {
   ~AzureModelCatalog() override;
 
   // Metadata-only override for hosted clients; never changes the native runtime's registered providers.
-  void SetRuntimeDevices(std::map<std::string, std::vector<std::string>> devices);
+  void SetRuntimeDevices(std::map<std::string, std::vector<std::string>> devices,
+                         std::vector<ExecutionTarget> execution_targets = {});
 
  protected:
   std::vector<Model> FetchModels() const override;

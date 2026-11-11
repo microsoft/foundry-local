@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #pragma once
+#include "ep_detection/execution_target.h"
 
 #include "inferencing/execution_provider.h"
 #include "inferencing/generative/genai_config.h"
@@ -115,7 +116,8 @@ class GenAIModelInstance {
                      std::string effective_model_path,
                      GenAIConfig genai_config,
                      ExecutionProvider resolved_ep,
-                     ILogger& logger);
+                     ILogger& logger,
+                     const std::optional<ExecutionTarget>& target);
 
   std::string model_id_;
   std::string model_path_;

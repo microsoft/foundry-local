@@ -26,6 +26,7 @@
 namespace fl {
 
 class Model;
+struct ModelInfo;
 class ModelLoadManager;
 class ManagedModelRuntime;
 class ModelLoadManagerTestAccess;
@@ -84,7 +85,8 @@ class ModelLoadManager {
   /// @returns LoadResult with status and non-owning pointer to the loaded model.
   LoadResult LoadModel(std::string_view model_path,
                        std::string_view model_id,
-                       ExecutionProvider ep_override = ExecutionProvider::kDefault);
+                       ExecutionProvider ep_override = ExecutionProvider::kDefault,
+                       const ModelInfo* model_info = nullptr);
 
   /// Verify that a required provider is registered and prepare its runtime
   /// dependencies before constructing an ORT GenAI model or session.

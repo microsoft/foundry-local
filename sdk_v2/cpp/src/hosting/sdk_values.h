@@ -12,6 +12,7 @@ struct RequestBudget;
 enum class CatalogType;
 namespace api {
 class ModelBackend;
+struct RuntimeDeviceSnapshot;
 }
 }  // namespace fl
 
@@ -22,6 +23,9 @@ struct ModelSelection {
   ModelInfo info;
   std::string path;
 };
+
+nlohmann::json EncodeRuntimeDeviceSnapshot(const api::RuntimeDeviceSnapshot& snapshot);
+api::RuntimeDeviceSnapshot DecodeRuntimeDeviceSnapshot(const nlohmann::json& value);
 
 nlohmann::json EncodeModelInfo(const ModelInfo& info);
 ModelInfo DecodeModelInfo(const nlohmann::json& value);

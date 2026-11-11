@@ -240,7 +240,8 @@ GenAIModelInstance::GenAIModelInstance(std::string model_id,
                                        std::string effective_model_path,
                                        GenAIConfig genai_config,
                                        ExecutionProvider resolved_ep,
-                                       ILogger& logger)
+                                       ILogger& logger,
+                                       const std::optional<ExecutionTarget>& target)
     : model_id_(std::move(model_id)),
       model_path_(std::move(effective_model_path)),
       genai_config_(std::move(genai_config)),
@@ -287,6 +288,20 @@ GenAIModelInstance::GenAIModelInstance(std::string model_id,
     logger_.Log(LogLevel::Information,
                 fmt::format("model {} using main decoder provider options from genai_config.json (provider={})",
                             model_id_, configured_provider.empty() ? "implicit CPU" : configured_provider));
+  }
+
+  if (target && !target->options.empty()) {
+    const auto provider = ep_ == ExecutionProvider::kDefault
+                              ? genai_config_.DefaultProvider()
+                              : std::string(EPUtils::EPtoGenAI(ep_));
+    try {
+      for (const auto& [key, value] : target->options) {
+        oga_config->SetProviderOption(provider.c_str(), key.c_str(), value.c_str());
+      }
+    } catch (const std::runtime_error& error) {
+      FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,
+                       "failed to configure selected execution target for model ", model_id_, ": ", error.what());
+    }
   }
 
   // Create OGA Model

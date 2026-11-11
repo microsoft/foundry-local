@@ -135,7 +135,7 @@ if(NOT EXISTS "${_ORT_HEADER_DIR}/onnxruntime_c_api.h")
 endif()
 
 option(FOUNDRY_LOCAL_REQUIRE_DEVICE_MEMORY_CAPACITY
-    "Require an ORT build supporting EP device total-memory queries" OFF)
+    "Require an ORT build supporting EP device total-memory queries" ON)
 include(CheckCXXSourceCompiles)
 include(CMakePushCheckState)
 cmake_push_check_state(RESET)
@@ -154,12 +154,14 @@ if(FOUNDRY_LOCAL_HAS_EP_DEVICE_MEMORY_CAPACITY)
 elseif(FOUNDRY_LOCAL_REQUIRE_DEVICE_MEMORY_CAPACITY)
     message(FATAL_ERROR
         "ORT lacks EpDevice_GetMemoryCapacity. Use --ort_home with a source build containing ORT PR #33447, "
-        "including matching runtime headers/libraries and CUDA provider. An API 32 version alone is insufficient.")
+        "including matching runtime headers/libraries and CUDA provider. An API 32 version alone is insufficient. "
+        "Shipping builds require this API and matching ORT 1.32.0 release runtime/provider packages. "
+        "For source compatibility only, explicitly set FOUNDRY_LOCAL_REQUIRE_DEVICE_MEMORY_CAPACITY=OFF.")
 else()
     message(WARNING
         "ORT lacks EpDevice_GetMemoryCapacity: catalog VRAM capacity filtering is inactive. "
-        "Use a post-PR #33447 ORT build via --ort_home; enable FOUNDRY_LOCAL_REQUIRE_DEVICE_MEMORY_CAPACITY "
-        "to reject this dependency at configure time.")
+        "FOUNDRY_LOCAL_REQUIRE_DEVICE_MEMORY_CAPACITY=OFF is for source compatibility only, not shipping. "
+        "Use a post-PR #33447 ORT build via --ort_home with matching runtime headers/libraries and provider.")
 endif()
 
 # Create imported target

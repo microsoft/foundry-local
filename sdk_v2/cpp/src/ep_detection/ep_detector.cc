@@ -35,6 +35,34 @@ bool IsTrtRtxEp(std::string_view name) {
 
 }  // namespace
 
+std::vector<ExecutionTarget> IEpDetector::GetExecutionTargets() const {
+  const auto capacities = GetDeviceCapacities();
+  std::map<std::string, std::string> provider_types;
+  for (const auto& [device_type, providers] : GetAvailableDevicesToEPs()) {
+    for (const auto& provider : providers) {
+      provider_types.emplace(provider, device_type);
+    }
+  }
+
+  std::vector<ExecutionTarget> targets;
+  for (const auto& [provider, device_capacities] : capacities) {
+    const auto type = provider_types.find(provider);
+    for (size_t index = 0; index < device_capacities.size(); ++index) {
+      targets.push_back({provider, static_cast<uint32_t>(index),
+                         type == provider_types.end() ? std::string{} : type->second, device_capacities[index]});
+    }
+  }
+
+  for (const auto& [provider, device_type] : provider_types) {
+    const auto found = capacities.find(provider);
+    if (found == capacities.end() || found->second.empty()) {
+      targets.push_back({provider, 0, device_type, {}});
+    }
+  }
+
+  return targets;
+}
+
 EpDetector::EpDetector(const OrtApi& ort_api, OrtEnv& ort_env,
                        std::vector<std::unique_ptr<IEpBootstrapper>> bootstrappers,
                        ILogger& logger,
@@ -131,35 +159,72 @@ std::map<std::string, std::vector<std::string>> EpDetector::GetAvailableDevicesT
 
 std::map<std::string, std::vector<DeviceCapacity>> EpDetector::GetDeviceCapacities() const {
   std::map<std::string, std::vector<DeviceCapacity>> capacities;
-#if defined(FOUNDRY_LOCAL_HAS_EP_DEVICE_MEMORY_CAPACITY)
+  for (const auto& target : GetExecutionTargets()) {
+    if (target.device_type == "GPU") {
+      capacities[target.provider].push_back(target.capacity);
+    }
+  }
+
+  return capacities;
+}
+
+std::vector<ExecutionTarget> EpDetector::GetExecutionTargets() const {
+  std::vector<ExecutionTarget> targets;
   const OrtEpDevice* const* devices = nullptr;
   size_t count = 0;
   if (auto* status = ort_api_.GetEpDevices(&ort_env_, &devices, &count)) {
-    logger_.Log(LogLevel::Warning, "Cannot enumerate devices for catalog capacity checks");
+    logger_.Log(LogLevel::Warning, "Cannot enumerate execution targets");
     ort_api_.ReleaseStatus(status);
-    return capacities;
+    return targets;
   }
+
+  targets.reserve(count);
   for (size_t index = 0; index < count; ++index) {
     const auto* device = devices[index];
-    if (ort_api_.HardwareDevice_Type(ort_api_.EpDevice_Device(device)) != OrtHardwareDeviceType_GPU) {
-      continue;
-    }
     const auto* provider = ort_api_.EpDevice_EpName(device);
     if (!provider) {
       continue;
     }
-    DeviceCapacity capacity;
+
+    const auto* hardware = ort_api_.EpDevice_Device(device);
+    ExecutionTarget target{provider, ort_api_.HardwareDevice_DeviceId(hardware), {}, {}};
+    if (const auto* options = ort_api_.EpDevice_EpOptions(device)) {
+      const char* const* keys = nullptr;
+      const char* const* values = nullptr;
+      size_t option_count = 0;
+      ort_api_.GetKeyValuePairs(options, &keys, &values, &option_count);
+      for (size_t option_index = 0; option_index < option_count; ++option_index) {
+        target.options.emplace(keys[option_index], values[option_index]);
+      }
+    }
+    const auto type = ort_api_.HardwareDevice_Type(hardware);
+    switch (type) {
+      case OrtHardwareDeviceType_CPU:
+        target.device_type = "CPU";
+        break;
+      case OrtHardwareDeviceType_GPU:
+        target.device_type = "GPU";
+        break;
+      case OrtHardwareDeviceType_NPU:
+        target.device_type = "NPU";
+        break;
+      default:
+        break;
+    }
+
+#if defined(FOUNDRY_LOCAL_HAS_EP_DEVICE_MEMORY_CAPACITY)
     uint64_t total = 0;
     if (auto* status = ort_api_.EpDevice_GetMemoryCapacity(device, OrtDeviceMemoryType_DEFAULT, &total, nullptr)) {
-      logger_.Log(LogLevel::Debug, std::string("GPU total capacity unavailable for ") + provider);
+      logger_.Log(LogLevel::Debug, std::string("Total memory capacity unavailable for ") + provider);
       ort_api_.ReleaseStatus(status);
-    } else {
-      capacity.total_vram_bytes = total;
+    } else if (type == OrtHardwareDeviceType_GPU) {
+      target.capacity.total_vram_bytes = total;
     }
-    capacities[provider].push_back(capacity);
-  }
 #endif
-  return capacities;
+    targets.push_back(std::move(target));
+  }
+
+  return targets;
 }
 
 const std::vector<EpInfo>& EpDetector::GetDiscoverableEps() const {

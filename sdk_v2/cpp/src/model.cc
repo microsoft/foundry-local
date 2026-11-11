@@ -768,7 +768,7 @@ void Model::Load(ExecutionProvider ep, std::optional<std::string_view> expected_
         *this, [&] { lifecycle_lock.unlock(); });
     return;
   }
-  auto result = model_load_manager_->LoadModel(path, Info().model_id, ep);
+  auto result = model_load_manager_->LoadModel(path, info.model_id, ep, &info);
 
   if (result.status == ModelLoadManager::LoadStatus::kModelNotFound) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model not found at path: " + path);

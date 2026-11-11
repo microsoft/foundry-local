@@ -770,6 +770,41 @@ TEST_F(AzureModelCatalogTest, GenericGpuCapacityChecksEachEligibleProvider) {
   EXPECT_NE(catalog->GetModel("model"), nullptr);
 }
 
+TEST_F(AzureModelCatalogTest, HostedCapacityUsesOnlyHostTargetsAndNamesOnlyHostRemainsUnknown) {
+  const std::string url = "https://catalog.test";
+  auto gpu = MakeModelInfo("model-cuda-gpu:1", "model-cuda-gpu", 1, "model", "Azure");
+  gpu.device_type = DeviceType::kGPU;
+  gpu.execution_provider = "CUDAExecutionProvider";
+  gpu.int_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_VRAM_BYTES_INT] = 16;
+  auto behavior = AddBehavior(url);
+  behavior->all_models = {gpu};
+  CountingCatalogEpDetector detector;
+  detector.devices["GPU"] = {"CUDAExecutionProvider"};
+  detector.capacities["CUDAExecutionProvider"] = {{64}};
+  auto catalog = CreateCatalog({{url, std::nullopt}}, false, &detector);
+  const std::map<std::string, std::vector<std::string>> names{{"GPU", {"CUDAExecutionProvider"}}};
+  const std::vector<ExecutionTarget> small{{"CUDAExecutionProvider", 7, "GPU", {8}}};
+  const std::vector<ExecutionTarget> large{{"CUDAExecutionProvider", 7, "GPU", {24}}};
+  catalog->SetRuntimeDevices(names, small);
+  EXPECT_EQ(catalog->GetModel("model"), nullptr);
+  catalog->SetRuntimeDevices(names, large);
+  EXPECT_NE(catalog->GetModel("model"), nullptr);
+  const auto fetches = behavior->fetch_all_calls;
+  catalog->SetRuntimeDevices(names, large);
+  EXPECT_NE(catalog->GetModel("model"), nullptr);
+  EXPECT_EQ(behavior->fetch_all_calls, fetches);
+
+  detector.capacities["CUDAExecutionProvider"] = {{8}};
+  catalog->SetRuntimeDevices(names, large);
+  EXPECT_NE(catalog->GetModel("model"), nullptr);
+  catalog->SetRuntimeDevices(names, small);
+  EXPECT_EQ(catalog->GetModel("model"), nullptr);
+  catalog->SetRuntimeDevices(names);
+  EXPECT_NE(catalog->GetModel("model"), nullptr);
+  EXPECT_EQ(detector.calls, 0);
+  EXPECT_EQ(detector.capacity_calls, 0);
+}
+
 TEST_F(AzureModelCatalogTest, UnavailableCachedEpRemainsVisibleWithoutOverridingCompatibleDefault) {
   const std::string url = "https://catalog.test";
   auto cuda = MakeModelInfo("model-cuda-gpu:1", "model-cuda-gpu", 1, "model", "Azure");
