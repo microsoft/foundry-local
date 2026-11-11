@@ -875,6 +875,22 @@ TEST_F(SearchOptionsTest, LargeInputExceedsByOneThrows) {
                fl::Exception);
 }
 
+TEST_F(SearchOptionsTest, ContinuationReserveExtendsMaxLengthUpToContextWindow) {
+  SearchOptions opts;
+  opts.max_output_tokens = 100;
+  auto params = MakeParams();
+  EXPECT_EQ(ApplySearchOptions(opts, 50, GetConfig(), *params, ExecutionProvider::kDefault,
+                               /*use_full_context=*/false, kDefaultChatTextMaxOutputTokens,
+                               /*continuation_reserve_tokens=*/4096),
+            50 + 100 + 4096);
+
+  auto capped_params = MakeParams();
+  EXPECT_EQ(ApplySearchOptions(opts, 32000, GetConfig(), *capped_params, ExecutionProvider::kDefault,
+                               /*use_full_context=*/false, kDefaultChatTextMaxOutputTokens,
+                               /*continuation_reserve_tokens=*/4096),
+            32768);
+}
+
 TEST_F(SearchOptionsTest, ChunkedPrefillDefaultsTo2048ForSupportedExecutionProviders) {
   SearchOptions opts;
 

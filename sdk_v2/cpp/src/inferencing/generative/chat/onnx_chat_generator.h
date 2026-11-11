@@ -93,7 +93,8 @@ class OnnxChatGenerator : public ChatGenerator {
 
   /// Rewind the generator to a previous token position.
   /// Used for error recovery — restores the KV cache to the state before the last turn.
-  bool CanRewind() const override { return true; }
+  /// Multimodal pipelines restart their prompt stage after a rewind, so media generators are rebuilt instead.
+  bool CanRewind() const override { return named_tensors_ == nullptr; }
   void RewindTo(int token_count) override;
 
   /// True when the most recent prompt fed to the generator ends inside an open reasoning block, because the model's
@@ -136,7 +137,8 @@ class OnnxChatGenerator : public ChatGenerator {
                                                            const SearchOptions& options,
                                                            GenAIModelInstance& model,
                                                            const ToolCallContext& tool_ctx = {},
-                                                           bool use_full_context = false);
+                                                           bool use_full_context = false,
+                                                           int continuation_reserve_tokens = 0);
 
   // ---- Static helpers exposed for unit testing ----
 
@@ -169,6 +171,8 @@ class OnnxChatGenerator : public ChatGenerator {
   GenAIModelInstance& model_;  // non-owning reference — model outlives generator
   int prompt_token_count_ = 0;
   int turn_start_token_count_ = 0;
+  // Resident prompt prefix reused by the current turn; zero for a freshly prefilled generator.
+  int cached_prompt_tokens_ = 0;
   int max_length_ = 0;
   int max_output_tokens_ = 0;
   // Kept so each appended turn can be re-probed for a template-opened reasoning block.

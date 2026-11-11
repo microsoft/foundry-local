@@ -228,10 +228,16 @@ For complete setup and inference examples, see the native vision samples:
 #### Current limitations
 
 Remote HTTP(S) image fetching and image `file_id` references are not supported.
-Images may appear in any user turn. Earlier images are replayed until the conversation
-history is discarded, so each later turn re-encodes the conversation and its images.
-Inline image bytes are retained in memory; local image files are referenced by path and
-read again for each turn, so keep them available and unchanged for the life of the
+Images may appear in any user turn. Earlier images stay part of the conversation until
+its history is discarded. A text-only follow-up extends the cached image prefill, so the
+images are not encoded again, as long as reasoning is off, the conversation has no audio,
+the added turns fit in the 4,096 tokens of headroom reserved when the images were last
+encoded, and the chat template reproduces earlier turns exactly. Templates that drop
+earlier reasoning blocks, such as Qwen3.5, cannot meet that last condition. Otherwise,
+and on every turn that adds an image, the whole conversation and its images are encoded
+again. Each turn still preprocesses the earlier images to rebuild the prompt, so inline
+image bytes are retained in memory, and local image files are referenced by path and
+read again for each turn: keep them available and unchanged for the life of the
 conversation. Multi-image support and input limits depend on the model and its chat
 template. On the CUDA execution provider a conversation may hold only one image: ONNX
 Runtime's CUDA vision path cannot encode more, so a second image is rejected with an

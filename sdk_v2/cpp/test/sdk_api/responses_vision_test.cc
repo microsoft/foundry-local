@@ -22,6 +22,7 @@
 #include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <regex>
 #include <sstream>
 #include <string>
@@ -137,6 +138,8 @@ class ResponsesVisionIntegrationTest : public WebServiceFixture {
   static const std::string& vision_model_id() {
     return SharedTestEnv::Get().vision_model_id();
   }
+
+  static foundry_local::IModel* vision_model() { return SharedTestEnv::Get().vision_model(); }
 
   static std::string VisionEndpoint(const char* path) {
     return SharedTestEnv::Get().vision_endpoint(path);
@@ -627,6 +630,63 @@ TEST_F(ResponsesVisionIntegrationTest, ImagesAndTextContinueWarmAndColdConversat
   ASSERT_EQ(text_result->status, 200) << text_result->body;
   const auto text = json::parse(text_result->body).value("output_text", "");
   EXPECT_TRUE(std::regex_search(fl::test::ToLower(text), std::regex("\\bred\\b"))) << text;
+}
+
+TEST_F(ResponsesVisionIntegrationTest, TextFollowUpsExtendTheWarmImagePrefill) {
+  auto client = MakeClient(600);
+  const json image_turn = {
+      {"model", vision_model_id()},
+      {"input", json::array({{{"role", "user"},
+                              {"content", json::array({{{"type", "input_text"},
+                                                        {"text", "Remember this image. Reply only OK."}},
+                                                       {{"type", "input_image"},
+                                                        {"image_url", std::string("data:image/png;base64,") +
+                                                                          kRedPngBase64}}})}}})},
+      {"max_output_tokens", 32},
+      {"temperature", 0},
+      {"reasoning", {{"effort", "none"}}},
+      {"store", true},
+  };
+  const auto image_result = client.Post(VisionEndpoint("/v1/responses"), image_turn.dump(), "application/json");
+  ASSERT_TRUE(image_result);
+  ASSERT_EQ(image_result->status, 200) << image_result->body;
+  auto previous_id = json::parse(image_result->body)["id"].get<std::string>();
+
+  // Qwen3.5-style templates drop the reasoning block from earlier assistant turns, so the generated tokens are never a
+  // prefix of the re-rendered transcript and those follow-ups correctly rebuild instead of extending the cache.
+  std::ifstream template_file(std::filesystem::path(std::string(vision_model()->GetPath())) / "chat_template.jinja");
+  const std::string chat_template((std::istreambuf_iterator<char>(template_file)), std::istreambuf_iterator<char>());
+  const bool expect_reuse = chat_template.find("<think>") == std::string::npos;
+
+  // Keep the request under 1 KiB: httplib adds Expect: 100-continue above that, and oatpp 1.3.0 answers it with an
+  // unterminated interim response that deadlocks the client.
+  std::string filler;
+  for (int i = 0; i < 12; ++i) {
+    filler += "The quick brown fox jumps over the lazy dog. ";
+  }
+  for (const auto& question : {std::string("What color was the image? Answer with one word."),
+                               filler + "Ignore the text above. What color was the image? Answer with one word."}) {
+    SCOPED_TRACE(question.size());
+    const json follow_up = {{"model", vision_model_id()},
+                            {"previous_response_id", previous_id},
+                            {"input", question},
+                            {"max_output_tokens", 32},
+                            {"temperature", 0},
+                            {"reasoning", {{"effort", "none"}}},
+                            {"store", true}};
+    ASSERT_LT(follow_up.dump().size(), 1024U);
+    const auto result = client.Post(VisionEndpoint("/v1/responses"), follow_up.dump(), "application/json");
+    ASSERT_TRUE(result);
+    ASSERT_EQ(result->status, 200) << result->body;
+    const auto response = json::parse(result->body);
+    const auto text = response.value("output_text", "");
+    EXPECT_TRUE(std::regex_search(fl::test::ToLower(text), std::regex("\\bred\\b"))) << text;
+    const auto& usage = response.at("usage");
+    if (expect_reuse) {
+      EXPECT_GT(usage["input_tokens_details"]["cached_tokens"].get<int>(), 0) << usage.dump();
+    }
+    previous_id = response["id"].get<std::string>();
+  }
 }
 
 TEST_F(ResponsesVisionIntegrationTest, LocalImageReplayRereadsTheFileForStreamingAndNonStreaming) {

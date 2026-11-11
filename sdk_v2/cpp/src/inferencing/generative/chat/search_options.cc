@@ -281,7 +281,8 @@ int ApplySearchOptions(const SearchOptions& options,
                        OgaGeneratorParams& gen_params,
                        ExecutionProvider ep,
                        bool use_full_context,
-                       int default_max_output_tokens) {
+                       int default_max_output_tokens,
+                       int continuation_reserve_tokens) {
   ValidatePenalties(options);
 
   const int model_max_length = GetModelMaxContextLength(config);
@@ -298,7 +299,11 @@ int ApplySearchOptions(const SearchOptions& options,
   // max_length in ORT GenAI is the total (input + output) budget.
   // For continuous decoding (cached generators), use the model's full context window
   // so the sequence can grow across turns.
-  const int effective_max_length = use_full_context ? model_max_length : total_required;
+  const int effective_max_length =
+      use_full_context
+          ? model_max_length
+          : static_cast<int>(std::min<int64_t>(
+                model_max_length, static_cast<int64_t>(total_required) + std::max(continuation_reserve_tokens, 0)));
   gen_params.SetSearchOption("max_length", static_cast<double>(effective_max_length));
 
   // One shared normalization for every backend: the same combination is forwarded to a classic generator, to an

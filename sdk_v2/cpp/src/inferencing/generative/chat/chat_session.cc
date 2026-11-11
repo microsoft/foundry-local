@@ -1627,8 +1627,12 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   auto& ingest = prepared->ingest;
   auto inputs = std::move(ingest.messages);
   const bool media_turn = prepared->prompt.HasMedia();
+  const bool turn_has_audio = prepared->prompt.has_audio;
+  // A new image or audio clip needs the multimodal prompt stage, which only runs when a generator is created.
+  const bool turn_adds_media = CarriesMedia(inputs);
+  // Media prompts always run on a classic Generator, whose request options are fixed at creation.
+  const auto backend_kind = media_turn ? ChatBackendKind::kGenerator : prepared->backend_kind;
   const auto& effective_options = prepared->options;
-  const auto backend_kind = prepared->backend_kind;
   const auto& turn_system_prompt = prepared->system_prompt;
   auto& prepared_messages = *prepared->messages;
   ToolCallRecoveryCheckpoint recovery_checkpoint(prepared->prompt, turn_tool_ctx.tool_call_start_token_id,
@@ -1652,7 +1656,8 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       !cached_tool_ctx_.HasSameTools(turn_tool_ctx);
 
   if (cached_generator_ &&
-      (media_turn || turn_system_prompt != system_prompt_ || retained_tool_context_changed ||
+      (turn_adds_media || turn_has_audio || turn_system_prompt != system_prompt_ ||
+       retained_tool_context_changed ||
        (backend_kind == ChatBackendKind::kGenerator && (inputs.empty() || CarriesToolActivity(inputs))))) {
     InvalidateCachedGenerator();
   }
@@ -1693,7 +1698,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   if (cached_generator_) {
     pre_turn_token_count = cached_generator_->TokenCount();
     try {
-      if (text_generator_factory_) {
+      if (text_generator_factory_ && !media_turn) {
         cached_generator_->AppendMessages(inputs, prepared_messages, Model(), turn_tool_ctx, effective_options);
       } else {
         cached_generator_->AppendPreparedPrompt(inputs, prepared->prompt, Model(), turn_tool_ctx, effective_options);
@@ -1714,8 +1719,12 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
     std::unique_ptr<ChatGenerator> generator;
     if (media_turn) {
+      // Bounded headroom lets text follow-ups extend the image prefill without preallocating the whole context window.
+      // Reasoning generators are discarded after each turn, so they get no headroom.
+      const int continuation_reserve =
+          tool_ctx.supports_reasoning || turn_has_audio ? 0 : kMediaContinuationReserveTokens;
       generator = OnnxChatGenerator::CreatePrepared(std::move(prepared->prompt), effective_options, Model(), tool_ctx,
-                                                    /*use_full_context=*/false);
+                                                    /*use_full_context=*/false, continuation_reserve);
     } else {
       // Reasoning generators are discarded after each turn, so reserving the full context cannot help continuation.
       const bool use_full_context = backend_kind == ChatBackendKind::kEngine || !tool_ctx.supports_reasoning;
@@ -2082,7 +2091,8 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   // from plain text turns, so a rebuild restores correct behavior. This matches C#, which always applies the full
   // template per turn.
   //
-  // AppendMessages cannot extend a media-decoded sequence. Rebuild later turns from the retained media transcript.
+  // A media generator survives only for text follow-ups: a new image or audio turn rebuilds through the multimodal
+  // prompt stage, and audio histories are never extended because GenAI continuation after audio is unverified.
   //
   // A turn stopped at a tool call because the model kept talking afterwards is truncated mid-sequence with no turn
   // terminator, so its KV cache is no basis for the next turn either.
@@ -2100,7 +2110,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
                          {pre_turn_token_count, total_tokens});
   turn_committed = true;
 
-  if (discard_after_success || media_turn || generated_tool_calls || turn_guard.TurnEnded()) {
+  if (discard_after_success || turn_has_audio || generated_tool_calls || turn_guard.TurnEnded()) {
     InvalidateCachedGenerator();
   }
 }
