@@ -590,20 +590,18 @@ ICatalog& Manager::GetCatalog(CatalogType type) {
     case CatalogType::kLocal:
       return *local_catalog_;
     case CatalogType::kAzureRegistry:
-      return GetAzureRegistryCatalog();
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+               "Azure Registry catalog requires a registry name; call GetAzureRegistryCatalog");
     default:
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
   }
 }
 
 ICatalog& Manager::GetAzureRegistryCatalog(const std::string& registry_name) {
-  auto configured = config_.additional_options.find("AzureRegistryModelRegistry");
-  if (configured == config_.additional_options.end()) {
-    configured = config_.additional_options.find("AzureMLModelRegistry");
+  if (registry_name.empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Azure Registry catalog requires a registry name");
   }
-  auto registry = AzureMlRegistryClient::ValidateRegistryName(registry_name.empty()
-      ? (configured == config_.additional_options.end() ? AzureRegistryCatalog::kDefaultRegistry : configured->second)
-      : registry_name);
+  auto registry = AzureMlRegistryClient::ValidateRegistryName(registry_name);
   std::lock_guard lock(azure_registry_catalogs_mutex_);
   auto& catalog = azure_registry_catalogs_[registry];
   if (!catalog) {

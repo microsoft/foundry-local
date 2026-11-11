@@ -220,7 +220,8 @@ class EmbeddedManager final : public ManagerBackend {
       case CatalogType::kLocal:
         return local_catalog_;
       case CatalogType::kAzureRegistry:
-        return GetAzureRegistryCatalog("");
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                 "Azure Registry catalog requires a registry name; call GetAzureRegistryCatalog");
     }
 
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");

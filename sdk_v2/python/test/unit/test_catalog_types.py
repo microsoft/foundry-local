@@ -78,15 +78,22 @@ def test_azure_registry_catalog_routes_registry_and_reuses_case_insensitive_wrap
     api.root.Manager_GetCatalogByType.assert_not_called()
 
 
-def test_azure_registry_catalog_keeps_registries_and_native_default_separate(mock_catalog_manager):
+def test_azure_registry_catalog_requires_registry_name(mock_catalog_manager):
+    manager, api = mock_catalog_manager
+    with pytest.raises(ValueError, match="registry_name is required"):
+        manager.get_catalog(CatalogType.AZURE_REGISTRY)
+    with pytest.raises(ValueError, match="registry_name must not be empty"):
+        manager.get_catalog(CatalogType.AZURE_REGISTRY, registry_name="")
+    api.root.Manager_GetAzureRegistryCatalog.assert_not_called()
+
+
+def test_azure_registry_catalog_keeps_registries_separate(mock_catalog_manager):
     manager, api = mock_catalog_manager
     first = manager.get_catalog(CatalogType.AZURE_REGISTRY, registry_name="registry-one")
     second = manager.get_catalog(CatalogType.AZURE_REGISTRY, registry_name="registry-two")
-    default = manager.get_catalog(CatalogType.AZURE_REGISTRY)
     assert first is not second
-    assert default is not first and default is not second
     assert [call.args[1] for call in api.root.Manager_GetAzureRegistryCatalog.call_args_list] == [
-        b"registry-one", b"registry-two", ffi.NULL,
+        b"registry-one", b"registry-two",
     ]
 
 
@@ -142,7 +149,7 @@ def test_missing_native_azure_registry_catalog_is_not_cached(mock_catalog_manage
     manager, api = mock_catalog_manager
     api.root.Manager_GetAzureRegistryCatalog.side_effect = None
     with pytest.raises(FoundryLocalException, match="no azure_registry catalog"):
-        manager.get_catalog(CatalogType.AZURE_REGISTRY)
+        manager.get_catalog(CatalogType.AZURE_REGISTRY, registry_name="mock-registry")
     assert not manager._catalogs
 
 

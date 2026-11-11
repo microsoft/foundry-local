@@ -17,7 +17,7 @@ from pathlib import Path
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--registry", default="prathikrao-pmc-test")
+    parser.add_argument("--registry", required=True)
     selection = parser.add_mutually_exclusive_group(required=True)
     selection.add_argument("--model-id", help="Exact <variant-name>:<positive-version>")
     selection.add_argument("--alias", help="Resolve the best compatible variant interactively")

@@ -146,7 +146,7 @@ class FoundryLocalManager:
         Args:
             catalog_type: Catalog to return. Defaults to :attr:`CatalogType.PUBLIC`
                 for backward compatibility with ``manager.catalog``.
-            registry_name: Azure registry name for AZURE_REGISTRY only. Omit for the native default.
+            registry_name: Azure registry name (required for AZURE_REGISTRY).
                 Authentication uses ``AzureRegistryModelCredential`` in ``additional_settings``:
                 ``azure_cli`` (developer default) or ``workload_identity`` (CI).
 
@@ -156,12 +156,14 @@ class FoundryLocalManager:
         with FoundryLocalManager._lock:
             if not isinstance(catalog_type, CatalogType):
                 raise TypeError("catalog_type must be a CatalogType")
-            if registry_name is not None:
-                if catalog_type is not CatalogType.AZURE_REGISTRY:
-                    raise ValueError("registry_name is only supported for CatalogType.AZURE_REGISTRY")
+            if catalog_type is CatalogType.AZURE_REGISTRY:
+                if registry_name is None:
+                    raise ValueError("registry_name is required for CatalogType.AZURE_REGISTRY")
                 _validate_native_string(registry_name, "registry_name")
                 if not registry_name:
                     raise ValueError("registry_name must not be empty")
+            elif registry_name is not None:
+                raise ValueError("registry_name is only supported for CatalogType.AZURE_REGISTRY")
             if self._native_manager is None or self._close_started.is_set():
                 raise RuntimeError("FoundryLocalManager is closed")
 
@@ -176,7 +178,7 @@ class FoundryLocalManager:
             if catalog_type is CatalogType.AZURE_REGISTRY:
                 if api.api_version < 4:
                     raise FoundryLocalException("Azure Registry catalogs require native API version 4 or newer.")
-                name = registry_name.encode("utf-8") if registry_name is not None else ffi.NULL
+                name = registry_name.encode("utf-8")
                 api.check_status(api.root.Manager_GetAzureRegistryCatalog(self._native_manager, name, out))
             else:
                 api.check_status(api.root.Manager_GetCatalogByType(self._native_manager, int(catalog_type), out))

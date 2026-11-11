@@ -12,7 +12,6 @@ class ModelLoadManager;
 
 class AzureRegistryCatalog final : public AzureModelCatalog {
  public:
-  static constexpr const char* kDefaultRegistry = "prathikrao-pmc-test";
   static constexpr const char* kRegistryProperty = "azure_registry.name";
 
   AzureRegistryCatalog(std::string registry, const Configuration& config, const IEpDetector& ep_detector,

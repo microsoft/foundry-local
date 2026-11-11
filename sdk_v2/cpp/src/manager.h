@@ -61,7 +61,7 @@ class Manager {
   /// (web service, C API, etc.) so model state (e.g. IsLoaded) is consistent.
   ICatalog& GetCatalog();
   ICatalog& GetCatalog(CatalogType type);
-  ICatalog& GetAzureRegistryCatalog(const std::string& registry_name = "");
+  ICatalog& GetAzureRegistryCatalog(const std::string& registry_name);
   void SetCatalogRuntimeDevices(std::map<std::string, std::vector<std::string>> devices);
 
   /// Get the configuration used to create this manager.

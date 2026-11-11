@@ -514,13 +514,17 @@ class HostedManager final : public ManagerBackend {
       case CatalogType::kLocal:
         return local_catalog_;
       case CatalogType::kAzureRegistry:
-        return GetAzureRegistryCatalog("");
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                 "Azure Registry catalog requires a registry name; call GetAzureRegistryCatalog");
     }
 
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
   }
 
   CatalogBackend& GetAzureRegistryCatalog(const std::string& registry) override {
+    if (registry.empty()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Azure Registry catalog requires a registry name");
+    }
     auto& source = state_->metadata->GetAzureRegistryCatalog(registry);
     std::lock_guard lock(catalogs_mutex_);
     auto& catalog = azure_registry_catalogs_[&source];
