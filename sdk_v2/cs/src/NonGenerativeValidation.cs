@@ -22,7 +22,8 @@ internal static class NonGenerativeValidation
 
     internal static void ValidateJson(JsonElement value, string name, int depth = 0)
     {
-        if (depth > MaxStructuredJsonDepth)
+        if (depth >= MaxStructuredJsonDepth &&
+            (value.ValueKind == JsonValueKind.Object || value.ValueKind == JsonValueKind.Array))
         {
             throw new ArgumentException(
                 $"{name} cannot exceed {MaxStructuredJsonDepth} levels of JSON nesting.");
@@ -55,7 +56,7 @@ internal static class NonGenerativeValidation
                 {
                     var raw = value.GetRawText();
                     if (raw.IndexOf('.') < 0 &&
-                        raw.IndexOf('e', StringComparison.OrdinalIgnoreCase) < 0)
+                        raw.IndexOf("e", StringComparison.OrdinalIgnoreCase) < 0)
                     {
                         throw new ArgumentException(
                             $"{name} integers must fit in a signed 64-bit value.");

@@ -285,10 +285,29 @@ internal sealed class NonGenerativeSessionTests
         });
         await Assert.That(result.Ranked.Count).IsEqualTo(1);
 
+        var maximumEmptyDepth = new string('[', NonGenerativeValidation.MaxStructuredJsonDepth) +
+            new string(']', NonGenerativeValidation.MaxStructuredJsonDepth);
+        using var acceptedEmptyDepth = JsonDocument.Parse(maximumEmptyDepth);
+        result = await session.RankAsync(new RankingRequest
+        {
+            Context = acceptedEmptyDepth.RootElement,
+            Answers = ["a"],
+        });
+        await Assert.That(result.Ranked.Count).IsEqualTo(1);
+
         using var oversizedInteger = JsonDocument.Parse("""{"value":9223372036854775808}""");
         await Assert.That(() => session.RankAsync(new RankingRequest
         {
             Context = oversizedInteger.RootElement,
+            Answers = ["a"],
+        })).Throws<ArgumentException>();
+
+        var excessiveEmptyDepth = new string('[', NonGenerativeValidation.MaxStructuredJsonDepth + 1) +
+            new string(']', NonGenerativeValidation.MaxStructuredJsonDepth + 1);
+        using var rejectedEmptyDepth = JsonDocument.Parse(excessiveEmptyDepth);
+        await Assert.That(() => session.RankAsync(new RankingRequest
+        {
+            Context = rejectedEmptyDepth.RootElement,
             Answers = ["a"],
         })).Throws<ArgumentException>();
 
@@ -302,7 +321,7 @@ internal sealed class NonGenerativeSessionTests
             Answers = ["a"],
         })).Throws<ArgumentException>();
 
-        await Assert.That(calls).IsEqualTo(1);
+        await Assert.That(calls).IsEqualTo(2);
     }
 
     [Test]
