@@ -180,6 +180,7 @@ class Model {
             std::optional<std::string_view> expected_path = std::nullopt);
   void Unload();
   std::shared_ptr<void> AcquireNonGenerativeRuntime();
+  std::shared_ptr<void> AcquireLoadedNonGenerativeRuntime();
   void RemoveFromCache(std::optional<std::string_view> expected_path = std::nullopt);
 
   /// Mark this model and its variants inactive while retaining pointer validity.

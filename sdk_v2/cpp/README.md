@@ -26,6 +26,8 @@ and streaming across languages, see [Inference with the Foundry Local SDK](../IN
 - **Tool calling** -- session-scoped and request-scoped tool definitions, plus typed tool call/result items
 - **Embeddings** -- single and batch `std::vector<float>` helpers
 - **Audio** -- offline and real-time streaming audio transcription
+- **Ranking and typed decisions** -- native `RankingSession` and
+  `DecisionSession` APIs for CLM and KEV packages
 - **Execution providers** -- discover, download, and register hardware acceleration on demand
 - **Embedded web service** -- optionally expose an OpenAI-compatible local endpoint
 - **C API** -- a stable ABI for other language bindings and low-level integrations
@@ -257,10 +259,42 @@ curl -s http://127.0.0.1:5272/catalogs/local/v1/systemone \
 
 Missing fallback configuration is reported as HTTP 503. Invalid contracts,
 tasks, criteria, or token bounds are HTTP 400. This bounded integration does
-not add remote catalog submission or C/Python SDK APIs.
+not add remote catalog submission.
 Until the corresponding ORT GenAI package is published, configure this branch
 with `--ort_genai_home /path/to/onnxruntime-genai` so the native
 `OgaConfig`-based `NonGenerativeSession` API is available.
+
+Cached catalog models can also be used directly without starting the web
+service. The normal lifecycle uses the same model-owned manager as other
+tasks: load the model, create a task session, process requests, destroy the
+session, and unload the model. Session construction requires the selected
+artifact to be loaded and only acquires a lease on that model-owned runtime.
+
+```cpp
+clm_model.Load();
+{
+  foundry_local::RankingSession ranking(clm_model);
+  const auto ranked = ranking.RankJson(R"({
+    "context":{"weather":"heavy rain"},
+    "question":"Which activity is more suitable?",
+    "answers":["Have a picnic outdoors","Visit an indoor museum"]
+  })");
+}
+clm_model.Unload();
+```
+
+The session already selects the model. The JSON `model` field may be omitted;
+a matching bound model ID or alias is accepted, while a different model is
+rejected rather than routed elsewhere. Temperature precedence is JSON value,
+then request options, then session defaults. Ordinary text items containing
+JSON are accepted; responses retain the compatibility OpenAI-JSON text tag.
+These are Foundry task payloads, not standard OpenAI request schemas.
+
+The SDK methods use the same payload and response shapes as
+`POST /catalogs/local/v1/rank` and
+`POST /catalogs/local/v1/systemone`. The C ABI remains unchanged: all language
+bindings use the existing `flSession`, `flRequest`, `flResponse`, and JSON
+text-item contract.
 
 ## Build From Source
 

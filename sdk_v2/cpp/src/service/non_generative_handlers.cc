@@ -103,6 +103,8 @@ class NonGenerativeHandler final : public HttpRequestHandler {
       return ErrorResponse(Status::CODE_404, "Model not found", error.what());
     } catch (const RequestError& error) {
       return ErrorResponse(Status::CODE_400, "Invalid request", error.what());
+    } catch (const RuntimeCapacityError& error) {
+      return ErrorResponse(Status::CODE_503, "Runtime busy", error.what());
     } catch (const Exception& error) {
       const auto status = StatusForException(error);
       if (status.code >= Status::CODE_500.code) {

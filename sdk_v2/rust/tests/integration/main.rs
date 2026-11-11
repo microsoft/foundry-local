@@ -14,5 +14,6 @@ mod embedding_client_test;
 mod live_audio_test;
 mod manager_test;
 mod model_test;
+mod non_generative_test;
 mod session_test;
 mod web_service_test;

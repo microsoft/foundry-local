@@ -6,6 +6,105 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum
+from typing import Literal, NotRequired, TypeAlias, TypedDict
+
+
+JSONValue: TypeAlias = None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
+DecisionQuestionType: TypeAlias = Literal["noul", "choice", "score"]
+
+
+class _DecisionQuestionOptions(TypedDict, total=False):
+    instructions: NotRequired[JSONValue]
+
+
+class NoulDecisionQuestion(_DecisionQuestionOptions):
+    type: Literal["noul"]
+
+
+class ChoiceDecisionQuestion(_DecisionQuestionOptions):
+    type: Literal["choice"]
+    criteria: dict[str, JSONValue]
+
+
+class ScoreDecisionQuestion(_DecisionQuestionOptions):
+    type: Literal["score"]
+    criteria: list[JSONValue]
+
+
+DecisionQuestion: TypeAlias = (
+    NoulDecisionQuestion | ChoiceDecisionQuestion | ScoreDecisionQuestion
+)
+
+
+class _DecisionAnswerMetadata(TypedDict, total=False):
+    confidence: float
+    probabilities: dict[str, float]
+    legend: dict[str, str]
+
+
+class NoulDecisionAnswer(_DecisionAnswerMetadata):
+    type: Literal["noul"]
+    noul: float
+
+
+class ChoiceDecisionAnswer(_DecisionAnswerMetadata):
+    type: Literal["choice"]
+    choice: str
+
+
+class ScoreDecisionAnswer(_DecisionAnswerMetadata):
+    type: Literal["score"]
+    score: float
+
+
+DecisionAnswer: TypeAlias = (
+    NoulDecisionAnswer | ChoiceDecisionAnswer | ScoreDecisionAnswer
+)
+
+
+class DecisionUsage(TypedDict):
+    billing_units: int
+
+
+@dataclass(frozen=True)
+class RankingRequest:
+    """Bound-session ranking request derived from ``POST /v1/rank``."""
+
+    answers: list[str]
+    context: JSONValue = None
+    question: str = ""
+    temperature: float | None = None
+
+
+@dataclass(frozen=True)
+class RankedCandidate:
+    rank: int
+    id: str
+    index: int
+    candidate: str
+    prob: float
+
+
+@dataclass(frozen=True)
+class RankingResult:
+    model: str
+    ranked: list[RankedCandidate]
+
+
+@dataclass(frozen=True)
+class DecisionRequest:
+    """Bound-session decision request derived from ``POST /v1/systemone``."""
+
+    questions: dict[str, DecisionQuestion]
+    state: JSONValue = None
+    temperature: float | None = None
+
+
+@dataclass(frozen=True)
+class DecisionResult:
+    model: str
+    answers: dict[str, DecisionAnswer]
+    usage: DecisionUsage
 
 
 class FinishReason(IntEnum):

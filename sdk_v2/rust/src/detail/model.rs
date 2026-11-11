@@ -308,6 +308,9 @@ impl Model {
     }
 
     /// Unload the (selected) variant from memory.
+    ///
+    /// Drop all sessions created from this model, including session clones,
+    /// before unloading it.
     pub async fn unload(&self) -> Result<()> {
         let native = self.selected_native().clone();
         spawn_blocking(move || native.unload()).await
