@@ -29,26 +29,11 @@ leak:cf_ssl_scache_peer_init
 # --- Azure SDK: process-static CURLSH wrapper.
 leak:CURLSHWrapper
 
-# --- ORT GenAI C++ wrapper bug: OgaMultiModalProcessor::Process{Images,Audios,
-# ImagesAndAudios}(vector<const char*>, ...) overloads in ort_genai.h allocate
-# an OgaStringArray via OgaCreateStringArrayFromStrings but never call
-# OgaDestroyStringArray on it. Fixed upstream in ort.genai (D:\src\github\ort.genai);
-# remove this suppression once the SDK consumes a release containing the fix.
-# https://github.com/microsoft/onnxruntime-genai/pull/2153
-leak:OgaCreateStringArrayFromStrings
-
-# --- ORT GenAI C++ wrapper bug: OrtxTensorResultGetAt (in onnxruntime-extensions) which returns a
-# heap-allocated TensorObject that the C++ wrapper never releases via OrtxDispose. 
-# remove this suppression once the SDK consumes a release containing the fix.
-# https://github.com/microsoft/onnxruntime-genai/pull/2168
-leak:OrtxTensorResultGetAt
-
 # --- ORT GenAI bug: Generators::State::Run calls OrtSession::Run with an
 # OrtValue** output array but the State never releases the returned output
 # handles, leaking one OrtValue (24 B) plus its backing tensor buffers
 # (multi-MB per call) for every Run. Observed across audio streaming tests.
-# Remove once the SDK consumes a release containing the upstream fix.
-# This is the source of the onnxruntime allocated leaks. Can be verified by 
-# running with `--integration-only --gtest_filter=StreamingAudioFixture.\*`
-# https://github.com/microsoft/onnxruntime-genai/pull/2169
+# microsoft/onnxruntime-genai#2169 was merged, but the leak still reproduces with
+# GenAI 0.19.0. Verify with `--integration-only --gtest_filter=StreamingAudioFixture.\*`
+# before removing this suppression.
 leak:Generators::State::Run
