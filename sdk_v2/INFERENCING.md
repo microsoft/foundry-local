@@ -229,11 +229,14 @@ For complete setup and inference examples, see the native vision samples:
 
 Remote HTTP(S) image fetching and image `file_id` references are not supported.
 Images may appear in any user turn. Earlier images are replayed until the conversation
-history is discarded. Inline image bytes are retained in memory; local image files are
-referenced by path and read again for each turn, so keep them available and unchanged
-for the life of the conversation. Multi-image support and input limits depend on the
-model and its chat template. Media cannot be combined with tool definitions or a
-conversation containing tool calls or results.
+history is discarded, so each later turn re-encodes the conversation and its images.
+Inline image bytes are retained in memory; local image files are referenced by path and
+read again for each turn, so keep them available and unchanged for the life of the
+conversation. Multi-image support and input limits depend on the model and its chat
+template. On the CUDA execution provider a conversation may hold only one image: ONNX
+Runtime's CUDA vision path cannot encode more, so a second image is rejected with an
+invalid-argument error (HTTP 400); start a new conversation instead. Media cannot be
+combined with tool definitions or a conversation containing tool calls or results.
 
 ## Run a request, then stream a follow-up
 

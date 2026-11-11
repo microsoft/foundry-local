@@ -42,12 +42,15 @@ bool RequestHasMedia(const Request& request);
 struct MediaTurnContext {
   /// This turn declares tools, so the model may answer it with a call.
   bool tools_declared = false;
+  /// The model's vision path cannot encode more than one image in a prompt.
+  bool single_image_only = false;
 };
 
 /// Reject tool declarations before their schemas are admitted on a media turn.
 void ValidateMediaToolDefinitions(bool tools_declared);
 
-/// Reject media combined with declared tools or historical tool activity, which the media template cannot render.
+/// Reject media combined with declared tools or historical tool activity, which the media template cannot render,
+/// and more than one image when the context limits the prompt to a single image.
 ///
 /// @throws fl::Exception FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT — the caller sent a request this runtime cannot
 ///         serve, so it maps to HTTP 400. No-op when the request carries no media.

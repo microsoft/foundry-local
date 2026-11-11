@@ -121,6 +121,12 @@ void ValidateMediaTurn(const MediaInput& media,
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
              "image or audio input cannot be combined with tool calls or results in the conversation");
   }
+
+  if (context.single_image_only && media.images.size() > 1) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "this model's execution provider supports one image per prompt, and earlier images stay in the "
+             "conversation; start a new conversation to send another image");
+  }
 }
 
 }  // namespace fl

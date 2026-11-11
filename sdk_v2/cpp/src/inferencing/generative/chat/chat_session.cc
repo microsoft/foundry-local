@@ -1277,6 +1277,12 @@ void ResolvePreparedGenerationLimit(PreparedChatRequest& prepared, bool media_tu
   }
 }
 
+// ORT's CUDA plugin EP terminates the process when the vision encoder runs on more than one image.
+MediaTurnContext MediaTurnContextFor(const GenAIModelInstance& model) {
+  const auto provider = EPUtils::EPtoTelemetryName(model.EP(), model.GetGenAIConfig().DefaultProviderView());
+  return {.single_image_only = provider == EPUtils::EPtoRegistrationName(ExecutionProvider::kCUDA)};
+}
+
 std::unique_ptr<PreparedChatRequest> PrepareChatRequest(
     const Request& request,
     const ChatTranscript& transcript,
@@ -1390,7 +1396,7 @@ std::unique_ptr<PreparedChatRequest> PrepareChatRequest(
     auto media = CollectMediaInput(prepared->messages->Messages());
     const bool media_turn = !media.Empty();
     if (media_turn) {
-      ValidateMediaTurn(media, prepared->messages->Messages(), {});
+      ValidateMediaTurn(media, prepared->messages->Messages(), MediaTurnContextFor(model));
       prepared->prompt =
           PrepareMediaChatPrompt(media.messages, model, media.images, media.audios, prepared->tool_context);
     } else {
@@ -1441,7 +1447,7 @@ std::unique_ptr<PreparedChatRequest> PrepareChatRequest(
   auto media = CollectMediaInput(prepared->messages->Messages());
   const bool media_turn = !media.Empty();
   if (media_turn) {
-    ValidateMediaTurn(media, prepared->messages->Messages(), {});
+    ValidateMediaTurn(media, prepared->messages->Messages(), MediaTurnContextFor(model));
     prepared->prompt =
         PrepareMediaChatPrompt(media.messages, model, media.images, media.audios, prepared->tool_context);
   } else {

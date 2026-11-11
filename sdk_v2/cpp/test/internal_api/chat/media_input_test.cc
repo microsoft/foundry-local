@@ -228,6 +228,25 @@ TEST(MediaInputTest, TextTurnWithDeclaredToolsIsUnaffected) {
   EXPECT_FALSE(RejectionFor(request, {.tools_declared = true}).has_value());
 }
 
+TEST(MediaInputTest, SecondImageIsRejectedWhenLimitedToOneImage) {
+  // The earlier image stays in the conversation, so a later image makes two in the prompt.
+  Request request;
+  request.AddOwnedItem(ImageMessage("What is this?"));
+  request.AddOwnedItem(std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_ASSISTANT, "A cat."));
+  request.AddOwnedItem(ImageMessage("And this?"));
+
+  EXPECT_EQ(RejectionFor(request, {.single_image_only = true}), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  EXPECT_FALSE(RejectionFor(request, {}).has_value());
+}
+
+TEST(MediaInputTest, OneImageWithAudioIsAcceptedWhenLimitedToOneImage) {
+  Request request;
+  request.AddOwnedItem(ImageMessage("What is this?"));
+  request.AddOwnedItem(AudioMessage("Describe the sound too."));
+
+  EXPECT_FALSE(RejectionFor(request, {.single_image_only = true}).has_value());
+}
+
 // ---------------------------------------------------------------------------
 // Through the Responses converter, as a real request arrives.
 // ---------------------------------------------------------------------------
