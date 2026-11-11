@@ -10,6 +10,8 @@ using System.Text.Json;
 
 internal static class NonGenerativeValidation
 {
+    internal const int MaxStructuredJsonDepth = 60;
+
     internal static void ValidateJson(JsonElement? value, string name)
     {
         if (value is JsonElement element)
@@ -18,8 +20,14 @@ internal static class NonGenerativeValidation
         }
     }
 
-    internal static void ValidateJson(JsonElement value, string name)
+    internal static void ValidateJson(JsonElement value, string name, int depth = 0)
     {
+        if (depth > MaxStructuredJsonDepth)
+        {
+            throw new ArgumentException(
+                $"{name} cannot exceed {MaxStructuredJsonDepth} levels of JSON nesting.");
+        }
+
         switch (value.ValueKind)
         {
             case JsonValueKind.Object:
@@ -28,7 +36,7 @@ internal static class NonGenerativeValidation
                     while (properties.MoveNext())
                     {
                         var property = properties.Current;
-                        ValidateJson(property.Value, $"{name}.{property.Name}");
+                        ValidateJson(property.Value, $"{name}.{property.Name}", depth + 1);
                     }
                 }
                 break;
@@ -38,15 +46,25 @@ internal static class NonGenerativeValidation
                 {
                     while (items.MoveNext())
                     {
-                        ValidateJson(items.Current, $"{name}[{index++}]");
+                        ValidateJson(items.Current, $"{name}[{index++}]", depth + 1);
                     }
                 }
                 break;
             case JsonValueKind.Number:
-                if (!value.TryGetInt64(out _) &&
-                    (!value.TryGetDouble(out var number) || !IsFinite(number)))
+                if (!value.TryGetInt64(out _))
                 {
-                    throw new ArgumentException($"{name} numbers must be finite and JSON-compatible.");
+                    var raw = value.GetRawText();
+                    if (raw.IndexOf('.') < 0 &&
+                        raw.IndexOf('e', StringComparison.OrdinalIgnoreCase) < 0)
+                    {
+                        throw new ArgumentException(
+                            $"{name} integers must fit in a signed 64-bit value.");
+                    }
+                    if (!value.TryGetDouble(out var number) || !IsFinite(number))
+                    {
+                        throw new ArgumentException(
+                            $"{name} numbers must be finite and JSON-compatible.");
+                    }
                 }
                 break;
             case JsonValueKind.Undefined:
