@@ -9,6 +9,7 @@
 #include "inferencing/generative/chat/chat_transcript.h"
 #include "inferencing/generative/toolcalling/qwen_xml_tool_call_decoder.h"
 #include "inferencing/generative/toolcalling/tool_call_context.h"
+#include "inferencing/generative/toolcalling/tool_call_plan.h"
 #include "inferencing/session/tool_registry.h"
 
 #include <gtest/gtest.h>
@@ -227,6 +228,28 @@ TEST(QwenTaggedJsonToolCallAccumulatorTest, RejectsMalformedEnvelopeWithoutPubli
   EXPECT_TRUE(CollectCalls(outputs).empty());
 }
 
+TEST(QwenTaggedJsonToolCallAccumulatorTest, StrictRecoveryRejectsInvalidJsonAndEnvelopeShapesWithoutRepair) {
+  const auto parser = CreateQwenTaggedJsonToolCallPayloadParser(
+      kQwenTools, kQwenToolKinds, "<tool_call>", "</tool_call>", /*repair_extra_closes=*/false);
+  for (const auto& [body, invalid_json] : std::vector<std::pair<std::string, bool>>{
+           {R"({"name":"typed","arguments":{"text":"value"})", true},
+           {R"({"name":"typed","arguments":{"text":"value"}}})", true},
+           {R"({"name":"typed","arguments":{"text":"first","text":"second"}})", true},
+           {"{\"name\":\"typed\",\"arguments\":{\"text\":\"raw\nline\"}}", true},
+           {R"([{"name":"typed","arguments":{"text":"value"}}])", false},
+           {R"({"name":"typed","parameters":{"text":"value"}})", false},
+           {R"({"name":1,"arguments":{"text":"value"}})", false},
+           {R"({"name":"typed","arguments":"value"})", false},
+           {R"({"name":"typed","arguments":{"text":"value"},"extra":true})", false}}) {
+    const auto parsed = parser("<tool_call>" + body + "</tool_call>", true);
+    EXPECT_EQ(parsed.disposition, ToolCallPayloadDisposition::kMalformed);
+    EXPECT_TRUE(parsed.calls.empty());
+    EXPECT_EQ(parsed.error, invalid_json
+                                ? "Qwen tagged-JSON tool call is not valid strict JSON"
+                                : "Qwen tagged-JSON tool call has an invalid name/arguments envelope");
+  }
+}
+
 TEST(QwenTaggedJsonToolCallAccumulatorTest, UsesRequestPublishedBoundaries) {
   constexpr std::string_view start = "<|tool_start|>";
   constexpr std::string_view end = "<|tool_end|>";
@@ -260,12 +283,51 @@ TEST(QwenTaggedJsonToolCallAccumulatorTest, ClosingMarkerInsideJsonStringDoesNot
 TEST(QwenXmlToolSchemaTest, NativeModeRequiresEverySchemaToBeRepresentable) {
   EXPECT_TRUE(CanDecodeQwenXmlToolSchemas(kQwenTools, kQwenToolKinds));
 
-  const std::string unsupported =
+  const std::string constrained =
       R"([{"type":"function","function":{"name":"typed","parameters":)"
       R"({"type":"object","properties":{"text":{"type":"string","minLength":1}}})"
       R"(}}])";
-  EXPECT_FALSE(CanDecodeQwenXmlToolSchemas(
-      unsupported, {{"typed", ToolKind::kFunction}}));
+  EXPECT_TRUE(CanDecodeQwenXmlToolSchemas(
+      constrained, {{"typed", ToolKind::kFunction}}));
+  for (const auto& value : {std::string("valid"), std::string()}) {
+    auto output = RunQwen(
+        {"<tool_call>\n<function=typed>\n<parameter=text>\n" + value +
+         "\n</parameter>\n</function>\n</tool_call>"},
+        constrained, {{"typed", ToolKind::kFunction}});
+    EXPECT_EQ(output.calls.size(), value.empty() ? 0u : 1u);
+  }
+}
+
+TEST(QwenXmlToolSchemaTest, NativeDecodersUseOriginalPlanChoiceAndBatchLimits) {
+  for (const bool tagged_json : {false, true}) {
+    for (const bool parallel : {false, true}) {
+      for (const bool forced : {false, true}) {
+        const auto choice = forced
+                                ? std::optional<ForcedToolChoice>{{"zero", ToolKind::kFunction}}
+                                : std::nullopt;
+        const auto plan = ToolCallPlan::Create(kQwenTools, parallel, choice);
+        const auto parser = tagged_json
+                                ? CreateQwenTaggedJsonToolCallPayloadParser(
+                                      kQwenTools, kQwenToolKinds, "<tool_call>", "</tool_call>", false, plan)
+                                : CreateQwenXmlToolCallPayloadParser(
+                                      kQwenTools, kQwenToolKinds, true, "<tool_call>", "</tool_call>", plan);
+        const auto call = tagged_json
+                              ? R"(<tool_call>{"name":"typed","arguments":{"text":"value"}}</tool_call>)"
+                              : "<tool_call>\n<function=typed>\n<parameter=text>\nvalue\n"
+                                "</parameter>\n</function>\n</tool_call>";
+        for (const bool multiple : {false, true}) {
+          const auto parsed = parser(multiple ? std::string(call) + "\n" + call : call, true);
+          const bool accepted = !forced && (parallel || !multiple);
+          EXPECT_EQ(parsed.disposition, accepted ? ToolCallPayloadDisposition::kParsed
+                                                  : ToolCallPayloadDisposition::kMalformed);
+          EXPECT_EQ(parsed.calls.size(), accepted ? (multiple ? 2u : 1u) : 0u);
+          if (!accepted) {
+            EXPECT_FALSE(parsed.error.empty());
+          }
+        }
+      }
+    }
+  }
 }
 
 TEST(QwenXmlToolSchemaTest, NativeModeRequiresRepresentableFunctionAndParameterNames) {
@@ -281,6 +343,123 @@ TEST(QwenXmlToolSchemaTest, NativeModeRequiresRepresentableFunctionAndParameterN
     EXPECT_FALSE(CanDecodeQwenXmlToolSchemas(
         tools(name, "city"), {{name, ToolKind::kFunction}}))
         << name;
+  }
+}
+
+TEST(QwenXmlToolSchemaTest, AmbiguousScalarUnionsUseTypedJsonWithoutGuessing) {
+  const std::string tools =
+      R"([{"type":"function","function":{"name":"typed","parameters":{"type":"object",)"
+      R"("properties":{"text":{"anyOf":[{"type":"string"},{"type":"integer"}]}},"required":["text"]}}}])";
+  const auto kinds = std::unordered_map<std::string, ToolKind>{{"typed", ToolKind::kFunction}};
+  EXPECT_FALSE(CanDecodeQwenXmlToolSchemas(tools, kinds));
+  ExpectSchemaFailureWithoutCalls(
+      {"<tool_call>\n<function=typed>\n<parameter=text>\n123\n</parameter>\n</function>\n</tool_call>"},
+      tools, kinds);
+  for (const auto& value : {nlohmann::json("123"), nlohmann::json(123)}) {
+    auto parser = CreateQwenTaggedJsonToolCallPayloadParser(tools, kinds);
+    const auto wire = "<tool_call>" +
+                      nlohmann::json({{"name", "typed"}, {"arguments", {{"text", value}}}}).dump() +
+                      "</tool_call>";
+    const auto parsed = parser(wire, true);
+    ASSERT_EQ(parsed.disposition, ToolCallPayloadDisposition::kParsed) << parsed.error;
+    ASSERT_EQ(parsed.calls.size(), 1u);
+    EXPECT_EQ(nlohmann::json::parse(parsed.calls[0].arguments)["text"], value);
+  }
+}
+
+TEST(QwenXmlToolSchemaTest, StringOrContainerOffersRetainNativeCallsWithoutGuessingContainerValues) {
+  for (const auto* type : {"array", "object"}) {
+    const auto tools = nlohmann::json::array(
+        {{{"type", "function"}, {"function", {{"name", "typed"}, {"parameters",
+          {{"type", "object"}, {"properties",
+            {{"text", {{"anyOf", {{{"type", "string"}}, {{"type", type}}}}}}}},
+           {"required", {"text"}}}}}}}}).dump();
+    const auto kinds = std::unordered_map<std::string, ToolKind>{{"typed", ToolKind::kFunction}};
+    ASSERT_TRUE(CanDecodeQwenXmlToolSchemas(tools, kinds));
+    auto parser = CreateQwenXmlToolCallPayloadParser(tools, kinds, true);
+    const auto plain = parser(
+        "<tool_call>\n<function=typed>\n<parameter=text>\n/path\n"
+        "</parameter>\n</function>\n</tool_call>", true);
+    ASSERT_EQ(plain.disposition, ToolCallPayloadDisposition::kParsed) << plain.error;
+    EXPECT_EQ(plain.calls[0].arguments, R"({"text":"/path"})");
+    const std::string container = std::string_view(type) == "array" ? R"(["/path"])" : R"({"path":"/path"})";
+    const auto ambiguous = parser(
+        "<tool_call>\n<function=typed>\n<parameter=text>\n" + container +
+        "\n</parameter>\n</function>\n</tool_call>", true);
+    EXPECT_EQ(ambiguous.disposition, ToolCallPayloadDisposition::kMalformed);
+    EXPECT_TRUE(ambiguous.calls.empty());
+    const auto typed = parser(
+        "<tool_call>{\"name\":\"typed\",\"arguments\":{\"text\":" + container + "}}</tool_call>", true);
+    ASSERT_EQ(typed.disposition, ToolCallPayloadDisposition::kParsed) << typed.error;
+    EXPECT_EQ(nlohmann::json::parse(typed.calls[0].arguments)["text"], nlohmann::json::parse(container));
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, NativeJsonAlternativePreservesAdversarialStringsAcrossEverySplit) {
+  const std::vector<std::string> values{
+      "123", "literal <tool_call> and </tool_call>", "<parameter=x>\n</parameter>",
+      "<function=typed>\n</function>", "\"quoted\" \\\\ backslash\nterminal LF\n",
+      "Unicode \xE2\x98\x83 \xF0\x9F\xA7\xAA", ""};
+  for (const auto& value : values) {
+    const auto wire = "<tool_call>" +
+                      nlohmann::json({{"name", "typed"}, {"arguments", {{"text", value}}}}).dump() +
+                      "</tool_call>";
+    for (size_t split = 0; split <= wire.size(); ++split) {
+      auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, true);
+      auto outputs = RunChunks(accumulator, SplitAt(wire, split));
+      auto calls = CollectCalls(outputs);
+      ASSERT_EQ(calls.size(), 1u) << "split=" << split << " value=" << value;
+      EXPECT_TRUE(CollectVisible(outputs).empty());
+      EXPECT_EQ(nlohmann::json::parse(calls[0].arguments)["text"], value);
+    }
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, RootCompositionDoesNotChangeDeclaredParameterTransport) {
+  const std::string tools =
+      R"([{"type":"function","function":{"name":"typed","parameters":{"type":"object",)"
+      R"("properties":{"text":{"type":"string"}},"required":["text"],"additionalProperties":false,)"
+      R"("oneOf":[{"properties":{"text":{"const":"alpha"}}},{"properties":{"text":{"const":"beta"}}}]}}}])";
+  const auto kinds = std::unordered_map<std::string, ToolKind>{{"typed", ToolKind::kFunction}};
+  ASSERT_TRUE(CanDecodeQwenXmlToolSchemas(tools, kinds));
+  for (const bool recovery_aware : {false, true}) {
+    for (const auto* value : {"alpha", "beta", "gamma"}) {
+      auto parser = CreateQwenXmlToolCallPayloadParser(tools, kinds, recovery_aware);
+      const auto parsed = parser(
+          "<tool_call>\n<function=typed>\n<parameter=text>\n" + std::string(value) +
+              "\n</parameter>\n</function>\n</tool_call>", true);
+      const bool valid = std::string_view(value) != "gamma";
+      EXPECT_EQ(parsed.disposition, valid ? ToolCallPayloadDisposition::kParsed
+                                          : ToolCallPayloadDisposition::kMalformed);
+      EXPECT_EQ(parsed.calls.size(), valid ? 1u : 0u);
+      if (!valid) {
+        EXPECT_FALSE(parsed.error.empty());
+      }
+    }
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, OriginalSemanticConstraintsRemainAuthoritative) {
+  const auto tools =
+      R"([{"type":"function","function":{"name":"typed","parameters":{"type":"object",)"
+      R"("properties":{"text":{"type":"string","minLength":2,"maxLength":4,"pattern":"^[a-z]+$"},)"
+      R"("integer":{"type":"integer","minimum":1,"maximum":3}},"required":["text","integer"]}}}])";
+  const auto kinds = std::unordered_map<std::string, ToolKind>{{"typed", ToolKind::kFunction}};
+  ASSERT_TRUE(CanDecodeQwenXmlToolSchemas(tools, kinds));
+  for (const auto& [value, number, valid] : std::vector<std::tuple<std::string, int, bool>>{
+           {"ok", 2, true}, {"x", 2, false}, {"longer", 2, false}, {"UP", 2, false}, {"ok", 0, false}, {"ok", 4, false}}) {
+    auto parser = CreateQwenXmlToolCallPayloadParser(tools, kinds);
+    const auto parsed = parser(
+        "<tool_call>\n<function=typed>\n<parameter=text>\n" + value +
+            "\n</parameter>\n<parameter=integer>\n" + std::to_string(number) +
+            "\n</parameter>\n</function>\n</tool_call>",
+        true);
+    EXPECT_EQ(parsed.disposition, valid ? ToolCallPayloadDisposition::kParsed
+                                        : ToolCallPayloadDisposition::kMalformed);
+    EXPECT_EQ(parsed.calls.size(), valid ? 1u : 0u);
+    if (!valid) {
+      EXPECT_FALSE(parsed.error.empty());
+    }
   }
 }
 
@@ -335,10 +514,6 @@ TEST(QwenXmlToolCallAccumulatorTest, UsesRequestPublishedBoundaries) {
 
 TEST(QwenXmlToolCallAccumulatorTest, UnsupportedSchemaKeywordsRemainUnadmittable) {
   const std::vector<nlohmann::json> schemas = {
-      {{"type", "object"},
-       {"properties", {{"value", {{"type", "string"}, {"pattern", "^[a-z]+$"}}}}}},
-      {{"type", "object"},
-       {"properties", {{"value", {{"type", "string"}, {"format", "date-time"}}}}}},
       {{"type", "object"},
        {"properties", {{"value", {{"$ref", "#/$defs/missing"}}}}},
        {"$defs", {{"value", {{"type", "string"}}}}}},
@@ -482,6 +657,18 @@ TEST(QwenXmlToolCallAccumulatorTest, SyntheticGrepPathsUnionAcceptsStringOrArray
   for (const auto value : {"src/a.cc", R"(["src/a.cc","src/b.cc"])"}) {
     const auto call = "<tool_call>\n<function=grep>\n<parameter=paths>\n" + std::string(value) +
                       "\n</parameter>\n<parameter=pattern>\nneedle\n</parameter>\n</function>\n</tool_call>";
+    if (value[0] == '[') {
+      ExpectSchemaFailureWithoutCalls({call}, tools, kinds);
+      auto parser = CreateQwenTaggedJsonToolCallPayloadParser(tools, kinds);
+      auto parsed = parser(
+          "<tool_call>" + nlohmann::json({{"name", "grep"}, {"arguments", {{"paths", nlohmann::json::parse(value)}, {"pattern", "needle"}}}}).dump() +
+              "</tool_call>",
+          true);
+      ASSERT_EQ(parsed.disposition, ToolCallPayloadDisposition::kParsed);
+      ASSERT_EQ(parsed.calls.size(), 1u);
+      EXPECT_EQ(nlohmann::json::parse(parsed.calls.front().arguments)["paths"], nlohmann::json::parse(value));
+      continue;
+    }
     const auto result = RunQwen({call}, tools, kinds);
     ASSERT_EQ(result.calls.size(), 1u) << value;
     EXPECT_EQ(nlohmann::json::parse(result.calls.front().arguments)["paths"],
@@ -768,7 +955,7 @@ TEST(QwenXmlToolCallAccumulatorTest, UnrepresentableWholeSetFallsBackAndHidesUns
     ])";
   const std::unordered_map<std::string, ToolKind> kinds{
       {"grep", ToolKind::kFunction}, {"other", ToolKind::kFunction}};
-  EXPECT_FALSE(BuildQwenXmlToolBodyGrammar(tools, kinds).has_value());
+  EXPECT_TRUE(BuildQwenXmlToolBodyGrammar(tools, kinds).has_value());
   const std::string only_unsupported =
       R"([{"type":"function","function":{"name":"other","parameters":{"type":"object",)"
       R"("properties":{"value":{"type":"string"}},"required":"value"}}}])";
@@ -846,10 +1033,10 @@ TEST(QwenXmlToolCallAccumulatorTest, MixedOfferRecoveryValidatesOnlyCalledTools)
       R"("properties":{"input":{"type":"string","pattern":"^safe$"}}}}}])";
   const std::unordered_map<std::string, ToolKind> kinds = {
       {"grep", ToolKind::kFunction}, {"unused", ToolKind::kFunction}};
-  EXPECT_FALSE(BuildQwenXmlToolBodyGrammar(tools, kinds));
+  EXPECT_TRUE(BuildQwenXmlToolBodyGrammar(tools, kinds));
 
   const std::string grep_call = R"({"name":"grep","parameters":{"paths":["src"]}})";
-  const std::string unsupported_call = R"({"name":"unused","parameters":{"input":"safe"}})";
+  const std::string unsupported_call = R"({"name":"unused","parameters":{"input":"unsafe"}})";
   const auto recovered = ParseQwenGuidedToolCalls("[" + grep_call + "]", tools, kinds);
   ASSERT_EQ(recovered.size(), 1u);
   EXPECT_EQ(recovered.front().name, "grep");
@@ -872,7 +1059,7 @@ TEST(QwenXmlToolCallAccumulatorTest, MixedOfferRecoveryValidatesOnlyCalledTools)
 
   auto constrained_root = nlohmann::json::parse(tools);
   constrained_root[1]["function"]["parameters"]["minProperties"] = 1;
-  EXPECT_FALSE(BuildQwenXmlToolBodyGrammar(constrained_root.dump(), kinds));
+  EXPECT_TRUE(BuildQwenXmlToolBodyGrammar(constrained_root.dump(), kinds));
   EXPECT_EQ(ParseQwenGuidedToolCalls("[" + grep_call + "]", constrained_root.dump(), kinds).size(), 1u);
   EXPECT_TRUE(ParseQwenGuidedToolCalls("[" + unsupported_call + "]", constrained_root.dump(), kinds).empty());
   EXPECT_TRUE(ParseQwenGuidedToolCalls("[" + grep_call + "," + unsupported_call + "]",
@@ -2134,6 +2321,18 @@ TEST(QwenXmlToolCallAccumulatorTest, CopilotGlobAnyOfDecodesOmittedStringAndArra
         "\n</parameter>\n"
         "</function>\n"
         "</tool_call>";
+    if (expected.is_array()) {
+      ExpectSchemaFailureWithoutCalls({generated}, tools, {{"glob", ToolKind::kFunction}});
+      auto parser = CreateQwenTaggedJsonToolCallPayloadParser(tools, {{"glob", ToolKind::kFunction}});
+      auto parsed = parser(
+          "<tool_call>" + nlohmann::json({{"name", "glob"}, {"arguments", {{"pattern", "**/range_math.py"}, {"paths", expected}}}}).dump() +
+              "</tool_call>",
+          true);
+      ASSERT_EQ(parsed.disposition, ToolCallPayloadDisposition::kParsed);
+      ASSERT_EQ(parsed.calls.size(), 1u);
+      EXPECT_EQ(nlohmann::json::parse(parsed.calls.front().arguments)["paths"], expected);
+      continue;
+    }
     auto output = RunQwen({generated}, tools, {{"glob", ToolKind::kFunction}});
     ASSERT_EQ(output.calls.size(), 1u) << body;
     const auto arguments = nlohmann::json::parse(output.calls.front().arguments);
@@ -2274,7 +2473,6 @@ TEST(QwenXmlToolCallAccumulatorTest, CustomToolWithNoncanonicalSchemaFailsClosed
 
 TEST(QwenXmlToolCallAccumulatorTest, DeclaredParameterlessSchemaShapesDecodeExactEmptyArguments) {
   const std::vector<nlohmann::json> parameters = {
-      nullptr,
       nlohmann::json::object(),
       {{"type", "object"}},
       {{"type", "object"}, {"properties", nlohmann::json::object()}},

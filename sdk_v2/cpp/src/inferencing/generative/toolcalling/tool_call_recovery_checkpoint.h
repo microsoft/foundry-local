@@ -42,6 +42,10 @@ class ToolCallRecoveryCheckpoint {
     return enabled_ && captured_;
   }
 
+  bool HasExactPrefix() const noexcept {
+    return enabled_;
+  }
+
   PreparedChatPrompt TakePrompt() {
     prompt_.prompt_token_count = static_cast<int64_t>(prompt_.token_ids.size());
     return std::move(prompt_);

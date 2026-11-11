@@ -91,6 +91,7 @@ class OnnxChatEngine {
   bool IsTurnFinished(const std::shared_ptr<Conversation>& conversation) const;
   TurnResult GetTurnResult(const std::shared_ptr<Conversation>& conversation) const;
   uint64_t MaxRequestLength() const noexcept { return max_request_length_; }
+  std::optional<bool> SupportsGuidance() const noexcept { return supports_guidance_; }
   size_t SequenceLength(const std::shared_ptr<Conversation>& conversation) const;
   std::vector<int32_t> ResidentTokens(const std::shared_ptr<Conversation>& conversation) const;
   void Cancel(const std::shared_ptr<Conversation>& conversation);
@@ -125,6 +126,7 @@ class OnnxChatEngine {
   std::unique_ptr<OgaEngineEventBuffer> event_buffer_;
   std::unordered_map<Conversation*, std::unique_ptr<NativeConversation>> conversations_;
   uint64_t max_request_length_ = 0;
+  std::optional<bool> supports_guidance_;
   uint64_t next_admission_sequence_ = 1;
   std::chrono::steady_clock::time_point last_progress_at_ = std::chrono::steady_clock::now();
 };

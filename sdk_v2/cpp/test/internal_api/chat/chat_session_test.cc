@@ -8,6 +8,7 @@
 #include "inferencing/generative/chat/chat_generator.h"
 #include "inferencing/generative/chat/chat_template.h"
 #include "inferencing/generative/chat/onnx_chat_generator.h"
+#include "inferencing/generative/chat/onnx_chat_engine.h"
 #include "inferencing/generative/chat/stop_strings.h"
 #include "inferencing/generative/openresponses/response_converter.h"
 #include "inferencing/generative/openresponses/response_store.h"
@@ -851,16 +852,9 @@ TEST(ChatSessionDecisionTest, TaggedJsonSchemaViolationBecomesMalformedAdmission
   auto parser = chat_session_internal::CreateToolCallPayloadParser(context);
   const auto parsed =
       parser(R"(<tool>{"name":"lookup","arguments":{"city":7}}</tool>)", true);
-  ASSERT_EQ(parsed.disposition, ToolCallPayloadDisposition::kParsed);
-  ASSERT_EQ(parsed.calls.size(), 1u);
-
-  ToolCallStreamAccumulator::Output output;
-  output.events.emplace_back(parsed.calls.front());
-  chat_session_internal::NormalizeToolOutputBatch(output, context);
-
-  EXPECT_TRUE(output.malformed);
-  EXPECT_FALSE(output.error.empty());
-  EXPECT_TRUE(output.events.empty());
+  EXPECT_EQ(parsed.disposition, ToolCallPayloadDisposition::kMalformed);
+  EXPECT_FALSE(parsed.error.empty());
+  EXPECT_TRUE(parsed.calls.empty());
 }
 
 TEST(ChatSessionDecisionTest, NativeJsonDepthLimitsApplyBeforeParsingAndSerialization) {
@@ -2092,6 +2086,243 @@ TEST_F(QwenNativeProductionIntegrationTest, QualifiedNativeContinuationPreserves
     ASSERT_EQ(response.items.size(), 1u);
     const auto result = nlohmann::json::parse(static_cast<const TextItem&>(*response.items[0]).text);
     EXPECT_EQ(result.at("choices").at(0).at("message").at("content"), "Finished.");
+  }
+}
+
+TEST_F(QwenNativeProductionIntegrationTest, NativeSchemaRefusalSelectsSupportedFallbackBeforeGeneration) {
+  for (auto* model : qualified_models_) {
+    for (const auto* schema : {
+             R"({"type":"object","properties":{"city":{"anyOf":[{"type":"string"},{"type":"integer"}]}},"required":["city"]})",
+             R"({"type":"object","properties":{"city":{"anyOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}]}},"required":["city"]})",
+             R"({"oneOf":[{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false}]})",
+             R"({"type":"object","properties":{"city":{"type":"string"}},"additionalProperties":true})"}) {
+      auto catalog = MakeCatalogModel(true);
+      const auto tools = nlohmann::json::array(
+          {{{"type", "function"}, {"function", {{"name", "lookup"},
+                                               {"parameters", nlohmann::json::parse(schema)}}}}}).dump();
+      const bool native = CanDecodeQwenXmlToolSchemas(tools, {{"lookup", ToolKind::kFunction}});
+      const auto guidance = model->GetChatEngine() ? model->GetChatEngine()->SupportsGuidance()
+                                                   : std::optional<bool>{true};
+      int dispatched = 0;
+      ChatSession session(
+          catalog, *model, *logger_, telemetry_, {},
+          [&](const auto& messages, const auto& options, auto& instance, const auto& context, bool retry) {
+            ++dispatched;
+            EXPECT_EQ(dispatched, 1);
+            EXPECT_EQ(context.guidance_disabled, native);
+            EXPECT_FALSE(context.native_tagged_json_tool_calls);
+            EXPECT_EQ(context.native_qwen_xml_tool_calls, native);
+            EXPECT_FALSE(context.HasAnyExplicitGuidance());
+            const auto wire = native
+                                  ? "<tool_call>\n<function=lookup>\n<parameter=city>\nParis\n"
+                                    "</parameter>\n</function>\n</tool_call>"
+                                  : R"(<tool_call>[{"name":"lookup","parameters":{"city":"Paris"}}]</tool_call>)";
+            return OutputFactory(wire)(messages, options, instance, context, retry);
+          });
+      session.AddToolDefinition({"lookup", "Lookup a city.", schema, ToolKind::kFunction});
+      auto request = MakeStatefulRequest("Look up Paris.");
+      Response response;
+      if (!native && guidance != true) {
+        EXPECT_THROW(session.ProcessRequest(request, response), fl::Exception);
+        EXPECT_EQ(dispatched, 0);
+        EXPECT_TRUE(Calls(response).empty());
+        continue;
+      }
+      session.ProcessRequest(request, response);
+      ASSERT_EQ(Calls(response).size(), 1u);
+      EXPECT_EQ(Calls(response)[0]->arguments, R"({"city":"Paris"})");
+      EXPECT_EQ(dispatched, 1);
+    }
+  }
+}
+
+TEST_F(QwenNativeProductionIntegrationTest, BoundedNativeRecoveryPreservesPrefixWithoutRequestingGuidance) {
+  for (auto* model : qualified_models_) {
+    auto catalog = MakeCatalogModel(true);
+    int attempts = 0;
+    ChatSession session(
+        catalog, *model, *logger_, telemetry_, {},
+        [&](const auto& messages, const auto& options, auto& instance, const auto& context, bool retry) {
+          const int attempt = attempts++;
+          EXPECT_LT(attempt, 2);
+          EXPECT_TRUE(context.guidance_disabled);
+          EXPECT_FALSE(context.HasAnyExplicitGuidance());
+          EXPECT_EQ(context.native_qwen_xml_tool_calls, attempt == 0);
+          EXPECT_EQ(context.native_tagged_json_tool_calls, attempt == 1);
+          const auto wire = attempt == 0
+                                ? "visible <tool_call>\n<function=lookup>\n<parameter=wrong>\nParis\n"
+                                  "</parameter>\n</function>\n</tool_call>"
+                                : R"("lookup","arguments":{"city":"Paris"}}</tool_call>)";
+          return OutputFactory(wire)(messages, options, instance, context, retry);
+        });
+    AddFunctionTools(session);
+    auto request = MakeStatefulRequest("Look up Paris.");
+    Response response;
+    session.ProcessRequest(request, response);
+    ASSERT_EQ(Calls(response).size(), 1u);
+    EXPECT_EQ(Calls(response)[0]->arguments, R"({"city":"Paris"})");
+    EXPECT_EQ(session.Transcript().Messages().back().VisibleText(), "visible ");
+    EXPECT_EQ(attempts, 2);
+  }
+}
+
+TEST_F(QwenNativeProductionIntegrationTest, PrefilledNativeRecoveryRequiresValidJsonAndNaturalCompletion) {
+  struct TestCase {
+    const char* suffix;
+    BackendTerminationCause cause;
+    bool accepted;
+    bool authoritative_controls = true;
+  };
+  for (auto* model : qualified_models_) {
+    for (const auto& test_case : {
+             TestCase{R"("lookup","arguments":{"city":"Paris"}})", BackendTerminationCause::kNaturalEnd, true},
+             TestCase{R"("lookup","arguments":{"city":123}})", BackendTerminationCause::kNaturalEnd, false},
+             TestCase{R"("lookup","arguments":{"city":"Paris"},"parameters":{"city":"Paris"}})",
+                      BackendTerminationCause::kNaturalEnd, false},
+             TestCase{R"("lookup","arguments":{}})", BackendTerminationCause::kNaturalEnd, false},
+             TestCase{R"("lookup","arguments":{"city":"Paris"})", BackendTerminationCause::kNaturalEnd, false},
+             TestCase{R"("lookup","arguments":{"city":"Paris"}}})", BackendTerminationCause::kNaturalEnd, false},
+             TestCase{R"("lookup","arguments":{"city":"Paris"}}</tool_call>trailing)",
+                      BackendTerminationCause::kNaturalEnd, false},
+             TestCase{"\"lookup\",\"arguments\":{\"city\":\"Pa\nris\"}}", BackendTerminationCause::kNaturalEnd, false},
+             TestCase{R"("lookup","arguments":{"city":"Paris"}})", BackendTerminationCause::kOutputTokenLimit, false},
+             TestCase{R"("lookup","arguments":{"city":"Paris"}})", BackendTerminationCause::kSessionTokenLimit, false},
+             TestCase{R"("lookup","arguments":{"city":"Paris"}})", BackendTerminationCause::kCancellation, false},
+             TestCase{R"("lookup","arguments":{"city":"Paris"}}</tool_call>)",
+                      BackendTerminationCause::kNaturalEnd, false, false}}) {
+      SCOPED_TRACE(model->ModelId());
+      SCOPED_TRACE(test_case.suffix);
+      auto catalog = MakeCatalogModel(true);
+      int attempts = 0;
+      ChatSession session(
+          catalog, *model, *logger_, telemetry_, {},
+          [&](const auto& messages, const auto& options, auto& instance, const auto& context,
+              bool retry) -> std::unique_ptr<ChatGenerator> {
+            const int attempt = attempts++;
+            EXPECT_LT(attempt, 2);
+            if (attempt != 0) {
+              auto generator = std::make_unique<FixedOutputGenerator>(test_case.suffix, test_case.cause);
+              generator->EnableAuthoritativeControls(
+                  instance.GetGenAIConfig().GetChatBackendKind() == ChatBackendKind::kEngine
+                      ? 0 : kClassicControlOffset);
+              if (!test_case.authoritative_controls) {
+                generator->ReplaceControlWithLiteral(context.tool_call_end_token_id.value());
+              }
+              return generator;
+            }
+            return OutputFactory("<tool_call>\n<function=lookup>\n<parameter=wrong>\nParis\n"
+                                 "</parameter>\n</function>\n</tool_call>")(
+                messages, options, instance, context, retry);
+          });
+      AddFunctionTools(session, true);
+      auto request = MakeStatefulRequest("Look up Paris.");
+      Response response;
+      if (test_case.accepted) {
+        session.ProcessRequest(request, response);
+        ASSERT_EQ(Calls(response).size(), 1u);
+        EXPECT_EQ(Calls(response)[0]->arguments, R"({"city":"Paris"})");
+      } else {
+        EXPECT_THROW(session.ProcessRequest(request, response), fl::Exception);
+        EXPECT_TRUE(Calls(response).empty());
+      }
+      EXPECT_EQ(attempts, 2);
+    }
+  }
+}
+
+TEST_F(QwenNativeProductionIntegrationTest, PrefilledNativeRecoveryPreservesLiteralStringsAcrossChunks) {
+  const std::string source = "[scratch\n\"quoted\" C:\\receipts\\new\n"
+                             "<tool_call></tool_call><think></think>\n"
+                             "Unicode \xE2\x98\x83 \xF0\x9F\xA7\xAA\n";
+  for (auto* model : qualified_models_) {
+    for (const auto chunk_size : {size_t{1}, std::string::npos}) {
+      auto catalog = MakeCatalogModel(true);
+      int attempts = 0;
+      ChatSession session(
+          catalog, *model, *logger_, telemetry_, {},
+          [&](const auto& messages, const auto& options, auto& instance, const auto& context, bool retry) {
+            const auto wire = attempts++ == 0
+                                  ? std::string("<tool_call>\n<function=lookup>\n<parameter=wrong>\nParis\n"
+                                                "</parameter>\n</function>\n</tool_call>")
+                                  : R"("lookup","arguments":)" + nlohmann::json({{"city", source}}).dump() + "}";
+            return OutputFactory(wire, {}, BackendTerminationCause::kNaturalEnd, chunk_size)(
+                messages, options, instance, context, retry);
+          });
+      AddFunctionTools(session);
+      auto request = MakeStatefulRequest("Pass the supplied string unchanged.");
+      Response response;
+      session.ProcessRequest(request, response);
+      ASSERT_EQ(Calls(response).size(), 1u);
+      EXPECT_EQ(nlohmann::json::parse(Calls(response)[0]->arguments)["city"], source);
+      EXPECT_EQ(attempts, 2);
+    }
+  }
+}
+
+TEST_F(QwenNativeProductionIntegrationTest, NativeRecoveryValidatesWholeBatchAgainstOriginalChoiceAndCount) {
+  for (auto* model : qualified_models_) {
+    for (const auto* choice : {"auto", "forced"}) {
+      for (const bool parallel : {false, true}) {
+        auto catalog = MakeCatalogModel(true);
+        int attempts = 0;
+        ChatSession session(
+            catalog, *model, *logger_, telemetry_, {},
+            [&](const auto& messages, const auto& options, auto& instance, const auto& context, bool retry) {
+              const auto wire = attempts++ == 0
+                                    ? "<tool_call>\n<function=lookup>\n<parameter=wrong>\nParis\n"
+                                      "</parameter>\n</function>\n</tool_call>"
+                                    : R"("lookup","arguments":{"city":"Paris"}}</tool_call>)"
+                                      R"(<tool_call>{"name":"clock","arguments":{"zone":"UTC"}}</tool_call>)";
+              return OutputFactory(wire)(messages, options, instance, context, retry);
+            });
+        std::vector<nlohmann::json> chunks;
+        if (std::string_view(choice) == "auto" && parallel) {
+          const auto response = RunChatCompletions(session, choice, &chunks, false, parallel, true);
+          EXPECT_EQ(response["choices"][0]["message"]["tool_calls"].size(), 2u);
+        } else {
+          EXPECT_THROW(RunChatCompletions(session, choice, &chunks, false, parallel, true), fl::Exception);
+          for (const auto& chunk : chunks) {
+            for (const auto& item : chunk.value("choices", nlohmann::json::array())) {
+              EXPECT_FALSE(item.value("delta", nlohmann::json::object()).contains("tool_calls"));
+            }
+          }
+        }
+        EXPECT_EQ(attempts, 2);
+      }
+    }
+  }
+}
+
+TEST_F(QwenNativeProductionIntegrationTest, RequiredNativeRecoveryPreservesPrefixWithoutInitialToolBoundary) {
+  for (auto* model : qualified_models_) {
+    for (const bool json_api : {false, true}) {
+      auto catalog = MakeCatalogModel(true);
+      int attempts = 0;
+      ChatSession session(
+          catalog, *model, *logger_, telemetry_, {},
+          [&](const auto& messages, const auto& options, auto& instance, const auto& context, bool retry) {
+            const int attempt = attempts++;
+            EXPECT_LT(attempt, 2);
+            const auto wire = attempt == 0 ? "<think>checking</think>visible"
+                                           : R"("lookup","arguments":{"city":"Paris"}})";
+            return OutputFactory(wire)(messages, options, instance, context, retry);
+          });
+      if (json_api) {
+        std::vector<nlohmann::json> chunks;
+        const auto result = RunChatCompletions(session, "required", &chunks);
+        ASSERT_EQ(result["choices"][0]["message"]["tool_calls"].size(), 1u);
+        EXPECT_EQ(result["choices"][0]["message"]["content"], "visible");
+      } else {
+        AddFunctionTools(session);
+        auto request = MakeStatefulRequest("Look up Paris.");
+        request.options[FOUNDRY_LOCAL_PARAM_TOOL_CHOICE] = "required";
+        Response response;
+        session.ProcessRequest(request, response);
+        ASSERT_EQ(Calls(response).size(), 1u);
+        EXPECT_EQ(session.Transcript().Messages().back().VisibleText(), "visible");
+      }
+      EXPECT_EQ(attempts, 2);
+    }
   }
 }
 
@@ -5782,6 +6013,71 @@ TEST_F(QwenNativeProductionIntegrationTest,
     EXPECT_EQ(streamed_tool_calls.front().at("function").at("arguments"),
               final_call.at("function").at("arguments"));
     EXPECT_TRUE(session.Transcript().Empty());
+  }
+}
+
+TEST(ChatSessionInternalTest, NativeSchemaRefusalRequiresReportedGuidanceOrQualifiedTaggedJson) {
+  for (const auto support : {std::optional<bool>{false}, std::optional<bool>{true}, std::optional<bool>{}}) {
+    for (const bool tagged_json : {false, true}) {
+      ToolCallContext context;
+      context.tool_output = true;
+      context.native_qwen_xml_tool_calls = true;
+      context.native_tagged_json_tool_calls = tagged_json;
+      context.backend_supports_guidance = support;
+      context.tool_kinds = {{"lookup", ToolKind::kFunction}};
+      context.tools_json =
+          R"([{"type":"function","function":{"name":"lookup","parameters":{"type":"object",)"
+          R"("properties":{"city":{"anyOf":[{"type":"string"},{"type":"integer"}]}}}}}])";
+      if (!tagged_json && support != true) {
+        EXPECT_THROW(chat_session_internal::SelectSupportedToolProtocol(context), fl::Exception);
+      } else {
+        chat_session_internal::SelectSupportedToolProtocol(context);
+        EXPECT_FALSE(context.native_qwen_xml_tool_calls);
+        EXPECT_EQ(context.native_tagged_json_tool_calls, tagged_json);
+        EXPECT_EQ(context.guidance_disabled, tagged_json);
+      }
+    }
+  }
+}
+
+TEST(ChatSessionInternalTest, SemanticStringConstraintsKeepNativeXmlWithoutGuidance) {
+  ToolCallContext context;
+  context.tool_output = true;
+  context.native_qwen_xml_tool_calls = true;
+  context.backend_supports_guidance = false;
+  context.tool_kinds = {{"lookup", ToolKind::kFunction}};
+  context.tools_json =
+      R"([{"type":"function","function":{"name":"lookup","parameters":{"type":"object",)"
+      R"("properties":{"city":{"type":"string","minLength":1}},"required":["city"]}}}])";
+  chat_session_internal::SelectSupportedToolProtocol(context);
+  EXPECT_TRUE(context.native_qwen_xml_tool_calls);
+  EXPECT_TRUE(context.guidance_disabled);
+}
+
+TEST(ChatSessionInternalTest, CopilotStringOrArrayPathsKeepNativeProtocolWithoutGuidance) {
+  ToolCallContext context;
+  context.tool_output = true;
+  context.native_qwen_xml_tool_calls = true;
+  context.backend_supports_guidance = false;
+  context.tool_kinds = {{"grep", ToolKind::kFunction}};
+  context.tools_json =
+      R"([{"type":"function","function":{"name":"grep","parameters":{"type":"object",)"
+      R"("properties":{"paths":{"anyOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}]}}}}}])";
+  chat_session_internal::SelectSupportedToolProtocol(context);
+  EXPECT_TRUE(context.native_qwen_xml_tool_calls);
+  EXPECT_TRUE(context.guidance_disabled);
+}
+
+TEST(ChatSessionInternalTest, GuidanceUnavailableRejectsCanonicalAndExplicitGuidanceBeforeGeneration) {
+  for (const bool explicit_guidance : {false, true}) {
+    ToolCallContext context;
+    context.backend_supports_guidance = false;
+    context.tool_output = !explicit_guidance;
+    if (explicit_guidance) {
+      context.guidance_type = "lark_grammar";
+      context.guidance_data = R"(start: "value")";
+    }
+    EXPECT_THROW(chat_session_internal::SelectSupportedToolProtocol(context), fl::Exception);
   }
 }
 

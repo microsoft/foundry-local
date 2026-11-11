@@ -4,6 +4,7 @@
 #include "inferencing/generative/toolcalling/grammar.h"
 #include "inferencing/generative/toolcalling/tool_call_context.h"
 #include "inferencing/generative/toolcalling/tool_call_plan.h"
+#include "exception.h"
 #include "inferencing/generative/toolcalling/tool_call_utils.h"
 #include "inferencing/session/tool_registry.h"
 #include "util/json_helpers.h"
@@ -171,7 +172,7 @@ bool IsSupportedAnnotation(std::string_view keyword) {
       "writeOnly",
       "x-mcp-header",
   };
-  return kSupportedAnnotations.contains(keyword);
+  return kSupportedAnnotations.contains(keyword) || keyword.starts_with("x-");
 }
 
 bool JsonScalarEquals(const Json& lhs, const Json& rhs) {
@@ -379,6 +380,12 @@ bool IsSupportedParameterSchema(const Json& schema, size_t depth = 0) {
 
   if (std::ranges::any_of(schema.items(), [&](const auto& item) {
         return item.key() != "type" && !IsSupportedAnnotation(item.key()) &&
+               item.key() != "minLength" && item.key() != "maxLength" && item.key() != "pattern" &&
+               item.key() != "format" && item.key() != "minimum" && item.key() != "maximum" &&
+               item.key() != "exclusiveMinimum" && item.key() != "exclusiveMaximum" &&
+               item.key() != "multipleOf" && item.key() != "minItems" && item.key() != "maxItems" &&
+               item.key() != "uniqueItems" && item.key() != "minProperties" &&
+               item.key() != "maxProperties" &&
                item.key() != "enum" && item.key() != "const" &&
                !(*type == "array" && item.key() == "items") &&
                !(*type == "object" && (item.key() == "properties" || item.key() == "required" ||
@@ -443,7 +450,8 @@ bool IsSupportedParametersObject(const Json& schema) {
     if (item.key() == "$defs") {
       return item.value().is_object();
     }
-    if (item.key() == "type" || item.key() == "properties" || item.key() == "required") {
+    if (item.key() == "type" || item.key() == "properties" || item.key() == "required" ||
+        item.key() == "minProperties" || item.key() == "maxProperties") {
       return true;
     }
     return item.key() == "additionalProperties" && item.value() == false;
@@ -574,7 +582,14 @@ FunctionSchemas ParseFunctionSchemas(
       continue;
     }
 
-    const auto& parameters = (*function)["parameters"];
+    auto parameters = (*function)["parameters"];
+    if (parameters.is_object() && parameters.contains("properties") &&
+        parameters.contains("type") && parameters["type"] == "object") {
+      // Root composition constrains values, not the explicitly declared XML parameter layout.
+      for (const auto* keyword : {"anyOf", "oneOf", "allOf", "not", "if", "then", "else"}) {
+        parameters.erase(keyword);
+      }
+    }
     if (kind->second == ToolKind::kCustom && parameters != custom_tool_schema) {
       insert_schema(name, std::move(schema));
       continue;
@@ -846,7 +861,7 @@ std::optional<Json> DecodeParameterValue(std::string_view body, const Json& sche
   }
 
   if (decoded.has_value()) {
-    return decoded;
+    return decoded_string.has_value() ? std::nullopt : decoded;
   }
   // A leading array/object delimiter claims the structured branch. Reinterpreting malformed structured output as
   // a string would turn a model type error into an executable call; ambiguous union values therefore fail closed.
@@ -1132,6 +1147,14 @@ ToolCallPayloadParseResult ParseBatch(std::string_view source, bool end_of_strea
     }
     if (block.state == ParseState::kInvalid || block.state == ParseState::kStructuralFailure ||
         block.state == ParseState::kSchemaViolation) {
+      if (block.state == ParseState::kSchemaViolation) {
+        return {
+            .disposition = ToolCallPayloadDisposition::kMalformed,
+            .consumed_size = source.size(),
+            .calls = {},
+            .error = "Native function arguments could not be decoded without changing their values",
+        };
+      }
       const auto rejected = RejectedBatchEnd(source, position, end_of_stream, schemas, markers);
       if (rejected.end == 0) {
         return {};
@@ -1185,7 +1208,7 @@ ToolCallPayloadParseResult ParseBatch(std::string_view source, bool end_of_strea
 }
 
 ToolCallPayloadParseResult ParseTaggedJsonBatch(std::string_view source, bool end_of_stream,
-                                                const ToolCallMarkers& markers) {
+                                                const ToolCallMarkers& markers, bool repair_extra_closes = true) {
   const auto trim = [](std::string_view value) {
     const auto first = value.find_first_not_of(" \t\r\n");
     if (first == std::string_view::npos) {
@@ -1230,7 +1253,7 @@ ToolCallPayloadParseResult ParseTaggedJsonBatch(std::string_view source, bool en
     auto body = trim(source.substr(body_start, body_end - body_start));
     auto call_json = ParseJsonWithoutDuplicateObjectKeys(body, ToolCallPlan::kMaxDepth + 1);
     for (size_t repaired_closes = 0;
-         !call_json.has_value() && repaired_closes < 4 && body.ends_with('}');
+         repair_extra_closes && !call_json.has_value() && repaired_closes < 4 && body.ends_with('}');
          ++repaired_closes) {
       body.remove_suffix(1);
       body = trim(body);
@@ -1244,7 +1267,9 @@ ToolCallPayloadParseResult ParseTaggedJsonBatch(std::string_view source, bool en
           .disposition = ToolCallPayloadDisposition::kMalformed,
           .consumed_size = body_end + markers.end.size(),
           .calls = {},
-          .error = "Qwen tagged-JSON tool call has an invalid name/arguments envelope",
+          .error = !call_json.has_value()
+                       ? "Qwen tagged-JSON tool call is not valid strict JSON"
+                       : "Qwen tagged-JSON tool call has an invalid name/arguments envelope",
       };
     }
 
@@ -1281,6 +1306,33 @@ ToolCallPayloadParseResult ParseTaggedJsonBatch(std::string_view source, bool en
       .calls = std::move(calls),
       .error = {},
   };
+}
+
+std::shared_ptr<const ToolCallPlan> CreateNativeToolPlan(const std::string& tools_json) {
+  auto tools = Json::parse(tools_json);
+  for (auto& tool : tools) {
+    if (!tool.contains("function") && !tool.contains("type")) {
+      tool["type"] = "function";
+    }
+  }
+  return ToolCallPlan::Create(tools.dump());
+}
+
+ToolCallPayloadParseResult AdmitNativeBatch(
+    ToolCallPayloadParseResult result, const std::shared_ptr<const ToolCallPlan>& plan) {
+  if (result.disposition == ToolCallPayloadDisposition::kParsed) {
+    try {
+      if (!plan) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Native XML cannot represent the supplied tool schemas");
+      }
+      plan->ValidateBatch(result.calls);
+    } catch (const Exception& error) {
+      result.disposition = ToolCallPayloadDisposition::kMalformed;
+      result.calls.clear();
+      result.error = error.what();
+    }
+  }
+  return result;
 }
 
 }  // namespace
@@ -1412,7 +1464,8 @@ std::optional<std::string> PlanQwenXmlToolBodyGuidance(
 
 ToolCallPayloadParser CreateQwenXmlToolCallPayloadParser(
     std::string tools_json, std::unordered_map<std::string, ToolKind> tool_kinds,
-    bool recovery_aware, std::string tool_call_start, std::string tool_call_end) {
+    bool recovery_aware, std::string tool_call_start, std::string tool_call_end,
+    std::shared_ptr<const ToolCallPlan> original_plan) {
   ToolCallMarkers markers(std::move(tool_call_start), std::move(tool_call_end));
   if (!markers.Valid()) {
     return {};
@@ -1433,14 +1486,24 @@ ToolCallPayloadParser CreateQwenXmlToolCallPayloadParser(
   const bool unsupported_only = std::ranges::none_of(schemas, [](const auto& schema) {
     return schema.second.recognizable;
   });
+  auto plan = std::move(original_plan);
+  if (!plan && (recovery_aware ||
+                std::ranges::all_of(schemas, [](const auto& schema) { return schema.second.valid; }))) {
+    plan = CreateNativeToolPlan(tools_json);
+  }
 
-  return [schemas = std::move(schemas), recovery_aware, unsupported_only, markers = std::move(markers)](
+  return [schemas = std::move(schemas), plan = std::move(plan), recovery_aware, unsupported_only,
+          markers = std::move(markers)](
              std::string_view source, bool end_of_stream) {
     if (unsupported_only) {
       return RejectUndecodableToolCall(source, end_of_stream);
     }
 
-    return ParseBatch(source, end_of_stream, schemas, recovery_aware, markers);
+    const auto body_start = source.find_first_not_of(" \t\r\n", markers.start.size());
+    if (recovery_aware && body_start != std::string_view::npos && source[body_start] == '{') {
+      return AdmitNativeBatch(ParseTaggedJsonBatch(source, end_of_stream, markers), plan);
+    }
+    return AdmitNativeBatch(ParseBatch(source, end_of_stream, schemas, recovery_aware, markers), plan);
   };
 }
 
@@ -1453,14 +1516,29 @@ bool CanDecodeQwenXmlToolSchemas(
          std::ranges::all_of(schemas, [](const auto& schema) {
            return schema.second.valid && IsXmlTagName(schema.first) &&
                   std::ranges::all_of(schema.second.properties.items(), [](const auto& property) {
-                    return IsXmlTagName(property.key());
+                    if (!IsXmlTagName(property.key())) {
+                      return false;
+                    }
+                    const auto& definition = property.value();
+                    if (!definition.contains("anyOf")) {
+                      return true;
+                    }
+                    const bool has_string = std::ranges::any_of(definition["anyOf"], [](const auto& branch) {
+                      return GetSupportedType(branch) == "string";
+                    });
+                    return !has_string ||
+                           std::ranges::all_of(definition["anyOf"], [](const auto& branch) {
+                             const auto type = GetSupportedType(branch);
+                             return type == "string" || type == "array" || type == "object";
+                           });
                   });
          });
 }
 
 ToolCallPayloadParser CreateQwenTaggedJsonToolCallPayloadParser(
     std::string tools_json, std::unordered_map<std::string, ToolKind> tool_kinds,
-    std::string tool_call_start, std::string tool_call_end) {
+    std::string tool_call_start, std::string tool_call_end, bool repair_extra_closes,
+    std::shared_ptr<const ToolCallPlan> original_plan) {
   if (tools_json.empty() && tool_kinds.empty()) {
     return {};
   }
@@ -1470,8 +1548,10 @@ ToolCallPayloadParser CreateQwenTaggedJsonToolCallPayloadParser(
     return {};
   }
 
-  return [markers = std::move(markers)](std::string_view source, bool end_of_stream) {
-    return ParseTaggedJsonBatch(source, end_of_stream, markers);
+  auto plan = original_plan ? std::move(original_plan) : CreateNativeToolPlan(tools_json);
+  return [markers = std::move(markers), plan = std::move(plan), repair_extra_closes](
+             std::string_view source, bool end_of_stream) {
+    return AdmitNativeBatch(ParseTaggedJsonBatch(source, end_of_stream, markers, repair_extra_closes), plan);
   };
 }
 
@@ -1537,7 +1617,10 @@ std::vector<ParsedToolCall> ParseQwenGuidedToolCalls(
     calls.push_back(std::move(call));
   }
 
-  return calls;
+  ToolCallPayloadParseResult parsed;
+  parsed.disposition = ToolCallPayloadDisposition::kParsed;
+  parsed.calls = std::move(calls);
+  return AdmitNativeBatch(std::move(parsed), CreateNativeToolPlan(tools_json)).calls;
 }
 
 }  // namespace fl

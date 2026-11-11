@@ -77,7 +77,9 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
                                                               tool_ctx.supports_reasoning_history));
       std::string state =
           "Use a tool only when the user's request requires it. For serial work, emit only calls whose "
-          "prerequisites are already available; do not wait or deliberate about later calls.";
+          "prerequisites are already available; do not wait or deliberate about later calls. "
+          "Treat argument strings as literal data: preserve punctuation, newlines, Unicode and quoted markers. "
+          "Do not repair or reinterpret a string's contents as JSON.";
       if (tool_ctx.forced_tool) {
         state += "\nYou must call the tool named \"" + tool_ctx.forced_tool->name +
                  "\" in this turn. Do not answer with ordinary text.";

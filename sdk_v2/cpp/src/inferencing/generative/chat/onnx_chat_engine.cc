@@ -17,6 +17,14 @@ namespace fl {
 
 namespace {
 
+template <typename Capabilities>
+std::optional<bool> ReadGuidanceSupport(const Capabilities& capabilities) {
+  if constexpr (requires { capabilities.SupportsGuidance(); }) {
+    return capabilities.SupportsGuidance();
+  }
+  return std::nullopt;
+}
+
 // Only options the caller expressed are set. Upstream treats an unset turn option as "use the model-configured
 // default for this Turn", so forwarding a Foundry-invented default would silently override model policy — and an
 // explicit do_sample=true is rejected outright when the model's own defaults still resolve the turn to greedy.
@@ -339,6 +347,13 @@ void OnnxChatEngine::WorkerLoop(std::promise<void> initialized) {
     engine_ = OgaEngine::Create(model_.GetOgaModel());
     auto capabilities = engine_->GetCapabilities();
     max_request_length_ = capabilities->MaxRequestLength();
+    supports_guidance_ = ReadGuidanceSupport(*capabilities);
+    if (!supports_guidance_) {
+      model_.GetLogger().Log(
+          LogLevel::Warning,
+          "The loaded GenAI package does not expose guidance capability; native-schema fallback "
+          "requiring guidance will be rejected. Update the runtime to enable capability-based fallback.");
+    }
     if (max_request_length_ == 0) {
       throw std::runtime_error("Dynamic Engine did not report max_request_length.");
     }
