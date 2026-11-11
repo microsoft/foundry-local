@@ -33,7 +33,7 @@ turns and isolated concurrent requests. It covers SDK dispatch, paging, eviction
 unload, not CUDA kernel correctness or trained-model quality.
 
 The packaging pipeline includes the unconditional `cpp_test_engine` stage from
-`.pipelines/v2/templates/stages-test-engine.yml`. It runs on the existing `onnxruntime-Ubuntu2404-AMD-CPU` pool image
+`.pipelines/templates/stages-test-engine.yml`. It runs on the existing `onnxruntime-Ubuntu2404-AMD-CPU` pool image
 without a custom container and uses the same stable ORT and GenAI packages as the SDK build. The XML gate rejects
 missing lifecycle cases, skipped/disabled/unexecuted tests, and failures. Do not bypass failures with skips or
 `continueOnError`. Its binaries are not published as SDK artifacts.
