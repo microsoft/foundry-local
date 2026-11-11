@@ -1,6 +1,6 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
-#include "catalog/test_model_catalog.h"
+#include "catalog/azure_registry_catalog.h"
 
 #include "catalog/catalog_cache.h"
 #include "exception.h"
@@ -152,12 +152,12 @@ std::set<std::string> VariantIds(const std::vector<Model*>& groups) {
   return ids;
 }
 
-class TestModelCatalogTest : public ::testing::Test {
+class AzureRegistryCatalogTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    config_.app_name = "MockTestCatalog";
+    config_.app_name = "MockAzureRegistryCatalog";
     config_.model_cache_dir = directory_.string();
-    config_.additional_options["TestModelCredential"] = "invalid-if-credentials-are-initialized";
+    config_.additional_options["AzureRegistryModelCredential"] = "invalid-if-credentials-are-initialized";
   }
 
   void TearDown() override { EXPECT_EQ(transport_->calls, transport_->responses.size()); }
@@ -194,10 +194,10 @@ class TestModelCatalogTest : public ::testing::Test {
     return std::make_unique<AzureMlRegistryClient>(kRegistry, credential_, transport_);
   }
 
-  std::unique_ptr<TestModelCatalog> Catalog(bool inject_client = true) {
-    return std::make_unique<TestModelCatalog>(kRegistry, config_, devices_, services_.model_load_manager,
-                                              services_.logger, services_.telemetry,
-                                              inject_client ? Client() : nullptr);
+  std::unique_ptr<AzureRegistryCatalog> Catalog(bool inject_client = true) {
+    return std::make_unique<AzureRegistryCatalog>(kRegistry, config_, devices_, services_.model_load_manager,
+                                            services_.logger, services_.telemetry,
+                                            inject_client ? Client() : nullptr);
   }
 
   std::filesystem::path CachePath() const {
@@ -212,7 +212,7 @@ class TestModelCatalogTest : public ::testing::Test {
     info.alias = "tiny";
     info.device_type = DeviceType::kCPU;
     info.execution_provider = "CPUExecutionProvider";
-    info.string_properties[TestModelCatalog::kRegistryProperty] = kRegistry;
+    info.string_properties[AzureRegistryCatalog::kRegistryProperty] = kRegistry;
     return info;
   }
 
@@ -236,7 +236,7 @@ class TestModelCatalogTest : public ::testing::Test {
   std::shared_ptr<MockRegistryTransport> transport_ = std::make_shared<MockRegistryTransport>();
 };
 
-TEST_F(TestModelCatalogTest, LatestDiscoveryUsesNumericVersionsPerHardwareVariant) {
+TEST_F(AzureRegistryCatalogTest, LatestDiscoveryUsesNumericVersionsPerHardwareVariant) {
   devices_.devices["GPU"] = {"WebGpuExecutionProvider"};
   Inventory({LegacyModel(kCpuName, 2), LegacyModel(kCpuName, 10), LegacyModel(kCpuName, 1),
              LegacyModel("tiny-generic-gpu", 3), LegacyModel("tiny-generic-gpu", 1)});
@@ -249,7 +249,7 @@ TEST_F(TestModelCatalogTest, LatestDiscoveryUsesNumericVersionsPerHardwareVarian
   EXPECT_EQ(snapshot.GetCachedModels()->size(), 5);
 }
 
-TEST_F(TestModelCatalogTest, OlderExactIdFetchesOnlyTheRequestedVersion) {
+TEST_F(AzureRegistryCatalogTest, OlderExactIdFetchesOnlyTheRequestedVersion) {
   Inventory({LegacyModel(kCpuName, 10)});
   transport_->Queue(kBase + "/models/" + kCpuName + "/versions/2" + kApi, LegacyModel(kCpuName, 2));
   auto catalog = Catalog();
@@ -259,10 +259,10 @@ TEST_F(TestModelCatalogTest, OlderExactIdFetchesOnlyTheRequestedVersion) {
   EXPECT_EQ(older->Info().version, 2);
 }
 
-class TestModelCatalogExactHandleTest : public TestModelCatalogTest,
+class AzureRegistryCatalogExactHandleTest : public AzureRegistryCatalogTest,
                                         public ::testing::WithParamInterface<std::pair<bool, bool>> {};
 
-TEST_P(TestModelCatalogExactHandleTest, OlderHandlesSurviveLatestOnlyListingsAndRemainUsable) {
+TEST_P(AzureRegistryCatalogExactHandleTest, OlderHandlesSurviveLatestOnlyListingsAndRemainUsable) {
   const auto [listing_first, cached_first] = GetParam();
   const auto package = [&] {
     const auto path = CachePath() / (kCpuName + "-2");
@@ -323,7 +323,7 @@ TEST_P(TestModelCatalogExactHandleTest, OlderHandlesSurviveLatestOnlyListingsAnd
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    CallOrders, TestModelCatalogExactHandleTest,
+    CallOrders, AzureRegistryCatalogExactHandleTest,
     ::testing::Values(std::pair{false, false}, std::pair{false, true},
                       std::pair{true, false}, std::pair{true, true}),
     [](const ::testing::TestParamInfo<std::pair<bool, bool>>& info) {
@@ -331,7 +331,7 @@ INSTANTIATE_TEST_SUITE_P(
           (info.param.second ? "Cached" : "Registry");
     });
 
-TEST_F(TestModelCatalogTest, ExactLookupOfListedVersionKeepsListingCacheStateCurrentWithoutDuplicateCacheEntries) {
+TEST_F(AzureRegistryCatalogTest, ExactLookupOfListedVersionKeepsListingCacheStateCurrentWithoutDuplicateCacheEntries) {
   Inventory({LegacyModel(kCpuName, 10)});
   auto catalog = Catalog();
   ASSERT_EQ(catalog->ListModels().size(), 1);
@@ -349,7 +349,7 @@ TEST_F(TestModelCatalogTest, ExactLookupOfListedVersionKeepsListingCacheStateCur
   EXPECT_EQ(cached.front()->Id(), kCpuName + ":10");
 }
 
-TEST_F(TestModelCatalogTest, MissingExactVersionReturnsNullOnColdCatalog) {
+TEST_F(AzureRegistryCatalogTest, MissingExactVersionReturnsNullOnColdCatalog) {
   Discovery();
   transport_->Queue(kBase + "/models/" + kCpuName + "/versions/2" + kApi, Json{},
                     HttpMethod::Get, HttpStatusCode::NotFound);
@@ -358,7 +358,7 @@ TEST_F(TestModelCatalogTest, MissingExactVersionReturnsNullOnColdCatalog) {
   EXPECT_EQ(catalog->GetModelVariant(kCpuName + ":2"), nullptr);
 }
 
-TEST_F(TestModelCatalogTest, MissingExactVersionReturnsNullWithoutChangingListedModels) {
+TEST_F(AzureRegistryCatalogTest, MissingExactVersionReturnsNullWithoutChangingListedModels) {
   Inventory({LegacyModel(kCpuName, 10)});
   transport_->Queue(kBase + "/models/" + kCpuName + "/versions/2" + kApi, Json{},
                     HttpMethod::Get, HttpStatusCode::NotFound);
@@ -374,7 +374,7 @@ TEST_F(TestModelCatalogTest, MissingExactVersionReturnsNullWithoutChangingListed
   EXPECT_EQ(snapshot.GetCachedModels()->front().version, 10);
 }
 
-TEST_F(TestModelCatalogTest, ExactVersionLookupPropagatesAuthorizationAndAuthenticationFailures) {
+TEST_F(AzureRegistryCatalogTest, ExactVersionLookupPropagatesAuthorizationAndAuthenticationFailures) {
   for (const auto status : {HttpStatusCode::Unauthorized, HttpStatusCode::Forbidden}) {
     Discovery();
     transport_->Queue(kBase + "/models/" + kCpuName + "/versions/2" + kApi, Json{}, HttpMethod::Get, status);
@@ -391,7 +391,7 @@ TEST_F(TestModelCatalogTest, ExactVersionLookupPropagatesAuthorizationAndAuthent
   EXPECT_THROW(catalog->GetModelVariant(kCpuName + ":2"), Exception);
 }
 
-TEST_F(TestModelCatalogTest, ExactVersionLookupPropagatesTransportFailures) {
+TEST_F(AzureRegistryCatalogTest, ExactVersionLookupPropagatesTransportFailures) {
   Discovery();
   auto client = Client();
   client->ResourceId();
@@ -401,12 +401,12 @@ TEST_F(TestModelCatalogTest, ExactVersionLookupPropagatesTransportFailures) {
   transport_->before_response = [](size_t) {
     throw Azure::Core::Http::TransportException("mock connection failure");
   };
-  auto catalog = std::make_unique<TestModelCatalog>(kRegistry, config_, devices_, services_.model_load_manager,
+  auto catalog = std::make_unique<AzureRegistryCatalog>(kRegistry, config_, devices_, services_.model_load_manager,
                                                     services_.logger, services_.telemetry, std::move(client));
   EXPECT_THROW(catalog->GetModelVariant(kCpuName + ":2"), Exception);
 }
 
-TEST_F(TestModelCatalogTest, VersionHistoryPreservesOlderVersionsAndAppliesPerNameLimit) {
+TEST_F(AzureRegistryCatalogTest, VersionHistoryPreservesOlderVersionsAndAppliesPerNameLimit) {
   Inventory({LegacyModel(kCpuName, 2), LegacyModel(kCpuName, 10), LegacyModel(kCpuName, 1)});
   auto catalog = Catalog();
   auto versions = catalog->GetModelVersions("tiny", kCpuName, 2);
@@ -415,7 +415,7 @@ TEST_F(TestModelCatalogTest, VersionHistoryPreservesOlderVersionsAndAppliesPerNa
   EXPECT_EQ(versions[1]->Info().version, 2);
 }
 
-TEST_F(TestModelCatalogTest, StrictTagsMapMetadataAndIgnoreUnrelatedAssets) {
+TEST_F(AzureRegistryCatalogTest, StrictTagsMapMetadataAndIgnoreUnrelatedAssets) {
   auto unrelated = LegacyModel("unrelated");
   unrelated["properties"]["tags"] = {{"alias", "other"}, {"task", "chat-completion"}};
   Inventory({TaggedModel(3), unrelated});
@@ -427,7 +427,7 @@ TEST_F(TestModelCatalogTest, StrictTagsMapMetadataAndIgnoreUnrelatedAssets) {
   EXPECT_EQ(model->Info().execution_provider, "CPUExecutionProvider");
 }
 
-TEST_F(TestModelCatalogTest, MissingStrictTagFailsInsteadOfReturningAnEmptyCatalog) {
+TEST_F(AzureRegistryCatalogTest, MissingStrictTagFailsInsteadOfReturningAnEmptyCatalog) {
   auto model = TaggedModel();
   model["properties"]["tags"].erase("alias");
   Inventory({model});
@@ -435,7 +435,7 @@ TEST_F(TestModelCatalogTest, MissingStrictTagFailsInsteadOfReturningAnEmptyCatal
   EXPECT_THROW(catalog->ListModels(), Exception);
 }
 
-TEST_F(TestModelCatalogTest, MalformedTagsAndCrossRegistryAssetIdsFailExplicitly) {
+TEST_F(AzureRegistryCatalogTest, MalformedTagsAndCrossRegistryAssetIdsFailExplicitly) {
   auto malformed = TaggedModel();
   malformed["properties"]["tags"] = Json::array();
   Inventory({malformed});
@@ -449,7 +449,7 @@ TEST_F(TestModelCatalogTest, MalformedTagsAndCrossRegistryAssetIdsFailExplicitly
   EXPECT_THROW(catalog->ListModels(), Exception);
 }
 
-TEST_F(TestModelCatalogTest, IncompatiblePlatformIsExcluded) {
+TEST_F(AzureRegistryCatalogTest, IncompatiblePlatformIsExcluded) {
   auto model = TaggedModel();
   model["properties"]["tags"]["architecture"] =
       model["properties"]["tags"]["architecture"] == "arm64" ? "x64" : "arm64";
@@ -458,7 +458,7 @@ TEST_F(TestModelCatalogTest, IncompatiblePlatformIsExcluded) {
   EXPECT_TRUE(catalog->ListModels().empty());
 }
 
-TEST_F(TestModelCatalogTest, UnknownBackendAndIncompleteLegacyMetadataAreSkipped) {
+TEST_F(AzureRegistryCatalogTest, UnknownBackendAndIncompleteLegacyMetadataAreSkipped) {
   auto missing_alias = LegacyModel("other-generic-cpu");
   missing_alias["properties"]["tags"].erase("alias");
   Inventory({LegacyModel("tiny-mystery-npu"), missing_alias, LegacyModel(kCpuName)});
@@ -466,7 +466,7 @@ TEST_F(TestModelCatalogTest, UnknownBackendAndIncompleteLegacyMetadataAreSkipped
   EXPECT_EQ(VariantIds(catalog->ListModels()), (std::set<std::string>{"tiny-generic-cpu:1"}));
 }
 
-TEST_F(TestModelCatalogTest, HardwareFilteringMatchesProviderToDeviceAndRefreshesAfterRegistration) {
+TEST_F(AzureRegistryCatalogTest, HardwareFilteringMatchesProviderToDeviceAndRefreshesAfterRegistration) {
   devices_.devices["GPU"] = {"OpenVINOExecutionProvider"};
   Inventory({LegacyModel("tiny-openvino-gpu"), LegacyModel("tiny-openvino-npu")});
   auto catalog = Catalog();
@@ -483,7 +483,7 @@ TEST_F(TestModelCatalogTest, HardwareFilteringMatchesProviderToDeviceAndRefreshe
             (std::set<std::string>{"tiny-openvino-gpu:1", "tiny-openvino-npu:1"}));
 }
 
-TEST_F(TestModelCatalogTest, UnregisteredProvidersAreExcludedEvenWhenTheDeviceTypeExists) {
+TEST_F(AzureRegistryCatalogTest, UnregisteredProvidersAreExcludedEvenWhenTheDeviceTypeExists) {
   devices_.devices["GPU"] = {"WebGpuExecutionProvider"};
   Inventory({LegacyModel(kCpuName), LegacyModel("tiny-cuda-gpu"), LegacyModel("tiny-qnn-npu"),
              LegacyModel("tiny-generic-gpu")});
@@ -498,9 +498,9 @@ struct Backend {
   const char* provider;
 };
 
-class TestModelCatalogBackendTest : public TestModelCatalogTest, public ::testing::WithParamInterface<Backend> {};
+class AzureRegistryCatalogBackendTest : public AzureRegistryCatalogTest, public ::testing::WithParamInterface<Backend> {};
 
-TEST_P(TestModelCatalogBackendTest, RecognizesLegacyBackendAndRegisteredDevice) {
+TEST_P(AzureRegistryCatalogBackendTest, RecognizesLegacyBackendAndRegisteredDevice) {
   const auto backend = GetParam();
   devices_.devices[backend.device] = {backend.provider};
   const auto name = std::string("tiny-") + backend.suffix;
@@ -513,7 +513,7 @@ TEST_P(TestModelCatalogBackendTest, RecognizesLegacyBackendAndRegisteredDevice) 
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    AllBackends, TestModelCatalogBackendTest,
+    AllBackends, AzureRegistryCatalogBackendTest,
     ::testing::Values(Backend{"generic-cpu", "CPU", "CPUExecutionProvider"},
                       Backend{"generic-gpu", "GPU", "DmlExecutionProvider"},
                       Backend{"cuda-gpu", "GPU", "CUDAExecutionProvider"},
@@ -526,7 +526,7 @@ INSTANTIATE_TEST_SUITE_P(
                       Backend{"ryzenai-npu", "NPU", "RyzenAIExecutionProvider"},
                       Backend{"amdgpu-gpu", "GPU", "AMDGPUExecutionProvider"}));
 
-TEST_F(TestModelCatalogTest, CompletedCacheServesExactAndAliasWithoutCreatingCredentials) {
+TEST_F(AzureRegistryCatalogTest, CompletedCacheServesExactAndAliasWithoutCreatingCredentials) {
   Snapshot({CachedInfo(2)});
   const auto path = Package(2);
   auto catalog = Catalog(false);
@@ -539,7 +539,7 @@ TEST_F(TestModelCatalogTest, CompletedCacheServesExactAndAliasWithoutCreatingCre
   EXPECT_EQ(path.parent_path().filename().string().find("mock-registry-"), 0);
 }
 
-TEST_F(TestModelCatalogTest, IncompleteCacheFallsBackToRegistryForExactId) {
+TEST_F(AzureRegistryCatalogTest, IncompleteCacheFallsBackToRegistryForExactId) {
   Snapshot({CachedInfo(2)});
   Package(2, false);
   Discovery();
@@ -550,7 +550,7 @@ TEST_F(TestModelCatalogTest, IncompleteCacheFallsBackToRegistryForExactId) {
   EXPECT_TRUE(model->LocalPathSnapshot().empty());
 }
 
-TEST_F(TestModelCatalogTest, AliasCacheMissQueriesRegistryAndGroupsLatestVariant) {
+TEST_F(AzureRegistryCatalogTest, AliasCacheMissQueriesRegistryAndGroupsLatestVariant) {
   Inventory({LegacyModel(kCpuName, 1), LegacyModel(kCpuName, 10)});
   auto catalog = Catalog();
   auto* model = catalog->GetModel("tiny");
@@ -559,7 +559,7 @@ TEST_F(TestModelCatalogTest, AliasCacheMissQueriesRegistryAndGroupsLatestVariant
   EXPECT_EQ(model->Variants().size(), 1);
 }
 
-TEST_F(TestModelCatalogTest, ExactLookupMergesSnapshotAndSurvivesRestartWithoutCredentials) {
+TEST_F(AzureRegistryCatalogTest, ExactLookupMergesSnapshotAndSurvivesRestartWithoutCredentials) {
   Snapshot({CachedInfo(10)});
   Discovery();
   transport_->Queue(kBase + "/models/" + kCpuName + "/versions/2" + kApi, LegacyModel(kCpuName, 2));
@@ -582,10 +582,10 @@ enum class ConcurrencyMode {
   kHistory,
 };
 
-class TestModelCatalogConcurrencyTest : public TestModelCatalogTest,
+class AzureRegistryCatalogConcurrencyTest : public AzureRegistryCatalogTest,
                                         public ::testing::WithParamInterface<ConcurrencyMode> {};
 
-TEST_P(TestModelCatalogConcurrencyTest, SnapshotTransactionsPreserveExactIdsAcrossOfflineRestart) {
+TEST_P(AzureRegistryCatalogConcurrencyTest, SnapshotTransactionsPreserveExactIdsAcrossOfflineRestart) {
   Snapshot({CachedInfo(10)});
   Package(10);
   Discovery();
@@ -648,7 +648,7 @@ TEST_P(TestModelCatalogConcurrencyTest, SnapshotTransactionsPreserveExactIdsAcro
 
   const auto second_path = Package(2);
   const auto third_path = Package(3);
-  config_.additional_options["TestModelCacheOnly"] = "true";
+  config_.additional_options["AzureRegistryModelCacheOnly"] = "true";
   auto restarted = Catalog(false);
   ASSERT_FALSE(restarted->ListModels().empty());
   auto* second_model = restarted->GetModelVariant("tiny-generic-cpu:2");
@@ -660,7 +660,7 @@ TEST_P(TestModelCatalogConcurrencyTest, SnapshotTransactionsPreserveExactIdsAcro
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    ConcurrentWriters, TestModelCatalogConcurrencyTest,
+    ConcurrentWriters, AzureRegistryCatalogConcurrencyTest,
     ::testing::Values(ConcurrencyMode::kExactId, ConcurrencyMode::kListing, ConcurrencyMode::kHistory),
     [](const ::testing::TestParamInfo<ConcurrencyMode>& info) {
       switch (info.param) {
@@ -674,8 +674,8 @@ INSTANTIATE_TEST_SUITE_P(
       return "Unknown";
     });
 
-TEST_F(TestModelCatalogTest, CacheOnlyListsLatestDownloadedButAllowsOlderDownloadedExactIds) {
-  config_.additional_options["TestModelCacheOnly"] = "true";
+TEST_F(AzureRegistryCatalogTest, CacheOnlyListsLatestDownloadedButAllowsOlderDownloadedExactIds) {
+  config_.additional_options["AzureRegistryModelCacheOnly"] = "true";
   Snapshot({CachedInfo(1), CachedInfo(2), CachedInfo(10)});
   Package(1);
   Package(2);
@@ -685,18 +685,18 @@ TEST_F(TestModelCatalogTest, CacheOnlyListsLatestDownloadedButAllowsOlderDownloa
   EXPECT_EQ(catalog->GetModelVariant("tiny-generic-cpu:10"), nullptr);
 }
 
-TEST_F(TestModelCatalogTest, MissingOfflineSnapshotAndCrossRegistrySnapshotFailExplicitly) {
-  config_.additional_options["TestModelCacheOnly"] = "true";
+TEST_F(AzureRegistryCatalogTest, MissingOfflineSnapshotAndCrossRegistrySnapshotFailExplicitly) {
+  config_.additional_options["AzureRegistryModelCacheOnly"] = "true";
   auto missing = Catalog(false);
   EXPECT_THROW(missing->ListModels(), Exception);
   auto info = CachedInfo(1);
-  info.string_properties[TestModelCatalog::kRegistryProperty] = "another-registry";
+  info.string_properties[AzureRegistryCatalog::kRegistryProperty] = "another-registry";
   Snapshot({info});
   auto mismatched = Catalog(false);
   EXPECT_THROW(mismatched->ListModels(), Exception);
 }
 
-TEST_F(TestModelCatalogTest, PaginationUsesBothModelAndVersionNextLinksAndCorrectTokenScopes) {
+TEST_F(AzureRegistryCatalogTest, PaginationUsesBothModelAndVersionNextLinksAndCorrectTokenScopes) {
   Discovery();
   transport_->Queue(kBase + "/models" + kApi, {{"value", Json::array()}, {"nextLink", kBase + "/models?page=2"}});
   transport_->Queue(kBase + "/models?page=2", {{"value", {{{"name", kCpuName}}}}});
@@ -711,7 +711,7 @@ TEST_F(TestModelCatalogTest, PaginationUsesBothModelAndVersionNextLinksAndCorrec
             (std::set<std::string>{"https://ml.azure.com/.default", "https://management.azure.com/.default"}));
 }
 
-TEST_F(TestModelCatalogTest, DiscoveryEncodesParenthesizedAndUnicodeResourceGroupsAsOneSegment) {
+TEST_F(AzureRegistryCatalogTest, DiscoveryEncodesParenthesizedAndUnicodeResourceGroupsAsOneSegment) {
   std::string unicode_limit;
   std::string encoded_limit;
   for (int i = 0; i < 90; ++i) {
@@ -737,7 +737,7 @@ TEST_F(TestModelCatalogTest, DiscoveryEncodesParenthesizedAndUnicodeResourceGrou
   }
 }
 
-TEST_F(TestModelCatalogTest, DiscoveryRejectsInvalidResourceGroupBoundariesAndAsciiCharacters) {
+TEST_F(AzureRegistryCatalogTest, DiscoveryRejectsInvalidResourceGroupBoundariesAndAsciiCharacters) {
   for (const auto& group : std::vector<std::string>{
            "", "rg.", "..", "rg/test", "rg\\test", "rg%2Ftest", "rg?test", "rg#test",
            "rg test", std::string("rg\0test", 7), std::string(91, 'a')}) {
@@ -748,7 +748,7 @@ TEST_F(TestModelCatalogTest, DiscoveryRejectsInvalidResourceGroupBoundariesAndAs
   }
 }
 
-TEST_F(TestModelCatalogTest, DiscoveryAndListingNotFoundRemainErrors) {
+TEST_F(AzureRegistryCatalogTest, DiscoveryAndListingNotFoundRemainErrors) {
   Discovery();
   transport_->responses.back().status = HttpStatusCode::NotFound;
   auto undiscovered = Client();
@@ -760,7 +760,7 @@ TEST_F(TestModelCatalogTest, DiscoveryAndListingNotFoundRemainErrors) {
   EXPECT_THROW(client->ListModelVersions(), Exception);
 }
 
-TEST_F(TestModelCatalogTest, MissingModelAndArtifactGrantRemainDownloadErrors) {
+TEST_F(AzureRegistryCatalogTest, MissingModelAndArtifactGrantRemainDownloadErrors) {
   for (const bool missing_model : {true, false}) {
     Discovery();
     transport_->Queue(kBase + "/models/" + kCpuName + "/versions/1" + kApi, LegacyModel(kCpuName),
@@ -774,7 +774,7 @@ TEST_F(TestModelCatalogTest, MissingModelAndArtifactGrantRemainDownloadErrors) {
   }
 }
 
-TEST_F(TestModelCatalogTest, RejectsPaginationOutsideRegistryAndCycles) {
+TEST_F(AzureRegistryCatalogTest, RejectsPaginationOutsideRegistryAndCycles) {
   Discovery();
   transport_->Queue(kBase + "/models" + kApi,
                     {{"value", Json::array()}, {"nextLink", "https://unrelated.example/models"}});
@@ -785,7 +785,7 @@ TEST_F(TestModelCatalogTest, RejectsPaginationOutsideRegistryAndCycles) {
   EXPECT_THROW(client->ListModelVersions(), Exception);
 }
 
-TEST_F(TestModelCatalogTest, RegistryHttpFailurePropagatesStatusAndRequestIdWithoutResponseSecrets) {
+TEST_F(AzureRegistryCatalogTest, RegistryHttpFailurePropagatesStatusAndRequestIdWithoutResponseSecrets) {
   Discovery();
   transport_->Queue(kBase + "/models" + kApi, {{"message", "private-response-marker"}},
                     HttpMethod::Get, HttpStatusCode::Forbidden);
@@ -801,7 +801,7 @@ TEST_F(TestModelCatalogTest, RegistryHttpFailurePropagatesStatusAndRequestIdWith
   }
 }
 
-TEST_F(TestModelCatalogTest, MalformedJsonAndAuthenticationFailureAreReported) {
+TEST_F(AzureRegistryCatalogTest, MalformedJsonAndAuthenticationFailureAreReported) {
   Discovery();
   transport_->responses.back().body = "{invalid-json";
   auto client = Client();
@@ -811,7 +811,7 @@ TEST_F(TestModelCatalogTest, MalformedJsonAndAuthenticationFailureAreReported) {
   EXPECT_THROW(unauthenticated->ListModelVersions(), Exception);
 }
 
-TEST_F(TestModelCatalogTest, ArtifactAccessUsesReadGrantAndPreservesBlobPrefix) {
+TEST_F(AzureRegistryCatalogTest, ArtifactAccessUsesReadGrantAndPreservesBlobPrefix) {
   Discovery();
   transport_->Queue(kBase + "/models/" + kCpuName + "/versions/2" + kApi, LegacyModel(kCpuName, 2));
   const auto sas = "https://storage.blob.core.windows.net/container?sig=mock-signature";
@@ -826,7 +826,7 @@ TEST_F(TestModelCatalogTest, ArtifactAccessUsesReadGrantAndPreservesBlobPrefix) 
   EXPECT_EQ(artifacts.blob_sas_uri, sas);
 }
 
-TEST_F(TestModelCatalogTest, LegacyArtifactsAcceptMatchingTestProxyAndDirectoryPath) {
+TEST_F(AzureRegistryCatalogTest, LegacyArtifactsAcceptMatchingTestProxyAndDirectoryPath) {
   Discovery("https://region.experiments.azureml-test.net/");
   auto base = kBase;
   base.replace(base.find(".azureml.net"), std::string(".azureml.net").size(), ".azureml-test.net");
@@ -844,7 +844,7 @@ TEST_F(TestModelCatalogTest, LegacyArtifactsAcceptMatchingTestProxyAndDirectoryP
   EXPECT_EQ(client->ResolveArtifacts(kCpuName, 1).path_prefix, "v4/");
 }
 
-TEST_F(TestModelCatalogTest, ArtifactGrantForAnotherContainerIsRejected) {
+TEST_F(AzureRegistryCatalogTest, ArtifactGrantForAnotherContainerIsRejected) {
   Discovery();
   transport_->Queue(kBase + "/models/" + kCpuName + "/versions/1" + kApi, LegacyModel(kCpuName));
   transport_->Queue(kBase + "/datarefs/" + kCpuName + "/versions/1" + kApi,
@@ -856,7 +856,7 @@ TEST_F(TestModelCatalogTest, ArtifactGrantForAnotherContainerIsRejected) {
   EXPECT_THROW(client->ResolveArtifacts(kCpuName, 1), Exception);
 }
 
-TEST_F(TestModelCatalogTest, CacheFirstAliasMaintainsIndependenceFromListingAndLoadedVersion) {
+TEST_F(AzureRegistryCatalogTest, CacheFirstAliasMaintainsIndependenceFromListingAndLoadedVersion) {
   std::filesystem::create_directories(CachePath());
   const auto package_path = CachePath() / (kCpuName + "-2");
   std::filesystem::copy(test::GetTestDataPath("tiny-paged-attention"), package_path,
@@ -889,7 +889,7 @@ TEST_F(TestModelCatalogTest, CacheFirstAliasMaintainsIndependenceFromListingAndL
   EXPECT_TRUE(catalog->GetLoadedModels().empty());
 }
 
-TEST_F(TestModelCatalogTest, RetainedUnloadedAliasRefreshesSelectionWhenDeviceMapChanges) {
+TEST_F(AzureRegistryCatalogTest, RetainedUnloadedAliasRefreshesSelectionWhenDeviceMapChanges) {
   devices_.devices["CPU"] = {"CPUExecutionProvider"};
   devices_.devices["GPU"] = {"WebGpuExecutionProvider"};
 
@@ -900,7 +900,7 @@ TEST_F(TestModelCatalogTest, RetainedUnloadedAliasRefreshesSelectionWhenDeviceMa
   gpu_info.alias = "tiny";
   gpu_info.device_type = DeviceType::kGPU;
   gpu_info.execution_provider = "WebGpuExecutionProvider";
-  gpu_info.string_properties[TestModelCatalog::kRegistryProperty] = kRegistry;
+  gpu_info.string_properties[AzureRegistryCatalog::kRegistryProperty] = kRegistry;
   Snapshot({CachedInfo(2), gpu_info});
 
   // Pre-cache both packages on disk
@@ -930,7 +930,7 @@ TEST_F(TestModelCatalogTest, RetainedUnloadedAliasRefreshesSelectionWhenDeviceMa
   EXPECT_EQ(alias->Id(), "tiny-generic-gpu:2");
 }
 
-TEST_F(TestModelCatalogTest, DownloadConcurrencyHonorsConfiguration) {
+TEST_F(AzureRegistryCatalogTest, DownloadConcurrencyHonorsConfiguration) {
   for (const auto* threads : {"4", "0", "-1", "invalid"}) {
     config_.additional_options["NumModelDownloadThreads"] = threads;
     auto catalog = Catalog();
@@ -938,7 +938,7 @@ TEST_F(TestModelCatalogTest, DownloadConcurrencyHonorsConfiguration) {
   }
 }
 
-TEST_F(TestModelCatalogTest, LiveInventorySavesRetainCompletedLocalPackagesForDeletedRemoteVersions) {
+TEST_F(AzureRegistryCatalogTest, LiveInventorySavesRetainCompletedLocalPackagesForDeletedRemoteVersions) {
   std::filesystem::create_directories(CachePath());
   const auto package_path = CachePath() / (kCpuName + "-2");
   std::filesystem::copy(test::GetTestDataPath("tiny-paged-attention"), package_path,
@@ -965,14 +965,14 @@ TEST_F(TestModelCatalogTest, LiveInventorySavesRetainCompletedLocalPackagesForDe
   EXPECT_EQ(saved_ids, (std::set<std::string>{kCpuName + ":2", kCpuName + ":10"}));
 
   // Offline / cache-only mode recovers the deleted version from retained snapshot
-  config_.additional_options["TestModelCacheOnly"] = "true";
+  config_.additional_options["AzureRegistryModelCacheOnly"] = "true";
   auto restarted = Catalog(false);
   auto* recovered = restarted->GetModelVariant(kCpuName + ":2");
   ASSERT_NE(recovered, nullptr);
   EXPECT_TRUE(recovered->IsCached());
 }
 
-TEST_F(TestModelCatalogTest, GetCachedModelsAndGetLoadedModelsIncludeOlderCompletedAndHistoryModels) {
+TEST_F(AzureRegistryCatalogTest, GetCachedModelsAndGetLoadedModelsIncludeOlderCompletedAndHistoryModels) {
   std::filesystem::create_directories(CachePath());
   const auto package_path = CachePath() / (kCpuName + "-2");
   std::filesystem::copy(test::GetTestDataPath("tiny-paged-attention"), package_path,
@@ -1007,7 +1007,7 @@ TEST_F(TestModelCatalogTest, GetCachedModelsAndGetLoadedModelsIncludeOlderComple
   ASSERT_NO_THROW(v2->Unload());
 }
 
-TEST_F(TestModelCatalogTest, GetLatestVersionPopulatesLiveListingOnFreshCatalogAndPreservesCacheOnly) {
+TEST_F(AzureRegistryCatalogTest, GetLatestVersionPopulatesLiveListingOnFreshCatalogAndPreservesCacheOnly) {
   std::filesystem::create_directories(CachePath());
   const auto package_path = CachePath() / (kCpuName + "-2");
   std::filesystem::copy(test::GetTestDataPath("tiny-paged-attention"), package_path,
@@ -1029,7 +1029,7 @@ TEST_F(TestModelCatalogTest, GetLatestVersionPopulatesLiveListingOnFreshCatalogA
   EXPECT_EQ(latest->Id(), kCpuName + ":10");
 
   // In cache-only mode with only version 2 on disk, it preserves cache-only
-  config_.additional_options["TestModelCacheOnly"] = "true";
+  config_.additional_options["AzureRegistryModelCacheOnly"] = "true";
   auto cache_only_catalog = Catalog(false);
   auto* cached_exact = cache_only_catalog->GetModelVariant(kCpuName + ":2");
   ASSERT_NE(cached_exact, nullptr);

@@ -32,8 +32,8 @@ const char* CatalogName(CatalogType catalog) {
       return "public";
     case CatalogType::kLocal:
       return "local";
-    case CatalogType::kTest:
-      return "test";
+    case CatalogType::kAzureRegistry:
+      return "azure_registry";
   }
 
   FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
@@ -93,7 +93,7 @@ class HostedState {
              context->Call(Operation::IsLoaded, {{"model", EncodeModelSelection({CatalogType::kLocal, info, path})}})
                  .get<bool>();
     });
-    if (catalog == CatalogType::kPublic || catalog == CatalogType::kTest) {
+    if (catalog == CatalogType::kPublic || catalog == CatalogType::kAzureRegistry) {
       const auto context = Connect(false);
       metadata->SetCatalogRuntimeDevices(
           context ? context->Call(Operation::RuntimeDevices, Json::object()).get<DeviceProviders>()
@@ -400,8 +400,8 @@ class HostedCatalog final : public CatalogBackend {
         type_(type),
         handles_(handles),
         state_(handles.state),
-        source_(type == CatalogType::kTest ? state_.metadata->GetTestCatalog(registry) :
-                                           state_.metadata->GetCatalog(type)),
+        source_(type == CatalogType::kAzureRegistry ? state_.metadata->GetAzureRegistryCatalog(registry) :
+                                                     state_.metadata->GetCatalog(type)),
         registry_(registry) {}
 
   const std::string& GetName() const override { return source_.GetName(); }
@@ -513,18 +513,18 @@ class HostedManager final : public ManagerBackend {
         return public_catalog_;
       case CatalogType::kLocal:
         return local_catalog_;
-      case CatalogType::kTest:
-        return GetTestCatalog("");
+      case CatalogType::kAzureRegistry:
+        return GetAzureRegistryCatalog("");
     }
 
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
   }
 
-  CatalogBackend& GetTestCatalog(const std::string& registry) override {
-    auto& source = state_->metadata->GetTestCatalog(registry);
+  CatalogBackend& GetAzureRegistryCatalog(const std::string& registry) override {
+    auto& source = state_->metadata->GetAzureRegistryCatalog(registry);
     std::lock_guard lock(catalogs_mutex_);
-    auto& catalog = test_catalogs_[&source];
-    if (!catalog) catalog = std::make_unique<HostedCatalog>(CatalogType::kTest, models_, registry);
+    auto& catalog = azure_registry_catalogs_[&source];
+    if (!catalog) catalog = std::make_unique<HostedCatalog>(CatalogType::kAzureRegistry, models_, registry);
     return *catalog;
   }
 
@@ -704,7 +704,7 @@ class HostedManager final : public ManagerBackend {
   HostedCatalog public_catalog_;
   HostedCatalog local_catalog_;
   std::mutex catalogs_mutex_;
-  std::map<CatalogBackend*, std::unique_ptr<HostedCatalog>> test_catalogs_;
+  std::map<CatalogBackend*, std::unique_ptr<HostedCatalog>> azure_registry_catalogs_;
   mutable std::mutex urls_mutex_;
   mutable std::set<std::vector<std::string>> url_snapshots_;
 };

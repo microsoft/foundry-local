@@ -123,8 +123,8 @@ class ManagerBackend : public BackendObject {
  public:
   using BackendObject::BackendObject;
   virtual CatalogBackend& GetCatalog(CatalogType type) = 0;
-  virtual CatalogBackend& GetTestCatalog(const std::string& /*registry*/) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED, "test catalogs are unavailable in this backend");
+  virtual CatalogBackend& GetAzureRegistryCatalog(const std::string& /*registry*/) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED, "Azure Registry catalogs are unavailable in this backend");
   }
   // Capture an active selection for admitted execution, not for retaining catalog/discovery handles.
   // A requested reservation is published atomically with capture and rolls back unless committed after Load.

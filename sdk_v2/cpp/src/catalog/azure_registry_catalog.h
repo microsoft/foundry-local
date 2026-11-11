@@ -10,14 +10,14 @@ namespace fl {
 
 class ModelLoadManager;
 
-class TestModelCatalog final : public AzureModelCatalog {
+class AzureRegistryCatalog final : public AzureModelCatalog {
  public:
   static constexpr const char* kDefaultRegistry = "prathikrao-pmc-test";
-  static constexpr const char* kRegistryProperty = "test.registry";
+  static constexpr const char* kRegistryProperty = "azure_registry.name";
 
-  TestModelCatalog(std::string registry, const Configuration& config, const IEpDetector& ep_detector,
-                   ModelLoadManager& load_manager, ILogger& logger, ITelemetry& telemetry,
-                   std::unique_ptr<AzureMlRegistryClient> client = nullptr);
+  AzureRegistryCatalog(std::string registry, const Configuration& config, const IEpDetector& ep_detector,
+                       ModelLoadManager& load_manager, ILogger& logger, ITelemetry& telemetry,
+                       std::unique_ptr<AzureMlRegistryClient> client = nullptr);
 
   std::vector<Model*> ListModels() const override;
   Model* GetModel(const std::string& alias) const override;
@@ -34,6 +34,7 @@ class TestModelCatalog final : public AzureModelCatalog {
   std::vector<Model> FetchModelsByIds(const std::vector<std::string>& ids) const override;
   bool IsAuthoritativeSnapshot() const override { return true; }
   bool RefreshOnEveryAccess() const override { return false; }
+  bool ShouldRethrowFetchErrors() const override { return true; }
   VariantEligibility MakeVariantEligibility() const override;
   void RefreshRetainedVariantCache(Model& model) const override;
 

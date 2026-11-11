@@ -7,7 +7,7 @@
 #include "catalog.h"
 #include "catalog/catalog_cache.h"
 #include "catalog/local_model_catalog.h"
-#include "catalog/test_model_catalog.h"
+#include "catalog/azure_registry_catalog.h"
 #include "configuration.h"
 #include "download/download_manager.h"
 #include "exception.h"
@@ -217,7 +217,7 @@ class SdkSessionTest : public testing::Test {
     config.model_cache_dir = (root_ / "models").string();
     config.logs_dir = (root_ / "logs").string();
     config.disable_nonessential_telemetry = true;
-    config.additional_options["TestModelCacheOnly"] = "true";
+    config.additional_options["AzureRegistryModelCacheOnly"] = "true";
     manager_ = api::CreateEmbeddedBackend(config);
     ModelInfo metadata;
     metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "coding");
@@ -360,7 +360,7 @@ class SdkSessionTest : public testing::Test {
       info.alias = "shared";
       info.device_type = variant.device;
       info.execution_provider = variant.provider;
-      info.string_properties[TestModelCatalog::kRegistryProperty] = registry;
+      info.string_properties[AzureRegistryCatalog::kRegistryProperty] = registry;
       models.push_back(std::move(info));
       const auto path = cache / (std::string(variant.name) + "-1");
       std::filesystem::create_directories(path);
@@ -910,12 +910,12 @@ TEST_F(SdkSessionTest, CatalogRuntimeDevicesInvalidateExistingTestRegistriesAndA
   const std::set<std::string> cpu_ids{"shared-generic-cpu:1"};
   const std::set<std::string> all_ids{"shared-generic-cpu:1", "shared-generic-gpu:1", "shared-qnn-npu:1"};
   manager_->SetCatalogRuntimeDevices(cpu_only);
-  auto& existing = manager_->GetTestCatalog("existing-registry");
+  auto& existing = manager_->GetAzureRegistryCatalog("existing-registry");
   EXPECT_EQ(CatalogVariantIds(existing), cpu_ids);
 
   manager_->SetCatalogRuntimeDevices(host_devices);
   EXPECT_EQ(CatalogVariantIds(existing), all_ids);
-  auto& created_later = manager_->GetTestCatalog("new-registry");
+  auto& created_later = manager_->GetAzureRegistryCatalog("new-registry");
   EXPECT_EQ(CatalogVariantIds(created_later), all_ids);
   EXPECT_EQ(manager_->GetRuntimeDevices(), local_devices);
 
@@ -944,7 +944,7 @@ TEST_F(SdkSessionTest, HostedTestDiscoveryRefreshesProvidersAfterHostRegistratio
     acquired += acquire;
     return context;
   });
-  auto& existing = hosted->GetTestCatalog("existing-registry");
+  auto& existing = hosted->GetAzureRegistryCatalog("existing-registry");
   EXPECT_EQ(CatalogVariantIds(existing), cpu_ids);
   EXPECT_EQ(acquired, 0);
 
@@ -957,7 +957,7 @@ TEST_F(SdkSessionTest, HostedTestDiscoveryRefreshesProvidersAfterHostRegistratio
   EXPECT_EQ(alias->Variants().size(), 3);
   EXPECT_EQ(CatalogVariantIds(existing), all_ids);
   EXPECT_EQ(existing.GetModelVersions("shared", "", 0).size(), 3);
-  auto& created_later = hosted->GetTestCatalog("new-registry");
+  auto& created_later = hosted->GetAzureRegistryCatalog("new-registry");
   EXPECT_EQ(CatalogVariantIds(created_later), all_ids);
   EXPECT_EQ(manager_->GetRuntimeDevices(), local_devices);
 

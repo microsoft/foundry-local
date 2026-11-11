@@ -1,6 +1,6 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
-#include "catalog/test_model_catalog.h"
+#include "catalog/azure_registry_catalog.h"
 
 #include "catalog/azure_catalog_models.h"
 #include "catalog/catalog_cache.h"
@@ -39,7 +39,7 @@ std::shared_ptr<Azure::Core::Credentials::TokenCredential> Credential(const std:
     return std::make_shared<Azure::Identity::AzureCliCredential>();
   }
   FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-           "Set TestModelCredential to azure_cli or workload_identity; CI must explicitly select workload_identity.");
+           "Set AzureRegistryModelCredential to azure_cli or workload_identity; CI must explicitly select workload_identity.");
 }
 
 const char* HostOS() {
@@ -96,18 +96,18 @@ std::optional<VariantMetadata> LegacyVariantMetadata(const std::string& name) {
 
 }  // namespace
 
-TestModelCatalog::TestModelCatalog(std::string registry, const Configuration& config,
-                                   const IEpDetector& ep_detector, ModelLoadManager& load_manager,
-                                   ILogger& logger, ITelemetry& telemetry,
-                                   std::unique_ptr<AzureMlRegistryClient> client)
+AzureRegistryCatalog::AzureRegistryCatalog(std::string registry, const Configuration& config,
+                               const IEpDetector& ep_detector, ModelLoadManager& load_manager,
+                               ILogger& logger, ITelemetry& telemetry,
+                               std::unique_ptr<AzureMlRegistryClient> client)
     : AzureModelCatalog({}, CacheDirectory(registry, config),
           [this](ModelInfo info, std::string path) {
             return Model::FromModelInfo(std::move(info), std::move(path), *downloader_, load_manager_);
-          }, ep_detector, logger, false, telemetry, CatalogType::kTest),
+          }, ep_detector, logger, false, telemetry, CatalogType::kAzureRegistry),
       registry_(std::move(registry)),
       cache_dir_(CacheDirectory(registry_, config)),
-      cache_only_(Setting(config, "TestModelCacheOnly", "false") == "true"),
-      credential_mode_(Setting(config, "TestModelCredential", "")),
+      cache_only_(Setting(config, "AzureRegistryModelCacheOnly", "false") == "true"),
+      credential_mode_(Setting(config, "AzureRegistryModelCredential", "")),
       logger_(logger),
       load_manager_(load_manager),
       client_(std::move(client)) {
@@ -129,7 +129,7 @@ TestModelCatalog::TestModelCatalog(std::string registry, const Configuration& co
       });
 }
 
-AzureMlRegistryClient& TestModelCatalog::Client() const {
+AzureMlRegistryClient& AzureRegistryCatalog::Client() const {
   if (cache_only_) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot access the registry in cache-only mode");
   }
@@ -138,7 +138,7 @@ AzureMlRegistryClient& TestModelCatalog::Client() const {
   return *client_;
 }
 
-std::optional<ModelInfo> TestModelCatalog::Adapt(const nlohmann::json& model) const {
+std::optional<ModelInfo> AzureRegistryCatalog::Adapt(const nlohmann::json& model) const {
   const auto& properties = model.at("properties");
   if (!properties.contains("tags") || properties["tags"].is_null()) return std::nullopt;
   const auto& tags = properties["tags"];
@@ -216,11 +216,11 @@ std::optional<ModelInfo> TestModelCatalog::Adapt(const nlohmann::json& model) co
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "test model has invalid version, device or execution provider");
   }
   info->string_properties[kRegistryProperty] = registry_;
-  info->string_properties["test.registryResourceId"] = Client().ResourceId();
+  info->string_properties["azureml.registryResourceId"] = Client().ResourceId();
   return info;
 }
 
-std::vector<Model*> TestModelCatalog::ListModels() const {
+std::vector<Model*> AzureRegistryCatalog::ListModels() const {
   auto models = AzureModelCatalog::ListModels();
   for (auto* model : models) {
     for (auto* variant : model->Variants()) RefreshRetainedVariantCache(*variant);
@@ -228,7 +228,7 @@ std::vector<Model*> TestModelCatalog::ListModels() const {
   return models;
 }
 
-Model* TestModelCatalog::GetModel(const std::string& alias) const {
+Model* AzureRegistryCatalog::GetModel(const std::string& alias) const {
   std::lock_guard lock(alias_models_mutex_);
   auto it = alias_models_.find(alias);
   if (it != alias_models_.end()) {
@@ -305,7 +305,7 @@ Model* TestModelCatalog::GetModel(const std::string& alias) const {
   return alias_models_.emplace(alias, std::move(container)).first->second.get();
 }
 
-Model* TestModelCatalog::GetModelVariant(const std::string& model_id) const {
+Model* AzureRegistryCatalog::GetModelVariant(const std::string& model_id) const {
   if (model_id.find(':') == std::string::npos) return AzureModelCatalog::GetModelVariant(model_id);
 
   {
@@ -319,7 +319,7 @@ Model* TestModelCatalog::GetModelVariant(const std::string& model_id) const {
   const auto indexed = FindIndexedModelInfo(model_id);
   auto models = indexed ? CreateModels({*indexed}) : FetchModelsByIds({model_id});
   if (models.empty()) {
-    logger_.Log(LogLevel::Information, "GetModelVariant: '" + model_id + "' not found in the test catalog.");
+    logger_.Log(LogLevel::Information, "GetModelVariant: '" + model_id + "' not found in the Azure ML catalog.");
     return nullptr;
   }
   auto model = std::make_unique<Model>(std::move(models.front()));
@@ -327,7 +327,7 @@ Model* TestModelCatalog::GetModelVariant(const std::string& model_id) const {
   return exact_models_.emplace(model_id, std::move(model)).first->second.get();
 }
 
-Model* TestModelCatalog::GetLatestVersion(const Model* model) const {
+Model* AzureRegistryCatalog::GetLatestVersion(const Model* model) const {
   if (!model) return nullptr;
   if (!cache_only_) {
     EnsurePopulated(/*allow_refresh=*/true);
@@ -335,7 +335,7 @@ Model* TestModelCatalog::GetLatestVersion(const Model* model) const {
   return AzureModelCatalog::GetLatestVersion(model);
 }
 
-std::vector<Model*> TestModelCatalog::GetCachedModels() const {
+std::vector<Model*> AzureRegistryCatalog::GetCachedModels() const {
   std::vector<std::string> completed_ids;
   {
     std::lock_guard snapshot_lock(snapshot_mutex_);
@@ -383,7 +383,7 @@ std::vector<Model*> TestModelCatalog::GetCachedModels() const {
   return models;
 }
 
-std::vector<Model*> TestModelCatalog::GetLoadedModels() const {
+std::vector<Model*> AzureRegistryCatalog::GetLoadedModels() const {
   std::vector<Model*> models = AzureModelCatalog::GetLoadedModels();
   std::unordered_set<std::string> seen_ids;
   for (auto* m : models) seen_ids.insert(m->Id());
@@ -411,12 +411,12 @@ std::vector<Model*> TestModelCatalog::GetLoadedModels() const {
   return models;
 }
 
-std::vector<Model> TestModelCatalog::CreateModels(const std::vector<ModelInfo>& infos) const {
+std::vector<Model> AzureRegistryCatalog::CreateModels(const std::vector<ModelInfo>& infos) const {
   std::vector<Model> models;
   for (const auto& info : infos) {
     const auto* registry = info.GetPropertyStr(kRegistryProperty);
     if (!registry || *registry != registry_) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "test catalog cache contains another registry's metadata");
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Azure ML catalog cache contains another registry's metadata");
     }
     const auto path = downloader_->GetCompletedModelCachePath(info);
     if (!cache_only_ || !path.empty()) {
@@ -426,7 +426,7 @@ std::vector<Model> TestModelCatalog::CreateModels(const std::vector<ModelInfo>& 
   return models;
 }
 
-std::vector<Model> TestModelCatalog::FetchModels() const {
+std::vector<Model> AzureRegistryCatalog::FetchModels() const {
   auto models = FetchAvailableModels();
   std::map<std::string, int> latest_versions;
   for (const auto& model : models) {
@@ -440,7 +440,7 @@ std::vector<Model> TestModelCatalog::FetchModels() const {
   return models;
 }
 
-std::vector<Model> TestModelCatalog::FetchAvailableModels() const {
+std::vector<Model> AzureRegistryCatalog::FetchAvailableModels() const {
   std::lock_guard snapshot_lock(snapshot_mutex_);
   CatalogCache cache(cache_dir_, logger_);
   std::vector<ModelInfo> live_infos;
@@ -448,7 +448,7 @@ std::vector<Model> TestModelCatalog::FetchAvailableModels() const {
     cache.Load();
     const auto cached = cache.GetCachedModels();
     if (!cached) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "no test catalog snapshot; run online with this registry and cache first");
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "no Azure ML catalog snapshot; run online with this registry and cache first");
     }
     live_infos = *cached;
   } else {
@@ -480,7 +480,7 @@ std::vector<Model> TestModelCatalog::FetchAvailableModels() const {
   return models;
 }
 
-BaseModelCatalog::VariantEligibility TestModelCatalog::MakeVariantEligibility() const {
+BaseModelCatalog::VariantEligibility AzureRegistryCatalog::MakeVariantEligibility() const {
   return [devices = AvailableDevicesToEPs(), eligible = AzureModelCatalog::MakeVariantEligibility()](
              const Model& model) {
     const auto& info = model.Info();
@@ -496,20 +496,20 @@ BaseModelCatalog::VariantEligibility TestModelCatalog::MakeVariantEligibility() 
   };
 }
 
-std::optional<std::vector<Model>> TestModelCatalog::FetchLookupModels() const {
+std::optional<std::vector<Model>> AzureRegistryCatalog::FetchLookupModels() const {
   std::lock_guard snapshot_lock(snapshot_mutex_);
   CatalogCache cache(cache_dir_, logger_);
   cache.Load();
   const auto infos = cache.GetCachedModels();
   if (!infos && cache_only_) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "no test catalog snapshot; run online with this registry and cache first");
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "no Azure ML catalog snapshot; run online with this registry and cache first");
   }
   auto models = infos ? CreateModels(*infos) : std::vector<Model>{};
   std::erase_if(models, [](const Model& model) { return model.LocalPathSnapshot().empty(); });
   return models;
 }
 
-std::vector<Model> TestModelCatalog::FetchModelVersions(const std::string& alias, const std::string& name,
+std::vector<Model> AzureRegistryCatalog::FetchModelVersions(const std::string& alias, const std::string& name,
                                                        int max_versions) const {
   auto models = FetchAvailableModels();
   std::erase_if(models, [&](const Model& model) {
@@ -523,7 +523,7 @@ std::vector<Model> TestModelCatalog::FetchModelVersions(const std::string& alias
   return models;
 }
 
-std::vector<Model> TestModelCatalog::FetchModelsByIds(const std::vector<std::string>& ids) const {
+std::vector<Model> AzureRegistryCatalog::FetchModelsByIds(const std::vector<std::string>& ids) const {
   std::lock_guard snapshot_lock(snapshot_mutex_);
   CatalogCache cache(cache_dir_, logger_);
   cache.Load();
@@ -532,7 +532,7 @@ std::vector<Model> TestModelCatalog::FetchModelsByIds(const std::vector<std::str
   for (const auto& id : ids) {
     const auto [name, version] = Utils::SplitModelNameAndVersion(id);
     if (version <= 0) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "test model ID must use <variant-name>:<positive-version>");
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Azure ML model ID must use <variant-name>:<positive-version>");
     }
     const auto cached = std::find_if(snapshot.begin(), snapshot.end(), [&](const ModelInfo& info) {
       return info.model_id == id && !downloader_->GetCompletedModelCachePath(info).empty();
@@ -553,7 +553,7 @@ std::vector<Model> TestModelCatalog::FetchModelsByIds(const std::vector<std::str
   return CreateModels(infos);
 }
 
-void TestModelCatalog::RefreshRetainedVariantCache(Model& model) const {
+void AzureRegistryCatalog::RefreshRetainedVariantCache(Model& model) const {
   model.UpdateCachedState(downloader_->GetCompletedModelCachePath(model.Info()));
 }
 

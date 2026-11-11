@@ -141,13 +141,13 @@ class FoundryLocalManager:
     def get_catalog(
         self, catalog_type: CatalogType = CatalogType.PUBLIC, *, registry_name: str | None = None
     ) -> Catalog:
-        """Get the public, local, or Azure ML test model catalog.
+        """Get the public, local, or Azure Registry model catalog.
 
         Args:
             catalog_type: Catalog to return. Defaults to :attr:`CatalogType.PUBLIC`
                 for backward compatibility with ``manager.catalog``.
-            registry_name: Azure ML registry for TEST only. Omit for the native default.
-                Authentication uses ``TestModelCredential`` in ``additional_settings``:
+            registry_name: Azure registry name for AZURE_REGISTRY only. Omit for the native default.
+                Authentication uses ``AzureRegistryModelCredential`` in ``additional_settings``:
                 ``azure_cli`` (developer default) or ``workload_identity`` (CI).
 
         Returns:
@@ -157,8 +157,8 @@ class FoundryLocalManager:
             if not isinstance(catalog_type, CatalogType):
                 raise TypeError("catalog_type must be a CatalogType")
             if registry_name is not None:
-                if catalog_type is not CatalogType.TEST:
-                    raise ValueError("registry_name is only supported for CatalogType.TEST")
+                if catalog_type is not CatalogType.AZURE_REGISTRY:
+                    raise ValueError("registry_name is only supported for CatalogType.AZURE_REGISTRY")
                 _validate_native_string(registry_name, "registry_name")
                 if not registry_name:
                     raise ValueError("registry_name must not be empty")
@@ -173,15 +173,16 @@ class FoundryLocalManager:
             from foundry_local_sdk._native.api import api, ffi
 
             out = ffi.new("flCatalog**")
-            if catalog_type is CatalogType.TEST:
+            if catalog_type is CatalogType.AZURE_REGISTRY:
                 if api.api_version < 4:
-                    raise FoundryLocalException("Test catalogs require native API version 4 or newer.")
+                    raise FoundryLocalException("Azure Registry catalogs require native API version 4 or newer.")
                 name = registry_name.encode("utf-8") if registry_name is not None else ffi.NULL
-                api.check_status(api.root.Manager_GetTestCatalog(self._native_manager, name, out))
+                api.check_status(api.root.Manager_GetAzureRegistryCatalog(self._native_manager, name, out))
             else:
                 api.check_status(api.root.Manager_GetCatalogByType(self._native_manager, int(catalog_type), out))
             if out[0] == ffi.NULL:
-                raise FoundryLocalException(f"GetCatalogByType returned no {catalog_type.name.lower()} catalog.")
+                method = "Manager_GetAzureRegistryCatalog" if catalog_type is CatalogType.AZURE_REGISTRY else "GetCatalogByType"
+                raise FoundryLocalException(f"{method} returned no {catalog_type.name.lower()} catalog.")
 
             catalog = Catalog(out[0], catalog_type=catalog_type, parent=self)
             self._catalogs[key] = catalog

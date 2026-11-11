@@ -539,6 +539,8 @@ def test(args: argparse.Namespace) -> None:
         "--output-on-failure",
         "--timeout", "600",
     ]
+    if args.parallel > 1:
+        command += ["-j", str(args.parallel)]
     run(command, cwd=str(args.build_dir))
 
 

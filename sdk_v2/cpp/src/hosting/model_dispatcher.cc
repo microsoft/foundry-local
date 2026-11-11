@@ -23,8 +23,8 @@ CatalogType Catalog(const Json& value) {
   if (name == "local") {
     return CatalogType::kLocal;
   }
-  if (name == "test") {
-    return CatalogType::kTest;
+  if (name == "azure_registry" || name == "azureml") {
+    return CatalogType::kAzureRegistry;
   }
 
   FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "invalid SDK model catalog");
@@ -127,12 +127,14 @@ void ModelDispatcher::Dispatch(const std::shared_ptr<SdkConnection::IncomingCall
 }
 
 ModelDispatcher::ResolvedModel ModelDispatcher::Resolve(const ModelSelection& selection) {
-  const auto* registry = selection.info.GetPropertyStr("test.registry");
-  if (selection.catalog == CatalogType::kTest && (!registry || registry->empty())) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "SDK test model is missing its registry identity");
+  const auto* registry = selection.info.GetPropertyStr("azure_registry.name");
+  if (!registry) registry = selection.info.GetPropertyStr("azureml.registry");
+  if (!registry) registry = selection.info.GetPropertyStr("test.registry");
+  if (selection.catalog == CatalogType::kAzureRegistry && (!registry || registry->empty())) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "SDK Azure Registry model is missing its registry identity");
   }
-  auto& catalog = selection.catalog == CatalogType::kTest
-      ? manager_->GetTestCatalog(*registry) : manager_->GetCatalog(selection.catalog);
+  auto& catalog = selection.catalog == CatalogType::kAzureRegistry
+      ? manager_->GetAzureRegistryCatalog(*registry) : manager_->GetCatalog(selection.catalog);
   auto* model = catalog.GetModelVariant(selection.info.model_id);
   if (!model) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "SDK model is no longer available in the selected catalog");
@@ -166,8 +168,8 @@ Json ModelDispatcher::Execute(const SdkConnection::IncomingCall& call, HostObjec
       return nullptr;
     case Operation::LoadedModels: {
       const auto type = Catalog(payload.at("catalog"));
-      auto& catalog = type == CatalogType::kTest
-          ? manager_->GetTestCatalog(payload.value("registry", "")) : manager_->GetCatalog(type);
+      auto& catalog = type == CatalogType::kAzureRegistry
+          ? manager_->GetAzureRegistryCatalog(payload.value("registry", "")) : manager_->GetCatalog(type);
       Json models = Json::array();
       for (auto* model : catalog.GetLoadedModels()) {
         const auto captured = manager_->CaptureModel(*model);

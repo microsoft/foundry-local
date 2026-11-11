@@ -1,11 +1,11 @@
-# Test Model Catalog Design
+# Azure Registry Model Catalog Design
 
 Status: Python-first implementation; online and cache-only E2E verified on Windows ARM64  
 Updated: November 9, 2026
 
 ## 1. Goal
 
-Let internal developers and CI/CD discover, download, load, and run models from a **default Azure ML test registry or their own registry**. Developers use existing **`az login` credentials**; CI/CD uses **workload identity federation without Azure CLI**.
+Let internal developers and CI/CD discover, download, load, and run models from a **default Azure registry or their own registry**. Developers use existing **`az login` credentials**; CI/CD uses **workload identity federation without Azure CLI**.
 
 This is a simpler, internal development and testing alternative to the [Private Model Catalog](private-model-catalog-design.md). No Azure Function, FPC service, application login, managed identity, shared secret, or separate authentication API is required. Registry access still requires authentication and RBAC; public network access does not enable anonymous access.
 
@@ -15,7 +15,7 @@ This is a simpler, internal development and testing alternative to the [Private 
 
 ```mermaid
 flowchart LR
-    Dev["Internal application or CLI"] --> Catalog["Foundry Local TEST catalog"]
+    Dev["Internal application or CLI"] --> Catalog["Foundry Local Azure Registry catalog"]
     Catalog --> Client["Native Azure ML registry client"]
     Client --> Identity["Azure Identity C++: injected TokenCredential"]
     Identity --> Login["Developer: AzureCliCredential / az login"]
@@ -24,15 +24,15 @@ flowchart LR
     Catalog --> Download["Existing download manager"]
     Download --> Client
     Download --> Storage["Azure Blob Storage (model files)"]
-    Download --> Cache["Local test-model cache"]
+    Download --> Cache["Local Azure Registry model cache"]
     Cache --> Runtime["Existing loader and inference"]
 ```
 
-`TestModelCatalog` derives from `AzureModelCatalog` to reuse hardware/EP eligibility and the shared `BaseModelCatalog` behavior, selected explicitly with `CatalogType.TEST`. Public remains the default; public, local, and test catalogs stay separate. There is no aggregation or fallback. This first implementation exposes the feature only in the Python SDK and its shared native backend; other language SDKs and the CLI are unchanged.
+`AzureRegistryCatalog` derives from `AzureModelCatalog` to reuse hardware/EP eligibility and the shared `BaseModelCatalog` behavior, selected explicitly with `CatalogType.AZURE_REGISTRY`. Public remains the default; public, local, and Azure Registry catalogs stay separate. There is no aggregation or fallback. This first implementation exposes the feature only in the Python SDK and its shared native backend; other language SDKs and the CLI are unchanged.
 
 | Concern | Decision |
 |---|---|
-| Registry | Default to `prathikrao-pmc-test`; allow an optional `registry_name` when requesting a test catalog |
+| Registry | Default to `prathikrao-pmc-test`; allow an optional `registry_name` when requesting an Azure Registry catalog |
 | Registry configuration | Discover the endpoint and subscription/resource identity from the registry name; keep identity configuration separate from registry selection |
 | Authentication | Inject an Azure Core `TokenCredential`: `AzureCliCredential` for developers, `WorkloadIdentityCredential` for CI/CD, and a fake credential for unit tests; never log tokens |
 | Azure integration | One native Azure ML REST client behind the Python SDK; no Python Azure ML dependency |
@@ -232,8 +232,8 @@ $env:PYTHONPATH = "$PWD\sdk_v2\python\src"
 $env:FOUNDRY_LOCAL_LIB_DIR = "$PWD\sdk_v2\cpp\build\Windows\RelWithDebInfo\bin\RelWithDebInfo"
 python sdk_v2\python\src\foundry_local_sdk\_native\build_cffi.py
 az login
-python sdk_v2\python\examples\test_model_catalog.py --model-id smollm2-135m-instruct-generic-cpu:1
-python sdk_v2\python\examples\test_model_catalog.py --model-id smollm2-135m-instruct-generic-cpu:1
+python sdk_v2\python\examples\azure_registry_model_catalog.py --model-id smollm2-135m-instruct-generic-cpu:1
+python sdk_v2\python\examples\azure_registry_model_catalog.py --model-id smollm2-135m-instruct-generic-cpu:1
 ```
 
 The script is for local, non-CI execution and uses the active `az login` session for catalog listing and cache misses through the native default credential selection; it exposes no credential or cache-only options. It downloads/registers all discoverable execution providers before listing and reports registration status and any failed providers. It uses the manager's default model cache without overriding `model_cache_dir`. The selected model must use the six-tag format or supported legacy backend format and have a complete GenAI package matching the host. The model table includes every variant exposed by this catalog's platform and registered device/provider filtering, not unrelated or unsupported registry assets. The generated assistant text is printed to the console. Repeat the command to reuse the downloaded package, though listing still requires registry access. Federated CI remains a separate native configuration path, not part of this script.

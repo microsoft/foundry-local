@@ -109,6 +109,9 @@ class BaseModelCatalog : public ICatalog {
   using VariantEligibility = std::function<bool(const Model&)>;
   virtual VariantEligibility MakeVariantEligibility() const { return {}; }
 
+  virtual bool ShouldRethrowFetchErrors() const { return false; }
+  virtual bool SupportsDefaultVariantRefresh() const { return type_ != CatalogType::kLocal; }
+
  private:
   /// Lookup indices into the stable models_ storage.
   /// Rebuilt on refresh. Does not own any Model instances.

@@ -23,7 +23,7 @@ BaseModelCatalog::~BaseModelCatalog() = default;
 
 void BaseModelCatalog::SelectDefaultVariant(Model& model, const VariantEligibility& is_eligible,
                                             bool preserve_explicit_selection) const {
-  if (type_ == CatalogType::kPublic || type_ == CatalogType::kTest) {
+  if (SupportsDefaultVariantRefresh()) {
     model.SetDefaultVariantRefresh([this] { EnsurePopulated(); });
   }
 
@@ -436,13 +436,13 @@ Model* BaseModelCatalog::GetModelVariant(const std::string& model_id) const {
     try {
       fetched = FetchModelsByIds({model_id});
     } catch (const std::exception& ex) {
-      if (GetType() == CatalogType::kTest) throw;
+      if (ShouldRethrowFetchErrors()) throw;
       logger_.Log(LogLevel::Warning,
                   fmt::format("GetModelVariant: direct fetch for '{}' failed — {}",
                               model_id, ex.what()));
       return nullptr;
     } catch (...) {
-      if (GetType() == CatalogType::kTest) throw;
+      if (ShouldRethrowFetchErrors()) throw;
       logger_.Log(LogLevel::Warning,
                   fmt::format("GetModelVariant: direct fetch for '{}' failed — unknown error",
                               model_id));
@@ -618,13 +618,13 @@ std::vector<Model*> BaseModelCatalog::GetModelVersions(const std::string& model_
   try {
     fetched = FetchModelVersions(model_alias, variant_name, max_versions);
   } catch (const std::exception& ex) {
-    if (GetType() == CatalogType::kTest) throw;
+    if (ShouldRethrowFetchErrors()) throw;
     logger_.Log(LogLevel::Warning,
                 fmt::format("GetModelVersions: fetch for alias '{}' failed — {}",
                             model_alias, ex.what()));
     return {};
   } catch (...) {
-    if (GetType() == CatalogType::kTest) throw;
+    if (ShouldRethrowFetchErrors()) throw;
     logger_.Log(LogLevel::Warning,
                 fmt::format("GetModelVersions: fetch for alias '{}' failed — unknown error",
                             model_alias));

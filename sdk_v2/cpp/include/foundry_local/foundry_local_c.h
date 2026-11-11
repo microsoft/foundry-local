@@ -213,7 +213,7 @@ typedef enum flDeviceType {
 typedef enum flCatalogType {
   FOUNDRY_LOCAL_CATALOG_PUBLIC = 0,
   FOUNDRY_LOCAL_CATALOG_LOCAL = 1,
-  FOUNDRY_LOCAL_CATALOG_TEST = 2,
+  FOUNDRY_LOCAL_CATALOG_AZURE_REGISTRY = 2,
 } flCatalogType;
 
 /// Tensor element data types. Values match ONNX TensorProto.DataType.
@@ -780,7 +780,7 @@ typedef struct flApi {
 
   // End V2
   // V3 adds versioned inference structures without extending this table.
-  FL_API_STATUS(Manager_GetTestCatalog, _In_ const flManager* manager, _In_opt_z_ const char* registry_name,
+  FL_API_STATUS(Manager_GetAzureRegistryCatalog, _In_ const flManager* manager, _In_opt_z_ const char* registry_name,
                 _Outptr_ flCatalog** out_catalog);
   // End V4
   /* Append new function pointers at the end for future versions and add marker for the end of each version */

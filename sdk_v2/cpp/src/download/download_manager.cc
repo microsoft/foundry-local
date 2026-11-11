@@ -494,7 +494,7 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
                                model_path, download_opts, stats, logger_);
     }
 
-    if (artifact_resolver_) {
+    if (artifact_resolver_ && info.task == "chat-completion") {
       const auto config = GenAIConfig::LoadFromFile(
           (std::filesystem::path(model_path) / kGenAIConfigFileName).string());
       if (!config.model) {

@@ -86,7 +86,7 @@ struct flManager {
   mutable flCatalog public_catalog;
   mutable flCatalog local_catalog;
   mutable std::mutex catalogs_mutex;
-  mutable std::map<fl::api::CatalogBackend*, std::unique_ptr<flCatalog>> test_catalogs;
+  mutable std::map<fl::api::CatalogBackend*, std::unique_ptr<flCatalog>> azure_registry_catalogs;
   mutable std::mutex urls_mutex;
   mutable std::map<std::vector<std::string>, std::vector<const char*>> url_snapshots;
 };
@@ -384,15 +384,15 @@ FL_API_STATUS_IMPL(Manager_GetCatalogImpl, const flManager* manager, flCatalog**
   API_IMPL_END
 }
 
-FL_API_STATUS_IMPL(Manager_GetTestCatalogImpl, const flManager* manager, const char* registry_name,
+FL_API_STATUS_IMPL(Manager_GetAzureRegistryCatalogImpl, const flManager* manager, const char* registry_name,
                    flCatalog** out_catalog) {
   API_IMPL_BEGIN
   if (!manager || !out_catalog) {
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
-  auto& source = manager->impl.GetTestCatalog(registry_name ? registry_name : "");
+  auto& source = manager->impl.GetAzureRegistryCatalog(registry_name ? registry_name : "");
   std::lock_guard lock(manager->catalogs_mutex);
-  auto& catalog = manager->test_catalogs[&source];
+  auto& catalog = manager->azure_registry_catalogs[&source];
   if (!catalog) catalog = std::make_unique<flCatalog>(flCatalog{source});
   *out_catalog = catalog.get();
   return nullptr;
@@ -413,8 +413,8 @@ FL_API_STATUS_IMPL(Manager_GetCatalogByTypeImpl, const flManager* manager, flCat
     case FOUNDRY_LOCAL_CATALOG_LOCAL:
       *out_catalog = &manager->local_catalog;
       return nullptr;
-    case FOUNDRY_LOCAL_CATALOG_TEST:
-      return Manager_GetTestCatalogImpl(manager, nullptr, out_catalog);
+    case FOUNDRY_LOCAL_CATALOG_AZURE_REGISTRY:
+      return Manager_GetAzureRegistryCatalogImpl(manager, nullptr, out_catalog);
     default:
       return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
   }
@@ -2082,14 +2082,14 @@ static const flApi g_api = {
     Manager_ShutdownImpl,
     Manager_IsShutdownRequestedImpl,
     Manager_GetCatalogByTypeImpl,
-    Manager_GetTestCatalogImpl,
+    Manager_GetAzureRegistryCatalogImpl,
 };
 
 static_assert(offsetof(flApi, Manager_IsShutdownRequested) / sizeof(void*) == 28,
               "Size of version 1 API cannot change");
 static_assert(offsetof(flApi, Manager_GetCatalogByType) / sizeof(void*) == 29,
               "Size of version 2 API cannot change");
-static_assert(offsetof(flApi, Manager_GetTestCatalog) / sizeof(void*) == 30,
+static_assert(offsetof(flApi, Manager_GetAzureRegistryCatalog) / sizeof(void*) == 30,
               "Size of version 4 API cannot change");
 
 // ========================================================================

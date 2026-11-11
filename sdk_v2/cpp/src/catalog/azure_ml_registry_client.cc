@@ -194,8 +194,8 @@ void AzureMlRegistryClient::Discover() {
   ValidateSegment(subscription);
   ValidateResourceGroup(group);
   Url endpoint(RequiredString(discovery, "primaryRegionResourceProviderUri"));
-  ValidateHost(endpoint, ToLower(endpoint.GetHost()).ends_with(".experiments.azureml-test.net")
-      ? ".experiments.azureml-test.net" : ".experiments.azureml.net");
+  is_test_endpoint_ = ToLower(endpoint.GetHost()).ends_with(".experiments.azureml-test.net");
+  ValidateHost(endpoint, is_test_endpoint_ ? ".experiments.azureml-test.net" : ".experiments.azureml.net");
   if (!endpoint.GetQueryParameters().empty() || !CleanPath(endpoint).empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK, "Azure ML returned an unexpected registry endpoint path/query");
   }
@@ -214,10 +214,10 @@ const std::string& AzureMlRegistryClient::ResourceId() {
 std::vector<Json> AzureMlRegistryClient::List(const std::string& url) {
   std::vector<Json> items;
   std::set<std::string> visited;
+  const Url base(base_url_);
   auto next = url;
   while (!next.empty()) {
     const Url page(next);
-    const Url base(base_url_);
     if (page.GetScheme() != base.GetScheme() || page.GetHost() != base.GetHost() ||
         page.GetPort() != base.GetPort() || !page.GetPath().starts_with(base.GetPath() + "/") ||
         !visited.insert(next).second) {
@@ -287,8 +287,7 @@ ModelContainer AzureMlRegistryClient::ResolveArtifacts(const std::string& name, 
   const auto proxy_host = artifact_host.substr(0, artifact_host.find('.')) +
       "-blob.dataproxy.int.api.azureml-test.ms";
   const auto container_host = ToLower(container.GetHost());
-  const bool test_proxy = ToLower(Url(base_url_).GetHost()).ends_with(".experiments.azureml-test.net") &&
-      container_host == proxy_host;
+  const bool test_proxy = is_test_endpoint_ && container_host == proxy_host;
   if (container.GetScheme() != "https" || (container_host != artifact_host && !test_proxy) ||
       (container.GetPort() != 0 && container.GetPort() != 443) ||
       CleanPath(container) != path.substr(0, slash) ||

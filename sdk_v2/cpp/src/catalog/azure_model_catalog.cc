@@ -182,7 +182,7 @@ AzureModelCatalog::AzureModelCatalog(std::vector<std::pair<std::string, std::opt
                                      bool cache_only,
                                      ITelemetry& telemetry,
                                      CatalogType type)
-    : BaseModelCatalog(type == CatalogType::kTest ? "test" :
+    : BaseModelCatalog(type == CatalogType::kAzureRegistry ? "azure_registry" :
                            (catalog_urls.empty() ? kDefaultCatalogUrl : catalog_urls.front().first), type, logger),
       catalog_urls_(std::move(catalog_urls)),
       cache_dir_(std::move(cache_dir)),

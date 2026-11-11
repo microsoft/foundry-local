@@ -15,7 +15,7 @@ namespace fl {
 enum class CatalogType {
   kPublic,
   kLocal,
-  kTest,
+  kAzureRegistry,
 };
 
 /// Abstract catalog interface for querying available models.

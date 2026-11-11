@@ -40,6 +40,7 @@ class AzureMlRegistryClient {
   std::string registry_;
   std::string base_url_;
   std::string resource_id_;
+  bool is_test_endpoint_ = false;
   std::mutex discovery_mutex_;
   std::unique_ptr<Azure::Core::Http::_internal::HttpPipeline> discovery_pipeline_;
   std::unique_ptr<Azure::Core::Http::_internal::HttpPipeline> registry_pipeline_;
