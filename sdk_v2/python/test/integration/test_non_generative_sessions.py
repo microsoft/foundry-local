@@ -2,7 +2,7 @@
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License.
 # --------------------------------------------------------------------------
-"""Real native coverage for ranking and typed-decision SDK sessions."""
+"""Real native coverage for ranking and decision SDK sessions."""
 
 from foundry_local_sdk import (
     DecisionRequest,

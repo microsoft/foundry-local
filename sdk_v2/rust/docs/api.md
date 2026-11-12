@@ -488,7 +488,7 @@ once on the SDK's blocking worker.
 
 ### RankingSession
 
-A typed session for loaded models whose task is `text-ranking`. Requests and
+A typed session for loaded models whose task is `ranking`. Requests and
 results use the same JSON contract as `POST /v1/rank`. Dereferences to
 [`Session`](#session).
 
@@ -506,7 +506,7 @@ impl Deref for RankingSession { type Target = Session; }
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `new` | `async fn new(model: &Model) -> Result<RankingSession, FoundryLocalError>` | Open a ranking session on a loaded `text-ranking` model. Returns `Validation` for any other task. |
+| `new` | `async fn new(model: &Model) -> Result<RankingSession, FoundryLocalError>` | Open a ranking session on a loaded `ranking` model. Returns `Validation` for any other task. |
 | `rank` | `async fn rank(&self, request: &RankingRequest) -> Result<RankingResult, FoundryLocalError>` | Validate and rank the request's candidate answers; validates the native response before returning it. |
 | `into_session` | `fn into_session(self) -> Session` | Consume this handle, yielding the base session. |
 
@@ -559,7 +559,7 @@ pub struct RankingResult {
 
 ### DecisionSession
 
-A typed session for loaded models whose task is `typed-decision`. Requests and
+A typed session for loaded models whose task is `decision`. Requests and
 results use the same JSON contract as `POST /v1/systemone`. Dereferences to
 [`Session`](#session).
 
@@ -577,7 +577,7 @@ impl Deref for DecisionSession { type Target = Session; }
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `new` | `async fn new(model: &Model) -> Result<DecisionSession, FoundryLocalError>` | Open a decision session on a loaded `typed-decision` model. Returns `Validation` for any other task. |
+| `new` | `async fn new(model: &Model) -> Result<DecisionSession, FoundryLocalError>` | Open a decision session on a loaded `decision` model. Returns `Validation` for any other task. |
 | `decide` | `async fn decide(&self, request: &DecisionRequest) -> Result<DecisionResult, FoundryLocalError>` | Validate and evaluate all keyed typed questions; validates the native response before returning it. |
 | `into_session` | `fn into_session(self) -> Session` | Consume this handle, yielding the base session. |
 

@@ -40,8 +40,8 @@ const std::unordered_set<std::string> kSupportedTasks = {
     "chat-completion",
     "coding",
     "embeddings",
-    "text-ranking",
-    "typed-decision",
+    "ranking",
+    "decision",
     "vision-language-chat",
 };
 
@@ -268,9 +268,9 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
     if (package) {
       const auto* task = metadata.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR);
       if (!task ||
-          (*task != "text-ranking" && *task != "typed-decision")) {
+          (*task != "ranking" && *task != "decision")) {
         FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-                 "multi-component registration requires text-ranking or typed-decision task");
+                 "multi-component registration requires ranking or decision task");
       }
       if (!package->task.empty() && package->task != *task) {
         FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
@@ -286,7 +286,7 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
       const auto* task =
           metadata.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR);
       if (task &&
-          (*task == "text-ranking" || *task == "typed-decision")) {
+          (*task == "ranking" || *task == "decision")) {
         FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
                  "non-generative registration requires component_manifest.json");
       }
@@ -506,7 +506,7 @@ std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistration
 
       RemoveLegacyRegistrationProperties(info);
       const bool typed_registration =
-          info.task == "text-ranking" || info.task == "typed-decision";
+          info.task == "ranking" || info.task == "decision";
       if (!typed_registration || info.alias.empty())
         info.alias = DeriveAlias(parsed_id.name);
       info.name = parsed_id.name;

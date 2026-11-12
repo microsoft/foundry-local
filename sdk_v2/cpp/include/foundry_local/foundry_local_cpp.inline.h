@@ -1435,7 +1435,7 @@ inline std::string ProcessNonGenerativeJson(
 }  // namespace detail
 
 inline RankingSession::RankingSession(IModel& model)
-    : Session(detail::RequireTask(model, "text-ranking")) {}
+    : Session(detail::RequireTask(model, "ranking")) {}
 
 inline std::string RankingSession::RankJson(
     const std::string& request_json) {
@@ -1443,7 +1443,7 @@ inline std::string RankingSession::RankJson(
 }
 
 inline DecisionSession::DecisionSession(IModel& model)
-    : Session(detail::RequireTask(model, "typed-decision")) {}
+    : Session(detail::RequireTask(model, "decision")) {}
 
 inline std::string DecisionSession::DecideJson(
     const std::string& request_json) {

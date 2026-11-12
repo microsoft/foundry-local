@@ -310,7 +310,7 @@ immediate.
 Native integration tests discover cached packages by task. Set
 `FOUNDRY_TEST_CLM_MODEL` and `FOUNDRY_TEST_KEV_MODEL` to exact registered model
 IDs to select specific packages; otherwise the tests use the first cached
-`text-ranking` and `typed-decision` models and skip cleanly when unavailable.
+`ranking` and `decision` models and skip cleanly when unavailable.
 
 ### Browsing the Model Catalog
 

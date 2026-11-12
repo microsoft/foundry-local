@@ -1,4 +1,4 @@
-/** JSON values accepted by ranking context and typed-decision structured fields. */
+/** JSON values accepted by ranking context and decision structured fields. */
 export type StructuredValue =
   | null
   | boolean

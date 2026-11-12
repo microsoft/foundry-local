@@ -91,7 +91,7 @@ pub struct RankingResult {
     pub ranked: Vec<RankedCandidate>,
 }
 
-/// Supported typed-decision question kinds.
+/// Supported decision question kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DecisionQuestionType {
@@ -252,7 +252,7 @@ pub struct DecisionAnswer {
     pub legend: BTreeMap<String, String>,
 }
 
-/// The answer value selected by a typed-decision model.
+/// The answer value selected by a decision model.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DecisionAnswerValue<'a> {
     /// Probability returned for a `noul` question.
@@ -277,7 +277,7 @@ impl DecisionAnswer {
     }
 }
 
-/// Usage returned by a typed-decision request.
+/// Usage returned by a decision request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecisionUsage {
     /// Billing units consumed by local inference.
@@ -462,19 +462,19 @@ async fn process_json<T: Serialize, U: for<'de> Deserialize<'de>>(
     }
 }
 
-/// Session for models whose task is `text-ranking`.
+/// Session for models whose task is `ranking`.
 #[derive(Clone)]
 pub struct RankingSession {
     session: Session,
 }
 
 impl RankingSession {
-    /// Open a ranking session on a loaded text-ranking model.
+    /// Open a ranking session on a loaded ranking model.
     ///
     /// Clones share one underlying native session. Drop every clone before
     /// calling [`Model::unload`].
     pub async fn new(model: &Model) -> Result<Self> {
-        super::session::validate_session_task(model, "RankingSession", &["text-ranking"])?;
+        super::session::validate_session_task(model, "RankingSession", &["ranking"])?;
         Ok(Self {
             session: Session::new(model).await?,
         })
@@ -507,25 +507,25 @@ impl Deref for RankingSession {
     }
 }
 
-/// Session for models whose task is `typed-decision`.
+/// Session for models whose task is `decision`.
 #[derive(Clone)]
 pub struct DecisionSession {
     session: Session,
 }
 
 impl DecisionSession {
-    /// Open a decision session on a loaded typed-decision model.
+    /// Open a decision session on a loaded decision model.
     ///
     /// Clones share one underlying native session. Drop every clone before
     /// calling [`Model::unload`].
     pub async fn new(model: &Model) -> Result<Self> {
-        super::session::validate_session_task(model, "DecisionSession", &["typed-decision"])?;
+        super::session::validate_session_task(model, "DecisionSession", &["decision"])?;
         Ok(Self {
             session: Session::new(model).await?,
         })
     }
 
-    /// Evaluate a typed-decision request.
+    /// Evaluate a decision request.
     ///
     /// Dropping this future signals cancellation through
     /// [`Session::process_request`]. Queued work is skipped; active inference

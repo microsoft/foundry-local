@@ -85,9 +85,9 @@ NonGenerativeSession::NonGenerativeSession(
   model_alias_ = selected.Info().alias;
   provider_ = selected.Info().execution_provider;
   auto runtime = live_model->AcquireLoadedNonGenerativeRuntime();
-  if (selected.Info().task == "text-ranking")
+  if (selected.Info().task == "ranking")
     ranking_ = std::static_pointer_cast<IRankingRuntime>(runtime);
-  else if (selected.Info().task == "typed-decision")
+  else if (selected.Info().task == "decision")
     decision_ = std::static_pointer_cast<IDecisionRuntime>(runtime);
   else
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,

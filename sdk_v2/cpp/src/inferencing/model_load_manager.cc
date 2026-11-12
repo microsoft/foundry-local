@@ -297,9 +297,9 @@ std::shared_ptr<void> ModelLoadManager::AcquireNonGenerativeRuntime(
                 : EPUtils::EPtoRegistrationName(
                       EPUtils::StringtoEP(provider_name));
         PrepareProviderForModelLoad(registration, model.Id());
-        if (task == "text-ranking")
+        if (task == "ranking")
           return std::make_shared<RankingRuntime>(canonical);
-        if (task == "typed-decision")
+        if (task == "decision")
           return std::make_shared<DecisionRuntime>(canonical);
         FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
                  "unsupported non-generative task: ", task);

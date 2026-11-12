@@ -137,12 +137,12 @@ std::shared_ptr<oatpp::web::server::HttpRequestHandler> CreateSystemOneHandler(
     ServiceContext& ctx) {
   return std::make_shared<
       NonGenerativeHandler<DecisionRuntime, NonGenerativeRequest, false>>(
-      ctx, "systemone", "typed-decision");
+      ctx, "systemone", "decision");
 }
 
 std::shared_ptr<oatpp::web::server::HttpRequestHandler> CreateRankHandler(ServiceContext& ctx) {
   return std::make_shared<NonGenerativeHandler<RankingRuntime, RankingRequest, true>>(
-      ctx, "rank", "text-ranking");
+      ctx, "rank", "ranking");
 }
 
 }  // namespace fl

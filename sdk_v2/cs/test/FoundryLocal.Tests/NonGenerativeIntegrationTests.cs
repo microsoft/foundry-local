@@ -114,9 +114,9 @@ internal sealed class NonGenerativeIntegrationTests
         var (directory, task) = modelId switch
         {
             "clm-v0.1-8b-mixed-generic-cpu:1" =>
-                ("clm-v0.1-8b-mixed-generic-cpu-1", "text-ranking"),
+                ("clm-v0.1-8b-mixed-generic-cpu-1", "ranking"),
             "kev-0.8b-mixed-generic-cpu:1" =>
-                ("kev-0.8b-mixed-generic-cpu-1", "typed-decision"),
+                ("kev-0.8b-mixed-generic-cpu-1", "decision"),
             _ => (null, null),
         };
         var testDataRoot = Environment.GetEnvironmentVariable("FOUNDRY_TEST_DATA_DIR");

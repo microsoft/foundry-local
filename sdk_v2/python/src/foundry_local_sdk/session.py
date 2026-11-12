@@ -765,12 +765,12 @@ def _process_non_generative_json(session: Session, payload: dict[str, object]) -
 
 
 class RankingSession(Session):
-    """Typed wrapper for a native ``text-ranking`` model session."""
+    """Typed wrapper for a native ``ranking`` model session."""
 
     def __init__(self, model: "IModel") -> None:
         task = model.info.task
-        if task != "text-ranking":
-            raise ValueError(f"RankingSession requires a model with task 'text-ranking', but got {task!r}.")
+        if task != "ranking":
+            raise ValueError(f"RankingSession requires a model with task 'ranking', but got {task!r}.")
         super().__init__(model)
 
     def rank(self, request: "RankingRequest") -> "RankingResult":
@@ -840,12 +840,12 @@ class RankingSession(Session):
 
 
 class DecisionSession(Session):
-    """Typed wrapper for a native ``typed-decision`` model session."""
+    """Typed wrapper for a native ``decision`` model session."""
 
     def __init__(self, model: "IModel") -> None:
         task = model.info.task
-        if task != "typed-decision":
-            raise ValueError(f"DecisionSession requires a model with task 'typed-decision', but got {task!r}.")
+        if task != "decision":
+            raise ValueError(f"DecisionSession requires a model with task 'decision', but got {task!r}.")
         super().__init__(model)
 
     def decide(self, request: "DecisionRequest") -> "DecisionResult":

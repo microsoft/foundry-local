@@ -195,7 +195,7 @@ void WriteRankingBundle(const std::filesystem::path& path,
       << nlohmann::json{
              {"Name", model_id},
              {"Alias", "clm"},
-             {"Task", "text-ranking"},
+             {"Task", "ranking"},
              {"ComponentManifest", "component_manifest.json"},
              {"License", "MIT"},
              {"Provenance",
@@ -282,7 +282,7 @@ TEST(ManagedModelRuntimeTest,
   info.model_id = "loading:1";
   info.name = "loading";
   info.alias = "loading";
-  info.task = "text-ranking";
+  info.task = "ranking";
   auto model = Model::FromLocalRegistration(
       std::move(info), root.string(), service.download_manager,
       service.model_load_manager);
@@ -365,7 +365,7 @@ TEST(ManagedModelRuntimeTest, RetiredHandleDoesNotObserveReplacementRuntime) {
   old_info.model_id = "typed:1";
   old_info.name = "typed";
   old_info.alias = "typed";
-  old_info.task = "text-ranking";
+  old_info.task = "ranking";
   auto old_model = Model::FromLocalRegistration(
       old_info, root.string(), service.download_manager,
       service.model_load_manager);
@@ -409,7 +409,7 @@ TEST(ManagedModelRuntimeTest, ActiveLeaseBlocksExplicitUnload) {
   info.model_id = "typed:1";
   info.name = "typed";
   info.alias = "typed";
-  info.task = "text-ranking";
+  info.task = "ranking";
   auto model = Model::FromLocalRegistration(
       std::move(info), "/typed:1", service.download_manager,
       service.model_load_manager);
@@ -512,7 +512,7 @@ TEST(NonGenerativeSessionTest,
   info.model_id = model_id;
   info.name = "clm-generic-cpu";
   info.alias = "clm";
-  info.task = "text-ranking";
+  info.task = "ranking";
   auto model = Model::FromLocalRegistration(
       std::move(info), path, service.download_manager,
       service.model_load_manager);
@@ -533,7 +533,7 @@ TEST(NonGenerativeSessionTest,
   const auto canonical = std::filesystem::weakly_canonical(path).string();
   const auto identity =
       "non-generative|" + std::string(model_id) + "|" + canonical +
-      "||text-ranking";
+      "||ranking";
   auto fake = std::make_shared<FakeRankingRuntime>();
   auto seeded = ModelLoadManagerTestAccess::AcquireArtifact(
       service.model_load_manager, identity, std::string(model_id), canonical,
@@ -587,7 +587,7 @@ TEST(NonGenerativeSessionTest, RejectsPackageTaskMismatchBeforeAcquisition) {
   info.model_id = "clm-generic-cpu:1";
   info.name = "clm-generic-cpu";
   info.alias = "clm";
-  info.task = "typed-decision";
+  info.task = "decision";
   auto model = Model::FromLocalRegistration(
       std::move(info), root.string(), service.download_manager,
       service.model_load_manager);

@@ -68,7 +68,7 @@ class LocalModelScannerTest : public ::testing::Test {
 
   void CreateBundleDir(const std::string& relative_path,
                        const std::string& model_name,
-                       const std::string& task = "text-ranking") {
+                       const std::string& task = "ranking") {
     const auto root = fs::path(test_dir_) / relative_path;
     CreateFile(relative_path + "/genai_config.json");
     CreateFile(relative_path + "/tokenizer.json");
@@ -79,7 +79,7 @@ class LocalModelScannerTest : public ::testing::Test {
       CreateFile(relative_path + "/" + relative, "synthetic");
       components[name] = {{"role", role}, {"filename", relative}};
     };
-    if (task == "text-ranking") {
+    if (task == "ranking") {
       add_component("encoder", "backbone");
       add_component("state_head", "head");
       add_component("action_head", "head");
@@ -304,19 +304,22 @@ TEST_F(LocalModelScannerTest, ManifestDoesNotRequireMetadataKey) {
 }
 
 TEST_F(LocalModelScannerTest, NonGenerativeTaskWithoutManifestCannotFallBackToGenerative) {
-  CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
-  CreateFile("microsoft/clm/genai_config.json");
-  auto root = fs::path(test_dir_) / "microsoft/clm";
-  nlohmann::json metadata;
-  {
-    std::ifstream input(root / "inference_model.json");
-    input >> metadata;
-  }
-  metadata.erase("ComponentManifest");
-  fs::remove(root / "component_manifest.json");
-  std::ofstream(root / "inference_model.json") << metadata;
+  for (const auto* task : {"ranking", "decision"}) {
+    SCOPED_TRACE(task);
+    CreateBundleDir(task, std::string(task) + "-generic-cpu:1", task);
+    const auto root = fs::path(test_dir_) / task;
+    nlohmann::json metadata;
+    {
+      std::ifstream input(root / "inference_model.json");
+      input >> metadata;
+    }
+    metadata.erase("ComponentManifest");
+    fs::remove(root / "component_manifest.json");
+    std::ofstream(root / "inference_model.json") << metadata;
 
-  EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
+    EXPECT_TRUE(DeclaresNonGenerativePackage(root));
+    EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
+  }
 }
 
 TEST_F(LocalModelScannerTest, BackendOwnsComponentTopologyValidation) {

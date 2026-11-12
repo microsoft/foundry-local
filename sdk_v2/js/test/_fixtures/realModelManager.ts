@@ -158,12 +158,12 @@ async function registerStagedNonGenerativeModel(
 ): Promise<{ catalog: Catalog; model: IModel } | undefined> {
   if (envCache === undefined) return undefined;
   const packageInfo =
-    task === "text-ranking"
+    task === "ranking"
       ? {
           directory: "clm-v0.1-8b-mixed-generic-cpu-1",
           modelId: "clm-v0.1-8b-mixed-generic-cpu:1",
         }
-      : task === "typed-decision"
+      : task === "decision"
         ? {
             directory: "kev-0.8b-mixed-generic-cpu-1",
             modelId: "kev-0.8b-mixed-generic-cpu:1",

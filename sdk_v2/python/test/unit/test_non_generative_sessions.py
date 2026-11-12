@@ -2,7 +2,7 @@
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License.
 # --------------------------------------------------------------------------
-"""Focused native-fake tests for ranking and typed-decision sessions."""
+"""Focused native-fake tests for ranking and decision sessions."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import json
 import sys
 import threading
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -22,6 +23,7 @@ from foundry_local_sdk import (
     RankingSession,
     TextItemType,
 )
+from foundry_local_sdk.session import Session
 
 _SESSION = object()
 _REQUEST = object()
@@ -205,10 +207,24 @@ def test_decision_preserves_empty_question_id(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    ("session_type", "task"),
+    [(RankingSession, "ranking"), (DecisionSession, "decision")],
+)
+def test_typed_session_accepts_catalog_task(monkeypatch, session_type, task):
+    create_session = Mock(return_value=None)
+    monkeypatch.setattr(Session, "__init__", create_session)
+    model = SimpleNamespace(info=SimpleNamespace(task=task))
+
+    session_type(model)
+
+    create_session.assert_called_once_with(model)
+
+
+@pytest.mark.parametrize(
     ("session_type", "task", "required_task"),
     [
-        (RankingSession, "typed-decision", "text-ranking"),
-        (DecisionSession, "text-ranking", "typed-decision"),
+        (RankingSession, "decision", "ranking"),
+        (DecisionSession, "ranking", "decision"),
     ],
 )
 def test_typed_session_rejects_wrong_model_task_before_native(session_type, task, required_task):

@@ -16,7 +16,7 @@ from foundry_local_sdk import (
 
 
 def rank_activities(model: IModel) -> None:
-    """Load a text-ranking model and reuse one session for several requests."""
+    """Load a ranking model and reuse one session for several requests."""
     model.load()
     try:
         with RankingSession(model) as session:
@@ -35,7 +35,7 @@ def rank_activities(model: IModel) -> None:
 
 
 def decide_about_umbrella(model: IModel) -> None:
-    """Load and use a typed-decision model registered in the local catalog."""
+    """Load and use a decision model registered in the local catalog."""
     model.load()
     try:
         with DecisionSession(model) as session:
