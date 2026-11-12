@@ -404,16 +404,6 @@ FL_API_STATUS_IMPL(Manager_GetCatalogWithOptionsImpl, const flManager* manager, 
   API_IMPL_END
 }
 
-FL_API_STATUS_IMPL(Manager_GetAzureRegistryCatalogImpl, const flManager* manager, const char* registry_name,
-                   flCatalog** out_catalog) {
-  API_IMPL_BEGIN
-  fl::KeyValuePairs options;
-  options.Add("name", registry_name ? registry_name : "");
-  return Manager_GetCatalogWithOptionsImpl(manager, FOUNDRY_LOCAL_CATALOG_AZURE_REGISTRY,
-                                           AsHandle<flKeyValuePairs>(&options), out_catalog);
-  API_IMPL_END
-}
-
 FL_API_STATUS_IMPL(Manager_GetCatalogByTypeImpl, const flManager* manager, flCatalogType catalog_type,
                    flCatalog** out_catalog) {
   API_IMPL_BEGIN
@@ -429,7 +419,7 @@ FL_API_STATUS_IMPL(Manager_GetCatalogByTypeImpl, const flManager* manager, flCat
       *out_catalog = &manager->local_catalog;
       return nullptr;
     case FOUNDRY_LOCAL_CATALOG_AZURE_REGISTRY:
-      return Manager_GetAzureRegistryCatalogImpl(manager, nullptr, out_catalog);
+      return Manager_GetCatalogWithOptionsImpl(manager, catalog_type, nullptr, out_catalog);
     default:
       return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
   }
@@ -2097,7 +2087,6 @@ static const flApi g_api = {
     Manager_ShutdownImpl,
     Manager_IsShutdownRequestedImpl,
     Manager_GetCatalogByTypeImpl,
-    Manager_GetAzureRegistryCatalogImpl,
     Manager_GetCatalogWithOptionsImpl,
 };
 
@@ -2105,10 +2094,8 @@ static_assert(offsetof(flApi, Manager_IsShutdownRequested) / sizeof(void*) == 28
               "Size of version 1 API cannot change");
 static_assert(offsetof(flApi, Manager_GetCatalogByType) / sizeof(void*) == 29,
               "Size of version 2 API cannot change");
-static_assert(offsetof(flApi, Manager_GetAzureRegistryCatalog) / sizeof(void*) == 30,
+static_assert(offsetof(flApi, Manager_GetCatalogWithOptions) / sizeof(void*) == 30,
               "Size of version 4 API cannot change");
-static_assert(offsetof(flApi, Manager_GetCatalogWithOptions) / sizeof(void*) == 31,
-              "Size of version 5 API cannot change");
 
 // ========================================================================
 // Exported symbols — the ONLY symbols the library exports

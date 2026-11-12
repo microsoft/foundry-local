@@ -244,8 +244,8 @@ inline ICatalog& Manager::GetCatalog(flCatalogType type) const {
 
 inline ICatalog& Manager::GetCatalog(flCatalogType type, const KeyValuePairs& options) const {
   if (options.GetAll().empty() && type != FOUNDRY_LOCAL_CATALOG_AZURE_REGISTRY) return GetCatalog(type);
-  if (detail::api_version() < 5) {
-    throw Error("catalog options require native API version 5 or newer", FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED);
+  if (detail::api_version() < 4) {
+    throw Error("catalog options require native API version 4 or newer", FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED);
   }
   flCatalog* source = nullptr;
   Check(detail::api()->Manager_GetCatalogWithOptions(handle_.get(), type, options.native_handle(), &source));

@@ -176,8 +176,8 @@ class FoundryLocalManager:
 
             out = ffi.new("flCatalog**")
             if settings or catalog_type is CatalogType.AZURE_REGISTRY:
-                if api.api_version < 5:
-                    raise FoundryLocalException("Catalog options require native API version 5 or newer.")
+                if api.api_version < 4:
+                    raise FoundryLocalException("Catalog options require native API version 4 or newer.")
                 pairs = ffi.new("flKeyValuePairs**")
                 api.root.CreateKeyValuePairs(pairs)
                 if pairs[0] == ffi.NULL:

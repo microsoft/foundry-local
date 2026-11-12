@@ -27,8 +27,7 @@ values are errors. Equivalent options reuse the same manager-owned catalog;
 different registries or credential modes have separate catalogs. Public and
 local catalog acquisition is unchanged.
 
-The C API exposes `Manager_GetCatalogWithOptions` in API v5. Earlier API table
-entries, including the v4 registry-name entry, remain available. C++ and Python
+The C API exposes `Manager_GetCatalogWithOptions` in API v4. C++ and Python
 negotiate supported API versions. Hosted/out-of-process catalog access is not
 implemented in this feature.
 

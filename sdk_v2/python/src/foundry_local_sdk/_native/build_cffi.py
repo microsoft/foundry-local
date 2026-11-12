@@ -412,7 +412,6 @@ typedef struct flApi {
     flStatusPtr (*Manager_Shutdown)(flManager* manager);
     _Bool (*Manager_IsShutdownRequested)(const flManager* manager);
     flStatusPtr (*Manager_GetCatalogByType)(const flManager* manager, flCatalogType catalog_type, flCatalog** out_catalog);
-    flStatusPtr (*Manager_GetAzureRegistryCatalog)(const flManager* manager, const char* registry_name, flCatalog** out_catalog);
     flStatusPtr (*Manager_GetCatalogWithOptions)(const flManager* manager, flCatalogType catalog_type, const flKeyValuePairs* options, flCatalog** out_catalog);
 } flApi;
 

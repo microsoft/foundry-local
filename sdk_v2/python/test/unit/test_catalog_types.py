@@ -51,7 +51,7 @@ def mock_catalog_manager(monkeypatch):
         return ffi.NULL
 
     api = SimpleNamespace(
-        api_version=5,
+        api_version=4,
         root=SimpleNamespace(
             CreateKeyValuePairs=Mock(side_effect=create_options),
             AddKeyValuePair=Mock(side_effect=add_option),
@@ -109,11 +109,11 @@ def test_invalid_abi_strings_never_reach_native(mock_catalog_manager, options):
     api.root.Manager_GetCatalogWithOptions.assert_not_called()
 
 
-@pytest.mark.parametrize("api_version", [2, 3, 4])
-def test_catalog_options_require_native_v5(mock_catalog_manager, api_version):
+@pytest.mark.parametrize("api_version", [2, 3])
+def test_catalog_options_require_native_v4(mock_catalog_manager, api_version):
     manager, api = mock_catalog_manager
     api.api_version = api_version
-    with pytest.raises(FoundryLocalException, match="version 5"):
+    with pytest.raises(FoundryLocalException, match="version 4"):
         manager.get_catalog(CatalogType.AZURE_REGISTRY, {"name": "one"})
     api.root.CreateKeyValuePairs.assert_not_called()
 
