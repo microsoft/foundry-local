@@ -232,7 +232,12 @@ int wmain(int argc, wchar_t* argv[]) {
 #else
 int main(int argc, char* argv[]) {
   const bool detach = argc == 4 && std::string_view(argv[3]) == "--detach";
-  if ((argc != 3 && !detach) || std::string_view(argv[1]) != "--bootstrap") {
+#ifdef __APPLE__
+  const bool detached = argc == 4 && std::string_view(argv[3]) == "--detached";
+#else
+  constexpr bool detached = false;
+#endif
+  if ((argc != 3 && !detach && !detached) || std::string_view(argv[1]) != "--bootstrap") {
 #endif
     std::fprintf(stderr,
                  "This executable is started by the Foundry Local SDK using its private bootstrap descriptor.\n");
@@ -241,6 +246,18 @@ int main(int argc, char* argv[]) {
 
 #ifndef _WIN32
   if (detach) {
+#ifdef __APPLE__
+    std::string executable;
+    try {
+      executable = ExecutablePath().string();
+    } catch (const std::exception& error) {
+      std::fprintf(stderr, "Foundry Local host executable: %s\n", error.what());
+      return 1;
+    }
+
+    char detached_option[] = "--detached";
+    char* resumed_arguments[]{executable.data(), argv[1], argv[2], detached_option, nullptr};
+#endif
 #ifdef __linux__
     // Scrub here, while single-threaded, without requiring glibc's newer spawn closefrom extension.
     auto* descriptors = opendir("/proc/self/fd");
@@ -291,11 +308,16 @@ int main(int argc, char* argv[]) {
     if (daemon > 0) {
       _exit(0);
     }
+#ifdef __APPLE__
+    // Metal/XPC require a fresh process image after fork. Keep the startup lease on fd3 through exec.
+    execv(executable.c_str(), resumed_arguments);
+    _exit(1);
+#endif
   }
 #endif
 #ifdef _WIN32
   return Run(std::filesystem::path(argv[2]));
 #else
-  return Run(std::filesystem::path(argv[2]), detach ? 3 : -1);
+  return Run(std::filesystem::path(argv[2]), detach || detached ? 3 : -1);
 #endif
 }

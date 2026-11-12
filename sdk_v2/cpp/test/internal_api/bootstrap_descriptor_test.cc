@@ -41,6 +41,10 @@
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <libproc.h>
+#include <sys/proc_info.h>
+#endif
 extern char** environ;
 #endif
 
@@ -618,6 +622,18 @@ TEST_F(BootstrapDescriptorTest, CoordinatorStartsOnceSharesOwnersReconnectsAndRe
 #endif
   const auto record = first.Store().Read();
   ASSERT_TRUE(record && record->process);
+#ifdef __APPLE__
+  proc_bsdinfo process_info{};
+  constexpr auto process_info_size = static_cast<int>(sizeof(process_info));
+  const auto bytes = proc_pidinfo(static_cast<int>(record->process->pid), PROC_PIDTBSDINFO, 0, &process_info,
+                                  process_info_size);
+  ASSERT_EQ(bytes, process_info_size);
+  EXPECT_NE(process_info.pbi_flags & PROC_FLAG_EXEC, 0u) << "The detached host must exec before loading runtime libraries";
+  {
+    const auto startup_lock = first.Store().Lock(Clock::now() + 1s);
+    ASSERT_TRUE(startup_lock) << "The resumed host must release its startup lease after publishing its identity";
+  }
+#endif
   ProcessWatch predecessor(*record->process);
   EXPECT_EQ(owner_a->Call(Operation::Observe, Json::object()).at("owners"), 2);
   owner_a->Close();
