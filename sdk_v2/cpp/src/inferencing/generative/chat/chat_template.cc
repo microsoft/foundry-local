@@ -266,6 +266,13 @@ std::string BuildCanonicalToolMessagesJson(const std::vector<TranscriptMessage>&
   auto instructions =
       "Tool calling protocol for this conversation:\nAvailable tools:\n" +
       (protect_literal ? protect_literal(tool_ctx.tools_json) : tool_ctx.tools_json);
+  if (tool_ctx.UsesAssistantTextFraming()) {
+    instructions =
+        "Do not forget the required MESSAGE framing after reasoning. All natural-language answers must begin "
+        "with MESSAGE followed by a newline. A tool call is not a substitute for an answer.\n\n" +
+        instructions;
+  }
+
   if (tool_ctx.fenced_tool_call_output) {
     instructions +=
         "\nYou must call a declared tool for this turn. Emit one JSON code fence containing an array of objects "

@@ -44,6 +44,7 @@ public sealed record RankedCandidate
     public required string Candidate { get; init; }
 
     [JsonPropertyName("prob")]
+    [JsonRequired]
     public double Probability { get; init; }
 }
 

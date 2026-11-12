@@ -122,6 +122,9 @@ TEST(ToolCallPlanTest, StructuralWhitespaceIsExplicitOnlyAtJsonBoundariesAndUses
     EXPECT_TRUE(std::regex_match(text, whitespace));
   }
 
+  EXPECT_TRUE(std::regex_match(std::string(16, ' '), whitespace));
+  EXPECT_FALSE(std::regex_match(std::string(17, ' '), whitespace));
+
   for (const std::string text : {"", "\v", "\f", "\xC2\xA0", "x", " ,", "1 "}) {
     EXPECT_FALSE(std::regex_match(text, whitespace));
   }
@@ -144,6 +147,12 @@ TEST(ToolCallPlanTest, SpacedNestedCallsPreserveStringDataAndRejectNonJsonWhites
   EXPECT_EQ(arguments.at("empty"), Json::object());
   EXPECT_EQ(arguments.at("array"), Json::array());
   EXPECT_EQ(Json::parse(calls[0].argument_source), arguments);
+  const std::string indented_code = std::string(64, ' ') + "return value;\n" + std::string(64, '\t');
+  EXPECT_TRUE(std::regex_match(Json(indented_code).dump(), GrammarTerminal(*plan, "TOOL_JSON_STRING")));
+  const auto indented_calls = plan->ParseCalls(std::string(64, ' ') + Batch({{"input", indented_code}}));
+  ASSERT_EQ(indented_calls.size(), 1u);
+  EXPECT_EQ(Json::parse(indented_calls[0].arguments).at("input"), indented_code);
+
   for (const std::string whitespace : {"\v", "\f", "\xC2\xA0"}) {
     const auto invalid = "[{\"name\"" + whitespace + ":\"edit\",\"parameters\":{\"input\":\"x\"}}]";
     ExpectError([&] { plan->ParseCalls(invalid); }, FOUNDRY_LOCAL_ERROR_INTERNAL, "");
