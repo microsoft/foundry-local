@@ -95,7 +95,7 @@ unsafe fn read_catalog_with_options(
     root: *const flApiVtable,
     version: u32,
 ) -> Option<FlGetCatalogWithOptionsFn> {
-    if version < 4 {
+    if version < 4 || root.is_null() {
         return None;
     }
     // Read only the appended slot, never a V4 reference over a legacy table.
