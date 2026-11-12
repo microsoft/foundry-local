@@ -40,7 +40,7 @@ namespace {
 constexpr const char* kDynamicEngineModelId = "tiny-paged-attention";
 
 std::string WithoutOptionalJsonWhitespace(std::string grammar) {
-  // The untrained fixture otherwise prefers whitespace indefinitely. The separate whitespace test forces that branch.
+  // Keep the untrained fixture focused on the envelope; separate whitespace tests exercise formatting and progress.
   const std::string rule = "tool_json_ws: TOOL_JSON_WS?";
   grammar.replace(grammar.find(rule), rule.size(), "tool_json_ws:");
   return grammar;
@@ -411,6 +411,38 @@ TEST_F(DynamicEngineChatTest, CanonicalToolGrammarAcceptsWhitespaceAtStructuralB
   const auto calls = plan->ParseCalls(body);
   ASSERT_EQ(calls.size(), 1u);
   EXPECT_EQ(nlohmann::json::parse(calls.front().arguments), (nlohmann::json{{"x", "x"}, {"other", "x"}}));
+  engine.Close(conversation);
+}
+
+TEST_F(DynamicEngineChatTest, CanonicalWhitespaceCannotConsumeTheEntireOutputBudget) {
+  const auto plan = ToolCallPlan::Create(
+      R"([{"type":"function","function":{"name":"echo","parameters":{"type":"object"}}}])", false);
+  ToolCallContext context;
+  context.guidance_type = "lark_grammar";
+  context.guidance_data = plan->Grammar();
+  // Require subsequent syntax: a whitespace-only start rule can terminate at EOS without testing progress.
+  context.guidance_data.replace(0, context.guidance_data.find('\n'), R"(start: TOOL_JSON_WS "[")");
+
+  const auto prompt = EncodeUserPrompt("Try it.", ModelInstance());
+  SearchOptions options;
+  options.max_output_tokens = 64;
+  options.do_sample = false;
+  OnnxChatEngine engine(ModelInstance());
+  auto conversation = engine.CreateConversation(options, context, static_cast<int>(prompt.size()));
+  engine.BeginTurn(conversation, prompt, options, context, false);
+  const auto output = FinishConversation(engine, conversation);
+  const auto result = engine.GetTurnResult(conversation);
+  EXPECT_LT(output.size(), 64u);
+  EXPECT_EQ(result.finish_reason, OgaFinishReason_Eos);
+  auto decoder = ModelInstance().GetPreprocessor().CreateTokenizerStream();
+  std::string body;
+  for (const auto token : output) {
+    body += decoder->Decode(token);
+  }
+
+  ASSERT_FALSE(body.empty());
+  EXPECT_TRUE(body.ends_with("[")) << body;
+  EXPECT_EQ(body.find_first_not_of(" \t\r\n"), body.size() - 1) << body;
   engine.Close(conversation);
 }
 

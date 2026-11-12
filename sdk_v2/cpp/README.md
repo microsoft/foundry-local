@@ -373,9 +373,9 @@ coerced, repaired, default-filled, or guessed from XML text.
 **Generation and validation have different responsibilities.** Structural Lark
 guidance restricts JSON syntax, the canonical envelope, declared/forced tool names,
 and serial versus parallel calls. It preserves arbitrary argument property order,
-JSON structural whitespace, and standard string escapes, including printable Unicode escapes. It does
-not use the runtime's JSON Schema-to-grammar projection: a mask must not turn a
-valid argument spelling into a different value to satisfy a compiler limitation.
+JSON structural whitespace (bounded formatting runs), and standard string escapes,
+including printable Unicode escapes. It does not use the runtime's JSON Schema-to-grammar
+projection: a mask must not turn a valid argument spelling into a different value to satisfy a compiler limitation.
 The unchanged original parameter schema is validated with jsoncons before any
 call in the batch is published. Structural guidance alone does not guarantee
 schema compliance or that the model chose the user's intended argument value.
@@ -441,7 +441,23 @@ Recovery also shares implicit classic Generator output limits; it cannot acquire
 fresh default allowance or use the retained conversation's full context as an output
 budget. Engine text turns remain uncapped when the caller leaves their limit unset.
 
-Qualification requires both protocol fidelity and the **real Copilot CLI** coding
+General-chat function qualification is separate from coding-agent qualification. With a locally registered model
+already loaded, select the ordinary chat cases explicitly:
+
+```bash
+python sdk_v2/cpp/test/manual/tool_call_gate.py \
+  --endpoint http://127.0.0.1:5273/catalogs/local/v1 --model YOUR_MODEL_ID \
+  --case chat_function_round_trip --case chat_tool_error --case chat_typed_arguments \
+  --case plain_answer_auto --case responses_chat_function_round_trip \
+  --output-dir sdk_v2/cpp/build/chat-function-gate
+```
+
+These cases preserve the caller's tool set and automatic selection, correlate real call IDs with results, and check
+the final answer. Chat Completions runs both streaming modes; the Responses round trip is nonstreaming.
+Also verify retained typed SDK sessions and fresh processes with the intended runtime packages. Passing these
+cases does not certify every schema/control combination, a released package, or coding-agent behavior.
+
+Coding-agent qualification requires both protocol fidelity and the **real Copilot CLI** coding
 workflow, not just an offline harness self-test. With the server already running:
 
 ```powershell

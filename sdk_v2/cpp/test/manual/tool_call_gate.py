@@ -16,6 +16,9 @@ import urllib.request
 
 
 FAILED_TOOL_RECOVERY = "failed_tool_recovery_auto"
+CHAT_ROUND_TRIP = "chat_function_round_trip"
+CHAT_TOOL_ERROR = "chat_tool_error"
+RESPONSES_CHAT_ROUND_TRIP = "responses_chat_function_round_trip"
 TOOL_FAILURE = "Intentional qualification failure. Do not retry; write the requested Python function and test."
 
 
@@ -66,6 +69,55 @@ def cases():
         request = copy.deepcopy(base)
         request["tool_choice"] = choice
         yield "minlength_" + choice, request, [{"city": "Paris"}], None
+
+    request = copy.deepcopy(base)
+    request["tools"][0]["function"]["description"] = "Look up the current weather for a city."
+    request["tools"].append({
+        "type": "function",
+        "function": {
+            "name": "convert_currency",
+            "description": "Convert a monetary amount between currencies.",
+            "parameters": {
+                "type": "object",
+                "properties": {"amount": {"type": "number"}, "currency": {"type": "string"}},
+                "required": ["amount", "currency"],
+                "additionalProperties": False,
+            },
+        },
+    })
+    request["messages"][0]["content"] = (
+        "What is the current weather in Paris? Use the weather tool and then tell me the city and temperature."
+    )
+    yield CHAT_ROUND_TRIP, request, [{"city": "Paris"}], None
+    yield RESPONSES_CHAT_ROUND_TRIP, {
+        "temperature": 0, "max_output_tokens": 2048, "store": False,
+        "input": request["messages"][0]["content"],
+        "tools": [{"type": "function", **tool["function"]} for tool in request["tools"]],
+    }, [{"city": "Paris"}], None
+    request = copy.deepcopy(request)
+    request["messages"][0]["content"] += (
+        " If the lookup fails, explain that the weather is unavailable; do not retry or invent a temperature."
+    )
+    yield CHAT_TOOL_ERROR, request, [{"city": "Paris"}], None
+
+    request = copy.deepcopy(base)
+    schema = request["tools"][0]["function"]["parameters"]
+    schema["properties"].update({
+        "count": {"type": "integer"},
+        "options": {
+            "type": "object",
+            "properties": {"enabled": {"type": "boolean"}, "limit": {"type": "number"}},
+            "required": ["enabled", "limit"],
+            "additionalProperties": False,
+        },
+    })
+    schema["required"] += ["count", "options"]
+    arguments = {"city": "Z\u00fcrich \u6771\u4eac", "count": 3, "options": {"enabled": True, "limit": 2.5}}
+    request["messages"][0]["content"] = (
+        "Call lookup with exactly these typed arguments, preserving all values: "
+        + json.dumps(arguments, ensure_ascii=False)
+    )
+    yield "chat_typed_arguments", request, [arguments], None
 
     request = copy.deepcopy(base)
     request["tool_choice"] = "auto"
@@ -299,7 +351,14 @@ def parse_responses_completion(result):
             calls.append({"id": item["call_id"], "type": "function",
                           "function": {"name": item["name"], "arguments": item["arguments"]}})
     validate_tool_calls(calls)
-    return {"tool_calls": calls}, result
+    message = {"tool_calls": calls}
+    text = "".join(
+        part["text"] for item in result["output"] if item["type"] == "message"
+        for part in item.get("content", []) if part["type"] == "output_text"
+    )
+    if text:
+        message["content"] = text
+    return message, result
 
 
 def complete(endpoint, request, timeout):
@@ -399,6 +458,41 @@ def complete_failed_tool_recovery(endpoint, request, timeout, transport=complete
     }
 
 
+def complete_chat_round_trip(endpoint, request, timeout, tool_error=False, transport=complete):
+    first, first_evidence = transport(endpoint, copy.deepcopy(request), timeout)
+    calls = first.get("tool_calls") or []
+    if len(calls) != 1 or calls[0]["function"]["name"] != "lookup":
+        raise RuntimeError("Expected one weather lookup, not a currency conversion")
+    call = calls[0]
+    if json.loads(call["function"]["arguments"]) != {"city": "Paris"}:
+        raise RuntimeError("Expected lookup arguments city=Paris")
+    tool_result = (
+        {"error": "Current weather is unavailable. Do not retry."} if tool_error else
+        {"city": "Paris", "temperature_c": 18.5, "condition": "cloudy"}
+    )
+    continuation = copy.deepcopy(request)
+    if "input" in continuation:
+        continuation["input"] = [
+            {"role": "user", "content": request["input"]},
+            {"type": "function_call", "call_id": call["id"], **call["function"]},
+            {"type": "function_call_output", "call_id": call["id"], "output": json.dumps(tool_result)},
+        ]
+    else:
+        continuation["messages"] += [
+            dict(first, role="assistant"),
+            {"role": "tool", "tool_call_id": call["id"], "content": json.dumps(tool_result)},
+        ]
+    final, final_evidence = transport(endpoint, continuation, timeout)
+    content = (final.get("content") or "").strip()
+    expected = "unavailable" in content.lower() if tool_error else "Paris" in content and "18.5" in content
+    return {
+        "passed": bool(content) and not final.get("tool_calls") and expected and "MESSAGE\n" not in content,
+        "callback_count": 1,
+        "tools_unchanged": continuation["tools"] == request["tools"],
+        "response": {"first": first_evidence, "continuation": final_evidence},
+    }
+
+
 def self_test():
     """Offline protocol and tool-metadata checks only; never qualify an endpoint."""
     checks = {}
@@ -428,6 +522,10 @@ def self_test():
         {"type": "function_call", "status": "completed", "call_id": "call_lookup", **function},
     ]}
     require("valid_responses_completion", lambda: parse_responses_completion(response)[0] == tool)
+    require("valid_responses_text", lambda: parse_responses_completion({
+        "status": "completed", "output": [{"type": "message", "content": [
+            {"type": "output_text", "text": "Paris is 18.5 degrees."}]}],
+    })[0] == {"tool_calls": [], "content": "Paris is 18.5 degrees."})
     for status in (None, "failed", "incomplete", "in_progress"):
         require("reject_responses_status_" + str(status), lambda s=status: parse_responses_completion(
             dict(response, status=s)), rejects=True)
@@ -558,6 +656,43 @@ def self_test():
     require("recovery_qualifies_final_python", lambda: recovery_round_trip({"content": python})["passed"])
     require("recovery_rejects_repeated_call", lambda: not recovery_round_trip(tool)["passed"])
     require("recovery_rejects_noninteger_callback_arguments", lambda: fail_multiply(7.0, 9), rejects=True)
+
+    def chat_round_trip(final, tool_error=False, responses=False):
+        case = RESPONSES_CHAT_ROUND_TRIP if responses else CHAT_ROUND_TRIP
+        request = dict(next(source for name, source, _, _ in cases() if name == case),
+                       model="offline-model", stream=False)
+        original = copy.deepcopy(request)
+        first = {"role": "assistant", "reasoning_content": "Need weather.", "tool_calls": [tool_call]}
+        seen = []
+
+        def transport(endpoint, body, timeout):
+            seen.append(copy.deepcopy(body))
+            return (first, {}) if len(seen) == 1 else (final, {})
+
+        result = complete_chat_round_trip("offline-endpoint", request, 1, tool_error, transport)
+        require("chat_preserves_request_and_tools", lambda: (
+            request == original and seen[0]["tools"] == seen[1]["tools"] == request["tools"]))
+        if responses:
+            require("responses_preserves_real_call_id_and_result", lambda: (
+                seen[1]["input"][0] == {"role": "user", "content": request["input"]}
+                and seen[1]["input"][1] == {
+                    "type": "function_call", "call_id": tool_call["id"], **tool_call["function"]}
+                and seen[1]["input"][2]["type"] == "function_call_output"
+                and seen[1]["input"][2]["call_id"] == tool_call["id"]
+                and json.loads(seen[1]["input"][2]["output"])["temperature_c"] == 18.5))
+        else:
+            require("chat_preserves_real_call_id_and_reasoning", lambda: (
+                seen[1]["messages"][-2] == first
+                and seen[1]["messages"][-1]["tool_call_id"] == tool_call["id"]))
+        return result["passed"]
+
+    require("chat_accepts_weather_result", lambda: chat_round_trip({"content": "Paris is 18.5 degrees."}))
+    require("chat_accepts_tool_error", lambda: chat_round_trip({"content": "Weather is unavailable."}, True))
+    require("chat_rejects_missing_result", lambda: not chat_round_trip({"content": "Paris is sunny."}))
+    require("chat_rejects_repeated_call", lambda: not chat_round_trip(tool))
+    require("chat_rejects_internal_frame", lambda: not chat_round_trip({"content": "MESSAGE\nParis is 18.5."}))
+    require("responses_accepts_weather_result", lambda: chat_round_trip(
+        {"content": "Paris is 18.5 degrees."}, responses=True))
     passed = all(checks.values())
     print(json.dumps({"self_test_passed": passed, "endpoint_qualification_performed": False,
                       "checks": checks}, indent=2))
@@ -590,13 +725,17 @@ def main():
             try:
                 if name == FAILED_TOOL_RECOVERY:
                     result.update(complete_failed_tool_recovery(args.endpoint, request, args.timeout_seconds))
+                elif name in (CHAT_ROUND_TRIP, CHAT_TOOL_ERROR, RESPONSES_CHAT_ROUND_TRIP):
+                    result.update(complete_chat_round_trip(
+                        args.endpoint, request, args.timeout_seconds, name == CHAT_TOOL_ERROR))
                 else:
                     message, evidence = complete(args.endpoint, request, args.timeout_seconds)
                     calls = message.get("tool_calls") or []
                     actual = [json.loads(call["function"]["arguments"]) for call in calls]
                     names = [call["function"]["name"] for call in calls]
                     result["passed"] = (
-                        actual == expected_calls and names == ["lookup"] * len(expected_calls)
+                        json.dumps(actual, sort_keys=True) == json.dumps(expected_calls, sort_keys=True)
+                        and names == ["lookup"] * len(expected_calls)
                         and (expected_text is None or (message.get("content") or "").strip() == expected_text)
                     )
                     result["response"] = evidence
