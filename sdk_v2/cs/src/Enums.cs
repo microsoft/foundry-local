@@ -16,6 +16,9 @@ public enum CatalogType
 
     /// <summary>The local catalog for caller-owned model registrations.</summary>
     Local = 1,
+
+    /// <summary>An Azure Machine Learning registry catalog (requires native API v4).</summary>
+    AzureRegistry = 2,
 }
 
 public enum ItemType

@@ -834,6 +834,25 @@ TEST_F(AzureRegistryCatalogTest, PaginationUsesBothModelAndVersionNextLinksAndCo
             (std::set<std::string>{"https://ml.azure.com/.default", "https://management.azure.com/.default"}));
 }
 
+TEST_F(AzureRegistryCatalogTest, PaginationAcceptsMixedCaseHostInNextLink) {
+  Discovery("https://Region-EastUS.experiments.azureml.net/");
+  const std::string mixed_base =
+      "https://Region-EastUS.experiments.azureml.net/mferp/managementfrontend/subscriptions/sub/resourceGroups/group"
+      "/providers/Microsoft.MachineLearningServices/registries/mock-registry";
+  const std::string lower_base =
+      "https://region-eastus.experiments.azureml.net/mferp/managementfrontend/subscriptions/sub/resourceGroups/group"
+      "/providers/Microsoft.MachineLearningServices/registries/mock-registry";
+  transport_->Queue(mixed_base + "/models" + kApi,
+                    {{"value", Json::array()}, {"nextLink", lower_base + "/models?page=2"}});
+  transport_->Queue(lower_base + "/models?page=2", {{"value", {{{"name", kCpuName}}}}});
+  transport_->Queue(mixed_base + "/models/" + kCpuName + "/versions" + kApi,
+                    {{"value", {LegacyModel(kCpuName, 1)}}});
+  auto client = Client();
+  const auto versions = client->ListModelVersions();
+  ASSERT_EQ(versions.size(), 1);
+  EXPECT_EQ(versions[0].at("foundryVariantName"), kCpuName);
+}
+
 TEST_F(AzureRegistryCatalogTest, DiscoveryEncodesParenthesizedAndUnicodeResourceGroupsAsOneSegment) {
   std::string unicode_limit;
   std::string encoded_limit;

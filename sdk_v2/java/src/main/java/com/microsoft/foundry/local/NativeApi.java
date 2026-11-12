@@ -21,16 +21,19 @@ import java.util.Map;
 import java.util.function.IntFunction;
 
 /**
- * Narrow binding to the Foundry Local C API v2.
+ * Narrow binding to the Foundry Local C API, negotiating v4 down to v2.
  * All supported targets use 64-bit pointers/size_t. C bool is one byte, not JNA boolean.
  */
 final class NativeApi {
+    // Keep the existing v2 data layouts even when negotiating a newer function table.
     static final int VERSION = 2;
+    static final int MAX_API_VERSION = 4;
     static final ThreadLocal<Boolean> IN_CALLBACK = ThreadLocal.withInitial(() -> false);
     private static NativeApi resident;
     private final List<NativeLibrary> libraries = new ArrayList<>();
     final Path directory;
     final String version;
+    final int apiVersion;
     final Table root, config, catalog, model, item, inference;
 
     static final class Root {
@@ -52,6 +55,7 @@ final class NativeApi {
         static final int MODEL_LIST_GET_AT = 23;
         static final int MANAGER_SHUTDOWN = 27;
         static final int MANAGER_GET_CATALOG_BY_TYPE = 29;
+        static final int MANAGER_GET_CATALOG_WITH_OPTIONS = 30;
     }
 
     static final class ConfigurationApi {
@@ -195,26 +199,30 @@ final class NativeApi {
     }
 
     private NativeApi(Path path, Path foundryLibrary) {
+        this(path, openRuntime(path, foundryLibrary));
+    }
+
+    private NativeApi(Path path, List<NativeLibrary> runtime) {
+        this(path,
+                text(runtime.get(runtime.size() - 1).getFunction("FoundryLocalGetVersionString")
+                        .invokePointer(new Object[0])),
+                requested -> runtime.get(runtime.size() - 1).getFunction("FoundryLocalGetApi")
+                        .invokePointer(new Object[] {requested}));
+        libraries.addAll(runtime);
+    }
+
+    NativeApi(Path path, String runtimeVersion, IntFunction<Pointer> lookup) {
         verifyArchitecture();
         directory = path;
-        for (String dependency : dependencyLibraryNames()) {
-            Path candidate = path.resolve(dependency);
-            if (Files.isRegularFile(candidate)) {
-                libraries.add(open(candidate));
-            }
-        }
-        NativeLibrary library = open(foundryLibrary);
-        libraries.add(library);
-        Pointer api;
+        NegotiatedApi negotiated;
         try {
-            Function negotiate = library.getFunction("FoundryLocalGetApi");
-            api = requireApiVersion(requested ->
-                    negotiate.invokePointer(new Object[] {requested}));
+            negotiated = requireApiVersion(lookup);
         } catch (UnsatisfiedLinkError e) {
             throw new IllegalStateException("Native runtime does not expose C API " + VERSION, e);
         }
-        version = text(library.getFunction("FoundryLocalGetVersionString").invokePointer(new Object[0]));
-        root = new Table(api);
+        version = runtimeVersion;
+        apiVersion = negotiated.version();
+        root = new Table(negotiated.pointer());
         catalog = new Table(root.pointer(Root.GET_CATALOG_API));
         config = new Table(root.pointer(Root.GET_CONFIGURATION_API));
         item = new Table(root.pointer(Root.GET_ITEM_API));
@@ -222,10 +230,27 @@ final class NativeApi {
         model = new Table(root.pointer(Root.GET_MODEL_API));
     }
 
-    static Pointer requireApiVersion(IntFunction<Pointer> lookup) {
-        Pointer api = lookup.apply(VERSION);
-        if (api == null) throw new IllegalStateException("Native runtime does not expose C API " + VERSION);
-        return api;
+    private static List<NativeLibrary> openRuntime(Path path, Path foundryLibrary) {
+        verifyArchitecture();
+        List<NativeLibrary> runtime = new ArrayList<>();
+        for (String dependency : dependencyLibraryNames()) {
+            Path candidate = path.resolve(dependency);
+            if (Files.isRegularFile(candidate)) {
+                runtime.add(open(candidate));
+            }
+        }
+        runtime.add(open(foundryLibrary));
+        return runtime;
+    }
+
+    record NegotiatedApi(int version, Pointer pointer) {}
+
+    static NegotiatedApi requireApiVersion(IntFunction<Pointer> lookup) {
+        for (int requested = MAX_API_VERSION; requested >= VERSION; requested--) {
+            Pointer api = lookup.apply(requested);
+            if (api != null) return new NegotiatedApi(requested, api);
+        }
+        throw new IllegalStateException("Native runtime does not expose C API " + VERSION + " or newer");
     }
 
     private static List<String> dependencyLibraryNames() {

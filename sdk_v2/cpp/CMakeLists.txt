@@ -765,6 +765,8 @@ endif()
 # --------------------------------------------------------------------------
 if(FOUNDRY_LOCAL_BUILD_EXAMPLES)
     add_subdirectory(examples/basic_chat)
+    add_subdirectory(examples/azure_registry_catalog)
+    set_target_properties(azure_registry_catalog_example PROPERTIES FOLDER "Examples")
     add_subdirectory(examples/tool_calling)
     add_subdirectory(examples/realtime_audio)
     add_subdirectory(examples/embeddings)

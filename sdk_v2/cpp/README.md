@@ -20,6 +20,10 @@ and streaming across languages, see [Inference with the Foundry Local SDK](../IN
 
 ## Features
 
+For Azure ML registries, see the short [registry catalog example](examples/azure_registry_catalog/main.cc).
+Run `az login` first; registry access requires native API v4 or newer and defaults to `azure_cli`
+credentials (`workload_identity` is also supported).
+
 - **Model catalog** -- discover model aliases, variants, cached models, and loaded models
 - **Model lifecycle** -- download, load, unload, remove, and register local model assets
 - **Chat** -- stateful chat sessions, including text-only `coding` models, with streaming and per-request settings

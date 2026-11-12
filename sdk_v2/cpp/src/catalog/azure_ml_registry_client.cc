@@ -215,11 +215,18 @@ std::vector<Json> AzureMlRegistryClient::List(const std::string& url) {
   std::vector<Json> items;
   std::set<std::string> visited;
   const Url base(base_url_);
+  const auto base_scheme = ToLower(base.GetScheme());
+  const auto base_host = ToLower(base.GetHost());
+  const auto base_port = base.GetPort() == 0 ? 443 : base.GetPort();
+  const auto base_path_prefix = ToLower(base.GetPath()) + "/";
   auto next = url;
   while (!next.empty()) {
     const Url page(next);
-    if (page.GetScheme() != base.GetScheme() || page.GetHost() != base.GetHost() ||
-        page.GetPort() != base.GetPort() || !page.GetPath().starts_with(base.GetPath() + "/") ||
+    const auto page_port = page.GetPort() == 0 ? 443 : page.GetPort();
+    if (ToLower(page.GetScheme()) != base_scheme ||
+        ToLower(page.GetHost()) != base_host ||
+        page_port != base_port ||
+        !ToLower(page.GetPath()).starts_with(base_path_prefix) ||
         !visited.insert(next).second) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK, "Azure ML returned an invalid pagination link");
     }

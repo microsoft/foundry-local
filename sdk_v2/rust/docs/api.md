@@ -84,6 +84,8 @@ pub struct FoundryLocalManager { /* private fields */ }
 |--------|-----------|-------------|
 | `create` | `fn create(config: FoundryLocalConfig) -> Result<Arc<Self>, FoundryLocalError>` | Initialise the SDK. Live handles reuse the same instance; conflicting hosted/in-process modes are rejected, including when derived handles retain it. Other settings remain those of the first configuration. Once the final native handle is dropped, a later call builds a fresh instance. |
 | `catalog` | `fn catalog(&self) -> &Catalog` | Access the model catalog. |
+| `get_catalog` | `fn get_catalog(&self, catalog_type: CatalogType) -> Result<Catalog, FoundryLocalError>` | Select the public or local catalog without options (legacy API route). |
+| `get_catalog_with_options` | `fn get_catalog_with_options(&self, catalog_type: CatalogType, options: &CatalogOptions) -> Result<Catalog, FoundryLocalError>` | Select a catalog with string settings. `CatalogType::AzureRegistry` requires `name`; optional `credential` is `azure_cli` (default) or `workload_identity`. Requires native API v4 except for empty-options public/local calls. Native code owns catalog identity and caching. |
 | `urls` | `fn urls(&self) -> Result<Vec<String>, FoundryLocalError>` | Observe current listening URLs without starting the service or acquiring shared-host ownership. Empty when no listener is running. |
 | `start_web_service` | `async fn start_web_service(&self) -> Result<(), FoundryLocalError>` | Start the local web service. Retrieve listening URLs via `urls()`. |
 | `stop_web_service` | `async fn stop_web_service(&self) -> Result<(), FoundryLocalError>` | Stop the local web service. |

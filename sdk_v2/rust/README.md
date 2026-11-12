@@ -151,6 +151,20 @@ model
 
 Catalog access does not block on EP downloads. Call `download_and_register_eps` when you need hardware-accelerated execution providers.
 
+### Azure ML registry catalog
+
+Use `manager.get_catalog_with_options(CatalogType::AzureRegistry, &options)`,
+where `options` is a `CatalogOptions` string map containing `name` (the registry
+name) and optionally `credential` (`azure_cli`, the default, or `workload_identity`).
+Authenticate with Azure CLI (`az login`) or configure workload identity as appropriate.
+See the minimal [registry example](examples/azure_registry_catalog.rs):
+`cargo run --example azure_registry_catalog`.
+
+Registry catalogs/options require native API v4. The SDK negotiates v4, v3, then
+v2; existing `catalog()`, `get_catalog(Public/Local)` and empty-options public/local
+calls continue to work on older runtimes. Catalog identity, caching and refresh
+are managed by the native core; the binding does not cache credentials or results.
+
 ## Native shared serving
 
 Opt in through normal SDK configuration; no separate host installation or control API is needed:

@@ -171,6 +171,20 @@ var cached = await catalog.GetCachedModelsAsync();
 var loaded = await catalog.GetLoadedModelsAsync();
 ```
 
+### Azure ML registry catalog
+
+Use `GetCatalogAsync(CatalogType.AzureRegistry, options)` with a registry `name` and optional
+`credential` (`azure_cli` or `workload_identity`). Registry HTTP access and authentication are
+handled by the native runtime; sign in with `az login` when using `azure_cli`.
+Catalog options require native C API v4. Existing public/local calls still work with v2/v3 runtimes.
+Wrappers are reused when the native runtime returns the same catalog handle.
+
+The [minimal registry example](examples/AzureRegistryCatalog/Program.cs) lists aliases and variant IDs:
+
+```powershell
+dotnet run --project examples\AzureRegistryCatalog
+```
+
 ### Bring your own model
 
 Select the local catalog to register an existing model directory. The directory must contain a valid
