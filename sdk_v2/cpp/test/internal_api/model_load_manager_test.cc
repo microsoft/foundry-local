@@ -498,58 +498,28 @@ TEST_F(ModelLoadManagerUnloadTest, UnloadFailsWhenInUseAndSucceedsAfterSessionsR
   EXPECT_EQ(mgr_->GetLoadedModel(fl::test::kTestChatModelAlias), nullptr);
 }
 
-TEST(ModelLoadManagerTest, SameIdSupportsIndependentCanonicalPathsForLoadLookupAndUnload) {
-  const auto model_path = fl::test::GetTestDataPath("tiny-paged-attention");
-  auto other_source = fl::test::TempPath::CreateTempDir("fl_model_load_other_source_");
-  const auto different_path = other_source.path() / "model";
-  std::filesystem::copy(model_path, different_path, std::filesystem::copy_options::recursive);
-  fl::test::FakeServiceBindings bindings;
-  auto& manager = bindings.model_load_manager;
-  const std::string id = "shared-model:1";
-  const auto equivalent_path = model_path / ".";
-  const auto equivalent_other_path = different_path / ".";
+TEST_F(ModelLoadManagerUnloadTest, SameIdRequiresSameCanonicalPathForLoadLookupAndUnload) {
+  const auto equivalent_path = std::filesystem::path(model_path_) / ".";
+  const auto different_path = std::filesystem::path(model_path_).parent_path();
 
-  const auto first = manager.LoadModel(model_path.string(), id);
-  ASSERT_EQ(first.status, fl::ModelLoadManager::LoadStatus::kSuccess);
-  ASSERT_NE(first.model, nullptr);
-  const auto idempotent = manager.LoadModel(equivalent_path.string(), id);
+  const auto idempotent = mgr_->LoadModel(equivalent_path.string(), fl::test::kTestChatModelAlias);
   EXPECT_EQ(idempotent.status, fl::ModelLoadManager::LoadStatus::kModelAlreadyLoaded);
-  EXPECT_EQ(idempotent.model, first.model);
-  EXPECT_EQ(manager.GetLoadedModel(id), first.model);
-  EXPECT_EQ(manager.GetLoadedModel(id, different_path.string()), nullptr);
-  EXPECT_FALSE(manager.UnloadModel(id, different_path.string()));
+  EXPECT_EQ(idempotent.model, instance_);
 
-  const auto second = manager.LoadModel(different_path.string(), id);
-  ASSERT_EQ(second.status, fl::ModelLoadManager::LoadStatus::kSuccess);
-  ASSERT_NE(second.model, nullptr);
-  EXPECT_NE(second.model, first.model);
-  const auto other_idempotent = manager.LoadModel(equivalent_other_path.string(), id);
-  EXPECT_EQ(other_idempotent.status, fl::ModelLoadManager::LoadStatus::kModelAlreadyLoaded);
-  EXPECT_EQ(other_idempotent.model, second.model);
+  try {
+    mgr_->LoadModel(different_path.string(), fl::test::kTestChatModelAlias);
+    FAIL() << "Expected a same-ID path collision";
+  } catch (const fl::Exception& e) {
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+    EXPECT_NE(std::string(e.what()).find("different path"), std::string::npos);
+  }
 
-  const auto expect_ambiguous = [](const auto& operation) {
-    try {
-      operation();
-      FAIL() << "Expected an ambiguous same-ID operation to require a path";
-    } catch (const fl::Exception& error) {
-      EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
-      EXPECT_NE(std::string(error.what()).find("multiple sources"), std::string::npos);
-    }
-  };
-  expect_ambiguous([&] { manager.GetLoadedModel(id); });
-  expect_ambiguous([&] { manager.UnloadModel(id); });
-  EXPECT_EQ(manager.GetLoadedModel(id, equivalent_path.string()), first.model);
-  EXPECT_EQ(manager.GetLoadedModel(id, equivalent_other_path.string()), second.model);
+  EXPECT_EQ(mgr_->GetLoadedModel(fl::test::kTestChatModelAlias, different_path.string()), nullptr);
+  EXPECT_FALSE(mgr_->UnloadModel(fl::test::kTestChatModelAlias, different_path.string()));
+  EXPECT_EQ(mgr_->GetLoadedModel(fl::test::kTestChatModelAlias), instance_);
 
-  EXPECT_TRUE(manager.UnloadModel(id, equivalent_path.string()));
-  EXPECT_EQ(manager.GetLoadedModel(id, model_path.string()), nullptr);
-  EXPECT_FALSE(manager.UnloadModel(id, model_path.string()));
-  EXPECT_EQ(manager.GetLoadedModel(id, different_path.string()), second.model);
-  EXPECT_EQ(manager.GetLoadedModel(id), second.model);
-  EXPECT_TRUE(manager.UnloadModel(id, equivalent_other_path.string()));
-  EXPECT_EQ(manager.GetLoadedModel(id, different_path.string()), nullptr);
-  EXPECT_EQ(manager.GetLoadedModel(id), nullptr);
-  EXPECT_FALSE(manager.UnloadModel(id));
+  EXPECT_TRUE(mgr_->UnloadModel(fl::test::kTestChatModelAlias, equivalent_path.string()));
+  EXPECT_EQ(mgr_->GetLoadedModel(fl::test::kTestChatModelAlias), nullptr);
 }
 
 TEST(ModelLoadManagerTest, LoadedConfigSnapshotRequiresMatchingIdAndPathAndSurvivesUnload) {

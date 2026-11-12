@@ -78,7 +78,9 @@ class ProviderBackend final : public api::ManagerBackend {
   const std::vector<std::string>& GetWebServiceUrls() const override { return urls_; }
   void StopWebService() override {}
   std::span<const flEpInfo> GetDiscoverableEps() const override { return eps_; }
-  api::DeviceProviders GetRuntimeDevices() const override { return devices; }
+  api::DeviceProviders GetRuntimeDevices() const override {
+    return {{"CPU", {"CPUExecutionProvider"}}, {"GPU", {"wire-ep"}}};
+  }
   void SetCatalogRuntimeDevices(api::DeviceProviders) override {}
   EpDownloadResult DownloadAndRegisterEps(const std::vector<std::string>* names,
                                           const api::EpProgressCallback& progress) override {
@@ -100,8 +102,6 @@ class ProviderBackend final : public api::ManagerBackend {
   bool IsShutdownRequested() const override { return false; }
 
   std::atomic<bool> reporting_download{false};
-  api::DeviceProviders devices{{"CPU", {"CPUExecutionProvider"}}, {"GPU", {"wire-ep"}}};
-
  private:
   std::vector<std::string> urls_;
   std::vector<flEpInfo> eps_{{FOUNDRY_LOCAL_DATA_VERSION, "wire-ep", false}};
@@ -947,53 +947,6 @@ TEST_F(SdkSessionTest, CatalogOptionsValidateAndDistinguishEffectiveSettings) {
   EXPECT_THROW(manager_->GetCatalog(CatalogType::kLocal, options), Exception);
   EXPECT_EQ(&manager_->GetCatalog(CatalogType::kPublic, KeyValuePairs{}),
             &manager_->GetCatalog(CatalogType::kPublic));
-}
-
-TEST_F(SdkSessionTest, HostedTestDiscoveryRefreshesProvidersAfterHostRegistrationWithoutRegisteringInClient) {
-  WriteTestCatalogSnapshot("existing-registry");
-  WriteTestCatalogSnapshot("new-registry");
-  const auto local_devices = manager_->GetRuntimeDevices();
-  const api::DeviceProviders cpu_only{{"CPU", {"CPUExecutionProvider"}}};
-  const api::DeviceProviders host_devices{{"CPU", {"CPUExecutionProvider"}},
-                                         {"GPU", {"WebGpuExecutionProvider"}},
-                                         {"NPU", {"QNNExecutionProvider"}}};
-  const std::set<std::string> cpu_ids{"shared-generic-cpu:1"};
-  const std::set<std::string> all_ids{"shared-generic-cpu:1", "shared-generic-gpu:1", "shared-qnn-npu:1"};
-  manager_->SetCatalogRuntimeDevices(cpu_only);
-  auto provider = std::make_shared<ProviderBackend>();
-  provider->devices = cpu_only;
-  manager_dispatcher_ = std::make_unique<ManagerDispatcher>(provider, *lifetime_);
-  auto context = ClientContext();
-  int acquired = 0;
-  auto hosted = api::CreateHostedBackend(manager_, [&](bool acquire) {
-    acquired += acquire;
-    return context;
-  });
-  KeyValuePairs existing_options;
-  existing_options.Add("name", "existing-registry");
-  KeyValuePairs new_options;
-  new_options.Add("name", "new-registry");
-  auto& existing = hosted->GetCatalog(CatalogType::kAzureRegistry, existing_options);
-  EXPECT_EQ(CatalogVariantIds(existing), cpu_ids);
-  EXPECT_EQ(acquired, 0);
-
-  provider->devices = host_devices;
-  const std::vector<std::string> names{"wire-ep"};
-  ASSERT_TRUE(hosted->DownloadAndRegisterEps(&names, {}).success);
-  EXPECT_EQ(acquired, 1);
-  auto* alias = existing.GetModel("shared");
-  ASSERT_NE(alias, nullptr);
-  EXPECT_EQ(alias->Variants().size(), 3);
-  EXPECT_EQ(CatalogVariantIds(existing), all_ids);
-  EXPECT_EQ(existing.GetModelVersions("shared", "", 0).size(), 3);
-  auto& created_later = hosted->GetCatalog(CatalogType::kAzureRegistry, new_options);
-  EXPECT_EQ(CatalogVariantIds(created_later), all_ids);
-  EXPECT_EQ(manager_->GetRuntimeDevices(), local_devices);
-
-  provider->devices = cpu_only;
-  EXPECT_EQ(CatalogVariantIds(existing), cpu_ids);
-  EXPECT_EQ(CatalogVariantIds(created_later), cpu_ids);
-  EXPECT_EQ(acquired, 1);
 }
 
 TEST_F(SdkSessionTest, HostedSessionAndCapturedPreflightKeepTheClientDependencyGraphAlive) {

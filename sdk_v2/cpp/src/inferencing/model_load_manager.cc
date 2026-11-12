@@ -40,12 +40,8 @@ namespace {
 /// The expected config filename inside a model directory.
 constexpr const char* kGenAIConfigFileName = "genai_config.json";
 
-std::string GenerativeRuntimeKey(std::string_view model_id, std::string_view model_path) {
-  auto path = NormalizeModelPath(model_path);
-#ifdef _WIN32
-  path = ToLower(std::move(path));
-#endif
-  return "generative|" + std::to_string(model_id.size()) + ":" + std::string(model_id) + "|" + path;
+std::string GenerativeRuntimeKey(std::string_view model_id) {
+  return "generative|" + std::string(model_id);
 }
 
 class ManagedGenerativeRuntime final : public ManagedModelRuntime {
@@ -515,7 +511,7 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
 
   const auto path_str = NormalizeModelPath(model_path);
   std::string id_str(model_id);
-  const auto runtime_key = GenerativeRuntimeKey(id_str, path_str);
+  const auto runtime_key = GenerativeRuntimeKey(id_str);
   std::lock_guard<std::mutex> lock(mutex_);
 
   auto it = loaded_runtimes_.find(runtime_key);
@@ -627,16 +623,7 @@ bool ModelLoadManager::UnloadModel(std::string_view model_id, const std::string*
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::string id_str(model_id);
-  auto it = loaded_runtimes_.end();
-  for (auto candidate = loaded_runtimes_.begin(); candidate != loaded_runtimes_.end(); ++candidate) {
-    if (candidate->second->GenAI() && candidate->second->ModelId() == model_id &&
-        (!normalized_model_path || ModelPathsEqual(*normalized_model_path, candidate->second->ModelPath()))) {
-      if (it != loaded_runtimes_.end()) {
-        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model ID is loaded from multiple sources; specify its path");
-      }
-      it = candidate;
-    }
-  }
+  auto it = loaded_runtimes_.find(GenerativeRuntimeKey(id_str));
   if (it == loaded_runtimes_.end()) {
     logger_.Log(LogLevel::Information, fmt::format("model was not loaded: {}", id_str));
     return false;
@@ -737,7 +724,7 @@ void ModelLoadManager::UnloadAll(std::chrono::milliseconds timeout) {
     }
 
     try {
-      UnloadModel(id, runtime->ModelPath());
+      UnloadModel(id);
     } catch (const std::exception& ex) {
       // A new session attached between our refcount poll and the lock acquisition inside
       // UnloadModel. Log and move on — IsShutdownRequested-gated callers shouldn't be
@@ -848,18 +835,14 @@ GenAIModelInstance* ModelLoadManager::GetLoadedModel(std::string_view model_id,
 
 GenAIModelInstance* ModelLoadManager::FindLoadedModelLocked(std::string_view model_id,
                                                             const std::string* normalized_model_path) {
-  GenAIModelInstance* result = nullptr;
-  for (const auto& [key, runtime] : loaded_runtimes_) {
-    if (runtime->GenAI() && runtime->ModelId() == model_id &&
-        (!normalized_model_path || ModelPathsEqual(*normalized_model_path, runtime->ModelPath()))) {
-      if (result) {
-        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model ID is loaded from multiple sources; specify its path");
-      }
-      result = runtime->GenAI();
-    }
+  std::string id_str(model_id);
+  auto it = loaded_runtimes_.find(GenerativeRuntimeKey(id_str));
+  if (it != loaded_runtimes_.end() &&
+      (!normalized_model_path || ModelPathsEqual(*normalized_model_path, it->second->ModelPath()))) {
+    return it->second->GenAI();
   }
 
-  return result;
+  return nullptr;
 }
 
 std::optional<ModelLoadManager::LoadedModelState> ModelLoadManager::GetLoadedModelState(

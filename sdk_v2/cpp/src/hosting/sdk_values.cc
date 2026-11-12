@@ -140,9 +140,6 @@ Json EncodeModelSelection(const ModelSelection& selection) {
     case CatalogType::kLocal:
       catalog = "local";
       break;
-    case CatalogType::kAzureRegistry:
-      catalog = "azure_registry";
-      break;
     default:
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "invalid SDK model catalog");
   }
@@ -157,12 +154,11 @@ Json EncodeModelSelection(CatalogType catalog, const api::ModelBackend& model) {
 ModelSelection DecodeModelSelection(const Json& value) {
   return DecodeChecked([&] {
     const auto catalog = value.at("catalog").get<std::string>();
-    if (catalog != "public" && catalog != "local" && catalog != "azure_registry" && catalog != "azureml") {
+    if (catalog != "public" && catalog != "local") {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "invalid SDK model catalog");
     }
 
-    return ModelSelection{catalog == "public" ? CatalogType::kPublic :
-                          (catalog == "azure_registry" || catalog == "azureml") ? CatalogType::kAzureRegistry : CatalogType::kLocal,
+    return ModelSelection{catalog == "public" ? CatalogType::kPublic : CatalogType::kLocal,
                           DecodeModelInfo(value.at("info")), value.at("path").get<std::string>()};
   });
 }

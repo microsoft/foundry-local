@@ -952,7 +952,7 @@ TEST_P(WebServiceModelManagementTest, EmptyNameDoesNotMatchManagementRoute) {
   }
 }
 
-TEST_P(WebServiceModelManagementTest, SameIdAtDifferentArtifactPathsLoadsAndUnloadsIndependently) {
+TEST_P(WebServiceModelManagementTest, SameIdAtDifferentArtifactPathCannotReturnLoadedContextOrUnloadOriginal) {
   auto& other_catalog = GetParam() ? public_catalog_ : local_catalog_;
   auto replacement = test::MakeTestModelInfo("replacement-model");
   replacement.model_id = kExactId;
@@ -961,39 +961,21 @@ TEST_P(WebServiceModelManagementTest, SameIdAtDifferentArtifactPathsLoadsAndUnlo
   other_catalog.AddModel(Model::FromModelInfo(std::move(replacement), other_path, bindings_.download_manager,
                                               bindings_.model_load_manager));
   ExpectStatus("load", kEncodedId, "loaded");
-  const auto original_path = ExactModel()->GetPath();
-  auto* original = bindings_.model_load_manager.GetLoadedModel(kExactId, original_path);
-  ASSERT_NE(original, nullptr);
 
   const std::string other_prefix = GetParam() ? "" : "/catalogs/local";
-  for (const auto* status : {"loaded", "already_loaded"}) {
-    const auto response = client_->Get(other_prefix + "/models/load/" + kEncodedId);
-    ASSERT_TRUE(response);
-    ASSERT_EQ(response->status, 200) << response->body;
-    const auto body = json::parse(response->body);
-    EXPECT_EQ(body.at("status"), status);
-    EXPECT_EQ(body.at("model_id"), kExactId);
-    EXPECT_EQ(body.at("model_path"), NormalizeModelPath(other_path));
-    EXPECT_EQ(body.at("context_length"), 512);
-  }
-  auto* other = bindings_.model_load_manager.GetLoadedModel(kExactId, other_path);
-  ASSERT_NE(other, nullptr);
-  EXPECT_NE(other, original);
-  EXPECT_EQ(bindings_.model_load_manager.GetLoadedModel(kExactId, original_path), original);
-  EXPECT_TRUE(other_catalog.GetModelVariant(kExactId)->IsLoaded());
-  ExpectStatus("load", kEncodedId, "already_loaded");
-
+  const auto response = client_->Get(other_prefix + "/models/load/" + kEncodedId);
+  ASSERT_TRUE(response);
+  EXPECT_EQ(response->status, 500) << response->body;
+  const auto body = json::parse(response->body);
+  EXPECT_NE(body.at("error").at("message").get<std::string>().find("different path"), std::string::npos);
+  EXPECT_FALSE(body.contains("context_length"));
   const auto unload = client_->Get(other_prefix + "/models/unload/" + kEncodedId);
   ASSERT_TRUE(unload);
-  ASSERT_EQ(unload->status, 200) << unload->body;
-  EXPECT_EQ(json::parse(unload->body).at("status"), "unloaded");
-  EXPECT_EQ(bindings_.model_load_manager.GetLoadedModel(kExactId, other_path), nullptr);
-  EXPECT_EQ(bindings_.model_load_manager.GetLoadedModel(kExactId, original_path), original);
-  EXPECT_FALSE(other_catalog.GetModelVariant(kExactId)->IsLoaded());
+  EXPECT_EQ(unload->status, 200) << unload->body;
+  EXPECT_EQ(json::parse(unload->body).at("status"), "not_loaded");
   EXPECT_TRUE(ExactModel()->IsLoaded());
   ExpectStatus("load", kEncodedId, "already_loaded");
   ExpectStatus("unload", kEncodedId, "unloaded");
-  EXPECT_EQ(bindings_.model_load_manager.GetLoadedModel(kExactId, original_path), nullptr);
 }
 
 TEST_P(WebServiceModelManagementTest, LoadedIdsAreCatalogAndArtifactPathScopedAcrossVariants) {

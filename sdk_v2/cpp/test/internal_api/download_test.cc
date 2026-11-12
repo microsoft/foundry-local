@@ -1979,35 +1979,24 @@ TEST(DownloadManagerTest, ConcurrentDownloadsOfSameModelSerialize) {
   }
 }
 
-// All model downloads serialize through the process-wide download_mutex_, even
-// for two *different* models owned by different managers (for example, the public
-// catalog and a registry catalog). A concurrency probe records the peak number of
-// downloads running at once; correct serialization keeps that peak at 1 (the
-// second download can't enter until the first releases the mutex).
-TEST(DownloadManagerTest, ModelDownloadsSerializeUnderGlobalLock) {
+// Downloads through one manager serialize even for two different models. The
+// probe verifies that they never overlap.
+TEST(DownloadManagerTest, DifferentModelDownloadsSerializeWithinManager) {
   auto tmpdir = TempPath::CreateTempDir();
 
-  const auto make_registry = [] {
-    return std::make_unique<ModelRegistryClient>(
-        "eastus", fl::test::NullLog(), std::make_unique<RegionFallback>(fl::test::NullLog(), false),
-        [](const std::string&) {
-          return MakeRegistryResponse(
-              R"({"blobSasUri": "https://storage.blob.core.windows.net/c?sig=test"})");
-        });
-  };
+  auto registry = std::make_unique<ModelRegistryClient>(
+      "eastus", fl::test::NullLog(), std::make_unique<RegionFallback>(fl::test::NullLog(), false),
+      [](const std::string&) {
+        return MakeRegistryResponse(
+            R"({"blobSasUri": "https://storage.blob.core.windows.net/c?sig=test"})");
+      });
 
-  struct Counters {
-    std::atomic<int> active{0};
-    std::atomic<int> peak{0};
-  } counters;
-
-  // Tracks the peak number of downloads running at once. The global download
-  // mutex must keep this at 1 even for different models.
+  // Tracks the peak number of downloads running at once. The manager's
+  // download mutex must keep this at 1 even for different models.
   class ConcurrencyProbe : public IBlobDownloader {
    public:
-    explicit ConcurrencyProbe(Counters& counters) : active(counters.active), peak(counters.peak) {}
-    std::atomic<int>& active;
-    std::atomic<int>& peak;
+    std::atomic<int> active{0};
+    std::atomic<int> peak{0};
 
     std::vector<BlobItemInfo> ListBlobs(const std::string&) override {
       return {{"variant-cpu/weights.bin", 16}};
@@ -2037,12 +2026,10 @@ TEST(DownloadManagerTest, ModelDownloadsSerializeUnderGlobalLock) {
     }
   };
 
+  auto probe = std::make_unique<ConcurrencyProbe>();
+  auto* probe_raw = probe.get();
   DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), fl::test::TestTelemetrySink(),
-                          /*disable_region_fallback=*/false, make_registry(),
-                          std::make_unique<ConcurrencyProbe>(counters));
-  DownloadManager other_manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), fl::test::TestTelemetrySink(),
-                                /*disable_region_fallback=*/false, make_registry(),
-                                std::make_unique<ConcurrencyProbe>(counters));
+                          /*disable_region_fallback=*/false, std::move(registry), std::move(probe));
 
   auto make_info = [](const char* id, const char* publisher) {
     ModelInfo info;
@@ -2065,7 +2052,7 @@ TEST(DownloadManagerTest, ModelDownloadsSerializeUnderGlobalLock) {
   });
   std::thread t2([&] {
     try {
-      other_manager.DownloadModel(info_b);
+      manager.DownloadModel(info_b);
     } catch (...) {
       ++exceptions;
     }
@@ -2074,8 +2061,8 @@ TEST(DownloadManagerTest, ModelDownloadsSerializeUnderGlobalLock) {
   t2.join();
 
   EXPECT_EQ(exceptions.load(), 0);
-  EXPECT_EQ(counters.peak.load(), 1)
-      << "The global download mutex must serialize all model downloads, even for different models.";
+  EXPECT_EQ(probe_raw->peak.load(), 1)
+      << "The manager download mutex must serialize all model downloads, even for different models.";
 }
 
 TEST(DownloadManagerTest, RegistryPackageWithoutFilesIsNotMarkedComplete) {
@@ -2488,9 +2475,6 @@ class ListedAzureBlobDownloader : public AzureBlobDownloader {
   std::vector<BlobItemInfo> blobs;
 
   std::vector<BlobItemInfo> ListBlobs(const std::string&) override { return blobs; }
-  std::vector<BlobItemInfo> ListBlobs(const std::string& sas_uri, const std::string&) override {
-    return ListBlobs(sas_uri);
-  }
 };
 
 /// Test double for AzureBlobDownloader. Overrides the protected virtuals so
@@ -2730,9 +2714,6 @@ TEST(AzureBlobDownloaderIntegrityTest, DirectoryRepairVerifiesReceiptOnlyOnce) {
     using FakeChunkAzureDownloader::FakeChunkAzureDownloader;
 
     std::vector<BlobItemInfo> ListBlobs(const std::string&) override { return {{"blob.bin", blob_size}}; }
-    std::vector<BlobItemInfo> ListBlobs(const std::string& sas_uri, const std::string&) override {
-      return ListBlobs(sas_uri);
-    }
   };
 
   auto tmpdir = TempPath::CreateTempDir();

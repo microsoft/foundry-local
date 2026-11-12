@@ -742,6 +742,7 @@ void Model::RefreshCachedState() {
   if (external_registration_) {
     return;
   }
+
   if (cached_) {
     std::lock_guard state_lock(state_mutex_);
     if (HasPackageFiles(local_path_)) {

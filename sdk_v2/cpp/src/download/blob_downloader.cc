@@ -222,10 +222,6 @@ AzureBlobDownloader::AzureBlobDownloader(ILogger& logger, std::shared_ptr<Azure:
     : logger_(logger), transport_(std::move(transport)), close_file_(close_file) {}
 
 std::vector<BlobItemInfo> AzureBlobDownloader::ListBlobs(const std::string& sas_uri) {
-  return ListBlobs(sas_uri, "");
-}
-
-std::vector<BlobItemInfo> AzureBlobDownloader::ListBlobs(const std::string& sas_uri, const std::string& prefix) {
   try {
     auto options = MakeBlobClientOptions();
     if (transport_) {
@@ -235,9 +231,7 @@ std::vector<BlobItemInfo> AzureBlobDownloader::ListBlobs(const std::string& sas_
     auto container_client = Azure::Storage::Blobs::BlobContainerClient(sas_uri, options);
     std::vector<BlobItemInfo> items;
 
-    Azure::Storage::Blobs::ListBlobsOptions list_options;
-    if (!prefix.empty()) list_options.Prefix = prefix;
-    for (auto page = container_client.ListBlobs(list_options); page.HasPage(); page.MoveToNextPage()) {
+    for (auto page = container_client.ListBlobs(); page.HasPage(); page.MoveToNextPage()) {
       for (const auto& blob : page.Blobs) {
         BlobItemInfo info;
         info.name = blob.Name;
@@ -258,7 +252,7 @@ std::vector<BlobItemInfo> AzureBlobDownloader::ListBlobs(const std::string& sas_
     return items;
   } catch (const Azure::Core::RequestFailedException& e) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK,
-             "failed to list blobs: HTTP ", static_cast<int>(e.StatusCode), "; request ID: ", e.RequestId);
+             std::string("failed to list blobs: ") + e.what());
   }
 }
 
@@ -633,8 +627,7 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
     FL_THROW_TIMEOUT(FOUNDRY_LOCAL_ERROR_NETWORK, "model download timed out after 3 hours");
   } catch (const Azure::Core::RequestFailedException& e) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK,
-             "failed to download blob '", blob_name, "': HTTP ", static_cast<int>(e.StatusCode),
-             "; request ID: ", e.RequestId);
+             std::string("failed to download blob '") + blob_name + "': " + e.what());
   }
 }
 
@@ -720,7 +713,7 @@ void DownloadBlobsToDirectory(IBlobDownloader& downloader,
   auto enum_start = clock::now();
 
   // Step 1: Enumerate all blobs
-  auto all_blobs = downloader.ListBlobs(sas_uri, options.path_prefix);
+  auto all_blobs = downloader.ListBlobs(sas_uri);
 
   // Step 2: Filter by path prefix
   struct BlobToDownload {

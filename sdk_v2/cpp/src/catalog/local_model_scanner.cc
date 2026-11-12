@@ -24,7 +24,6 @@ const char* kInferenceModelFileName = "inference_model.json";
 
 bool IsTestRegistryDirectory(const fs::path& dir) {
   const auto name = ToLower(dir.filename().string());
-  if (name == "_test_registries") return true;  // Exclude the previous cache layout too.
   const auto separator = name.rfind('-');
   if (separator == std::string::npos || name.size() - separator - 1 != 64) return false;
   const auto registry = name.substr(0, separator);

@@ -32,8 +32,6 @@ const char* CatalogName(CatalogType catalog) {
       return "public";
     case CatalogType::kLocal:
       return "local";
-    case CatalogType::kAzureRegistry:
-      return "azure_registry";
   }
 
   FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
@@ -93,7 +91,7 @@ class HostedState {
              context->Call(Operation::IsLoaded, {{"model", EncodeModelSelection({CatalogType::kLocal, info, path})}})
                  .get<bool>();
     });
-    if (catalog == CatalogType::kPublic || catalog == CatalogType::kAzureRegistry) {
+    if (catalog == CatalogType::kPublic) {
       const auto context = Connect(false);
       metadata->SetCatalogRuntimeDevices(
           context ? context->Call(Operation::RuntimeDevices, Json::object()).get<DeviceProviders>()
@@ -395,13 +393,12 @@ const HostedModel& HostedModels::Unwrap(CatalogType catalog, const ModelBackend&
 
 class HostedCatalog final : public CatalogBackend {
  public:
-  HostedCatalog(CatalogType type, HostedModels& handles, const KeyValuePairs& options = {})
+  HostedCatalog(CatalogType type, HostedModels& handles)
       : CatalogBackend(BackendKind::Hosted),
         type_(type),
         handles_(handles),
         state_(handles.state),
-        source_(state_.metadata->GetCatalog(type, options)),
-        options_(options) {}
+        source_(state_.metadata->GetCatalog(type)) {}
 
   const std::string& GetName() const override { return source_.GetName(); }
   std::vector<ModelBackend*> ListModels() const override {
@@ -437,8 +434,7 @@ class HostedCatalog final : public CatalogBackend {
     }
 
     std::vector<ModelBackend*> models;
-    for (const auto& value : context->Call(Operation::LoadedModels,
-                                         {{"catalog", CatalogName(type_)}, {"options", EncodeOptions(options_)}})) {
+    for (const auto& value : context->Call(Operation::LoadedModels, {{"catalog", CatalogName(type_)}})) {
       const auto selection = DecodeModelSelection(value);
       auto* source = source_.GetModelVariant(selection.info.model_id);
       if (!source || selection.catalog != type_) {
@@ -492,7 +488,6 @@ class HostedCatalog final : public CatalogBackend {
   HostedModels& handles_;
   HostedState& state_;
   CatalogBackend& source_;
-  KeyValuePairs options_;
 };
 
 class HostedManager final : public ManagerBackend {
@@ -512,21 +507,9 @@ class HostedManager final : public ManagerBackend {
         return public_catalog_;
       case CatalogType::kLocal:
         return local_catalog_;
-      case CatalogType::kAzureRegistry:
-        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-                 "Azure Registry catalog requires option 'name'");
     }
 
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
-  }
-
-  CatalogBackend& GetCatalog(CatalogType type, const KeyValuePairs& options) override {
-    auto& source = state_->metadata->GetCatalog(type, options);
-    if (type != CatalogType::kAzureRegistry) return GetCatalog(type);
-    std::lock_guard lock(catalogs_mutex_);
-    auto& catalog = azure_registry_catalogs_[&source];
-    if (!catalog) catalog = std::make_unique<HostedCatalog>(type, models_, options);
-    return *catalog;
   }
 
   std::unique_ptr<ModelBackend> CaptureModel(
@@ -704,8 +687,6 @@ class HostedManager final : public ManagerBackend {
   HostedModels models_;
   HostedCatalog public_catalog_;
   HostedCatalog local_catalog_;
-  std::mutex catalogs_mutex_;
-  std::map<CatalogBackend*, std::unique_ptr<HostedCatalog>> azure_registry_catalogs_;
   mutable std::mutex urls_mutex_;
   mutable std::set<std::vector<std::string>> url_snapshots_;
 };
