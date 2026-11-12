@@ -196,8 +196,8 @@ TEST(HarmonyDecoderTest, NativeRawBodyUsesInputEnvelopeWithoutLosingSourceBytes)
 }
 
 TEST(HarmonyDecoderTest, PromptProjectionPreservesNativeJsonRawAndResultProvenance) {
-  ToolCallContext context;
-  context.harmony = kProtocol;
+  ToolCallContext context{};
+  context.harmony.emplace(kProtocol);
   context.tools_json = kTools;
   context.tool_kinds = {{"lookup", ToolKind::kFunction}, {"patch", ToolKind::kCustom}};
   context.custom_lark_grammars = {{"patch", "start: /[\\s\\S]+/"}};
@@ -238,8 +238,8 @@ TEST(HarmonyDecoderTest, PromptProjectionPreservesNativeJsonRawAndResultProvenan
 }
 
 TEST(HarmonyDecoderTest, PromptProjectionRejectsParallelHistoryBeforeTemplateRendering) {
-  ToolCallContext context;
-  context.harmony = kProtocol;
+  ToolCallContext context{};
+  context.harmony.emplace(kProtocol);
   TranscriptMessage assistant(FOUNDRY_LOCAL_ROLE_ASSISTANT, "");
   for (const auto* id : {"call_first", "call_second"}) {
     assistant.AppendToolCall(
@@ -289,8 +289,8 @@ TEST(HarmonyDecoderTest, StoredInputAndOutputReplayRetainHistoricalCustomBodyEnc
         }
         EXPECT_EQ(call_count, 1u);
 
-        ToolCallContext context;
-        context.harmony = kProtocol;
+        ToolCallContext context{};
+        context.harmony.emplace(kProtocol);
         context.tools_json = kTools;
         context.tool_kinds = {{"patch", ToolKind::kCustom}};
         if (current_raw) {
@@ -321,8 +321,8 @@ TEST(HarmonyDecoderTest, StoredInputAndOutputReplayRetainHistoricalCustomBodyEnc
 
 TEST(HarmonyDecoderTest, UnannotatedCallerHistoryStillUsesTheCurrentCustomBodyDeclaration) {
   for (const bool current_raw : {false, true}) {
-    ToolCallContext context;
-    context.harmony = kProtocol;
+    ToolCallContext context{};
+    context.harmony.emplace(kProtocol);
     context.tools_json = kTools;
     context.tool_kinds = {{"patch", ToolKind::kCustom}};
     if (current_raw) {
@@ -346,8 +346,8 @@ TEST(HarmonyGrammarTest, ChoicesKeepAuthoritativeHeadersBoundariesAndAllowedReci
     for (const std::string choice : {"auto", "required", "forced", "none"}) {
       SCOPED_TRACE(reasoning);
       SCOPED_TRACE(choice);
-      ToolCallContext context;
-      context.harmony = kProtocol;
+      ToolCallContext context{};
+      context.harmony.emplace(kProtocol);
       context.supports_reasoning = reasoning;
       context.text_output = choice == "auto" || choice == "none";
       context.tool_output = choice != "none";
@@ -380,8 +380,8 @@ TEST(HarmonyGrammarTest, ChoicesKeepAuthoritativeHeadersBoundariesAndAllowedReci
 }
 
 TEST(HarmonyGrammarTest, NativePatchBodiesUseTheirGrammarAndUnsupportedFormatsFailExplicitly) {
-  ToolCallContext context;
-  context.harmony = kProtocol;
+  ToolCallContext context{};
+  context.harmony.emplace(kProtocol);
   context.tool_output = true;
   context.text_output = false;
   EXPECT_THROW(BuildLarkGrammar(context), fl::Exception);
@@ -398,8 +398,8 @@ TEST(HarmonyGrammarTest, NativePatchBodiesUseTheirGrammarAndUnsupportedFormatsFa
 
 TEST(HarmonyDecoderTest, PromptProjectionRejectsNonLeadingInstructionRoles) {
   for (const auto* tools : {"", kTools}) {
-    ToolCallContext context;
-    context.harmony = kProtocol;
+    ToolCallContext context{};
+    context.harmony.emplace(kProtocol);
     context.tools_json = tools;
     for (const auto role : {FOUNDRY_LOCAL_ROLE_SYSTEM, FOUNDRY_LOCAL_ROLE_DEVELOPER}) {
       const auto protect = [](std::string value) { return value; };
@@ -421,8 +421,8 @@ TEST(HarmonyDecoderTest, PromptProjectionRejectsHeaderSeparatorsInToolAndHistory
   for (const char separator : std::string(" \t\r\n\v\f\x01\x02")) {
     const std::string name = "lookup" + std::string(1, separator) + "city";
     for (const bool history : {false, true}) {
-      ToolCallContext context;
-      context.harmony = kProtocol;
+      ToolCallContext context{};
+      context.harmony.emplace(kProtocol);
       context.tools_json = history ? kTools : nlohmann::json::array({{{"type", "function"}, {"function", {{"name", name}, {"parameters", {{"type", "object"}}}}}}}).dump();
       std::vector<TranscriptMessage> messages{{FOUNDRY_LOCAL_ROLE_USER, "Hello"}};
       if (history) {
