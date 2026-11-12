@@ -35,7 +35,7 @@ auto& catalog = manager.GetCatalog(FOUNDRY_LOCAL_CATALOG_AZURE_REGISTRY, options
 
 | Option | Meaning |
 |---|---|
-| `name` | Required Azure ML registry name; normalized case-insensitively |
+| `name` | Required Azure ML registry name (2-32 characters, starting with a letter or digit); normalized case-insensitively |
 | `credential` | `azure_cli` (default) or `workload_identity` |
 
 Unknown keys, invalid registry names and unsupported credentials are errors.
@@ -101,7 +101,9 @@ The adapter reuses `CatalogLocalModel` parsing and conversion, preserving existi
 capability/context metadata and normalized platform properties. Optional
 `minFLVersion` participates in the same compatibility check as public models.
 Assets without Foundry hardware tags or the legacy `foundryLocal` marker are
-ignored. Incomplete opted-in metadata is an error.
+ignored. An opted-in asset with incomplete or malformed metadata is skipped from
+listings with a warning, so one bad record does not hide the rest of the registry;
+requesting that asset by exact ID reports the error.
 
 Legacy `foundryLocal` packages with alias/task and a recognized backend/device
 suffix remain supported. Their platform admission is left to package loading.
@@ -112,7 +114,12 @@ Generic GPU models retain the existing CUDA/WebGPU/DirectML behavior.
 Listings select the latest compatible numeric version per variant; exact
 `<variant-name>:<version>` lookup and version history retain access to older
 versions. Cache-first aliases can select an older completed package independently
-of live listings. Returned handles remain manager/catalog-owned.
+of live listings, and pick up packages completed later through other handles.
+A latest-only refresh does not retarget a container whose selected variant is
+loaded or in use; it moves to the newer version on the first refresh after unload.
+Variants are ordered by their `device`/`execution_provider` metadata when the
+variant name does not encode the device. Returned handles remain
+manager/catalog-owned.
 
 Registry caches remain alongside publisher directories:
 `<model-cache>\<lowercase-name>-<SHA256(azureml://registries/<name>)>\<variant>-<version>`.
@@ -122,9 +129,15 @@ Public/local scanning excludes these directories and the earlier
 Completed packages are usable after restart without contacting Azure. Explicit
 listing queries the registry subject to the normal refresh interval; ordinary
 alias misses reuse that inventory rather than repeating full discovery.
-Snapshots preserve completed local versions removed remotely. Read/merge/write
+Snapshots preserve completed local versions removed remotely, but online
+listings drop entries recorded for a different registry resource ID (a deleted
+and recreated registry). Read/merge/write
 transactions use the existing cross-process file lock in addition to the
 per-instance mutex, preventing different catalog instances from losing updates.
+A download completes only when the registry package contains files and, for
+chat-completion or any package with `genai_config.json`, a valid GenAI model
+configuration. Downloads from all catalogs share the process-wide download
+serialization.
 
 Shared-host discovery observes host providers without registering them in the
 client. Host model selection carries registry and credential mode, while runtime

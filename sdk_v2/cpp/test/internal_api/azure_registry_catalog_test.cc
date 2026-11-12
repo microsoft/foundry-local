@@ -121,8 +121,8 @@ Json LegacyModel(const std::string& name, int version = 1, const std::string& al
                           {"modelUri", "https://storage.blob.core.windows.net/container/v1"}}}};
 }
 
-Json TaggedModel(int version = 1) {
-  auto model = LegacyModel(kCpuName, version);
+Json TaggedModel(int version = 1, const std::string& name = kCpuName) {
+  auto model = LegacyModel(name, version);
   auto& tags = model["properties"]["tags"];
   tags.erase("foundryLocal");
   tags["device"] = "CPU";
@@ -471,26 +471,105 @@ TEST_F(AzureRegistryCatalogTest, StrictTagsMapMetadataAndIgnoreUnrelatedAssets) 
   EXPECT_EQ(model->Info().execution_provider, "CPUExecutionProvider");
 }
 
-TEST_F(AzureRegistryCatalogTest, MissingStrictTagFailsInsteadOfReturningAnEmptyCatalog) {
-  auto model = TaggedModel();
-  model["properties"]["tags"].erase("alias");
-  Inventory({model});
+TEST_F(AzureRegistryCatalogTest, InvalidOptedInRecordsAreSkippedWithoutHidingValidModels) {
+  auto missing_alias = TaggedModel(1, "missing-generic-cpu");
+  missing_alias["properties"]["tags"].erase("alias");
+  auto malformed = TaggedModel(1, "malformed-generic-cpu");
+  malformed["properties"]["tags"] = Json::array();
+  auto wrong_registry = TaggedModel(1, "wrong-generic-cpu");
+  wrong_registry["id"] = "azureml://registries/another-registry/models/wrong-generic-cpu/versions/1";
+  Inventory({missing_alias, malformed, wrong_registry, TaggedModel()});
   auto catalog = Catalog();
-  EXPECT_THROW(catalog->ListModels(), Exception);
+  EXPECT_EQ(VariantIds(catalog->ListModels()), (std::set<std::string>{kCpuName + ":1"}));
+
+  transport_->Queue(kBase + "/models/missing-generic-cpu/versions/1" + kApi, missing_alias);
+  EXPECT_THROW(catalog->GetModelVariant("missing-generic-cpu:1"), Exception);
 }
 
-TEST_F(AzureRegistryCatalogTest, MalformedTagsAndCrossRegistryAssetIdsFailExplicitly) {
-  auto malformed = TaggedModel();
-  malformed["properties"]["tags"] = Json::array();
-  Inventory({malformed});
-  auto catalog = Catalog();
-  EXPECT_THROW(catalog->ListModels(), Exception);
+TEST_F(AzureRegistryCatalogTest, RegistryNamesMayStartWithADigit) {
+  EXPECT_EQ(AzureMlRegistryClient::ValidateRegistryName("1Registry_a-2"), "1registry_a-2");
+  for (const auto* name : {"a", "-registry", "registry-", "reg.istry", "registry_"}) {
+    EXPECT_THROW(AzureMlRegistryClient::ValidateRegistryName(name), Exception) << name;
+  }
+}
 
-  auto wrong_registry = TaggedModel();
-  wrong_registry["id"] = "azureml://registries/another-registry/models/" + kCpuName + "/versions/1";
-  transport_->Queue(kBase + "/models" + kApi, {{"value", {{{"name", kCpuName}}}}});
-  transport_->Queue(kBase + "/models/" + kCpuName + "/versions" + kApi, {{"value", {wrong_registry}}});
-  EXPECT_THROW(catalog->ListModels(), Exception);
+TEST_F(AzureRegistryCatalogTest, VariantsOrderByDeviceMetadataWhenNamesDoNotEncodeTheDevice) {
+  devices_.devices["GPU"] = {"WebGpuExecutionProvider"};
+  auto accelerated = TaggedModel(1, "tiny-accelerated");
+  accelerated["properties"]["tags"]["device"] = "GPU";
+  accelerated["properties"]["tags"]["execution_provider"] = "WebGpuExecutionProvider";
+  Inventory({TaggedModel(5, "tiny-portable"), accelerated});
+  auto catalog = Catalog();
+  const auto models = catalog->ListModels();
+  ASSERT_EQ(models.size(), 1);
+  EXPECT_EQ(models.front()->Variants().front()->Id(), "tiny-accelerated:1");
+}
+
+TEST_F(AzureRegistryCatalogTest, LoadedListingSelectionSurvivesNewerPublicationUntilUnloaded) {
+  Inventory({LegacyModel(kCpuName, 2)});
+  auto catalog = Catalog();
+  ASSERT_EQ(catalog->ListModels().size(), 1);
+  auto* listed = catalog->ListModels().front();
+  const auto path = CachePath() / (kCpuName + "-2");
+  std::filesystem::copy(test::GetTestDataPath("tiny-paged-attention"), path, std::filesystem::copy_options::recursive);
+  std::ofstream(path / "inference_model.json") << "{}";
+  ASSERT_NO_THROW(listed->RefreshCachedState());
+  ASSERT_NO_THROW(listed->Load());
+
+  const std::vector<Json> published{LegacyModel(kCpuName, 2), LegacyModel(kCpuName, 10)};
+  Inventory(published, false);
+  catalog->InvalidateCache();
+  ASSERT_EQ(catalog->ListModels(), (std::vector<Model*>{listed}));
+  EXPECT_EQ(listed->Id(), kCpuName + ":2");
+  EXPECT_TRUE(listed->IsLoaded());
+  EXPECT_EQ(catalog->GetLoadedModels().size(), 1);
+
+  ASSERT_NO_THROW(listed->Unload());
+  EXPECT_TRUE(catalog->GetLoadedModels().empty());
+  Inventory(published, false);
+  catalog->InvalidateCache();
+  catalog->ListModels();
+  EXPECT_EQ(listed->Id(), kCpuName + ":10");
+}
+
+TEST_F(AzureRegistryCatalogTest, RetainedHandlesObservePackageChangesMadeThroughOtherHandles) {
+  Snapshot({CachedInfo(2), CachedInfo(10)});
+  Package(2);
+  config_.additional_options["AzureRegistryModelCacheOnly"] = "true";
+  auto catalog = Catalog(false);
+  auto* alias = catalog->GetModel("tiny");
+  ASSERT_NE(alias, nullptr);
+  EXPECT_EQ(alias->Variants().size(), 1);
+
+  Package(10);
+  ASSERT_EQ(catalog->GetModel("tiny"), alias);
+  EXPECT_EQ(alias->Variants().size(), 2);
+  EXPECT_EQ(alias->Id(), kCpuName + ":10");
+
+  auto* exact = catalog->GetModelVariant(kCpuName + ":10");
+  ASSERT_NE(exact, nullptr);
+  ASSERT_NO_THROW(exact->RemoveFromCache());
+  EXPECT_THROW(alias->Download(), Exception);
+  ASSERT_NO_THROW(alias->RefreshCachedState());
+  EXPECT_FALSE(alias->IsCached());
+
+  Package(10);
+  ASSERT_NO_THROW(alias->RefreshCachedState());
+  EXPECT_TRUE(alias->IsCached());
+}
+
+TEST_F(AzureRegistryCatalogTest, ListingDropsSnapshotEntriesFromAnotherRegistryResource) {
+  auto stale = CachedInfo(2);
+  stale.string_properties["azureml.registryResourceId"] = "/subscriptions/old/registries/mock-registry";
+  Snapshot({stale});
+  Package(2);
+  Inventory({LegacyModel(kCpuName, 10)});
+  Catalog()->ListModels();
+  CatalogCache snapshot(CachePath().string(), services_.logger);
+  snapshot.Load();
+  ASSERT_TRUE(snapshot.GetCachedModels().has_value());
+  ASSERT_EQ(snapshot.GetCachedModels()->size(), 1);
+  EXPECT_EQ(snapshot.GetCachedModels()->front().version, 10);
 }
 
 TEST_F(AzureRegistryCatalogTest, IncompatiblePlatformIsExcluded) {

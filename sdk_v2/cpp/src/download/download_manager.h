@@ -110,10 +110,10 @@ class DownloadManager {
   std::function<ModelContainer(const ModelInfo&)> artifact_resolver_;
   ITelemetry& telemetry_;
 
-  /// Serializes all model downloads in this process: only one runs at a time, so
+  /// Serializes all model downloads in this process, across every catalog's manager: only one runs at a time, so
   /// each gets the full network/disk instead of competing with another download.
   /// Cross-process serialization is handled separately by CrossProcessFileLock.
-  std::mutex download_mutex_;
+  inline static std::mutex download_mutex_;
 };
 
 }  // namespace fl

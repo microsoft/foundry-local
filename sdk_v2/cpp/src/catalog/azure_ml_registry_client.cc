@@ -105,7 +105,7 @@ std::unique_ptr<Azure::Core::Http::_internal::HttpPipeline> MakePipeline(
 std::string AzureMlRegistryClient::ValidateRegistryName(std::string name) {
   ValidateSegment(name);
   if (name.size() < 2 || name.size() > 32 ||
-      !std::isalpha(static_cast<unsigned char>(name.front())) ||
+      !std::isalnum(static_cast<unsigned char>(name.front())) ||
       !std::isalnum(static_cast<unsigned char>(name.back())) ||
       name.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") != std::string::npos) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "invalid Azure ML registry name");

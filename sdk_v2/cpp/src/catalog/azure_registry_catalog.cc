@@ -240,30 +240,33 @@ std::vector<Model*> AzureRegistryCatalog::ListModels() const {
 
 Model* AzureRegistryCatalog::GetModel(const std::string& alias) const {
   std::lock_guard lock(alias_models_mutex_);
+  // Cache-first alias behavior: completed packages for this alias, including ones finished after the alias was built.
+  const auto cached_variants = [&] {
+    std::lock_guard snapshot_lock(snapshot_mutex_);
+    CatalogCache cache(cache_dir_, logger_);
+    cache.Load();
+    auto infos = cache.GetCachedModels().value_or(std::vector<ModelInfo>{});
+    std::erase_if(infos, [&](const ModelInfo& info) {
+      return info.alias != alias || GetModelPath(info, Query::Lookup).empty();
+    });
+    return CreateModels(infos, Query::Lookup);
+  };
+
   auto it = alias_models_.find(alias);
   if (it != alias_models_.end()) {
+    std::unordered_set<std::string> known_ids;
     for (auto* variant : it->second->Variants()) {
+      known_ids.insert(variant->Id());
       RefreshRetainedVariantCache(*variant);
+    }
+    for (auto& variant : cached_variants()) {
+      if (!known_ids.contains(variant.Id())) it->second->AddVariant(std::move(variant));
     }
     it->second->SelectDefaultVariant(MakeVariantEligibility(), /*preserve_explicit_selection=*/true);
     if (it->second->HasEligibleDefaultVariant()) {
       return it->second.get();
     }
     return nullptr;
-  }
-
-  // First, check completed packages in cache for this alias (cache-first alias behavior).
-  std::vector<Model> cached_variants;
-  {
-    std::lock_guard snapshot_lock(snapshot_mutex_);
-    CatalogCache cache(cache_dir_, logger_);
-    cache.Load();
-    if (auto infos = cache.GetCachedModels()) {
-      std::erase_if(*infos, [&](const ModelInfo& info) {
-        return info.alias != alias || GetModelPath(info, Query::Lookup).empty();
-      });
-      cached_variants = CreateModels(*infos, Query::Lookup);
-    }
   }
 
   const auto make_alias = [&](std::vector<Model> variants) -> Model* {
@@ -281,7 +284,7 @@ Model* AzureRegistryCatalog::GetModel(const std::string& alias) const {
     }
     return nullptr;
   };
-  if (auto* cached = make_alias(std::move(cached_variants))) return cached;
+  if (auto* cached = make_alias(cached_variants())) return cached;
 
   if (cache_only_) {
     return nullptr;
@@ -418,16 +421,24 @@ std::vector<ModelInfo> AzureRegistryCatalog::FetchModelInfos() const {
     live_infos = *cached;
   } else {
     for (const auto& model : Client().ListModelVersions()) {
+      // One malformed opted-in asset must not hide the rest of the registry; exact-ID lookups still fail explicitly.
       try {
         if (auto info = Adapt(model)) live_infos.push_back(std::move(*info));
-      } catch (const nlohmann::json::exception&) {
-        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Azure ML returned malformed model metadata");
+      } catch (const nlohmann::json::exception& error) {
+        logger_.Log(LogLevel::Warning, std::string("Skipping malformed Azure ML model metadata: ") + error.what());
+      } catch (const Exception& error) {
+        if (error.code() != FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT) throw;
+        logger_.Log(LogLevel::Warning, std::string("Skipping invalid Azure ML model metadata: ") + error.what());
       }
     }
     cache.Load();
     auto snapshot_infos = live_infos;
     if (const auto existing = cache.GetCachedModels()) {
       for (const auto& old_info : *existing) {
+        const auto* resource_id = old_info.GetPropertyStr("azureml.registryResourceId");
+        if (resource_id && *resource_id != Client().ResourceId()) {
+          continue;
+        }
         if (std::none_of(snapshot_infos.begin(), snapshot_infos.end(), [&](const ModelInfo& m) {
               return m.model_id == old_info.model_id;
             })) {

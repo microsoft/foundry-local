@@ -494,11 +494,15 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
                                model_path, download_opts, stats, logger_);
     }
 
-    if (artifact_resolver_ && info.task == "chat-completion") {
-      const auto config = GenAIConfig::LoadFromFile(
-          (std::filesystem::path(model_path) / kGenAIConfigFileName).string());
-      if (!config.model) {
-        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "test model package has no GenAI model configuration");
+    if (artifact_resolver_) {
+      if (stats.file_count == 0) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "test model package contains no files: " + info.model_id);
+      }
+      const auto config_path = std::filesystem::path(model_path) / kGenAIConfigFileName;
+      if (info.task == "chat-completion" || std::filesystem::exists(config_path)) {
+        if (!GenAIConfig::LoadFromFile(config_path.string()).model) {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "test model package has no GenAI model configuration");
+        }
       }
     }
 
