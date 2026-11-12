@@ -65,7 +65,13 @@ inline const char* Version() noexcept;
 namespace detail {
 
 inline uint32_t api_version() {
-  static const uint32_t version = FoundryLocalGetApi(FOUNDRY_LOCAL_API_VERSION) ? FOUNDRY_LOCAL_API_VERSION : 2;
+  static const uint32_t version = []() {
+    if (FoundryLocalGetApi(FOUNDRY_LOCAL_API_VERSION)) {
+      return uint32_t{FOUNDRY_LOCAL_API_VERSION};
+    }
+
+    return FoundryLocalGetApi(3) ? uint32_t{3} : uint32_t{2};
+  }();
   return version;
 }
 
@@ -283,6 +289,11 @@ class Configuration {
   /// Optional. Use the packaged native shared host instead of in-process execution. Defaults to false.
   /// Requires an API v3 runtime when enabled. Cannot be combined with SetExternalServiceUrl.
   Configuration& SetUseSharedHost(bool enabled);
+
+  /// Optional. Override model HTTP transport; nullptr restores the default. Requires an API v4 runtime.
+  /// Copies the validated table and retains its context; already-created managers keep their transport snapshot.
+  /// See flHttpTransport for callback, cancellation, timeout, and request/response lifetime requirements.
+  Configuration& SetModelHttpTransport(const flHttpTransport* transport);
 
   /// Optional. Azure region for the model registry download endpoint.
   /// Defaults to "centralus" when not set.

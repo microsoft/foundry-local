@@ -87,6 +87,7 @@ endif()
 add_executable(foundry_local_tests
     test_main.cc
     internal_api/api_backend_test.cc
+    internal_api/model_http_transport_test.cc
     internal_api/request_admission_test.cc
     internal_api/audio/audio_session_test.cc
     internal_api/audio/audio_transcription_contract_test.cc

@@ -10,6 +10,10 @@
 
 namespace fl {
 
+namespace http {
+class ModelHttpTransport;
+}
+
 class ILogger;
 class RegionFallback;
 
@@ -36,7 +40,8 @@ class ModelRegistryClient {
   ModelRegistryClient(std::string region,
                       ILogger& logger,
                       std::unique_ptr<RegionFallback> fallback,
-                      HttpGetResponseFn http_get = {});
+                      HttpGetResponseFn http_get = {},
+                      std::shared_ptr<http::ModelHttpTransport> model_http_transport = nullptr);
 
   /// Resolve a model's asset_id (URI) to a blob storage SAS URI.
   /// Uses anonymous access (no token) for FoundryLocal models. When `region` is

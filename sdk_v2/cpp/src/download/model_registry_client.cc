@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "download/model_registry_client.h"
+#include "http/model_http_transport.h"
 
 #include <nlohmann/json.hpp>
 #include <string>
@@ -46,16 +47,17 @@ constexpr const char* kUserAgent = "AzureAiStudio";
 ModelRegistryClient::ModelRegistryClient(std::string region,
                                          ILogger& /*logger*/,
                                          std::unique_ptr<RegionFallback> fallback,
-                                         HttpGetResponseFn http_get)
+                                         HttpGetResponseFn http_get,
+                                         std::shared_ptr<http::ModelHttpTransport> model_http_transport)
     : default_region_(std::move(region)), http_get_(std::move(http_get)), fallback_(std::move(fallback)) {
   // Default transport: status-aware GET (non-throwing) so the fallback engine can
   // classify region-health failures. Cross-region fallback provides resilience
   // in place of in-region retries when enabled.
   if (!http_get_) {
-    http_get_ = [](const std::string& url) {
+    http_get_ = [transport = std::move(model_http_transport)](const std::string& url) {
       http::HttpRequestOptions options;
       options.user_agent = kUserAgent;
-      return http::HttpGetWithResponse(url, options);
+      return transport ? transport->Request("GET", url, {}, options) : http::HttpGetWithResponse(url, options);
     };
   }
 }

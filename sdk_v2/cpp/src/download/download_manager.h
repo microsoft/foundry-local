@@ -20,6 +20,9 @@ namespace fl {
 class ILogger;
 class ITelemetry;
 class ModelLoadManager;
+namespace http {
+class ModelHttpTransport;
+}
 
 /// Orchestrates the full model download flow:
 /// 1. Compute local cache path
@@ -45,7 +48,8 @@ class DownloadManager {
                   ITelemetry& telemetry,
                   bool disable_region_fallback = false,
                   std::unique_ptr<ModelRegistryClient> registry_client = nullptr,
-                  std::unique_ptr<IBlobDownloader> blob_downloader = nullptr);
+                  std::unique_ptr<IBlobDownloader> blob_downloader = nullptr,
+                  std::shared_ptr<http::ModelHttpTransport> model_http_transport = nullptr);
   ~DownloadManager();
 
   /// Download a model to the local cache.

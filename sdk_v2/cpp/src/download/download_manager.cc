@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "download/download_manager.h"
+#include "http/model_http_transport.h"
 #include "platform/cross_process_file_lock.h"
 #include "download/inference_model_writer.h"
 #include "exception.h"
@@ -262,7 +263,8 @@ std::string ResolveRegion(const std::string& config_region, const ModelInfo& inf
 DownloadManager::DownloadManager(std::string cache_directory, std::string_view catalog_region, int max_concurrency,
                                  ILogger& logger, ITelemetry& telemetry, bool disable_region_fallback,
                                  std::unique_ptr<ModelRegistryClient> registry_client,
-                                 std::unique_ptr<IBlobDownloader> blob_downloader)
+                                 std::unique_ptr<IBlobDownloader> blob_downloader,
+                                 std::shared_ptr<http::ModelHttpTransport> model_http_transport)
     : cache_directory_(std::move(cache_directory)),
       config_region_(NormalizeConfiguredRegion(catalog_region)),
       max_concurrency_(max_concurrency),
@@ -270,8 +272,9 @@ DownloadManager::DownloadManager(std::string cache_directory, std::string_view c
       registry_client_(registry_client ? std::move(registry_client)
                                        : std::make_unique<ModelRegistryClient>(
                                              kDefaultRegistryRegion, logger,
-                                             std::make_unique<RegionFallback>(logger, !disable_region_fallback))),
-      blob_downloader_(blob_downloader ? std::move(blob_downloader) : std::make_unique<AzureBlobDownloader>(logger)),
+                                             std::make_unique<RegionFallback>(logger, !disable_region_fallback),
+                                             HttpGetResponseFn{}, model_http_transport)),
+      blob_downloader_(blob_downloader ? std::move(blob_downloader) : std::make_unique<AzureBlobDownloader>(logger, model_http_transport ? model_http_transport->AzureTransport() : nullptr)),
       telemetry_(telemetry) {}
 
 DownloadManager::~DownloadManager() = default;

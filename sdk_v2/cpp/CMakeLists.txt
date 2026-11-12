@@ -279,6 +279,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/exception.cc
     src/inferencing/generative/genai_config.cc
     src/http/http_client.cc
+    src/http/model_http_transport.cc
     src/http/curl_transport.cc
     src/inferencing/generative/genai_model_instance.cc
     src/inferencing/generative/preprocessor.cc
@@ -763,6 +764,8 @@ if(FOUNDRY_LOCAL_BUILD_EXAMPLES)
     add_subdirectory(examples/tool_calling)
     add_subdirectory(examples/realtime_audio)
     add_subdirectory(examples/embeddings)
+    add_subdirectory(examples/custom_transport)
+    set_target_properties(custom_transport_example PROPERTIES FOLDER "Examples")
     set_target_properties(basic_chat_example PROPERTIES FOLDER "Examples")
     set_target_properties(tool_calling_example PROPERTIES FOLDER "Examples")
     set_target_properties(realtime_audio_example PROPERTIES FOLDER "Examples")
@@ -778,6 +781,7 @@ if(FOUNDRY_LOCAL_BUILD_EXAMPLES)
         target_link_options(tool_calling_example PRIVATE -Wl,--disable-new-dtags)
         target_link_options(realtime_audio_example PRIVATE -Wl,--disable-new-dtags)
         target_link_options(embeddings_example PRIVATE -Wl,--disable-new-dtags)
+        target_link_options(custom_transport_example PRIVATE -Wl,--disable-new-dtags)
         target_link_options(kev_decision_example PRIVATE -Wl,--disable-new-dtags)
     endif()
 endif()

@@ -423,7 +423,8 @@ Manager::Manager(const Configuration& config) : config_(config) {
 
   download_manager_ =
       std::make_unique<DownloadManager>(*config_.model_cache_dir, config_.catalog_region.value_or("auto"),
-                                        download_concurrency, *logger_, *telemetry_, disable_region_fallback);
+                                        download_concurrency, *logger_, *telemetry_, disable_region_fallback,
+                                        nullptr, nullptr, config_.model_http_transport);
   model_load_manager_ = std::make_unique<ModelLoadManager>(
       *ep_detector_, *logger_, non_generative_memory_budget_bytes,
       static_cast<size_t>(non_generative_readiness_concurrency));
@@ -432,7 +433,7 @@ Manager::Manager(const Configuration& config) : config_(config) {
   public_catalog_ = std::make_unique<AzureModelCatalog>(
       config_.catalog_urls, download_manager_->GetCacheDirectory(),
       [this](ModelInfo info, std::string local_path) { return CreateModel(std::move(info), std::move(local_path)); },
-      *ep_detector_, *logger_, config_.external_service_url.has_value(), *telemetry_);
+      *ep_detector_, *logger_, config_.external_service_url.has_value(), *telemetry_, config_.model_http_transport);
   local_catalog_ = std::make_unique<LocalModelCatalog>(
       download_manager_->GetCacheDirectory(),
       [this](ModelInfo info, std::string local_path) {
