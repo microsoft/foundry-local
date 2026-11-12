@@ -381,6 +381,29 @@ TEST(CApiTest, GetCatalogFromManager) {
   ASSERT_FL_OK(api, api->Manager_GetCatalogByType(mgr, FOUNDRY_LOCAL_CATALOG_LOCAL, &repeated_local));
   EXPECT_EQ(local, repeated_local);
 
+  flCatalog* configured = nullptr;
+  ASSERT_FL_OK(api, api->Manager_GetCatalogWithOptions(mgr, FOUNDRY_LOCAL_CATALOG_LOCAL, nullptr, &configured));
+  EXPECT_EQ(configured, local);
+  flKeyValuePairs* options = nullptr;
+  api->CreateKeyValuePairs(&options);
+  ASSERT_NE(options, nullptr);
+  api->AddKeyValuePair(options, "name", "Mock-Registry");
+  ASSERT_FL_OK(api, api->Manager_GetCatalogWithOptions(
+      mgr, FOUNDRY_LOCAL_CATALOG_AZURE_REGISTRY, options, &configured));
+  flCatalog* repeated = nullptr;
+  api->AddKeyValuePair(options, "name", "mock-registry");
+  api->AddKeyValuePair(options, "credential", "azure_cli");
+  ASSERT_FL_OK(api, api->Manager_GetCatalogWithOptions(
+      mgr, FOUNDRY_LOCAL_CATALOG_AZURE_REGISTRY, options, &repeated));
+  EXPECT_EQ(configured, repeated);
+  ASSERT_FL_OK(api, api->Manager_GetAzureRegistryCatalog(mgr, "mock-registry", &repeated));
+  EXPECT_EQ(configured, repeated);
+  api->AddKeyValuePair(options, "credential", "workload_identity");
+  ASSERT_FL_OK(api, api->Manager_GetCatalogWithOptions(
+      mgr, FOUNDRY_LOCAL_CATALOG_AZURE_REGISTRY, options, &repeated));
+  EXPECT_NE(configured, repeated);
+  api->KeyValuePairs_Release(options);
+
   const flCatalogApi* catalog_api = api->GetCatalogApi();
   const flModelApi* model_api = api->GetModelApi();
   flModelInfo* metadata = nullptr;

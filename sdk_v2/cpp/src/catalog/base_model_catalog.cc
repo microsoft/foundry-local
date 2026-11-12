@@ -23,7 +23,7 @@ BaseModelCatalog::~BaseModelCatalog() = default;
 
 void BaseModelCatalog::SelectDefaultVariant(Model& model, const VariantEligibility& is_eligible,
                                             bool preserve_explicit_selection) const {
-  if (SupportsDefaultVariantRefresh()) {
+  if (type_ != CatalogType::kLocal) {
     model.SetDefaultVariantRefresh([this] { EnsurePopulated(); });
   }
 

@@ -591,24 +591,26 @@ ICatalog& Manager::GetCatalog(CatalogType type) {
       return *local_catalog_;
     case CatalogType::kAzureRegistry:
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-               "Azure Registry catalog requires a registry name; call GetAzureRegistryCatalog");
+               "Azure Registry catalog requires option 'name'; call GetCatalog(type, options)");
     default:
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
   }
 }
 
-ICatalog& Manager::GetAzureRegistryCatalog(const std::string& registry_name) {
-  if (registry_name.empty()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Azure Registry catalog requires a registry name");
+ICatalog& Manager::GetCatalog(CatalogType type, const KeyValuePairs& options) {
+  if (type != CatalogType::kAzureRegistry) {
+    if (!options.empty()) FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "this catalog does not accept options");
+    return GetCatalog(type);
   }
-  auto registry = AzureMlRegistryClient::ValidateRegistryName(registry_name);
+  const auto settings = AzureRegistryCatalog::NormalizeOptions(options);
   std::lock_guard lock(azure_registry_catalogs_mutex_);
-  auto& catalog = azure_registry_catalogs_[registry];
+  auto& catalog = azure_registry_catalogs_[settings.Entries()];
   if (!catalog) {
-    catalog = std::make_unique<AzureRegistryCatalog>(registry, config_, *ep_detector_, *model_load_manager_,
-                                                    *logger_, *telemetry_);
+    catalog = std::make_unique<AzureRegistryCatalog>(settings.Find("name"), config_, *ep_detector_, *model_load_manager_,
+        *logger_, *telemetry_, nullptr, settings.Find("credential"),
+        IsAdditionalOptionEnabled(config_, "AzureRegistryModelCacheOnly"));
     if (catalog_runtime_devices_) {
-      static_cast<AzureModelCatalog&>(*catalog).SetRuntimeDevices(*catalog_runtime_devices_);
+      static_cast<RemoteModelCatalog&>(*catalog).SetRuntimeDevices(*catalog_runtime_devices_);
     }
   }
   return *catalog;
@@ -616,9 +618,9 @@ ICatalog& Manager::GetAzureRegistryCatalog(const std::string& registry_name) {
 
 void Manager::SetCatalogRuntimeDevices(std::map<std::string, std::vector<std::string>> devices) {
   std::lock_guard lock(azure_registry_catalogs_mutex_);
-  static_cast<AzureModelCatalog&>(*public_catalog_).SetRuntimeDevices(devices);
+  static_cast<RemoteModelCatalog&>(*public_catalog_).SetRuntimeDevices(devices);
   for (auto& [registry, catalog] : azure_registry_catalogs_) {
-    static_cast<AzureModelCatalog&>(*catalog).SetRuntimeDevices(devices);
+    static_cast<RemoteModelCatalog&>(*catalog).SetRuntimeDevices(devices);
   }
   catalog_runtime_devices_ = std::move(devices);
 }

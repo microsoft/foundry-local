@@ -2,21 +2,24 @@
 // Licensed under the MIT License.
 #pragma once
 
-#include "catalog/azure_model_catalog.h"
+#include "catalog/remote_model_catalog.h"
 #include "catalog/azure_ml_registry_client.h"
+#include "configuration.h"
 #include "download/download_manager.h"
 
 namespace fl {
 
 class ModelLoadManager;
 
-class AzureRegistryCatalog final : public AzureModelCatalog {
+class AzureRegistryCatalog final : public RemoteModelCatalog {
  public:
   static constexpr const char* kRegistryProperty = "azure_registry.name";
+  static KeyValuePairs NormalizeOptions(const KeyValuePairs& options);
 
   AzureRegistryCatalog(std::string registry, const Configuration& config, const IEpDetector& ep_detector,
                        ModelLoadManager& load_manager, ILogger& logger, ITelemetry& telemetry,
-                       std::unique_ptr<AzureMlRegistryClient> client = nullptr);
+                       std::unique_ptr<AzureMlRegistryClient> client = nullptr,
+                       std::string credential = "", bool cache_only = false);
 
   std::vector<Model*> ListModels() const override;
   Model* GetModel(const std::string& alias) const override;
@@ -26,21 +29,21 @@ class AzureRegistryCatalog final : public AzureModelCatalog {
   std::vector<Model*> GetLoadedModels() const override;
 
  protected:
-  std::vector<Model> FetchModels() const override;
-  std::optional<std::vector<Model>> FetchLookupModels() const override;
-  std::vector<Model> FetchModelVersions(const std::string& alias, const std::string& name,
+  std::vector<ModelInfo> FetchModelInfos() const override;
+  std::optional<std::vector<ModelInfo>> FetchLookupModelInfos() const override;
+  std::vector<ModelInfo> FetchModelVersionInfos(const std::string& alias, const std::string& name,
                                        int max_versions) const override;
-  std::vector<Model> FetchModelsByIds(const std::vector<std::string>& ids) const override;
+  std::vector<ModelInfo> FetchModelInfosByIds(const std::vector<std::string>& ids) const override;
   bool IsAuthoritativeSnapshot() const override { return true; }
   bool RefreshOnEveryAccess() const override { return false; }
   bool ShouldRethrowFetchErrors() const override { return true; }
-  VariantEligibility MakeVariantEligibility() const override;
+  std::string GetModelPath(const ModelInfo& info, Query query) const override;
+  bool RequiresCompletedCache() const override { return cache_only_; }
   void RefreshRetainedVariantCache(Model& model) const override;
 
  private:
   std::optional<ModelInfo> Adapt(const nlohmann::json& model) const;
-  std::vector<Model> FetchAvailableModels() const;
-  std::vector<Model> CreateModels(const std::vector<ModelInfo>& infos) const;
+  std::vector<Model*> RetainedVariants() const;
   AzureMlRegistryClient& Client() const;
 
   std::string registry_;

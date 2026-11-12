@@ -2,12 +2,11 @@
 // Licensed under the MIT License.
 #pragma once
 
-#include "catalog/base_model_catalog.h"
+#include "catalog/remote_model_catalog.h"
 #include "configuration.h"
 #include "ep_detection/ep_detector.h"
 #include "logger.h"
 
-#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -23,33 +22,26 @@ class ITelemetry;
 /// Azure-specific catalog. Fetches from Azure Foundry catalog API,
 /// scans local cache, merges results.
 /// Maps to C# AzureModelCatalog.
-class AzureModelCatalog : public BaseModelCatalog {
+class AzureModelCatalog : public RemoteModelCatalog {
  public:
-  using ModelFactory = std::function<Model(ModelInfo info, std::string local_path)>;
-
   AzureModelCatalog(std::vector<std::pair<std::string, std::optional<std::string>>> catalog_urls,
                     std::string cache_dir,
                     ModelFactory model_factory,
                     const IEpDetector& ep_detector,
                     ILogger& logger,
                     bool cache_only,
-                    ITelemetry& telemetry,
-                    CatalogType type = CatalogType::kPublic);
+                    ITelemetry& telemetry);
   ~AzureModelCatalog() override;
 
-  // Metadata-only override for hosted clients; never changes the native runtime's registered providers.
-  void SetRuntimeDevices(std::map<std::string, std::vector<std::string>> devices);
-
  protected:
-  std::vector<Model> FetchModels() const override;
-  std::vector<Model> FetchModelVersions(const std::string& model_alias,
+  std::vector<ModelInfo> FetchModelInfos() const override;
+  std::vector<ModelInfo> FetchModelVersionInfos(const std::string& model_alias,
                                         const std::string& model_name,
                                         int max_versions) const override;
-  std::vector<Model> FetchModelsByIds(const std::vector<std::string>& model_ids) const override;
+  std::vector<ModelInfo> FetchModelInfosByIds(const std::vector<std::string>& model_ids) const override;
   virtual std::unique_ptr<ICatalogClient> CreateCatalogClient(const std::string& url,
                                                               const std::string& filter) const;
-  VariantEligibility MakeVariantEligibility() const override;
-  std::map<std::string, std::vector<std::string>> AvailableDevicesToEPs() const;
+  std::string GetModelPath(const ModelInfo& info, Query query) const override;
   void RefreshRetainedVariantCache(Model& model) const override;
 
  private:
@@ -69,15 +61,10 @@ class AzureModelCatalog : public BaseModelCatalog {
   static constexpr const char* kDefaultCatalogFilter = Configuration::kDefaultCatalogFilter;
 
   CatalogResult GetLiveCatalogOrLocalSnapshot(const std::vector<std::string>& cached_model_ids) const;
-  std::vector<Model> CreateModelsWithLocalPaths(const std::vector<ModelInfo>& model_infos,
-                                                const LocalModels& local_models) const;
-
   std::vector<std::pair<std::string, std::optional<std::string>>> catalog_urls_;
   std::string cache_dir_;
-  mutable LocalModels scanned_local_models_;  // guarded by the base catalog mutex
-  ModelFactory model_factory_;
-  class CatalogDevices;
-  std::unique_ptr<CatalogDevices> catalog_devices_;
+  mutable std::mutex paths_mutex_;
+  mutable LocalModels scanned_local_models_;
   ILogger& logger_;
   bool cache_only_;
   ITelemetry& telemetry_;

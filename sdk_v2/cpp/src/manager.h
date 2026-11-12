@@ -32,6 +32,7 @@ class HostLifetime;
 
 // Forward declarations
 class ICatalog;
+class KeyValuePairs;
 enum class CatalogType;
 class DownloadManager;
 class ITelemetry;
@@ -61,7 +62,7 @@ class Manager {
   /// (web service, C API, etc.) so model state (e.g. IsLoaded) is consistent.
   ICatalog& GetCatalog();
   ICatalog& GetCatalog(CatalogType type);
-  ICatalog& GetAzureRegistryCatalog(const std::string& registry_name);
+  ICatalog& GetCatalog(CatalogType type, const KeyValuePairs& options);
   void SetCatalogRuntimeDevices(std::map<std::string, std::vector<std::string>> devices);
 
   /// Get the configuration used to create this manager.
@@ -156,7 +157,7 @@ class Manager {
   std::unique_ptr<IEpDetector> ep_detector_;
   std::unique_ptr<ICatalog> public_catalog_;
   std::unique_ptr<ICatalog> local_catalog_;
-  std::map<std::string, std::unique_ptr<ICatalog>> azure_registry_catalogs_;
+  std::map<std::map<std::string, std::string>, std::unique_ptr<ICatalog>> azure_registry_catalogs_;
   std::mutex azure_registry_catalogs_mutex_;
   std::optional<std::map<std::string, std::vector<std::string>>> catalog_runtime_devices_;
   std::unique_ptr<DownloadManager> download_manager_;

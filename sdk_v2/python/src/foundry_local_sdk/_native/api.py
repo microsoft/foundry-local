@@ -17,7 +17,7 @@ from foundry_local_sdk._native.lib_loader import find_library, prepare_native_de
 from foundry_local_sdk.exception import FoundryLocalException
 
 # Function tables negotiate separately from versioned payload layouts, which remain at v2.
-_FOUNDRY_LOCAL_API_VERSION: int = 4
+_FOUNDRY_LOCAL_API_VERSION: int = 5
 _MINIMUM_API_VERSION: int = 2
 
 _lib_path = find_library()

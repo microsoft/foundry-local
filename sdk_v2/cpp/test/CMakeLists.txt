@@ -15,6 +15,7 @@ if(NOT CMAKE_CROSSCOMPILING AND NOT ANDROID AND NOT IOS)
     target_compile_options(cpp-api-v2-compatibility PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
     set_target_properties(cpp-api-v2-compatibility PROPERTIES CXX_STANDARD 17)
     add_test(NAME cpp-api-v2-compatibility COMMAND cpp-api-v2-compatibility)
+    add_test(NAME cpp-api-v3-compatibility COMMAND cpp-api-v2-compatibility 3)
 endif()
 
 if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux" OR

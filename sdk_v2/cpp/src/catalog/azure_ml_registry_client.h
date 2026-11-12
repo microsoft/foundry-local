@@ -26,7 +26,6 @@ class AzureMlRegistryClient {
   std::optional<nlohmann::json> GetModelVersion(const std::string& name, const std::string& version);
   ModelContainer ResolveArtifacts(const std::string& name, int version);
 
-  const std::string& Registry() const { return registry_; }
   const std::string& ResourceId();
   static std::string ValidateRegistryName(std::string name);
 

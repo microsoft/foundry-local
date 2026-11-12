@@ -78,7 +78,7 @@ class FoundryLocalManager:
         # Declared up front so close() / __del__ can run safely even if
         # _initialize() raises before the native handle is assigned.
         self._native_manager: object | None = None
-        self._catalogs: dict[tuple[CatalogType, str | None], Catalog] = {}
+        self._catalogs: dict[tuple[CatalogType, tuple[tuple[str, str], ...]], Catalog] = {}
         self._native_call_state = threading.local()
         self._lifetime_changed = threading.Condition(FoundryLocalManager._lock)
         self._active_native_calls = 0
@@ -139,16 +139,16 @@ class FoundryLocalManager:
             raise
 
     def get_catalog(
-        self, catalog_type: CatalogType = CatalogType.PUBLIC, *, registry_name: str | None = None
+        self, catalog_type: CatalogType = CatalogType.PUBLIC, options: dict[str, str] | None = None
     ) -> Catalog:
         """Get the public, local, or Azure Registry model catalog.
 
         Args:
             catalog_type: Catalog to return. Defaults to :attr:`CatalogType.PUBLIC`
                 for backward compatibility with ``manager.catalog``.
-            registry_name: Azure registry name (required for AZURE_REGISTRY).
-                Authentication uses ``AzureRegistryModelCredential`` in ``additional_settings``:
-                ``azure_cli`` (developer default) or ``workload_identity`` (CI).
+            options: Source-specific string settings. AZURE_REGISTRY requires ``name``
+                and accepts ``credential`` (``azure_cli`` or ``workload_identity``).
+                Public and local catalogs do not accept settings.
 
         Returns:
             A stable catalog wrapper owned by this manager.
@@ -156,18 +156,18 @@ class FoundryLocalManager:
         with FoundryLocalManager._lock:
             if not isinstance(catalog_type, CatalogType):
                 raise TypeError("catalog_type must be a CatalogType")
-            if catalog_type is CatalogType.AZURE_REGISTRY:
-                if registry_name is None:
-                    raise ValueError("registry_name is required for CatalogType.AZURE_REGISTRY")
-                _validate_native_string(registry_name, "registry_name")
-                if not registry_name:
-                    raise ValueError("registry_name must not be empty")
-            elif registry_name is not None:
-                raise ValueError("registry_name is only supported for CatalogType.AZURE_REGISTRY")
+            settings = dict(options) if options is not None else {}
+            for name, value in settings.items():
+                if not isinstance(name, str) or not isinstance(value, str):
+                    raise TypeError("catalog option keys and values must be strings")
+                if not name:
+                    raise ValueError("catalog option keys must not be empty")
+                _validate_native_string(name, "catalog option key")
+                _validate_native_string(value, "catalog option value")
             if self._native_manager is None or self._close_started.is_set():
                 raise RuntimeError("FoundryLocalManager is closed")
 
-            key = (catalog_type, registry_name.lower() if registry_name is not None else None)
+            key = (catalog_type, tuple(sorted(settings.items())))
             cached = self._catalogs.get(key)
             if cached is not None:
                 return cached
@@ -175,18 +175,29 @@ class FoundryLocalManager:
             from foundry_local_sdk._native.api import api, ffi
 
             out = ffi.new("flCatalog**")
-            if catalog_type is CatalogType.AZURE_REGISTRY:
-                if api.api_version < 4:
-                    raise FoundryLocalException("Azure Registry catalogs require native API version 4 or newer.")
-                name = registry_name.encode("utf-8")
-                api.check_status(api.root.Manager_GetAzureRegistryCatalog(self._native_manager, name, out))
+            if settings or catalog_type is CatalogType.AZURE_REGISTRY:
+                if api.api_version < 5:
+                    raise FoundryLocalException("Catalog options require native API version 5 or newer.")
+                pairs = ffi.new("flKeyValuePairs**")
+                api.root.CreateKeyValuePairs(pairs)
+                if pairs[0] == ffi.NULL:
+                    raise FoundryLocalException("Failed to allocate catalog options.")
+                try:
+                    for name, value in settings.items():
+                        api.root.AddKeyValuePair(pairs[0], name.encode("utf-8"), value.encode("utf-8"))
+                    api.check_status(api.root.Manager_GetCatalogWithOptions(
+                        self._native_manager, int(catalog_type), pairs[0], out
+                    ))
+                finally:
+                    api.root.KeyValuePairs_Release(pairs[0])
             else:
                 api.check_status(api.root.Manager_GetCatalogByType(self._native_manager, int(catalog_type), out))
             if out[0] == ffi.NULL:
-                method = "Manager_GetAzureRegistryCatalog" if catalog_type is CatalogType.AZURE_REGISTRY else "GetCatalogByType"
-                raise FoundryLocalException(f"{method} returned no {catalog_type.name.lower()} catalog.")
+                raise FoundryLocalException(f"GetCatalog returned no {catalog_type.name.lower()} catalog.")
 
-            catalog = Catalog(out[0], catalog_type=catalog_type, parent=self)
+            catalog = next((c for c in self._catalogs.values() if c._ptr == out[0]), None)
+            if catalog is None:
+                catalog = Catalog(out[0], catalog_type=catalog_type, parent=self)
             self._catalogs[key] = catalog
             return catalog
 

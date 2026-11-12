@@ -910,18 +910,43 @@ TEST_F(SdkSessionTest, CatalogRuntimeDevicesInvalidateExistingTestRegistriesAndA
   const std::set<std::string> cpu_ids{"shared-generic-cpu:1"};
   const std::set<std::string> all_ids{"shared-generic-cpu:1", "shared-generic-gpu:1", "shared-qnn-npu:1"};
   manager_->SetCatalogRuntimeDevices(cpu_only);
-  auto& existing = manager_->GetAzureRegistryCatalog("existing-registry");
+  KeyValuePairs existing_options;
+  existing_options.Add("name", "existing-registry");
+  KeyValuePairs new_options;
+  new_options.Add("name", "new-registry");
+  auto& existing = manager_->GetCatalog(CatalogType::kAzureRegistry, existing_options);
   EXPECT_EQ(CatalogVariantIds(existing), cpu_ids);
 
   manager_->SetCatalogRuntimeDevices(host_devices);
   EXPECT_EQ(CatalogVariantIds(existing), all_ids);
-  auto& created_later = manager_->GetAzureRegistryCatalog("new-registry");
+  auto& created_later = manager_->GetCatalog(CatalogType::kAzureRegistry, new_options);
   EXPECT_EQ(CatalogVariantIds(created_later), all_ids);
   EXPECT_EQ(manager_->GetRuntimeDevices(), local_devices);
 
   manager_->SetCatalogRuntimeDevices(cpu_only);
   EXPECT_EQ(CatalogVariantIds(existing), cpu_ids);
   EXPECT_EQ(CatalogVariantIds(created_later), cpu_ids);
+}
+
+TEST_F(SdkSessionTest, CatalogOptionsValidateAndDistinguishEffectiveSettings) {
+  KeyValuePairs options;
+  EXPECT_THROW(manager_->GetCatalog(CatalogType::kAzureRegistry, options), Exception);
+  options.Add("name", "Mock-Registry");
+  auto& first = manager_->GetCatalog(CatalogType::kAzureRegistry, options);
+  options.Add("name", "mock-registry");
+  options.Add("credential", "azure_cli");
+  EXPECT_EQ(&manager_->GetCatalog(CatalogType::kAzureRegistry, options), &first);
+  options.Add("credential", "workload_identity");
+  EXPECT_NE(&manager_->GetCatalog(CatalogType::kAzureRegistry, options), &first);
+  options.Add("credential", "invalid");
+  EXPECT_THROW(manager_->GetCatalog(CatalogType::kAzureRegistry, options), Exception);
+  options.Add("credential", "azure_cli");
+  options.Add("unsupported", "value");
+  EXPECT_THROW(manager_->GetCatalog(CatalogType::kAzureRegistry, options), Exception);
+  EXPECT_THROW(manager_->GetCatalog(CatalogType::kPublic, options), Exception);
+  EXPECT_THROW(manager_->GetCatalog(CatalogType::kLocal, options), Exception);
+  EXPECT_EQ(&manager_->GetCatalog(CatalogType::kPublic, KeyValuePairs{}),
+            &manager_->GetCatalog(CatalogType::kPublic));
 }
 
 TEST_F(SdkSessionTest, HostedTestDiscoveryRefreshesProvidersAfterHostRegistrationWithoutRegisteringInClient) {
@@ -944,7 +969,11 @@ TEST_F(SdkSessionTest, HostedTestDiscoveryRefreshesProvidersAfterHostRegistratio
     acquired += acquire;
     return context;
   });
-  auto& existing = hosted->GetAzureRegistryCatalog("existing-registry");
+  KeyValuePairs existing_options;
+  existing_options.Add("name", "existing-registry");
+  KeyValuePairs new_options;
+  new_options.Add("name", "new-registry");
+  auto& existing = hosted->GetCatalog(CatalogType::kAzureRegistry, existing_options);
   EXPECT_EQ(CatalogVariantIds(existing), cpu_ids);
   EXPECT_EQ(acquired, 0);
 
@@ -957,7 +986,7 @@ TEST_F(SdkSessionTest, HostedTestDiscoveryRefreshesProvidersAfterHostRegistratio
   EXPECT_EQ(alias->Variants().size(), 3);
   EXPECT_EQ(CatalogVariantIds(existing), all_ids);
   EXPECT_EQ(existing.GetModelVersions("shared", "", 0).size(), 3);
-  auto& created_later = hosted->GetAzureRegistryCatalog("new-registry");
+  auto& created_later = hosted->GetCatalog(CatalogType::kAzureRegistry, new_options);
   EXPECT_EQ(CatalogVariantIds(created_later), all_ids);
   EXPECT_EQ(manager_->GetRuntimeDevices(), local_devices);
 

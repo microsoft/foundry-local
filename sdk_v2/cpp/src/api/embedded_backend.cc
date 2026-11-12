@@ -221,14 +221,15 @@ class EmbeddedManager final : public ManagerBackend {
         return local_catalog_;
       case CatalogType::kAzureRegistry:
         FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-                 "Azure Registry catalog requires a registry name; call GetAzureRegistryCatalog");
+                 "Azure Registry catalog requires option 'name'");
     }
 
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
   }
 
-  CatalogBackend& GetAzureRegistryCatalog(const std::string& registry) override {
-    auto& source = owner_.manager.GetAzureRegistryCatalog(registry);
+  CatalogBackend& GetCatalog(CatalogType type, const KeyValuePairs& options) override {
+    auto& source = owner_.manager.GetCatalog(type, options);
+    if (type != CatalogType::kAzureRegistry) return GetCatalog(type);
     std::lock_guard lock(catalogs_mutex_);
     auto& catalog = azure_registry_catalogs_[&source];
     if (!catalog) catalog = std::make_unique<EmbeddedCatalog>(source, models_);

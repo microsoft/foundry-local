@@ -14,6 +14,7 @@ flKeyValuePairs options;
 int configurations_created = 0;
 int configurations_released = 0;
 int options_applied = 0;
+uint32_t runtime_api_version = 2;
 
 flStatus* FL_API_CALL CreateConfiguration(const char*, flConfiguration** output) noexcept {
   ++configurations_created;
@@ -28,12 +29,15 @@ flStatus* FL_API_CALL SetOptions(flConfiguration*, const flKeyValuePairs*) noexc
   return nullptr;
 }
 
+flStatus* FL_API_CALL SetSharedHost(flConfiguration*, bool) noexcept { return nullptr; }
+
 const flConfigurationApi* FL_API_CALL ConfigurationApi() noexcept {
   static const flConfigurationApi api = [] {
     flConfigurationApi table{};
     table.Create = CreateConfiguration;
     table.Configuration_Release = ReleaseConfiguration;
     table.SetAdditionalOptions = SetOptions;
+    table.SetUseSharedHost = SetSharedHost;
     return table;
   }();
   return &api;
@@ -55,15 +59,16 @@ extern "C" const flApi* FL_API_CALL FoundryLocalGetApi(uint32_t version) noexcep
     table.KeyValuePairs_Release = ReleaseOptions;
     return table;
   }();
-  return version <= 2 ? &api : nullptr;
+  return version <= runtime_api_version ? &api : nullptr;
 }
 
 extern "C" const char* FL_API_CALL FoundryLocalGetVersionString() noexcept { return "v2-test-runtime"; }
 
-int main() {
+int main(int argc, char** argv) {
+  if (argc > 1) runtime_api_version = static_cast<uint32_t>(std::strtoul(argv[1], nullptr, 10));
   try {
-    if (foundry_local::detail::api_version() != 2 || !foundry_local::detail::api()) {
-      throw std::runtime_error("C++ wrapper did not negotiate the available v2 API");
+    if (foundry_local::detail::api_version() != runtime_api_version || !foundry_local::detail::api()) {
+      throw std::runtime_error("C++ wrapper did not negotiate the highest available API");
     }
 
     {
@@ -76,7 +81,7 @@ int main() {
         rejected = error.Code() == FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED;
       }
 
-      if (!rejected || configurations_created != 1 || options_applied != 1) {
+      if (rejected != (runtime_api_version < 3) || configurations_created != 1 || options_applied != 1) {
         throw std::runtime_error("v2 configuration failed or the v3-only setting did not fail explicitly");
       }
     }

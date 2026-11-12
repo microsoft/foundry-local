@@ -244,6 +244,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/items/message_item.cc
     src/items/speech_segment_item.cc
     src/catalog/base_model_catalog.cc
+    src/catalog/remote_model_catalog.cc
     src/catalog/azure_model_catalog.cc
     src/catalog/azure_registry_catalog.cc
     src/catalog/azure_ml_registry_client.cc

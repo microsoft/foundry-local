@@ -4,7 +4,7 @@
 """Local Azure Registry model catalog smoke test using the active Azure CLI login.
 
     az login
-    python azure_registry_model_catalog.py --model-id smollm2-135m-instruct-generic-cpu:1
+    python azure_registry_model_catalog.py --registry <name> --model-id smollm2-135m-instruct-generic-cpu:1
 
 Lists the latest version of each available hardware variant and its alias, then runs the selected model.
 Use --model-id to select an older version directly. Downloads use the default cache.
@@ -42,7 +42,7 @@ def main() -> None:
         print(f"Execution providers: {ep_result.status}", flush=True)
         if ep_result.failed_eps:
             print(f"Warning: unavailable execution providers: {', '.join(ep_result.failed_eps)}", flush=True)
-        catalog = manager.get_catalog(CatalogType.AZURE_REGISTRY, registry_name=args.registry)
+        catalog = manager.get_catalog(CatalogType.AZURE_REGISTRY, {"name": args.registry})
         print(f"Registry: {args.registry}", flush=True)
         rows = sorted(
             (group.alias, variant.id)

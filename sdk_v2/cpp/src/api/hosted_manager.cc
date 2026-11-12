@@ -395,14 +395,13 @@ const HostedModel& HostedModels::Unwrap(CatalogType catalog, const ModelBackend&
 
 class HostedCatalog final : public CatalogBackend {
  public:
-  HostedCatalog(CatalogType type, HostedModels& handles, const std::string& registry = "")
+  HostedCatalog(CatalogType type, HostedModels& handles, const KeyValuePairs& options = {})
       : CatalogBackend(BackendKind::Hosted),
         type_(type),
         handles_(handles),
         state_(handles.state),
-        source_(type == CatalogType::kAzureRegistry ? state_.metadata->GetAzureRegistryCatalog(registry) :
-                                                     state_.metadata->GetCatalog(type)),
-        registry_(registry) {}
+        source_(state_.metadata->GetCatalog(type, options)),
+        options_(options) {}
 
   const std::string& GetName() const override { return source_.GetName(); }
   std::vector<ModelBackend*> ListModels() const override {
@@ -439,7 +438,7 @@ class HostedCatalog final : public CatalogBackend {
 
     std::vector<ModelBackend*> models;
     for (const auto& value : context->Call(Operation::LoadedModels,
-                                         {{"catalog", CatalogName(type_)}, {"registry", registry_}})) {
+                                         {{"catalog", CatalogName(type_)}, {"options", EncodeOptions(options_)}})) {
       const auto selection = DecodeModelSelection(value);
       auto* source = source_.GetModelVariant(selection.info.model_id);
       if (!source || selection.catalog != type_) {
@@ -493,7 +492,7 @@ class HostedCatalog final : public CatalogBackend {
   HostedModels& handles_;
   HostedState& state_;
   CatalogBackend& source_;
-  std::string registry_;
+  KeyValuePairs options_;
 };
 
 class HostedManager final : public ManagerBackend {
@@ -515,20 +514,18 @@ class HostedManager final : public ManagerBackend {
         return local_catalog_;
       case CatalogType::kAzureRegistry:
         FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-                 "Azure Registry catalog requires a registry name; call GetAzureRegistryCatalog");
+                 "Azure Registry catalog requires option 'name'");
     }
 
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
   }
 
-  CatalogBackend& GetAzureRegistryCatalog(const std::string& registry) override {
-    if (registry.empty()) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Azure Registry catalog requires a registry name");
-    }
-    auto& source = state_->metadata->GetAzureRegistryCatalog(registry);
+  CatalogBackend& GetCatalog(CatalogType type, const KeyValuePairs& options) override {
+    auto& source = state_->metadata->GetCatalog(type, options);
+    if (type != CatalogType::kAzureRegistry) return GetCatalog(type);
     std::lock_guard lock(catalogs_mutex_);
     auto& catalog = azure_registry_catalogs_[&source];
-    if (!catalog) catalog = std::make_unique<HostedCatalog>(CatalogType::kAzureRegistry, models_, registry);
+    if (!catalog) catalog = std::make_unique<HostedCatalog>(type, models_, options);
     return *catalog;
   }
 

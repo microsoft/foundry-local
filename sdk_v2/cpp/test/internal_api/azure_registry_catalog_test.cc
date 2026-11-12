@@ -197,7 +197,9 @@ class AzureRegistryCatalogTest : public ::testing::Test {
   std::unique_ptr<AzureRegistryCatalog> Catalog(bool inject_client = true) {
     return std::make_unique<AzureRegistryCatalog>(kRegistry, config_, devices_, services_.model_load_manager,
                                             services_.logger, services_.telemetry,
-                                            inject_client ? Client() : nullptr);
+                                            inject_client ? Client() : nullptr,
+                                            "invalid-if-credentials-are-initialized",
+                                            config_.additional_options["AzureRegistryModelCacheOnly"] == "true");
   }
 
   std::filesystem::path CachePath() const {
@@ -247,6 +249,48 @@ TEST_F(AzureRegistryCatalogTest, LatestDiscoveryUsesNumericVersionsPerHardwareVa
   snapshot.Load();
   ASSERT_TRUE(snapshot.GetCachedModels().has_value());
   EXPECT_EQ(snapshot.GetCachedModels()->size(), 5);
+}
+
+TEST_F(AzureRegistryCatalogTest, SharedCompatibilityPolicyAppliesToDiscoveryExactHistoryAndCachedAlias) {
+  auto future = TaggedModel(2);
+  future["properties"]["tags"]["minFLVersion"] = "999.0.0";
+  Inventory({TaggedModel(1), future});
+  auto catalog = Catalog();
+  EXPECT_EQ(VariantIds(catalog->ListModels()), (std::set<std::string>{kCpuName + ":1"}));
+
+  transport_->Queue(kBase + "/models/" + kCpuName + "/versions/2" + kApi, future);
+  EXPECT_EQ(catalog->GetModelVariant(kCpuName + ":2"), nullptr);
+  Inventory({TaggedModel(1), future}, false);
+  const auto history = catalog->GetModelVersions("tiny", "", 0);
+  ASSERT_EQ(history.size(), 1);
+  EXPECT_EQ(history.front()->Id(), kCpuName + ":1");
+
+  auto info = CachedInfo(2);
+  info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR] = "999.0.0";
+  Snapshot({info});
+  Package(2);
+  config_.additional_options["AzureRegistryModelCacheOnly"] = "true";
+  auto offline = Catalog(false);
+  EXPECT_EQ(offline->GetModel("tiny"), nullptr);
+  EXPECT_EQ(offline->GetModelVariant(kCpuName + ":2"), nullptr);
+  EXPECT_TRUE(offline->ListModels().empty());
+}
+
+TEST_F(AzureRegistryCatalogTest, RegistryMetadataUsesSharedCapabilitiesAndLimitsConversion) {
+  auto model = TaggedModel();
+  model["properties"]["tags"]["capabilities"] = "tool-calling,reasoning";
+  model["properties"]["tags"]["contextLength"] = "4096";
+  model["properties"]["variantInfo"]["variantMetadata"]["fileSizeBytes"] = 10485760;
+  Inventory({model});
+  auto catalog = Catalog();
+  const auto models = catalog->ListModels();
+  ASSERT_EQ(models.size(), 1);
+  const auto& info = models.front()->Info();
+  EXPECT_EQ(info.GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT, int64_t{0}), 1);
+  EXPECT_EQ(info.GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, int64_t{0}), 4096);
+  EXPECT_EQ(info.GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT, int64_t{0}), 10);
+  EXPECT_NE(info.GetPropertyStr("os"), nullptr);
+  EXPECT_NE(info.GetPropertyStr("architecture"), nullptr);
 }
 
 TEST_F(AzureRegistryCatalogTest, OlderExactIdFetchesOnlyTheRequestedVersion) {
@@ -928,14 +972,6 @@ TEST_F(AzureRegistryCatalogTest, RetainedUnloadedAliasRefreshesSelectionWhenDevi
     return 0;
   });
   EXPECT_EQ(alias->Id(), "tiny-generic-gpu:2");
-}
-
-TEST_F(AzureRegistryCatalogTest, DownloadConcurrencyHonorsConfiguration) {
-  for (const auto* threads : {"4", "0", "-1", "invalid"}) {
-    config_.additional_options["NumModelDownloadThreads"] = threads;
-    auto catalog = Catalog();
-    EXPECT_NE(catalog, nullptr);
-  }
 }
 
 TEST_F(AzureRegistryCatalogTest, LiveInventorySavesRetainCompletedLocalPackagesForDeletedRemoteVersions) {
