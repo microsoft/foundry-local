@@ -396,6 +396,15 @@ TEST_F(SdkSessionTest, DormantHostedManagerKeepsMetadataDownloadsAndRegistration
   EXPECT_TRUE(catalog.GetLoadedModels().empty());
   EXPECT_TRUE(hosted->GetWebServiceUrls().empty());
   EXPECT_FALSE(hosted->IsEpDownloadInProgress());
+  const auto metadata_eps = manager_->GetDiscoverableEps();
+  const auto hosted_eps = hosted->GetDiscoverableEps();
+  ASSERT_EQ(hosted_eps.size(), metadata_eps.size());
+  for (size_t i = 0; i < metadata_eps.size(); ++i) {
+    EXPECT_STREQ(hosted_eps[i].name, metadata_eps[i].name);
+    EXPECT_EQ(hosted_eps[i].is_registered,
+              std::string_view(metadata_eps[i].name) == "WebGpuExecutionProvider" && metadata_eps[i].is_registered);
+  }
+
   model->Unload();
   ModelInfo metadata;
   metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "coding");

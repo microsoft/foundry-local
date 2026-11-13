@@ -7,6 +7,7 @@
 #include "utils.h"
 
 #include <fmt/format.h>
+#include <onnxruntime_c_api.h>
 
 #include <cstdint>
 #include <filesystem>
@@ -102,6 +103,46 @@ std::optional<fl::EpBundleManifest> BuildWebGpuManifest() {
 }  // anonymous namespace
 
 namespace fl {
+
+BuiltInWebGpuEpBootstrapper::BuiltInWebGpuEpBootstrapper(const OrtApi& ort_api, const OrtEnv& ort_env, ILogger& logger) {
+  const OrtEpDevice* const* devices = nullptr;
+  size_t count = 0;
+  OrtStatus* status = ort_api.GetEpDevices(&ort_env, &devices, &count);
+  if (status != nullptr) {
+    const std::string message = ort_api.GetErrorMessage(status);
+    ort_api.ReleaseStatus(status);
+    logger.Log(LogLevel::Warning, "WebGPU EP: failed to query built-in provider: " + message);
+    return;
+  }
+
+  for (size_t i = 0; i < count; ++i) {
+    const char* name = ort_api.EpDevice_EpName(devices[i]);
+    if (name != nullptr && name_ == name &&
+        ort_api.HardwareDevice_Type(ort_api.EpDevice_Device(devices[i])) == OrtHardwareDeviceType_GPU) {
+      registered_ = true;
+      break;
+    }
+  }
+
+  logger.Log(registered_ ? LogLevel::Information : LogLevel::Warning,
+             registered_ ? "WebGPU EP: using the provider built into ONNX Runtime"
+                         : "WebGPU EP: built-in provider is unavailable; plugin loading is disabled");
+}
+
+const std::string& BuiltInWebGpuEpBootstrapper::Name() const { return name_; }
+
+bool BuiltInWebGpuEpBootstrapper::IsRegistered() const { return registered_; }
+
+bool BuiltInWebGpuEpBootstrapper::DownloadAndRegister(bool /*force*/, const ProgressCallback& progress_cb,
+                                                      ILogger& /*logger*/, bool* downloaded) {
+  if (downloaded) {
+    *downloaded = false;
+  }
+
+  return registered_ && (!progress_cb || progress_cb(name_, 100.0f));
+}
+
+bool BuiltInWebGpuEpBootstrapper::PrepareForModelLoad(ILogger& /*logger*/) { return registered_; }
 
 WebGpuEpBootstrapper::WebGpuEpBootstrapper(std::string root_dir, EpRegistrationCallback register_ep,
                                            EpBundleManifestFactory manifest_factory, EpArtifactDownloadFn download_fn)

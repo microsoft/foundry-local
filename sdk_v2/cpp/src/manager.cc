@@ -365,12 +365,19 @@ Manager::Manager(const Configuration& config) : config_(config) {
     bootstrappers.push_back(std::make_unique<CudaEpBootstrapper>(cuda_ep_root.string(), register_ep));
   }
 
+#if defined(__APPLE__)
+#if defined(__aarch64__)
+  // macOS uses ORT's built-in WebGPU provider, never the separately downloaded plugin.
+  bootstrappers.push_back(std::make_unique<BuiltInWebGpuEpBootstrapper>(*ort_api_, *ort_env_, *logger_));
+#endif
+#else
   // Avoid downloading WebGPU when ORT's pre-registration hardware inventory has no GPU.
   if (WebGpuEpBootstrapper::IsSupportedPlatform() &&
       Utils::HasGpuHardwareDevice(*ort_api_, *ort_env_, *logger_)) {
     const auto webgpu_ep_root = std::filesystem::path(*config_.app_data_dir) / "ep" / "webgpu-ep";
     bootstrappers.push_back(std::make_unique<WebGpuEpBootstrapper>(webgpu_ep_root.string(), register_ep));
   }
+#endif
 #endif
 
   const bool disable_nonessential_telemetry =
