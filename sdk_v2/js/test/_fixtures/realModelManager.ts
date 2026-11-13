@@ -44,9 +44,8 @@ export interface RealModelManagerOptions {
    */
   readonly task?: string;
   /**
-   * Preferred model alias, name, or full variant ID. If supplied AND the model is in the
-   * catalog, it wins over the smallest-by-task fallback. Defaults to
-   * "qwen2.5-0.5b" — alias of the smallest chat model we ship.
+   * Preferred public model alias, name, or full variant ID. Staged predictive packages take precedence when available.
+   * Otherwise, a catalog match wins over the smallest-by-task fallback. Defaults to "qwen2.5-0.5b".
    */
   readonly namePreference?: string;
   /**
@@ -85,13 +84,25 @@ export async function setupRealModelManager(opts: RealModelManagerOptions = {}):
   let catalog = manager.catalog;
   const namePref = opts.namePreference ?? "qwen2.5-0.5b";
 
-  // Preference 1: exact name / alias hit (V1 throws on miss, so swallow).
   let model: IModel | undefined;
-  try {
-    const exact = namePref.includes(":") ? await catalog.getModelVariant(namePref) : await catalog.getModel(namePref);
-    model = exact.info.deviceType === "CPU" ? exact : undefined;
-  } catch {
-    model = undefined;
+
+  // Keep predictive tests on their staged packages, independent of public catalog version gates.
+  if (opts.task !== undefined) {
+    const staged = await registerStagedNonGenerativeModel(manager, opts.task);
+    if (staged !== undefined) {
+      catalog = staged.catalog;
+      model = staged.model;
+    }
+  }
+
+  // Preference 1: exact name / alias hit (V1 throws on miss, so swallow).
+  if (model === undefined) {
+    try {
+      const exact = namePref.includes(":") ? await catalog.getModelVariant(namePref) : await catalog.getModel(namePref);
+      model = exact.info.deviceType === "CPU" ? exact : undefined;
+    } catch {
+      model = undefined;
+    }
   }
 
   // Preference 1b: catalog entries often carry a `-N` version suffix
@@ -103,14 +114,6 @@ export async function setupRealModelManager(opts: RealModelManagerOptions = {}):
     const prefixed = all.find((m) => m.info.deviceType === "CPU" && m.info.name.startsWith(namePref));
     if (prefixed !== undefined) {
       model = prefixed;
-    }
-  }
-
-  if (model === undefined && opts.task !== undefined) {
-    const staged = await registerStagedNonGenerativeModel(manager, opts.task);
-    if (staged !== undefined) {
-      catalog = staged.catalog;
-      model = staged.model;
     }
   }
 
@@ -140,9 +143,10 @@ export async function setupRealModelManager(opts: RealModelManagerOptions = {}):
 
   // CI gate: refuse to trigger a real download.
   if (!model.isCached && (isCi || opts.loadModel === false)) {
+    const modelName = model.info.name;
     manager.dispose();
     throw new SkipFixture(
-      `Selected model '${model.info.name}' is not in the cache; skipping because this fixture cannot use the requested lifecycle.`,
+      `Selected model '${modelName}' is not in the cache; skipping because this fixture cannot use the requested lifecycle.`,
     );
   }
 
