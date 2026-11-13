@@ -23,18 +23,6 @@ steps:
     packageType: sdk
     version: '10.0.x'
 
-- task: UseDotNet@2
-  displayName: 'Install .NET 9 runtime'
-  inputs:
-    packageType: runtime
-    version: '9.0.x'
-
-- task: UseDotNet@2
-  displayName: 'Install .NET 8 runtime'
-  inputs:
-    packageType: runtime
-    version: '8.0.x'
-
 - task: PowerShell@2
   displayName: 'Bootstrap VC++ ARM64 runtime'
   condition: and(succeeded(), eq(variables['Agent.OS'], 'Windows_NT'), eq(variables['Agent.OSArchitecture'], 'ARM64'))
@@ -191,15 +179,7 @@ steps:
     script: |
       $proj = "$(Build.SourcesDirectory)/sdk_v2/cs/test/FoundryLocal.Tests/Microsoft.AI.Foundry.Local.Tests.csproj"
 
-      # Test TFMs:
-      #   * net8.0 covers the .NET (Core) runtime test surface.
-      #   * net462 (Windows only) exercises the netstandard2.0 surface
-      #     + polyfills at runtime on .NET Framework.
-      $frameworks = @('net8.0')
-      $isWin = $IsWindows -or ($PSVersionTable.Platform -eq $null)
-      if ($isWin) {
-        $frameworks += 'net462'
-      }
+      $frameworks = @('net10.0')
 
       # `dotnet test --no-build --framework <unknown>` exits successfully without running tests.
       # Validate the requested matrix first so a csproj/pipeline mismatch cannot produce a false green.
