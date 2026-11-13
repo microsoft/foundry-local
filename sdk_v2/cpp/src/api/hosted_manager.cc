@@ -578,7 +578,8 @@ class HostedManager final : public ManagerBackend {
       }
     } else {
       for (const auto& ep : state_->metadata->GetDiscoverableEps()) {
-        values.push_back({ep.name, false});
+        // Built-in WebGPU is ready even before a host starts; plugin EPs are not.
+        values.push_back({ep.name, std::string_view(ep.name) == "WebGpuExecutionProvider" && ep.is_registered});
       }
     }
 

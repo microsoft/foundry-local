@@ -3,6 +3,7 @@
 #include "ep_detection/webgpu_ep_bootstrapper.h"
 
 #include "ep_detection/ep_bundle_installer.h"
+#include "ep_detection/ep_detector.h"
 #include "internal_api/ep_bundle_test_helpers.h"
 #include "internal_api/test_helpers.h"
 #include "logger.h"
@@ -10,9 +11,11 @@
 #include "utils/temp_path.h"
 
 #include <gtest/gtest.h>
+#include <onnxruntime_c_api.h>
 
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -52,7 +55,116 @@ EpBundleManifest MakeRawManifest(const std::string& bundle_id, const std::string
   return manifest;
 }
 
+struct BuiltInEpInventory {
+  OrtApi api = *OrtGetApiBase()->GetApi(ORT_API_VERSION);
+  const char* name = "WebGpuExecutionProvider";
+  OrtHardwareDeviceType type = OrtHardwareDeviceType_GPU;
+  size_t count = 1;
+  bool query_fails = false;
+  const OrtEpDevice* device = reinterpret_cast<const OrtEpDevice*>(this);
+
+  BuiltInEpInventory() {
+    api.GetEpDevices = [](const OrtEnv* env, const OrtEpDevice* const** devices, size_t* count) noexcept -> OrtStatus* {
+      const auto& inventory = *reinterpret_cast<const BuiltInEpInventory*>(env);
+      if (inventory.query_fails) {
+        return inventory.api.CreateStatus(ORT_FAIL, "device query failed");
+      }
+
+      *devices = &inventory.device;
+      *count = inventory.count;
+      return nullptr;
+    };
+    api.EpDevice_EpName = [](const OrtEpDevice* device) noexcept {
+      return reinterpret_cast<const BuiltInEpInventory*>(device)->name;
+    };
+    api.EpDevice_Device = [](const OrtEpDevice* device) noexcept {
+      return reinterpret_cast<const OrtHardwareDevice*>(device);
+    };
+    api.HardwareDevice_Type = [](const OrtHardwareDevice* device) noexcept {
+      return reinterpret_cast<const BuiltInEpInventory*>(device)->type;
+    };
+  }
+
+  OrtEnv& Env() { return *reinterpret_cast<OrtEnv*>(this); }
+};
+
 }  // namespace
+
+TEST(BuiltInWebGpuEpBootstrapperTest, DiscoveryAndRepeatedRegistrationUseBuiltInProviderWithoutInstalling) {
+  BuiltInEpInventory inventory;
+  test::NullLogger logger;
+  auto root = test::TempPath::CreateTempDir("fl_builtin_webgpu_");
+  test::ScopedEnvironmentVariable override(kOverrideEnv, (root.path() / "missing-provider").string());
+  auto bootstrapper = std::make_unique<BuiltInWebGpuEpBootstrapper>(inventory.api, inventory.Env(), logger);
+  auto* builtin = bootstrapper.get();
+  std::vector<std::unique_ptr<IEpBootstrapper>> bootstrappers;
+  bootstrappers.push_back(std::move(bootstrapper));
+  EpDetector detector(inventory.api, inventory.Env(), std::move(bootstrappers), logger,
+                      test::TestTelemetrySink());
+
+  ASSERT_EQ(detector.GetDiscoverableEps().size(), 1u);
+  EXPECT_TRUE(detector.GetDiscoverableEps()[0].is_registered);
+  EXPECT_TRUE(detector.GetDiscoverableEpsCApi()[0].is_registered);
+  EXPECT_TRUE(detector.PrepareForModelLoad("WebGpuExecutionProvider"));
+  const std::vector<std::string> names{"WebGpuExecutionProvider"};
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    auto result = detector.DownloadAndRegisterEps(&names, nullptr);
+    EXPECT_TRUE(result.success);
+    EXPECT_EQ(result.registered_eps, names);
+  }
+
+  bool downloaded = true;
+  EXPECT_TRUE(builtin->DownloadAndRegister(true, nullptr, logger, &downloaded));
+  EXPECT_FALSE(downloaded);
+  auto result = detector.DownloadAndRegisterEps(&names, [](const std::string& name, float percent) {
+    EXPECT_EQ(name, "WebGpuExecutionProvider");
+    EXPECT_EQ(percent, 100.0f);
+    return false;
+  });
+  EXPECT_FALSE(result.success);
+  EXPECT_TRUE(result.cancelled);
+  EXPECT_TRUE(detector.GetDiscoverableEps()[0].is_registered);
+  EXPECT_TRUE(detector.GetDiscoverableEpsCApi()[0].is_registered);
+  EXPECT_TRUE(std::filesystem::is_empty(root.path()));
+}
+
+TEST(BuiltInWebGpuEpBootstrapperTest, MissingOrNonGpuProviderStaysUnavailableWithoutPluginFallback) {
+  test::NullLogger logger;
+  for (int scenario = 0; scenario < 3; ++scenario) {
+    BuiltInEpInventory inventory;
+    if (scenario == 0) {
+      inventory.count = 0;
+    } else if (scenario == 1) {
+      inventory.name = "CoreMLExecutionProvider";
+    } else {
+      inventory.type = OrtHardwareDeviceType_CPU;
+    }
+
+    std::vector<std::unique_ptr<IEpBootstrapper>> bootstrappers;
+    bootstrappers.push_back(std::make_unique<BuiltInWebGpuEpBootstrapper>(inventory.api, inventory.Env(), logger));
+    EpDetector detector(inventory.api, inventory.Env(), std::move(bootstrappers), logger,
+                        test::TestTelemetrySink());
+    EXPECT_FALSE(detector.GetDiscoverableEps()[0].is_registered);
+    EXPECT_FALSE(detector.GetDiscoverableEpsCApi()[0].is_registered);
+    EXPECT_FALSE(detector.PrepareForModelLoad("WebGpuExecutionProvider"));
+    const auto result = detector.DownloadAndRegisterEps(nullptr, nullptr);
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.failed_eps, std::vector<std::string>{"WebGpuExecutionProvider"});
+    EXPECT_FALSE(detector.GetDiscoverableEps()[0].is_registered);
+    EXPECT_FALSE(detector.GetDiscoverableEpsCApi()[0].is_registered);
+  }
+}
+
+TEST(BuiltInWebGpuEpBootstrapperTest, DeviceQueryFailureDoesNotClaimAvailability) {
+  BuiltInEpInventory inventory;
+  inventory.query_fails = true;
+  test::NullLogger logger;
+  BuiltInWebGpuEpBootstrapper bootstrapper(inventory.api, inventory.Env(), logger);
+  EXPECT_FALSE(bootstrapper.IsRegistered());
+  bool downloaded = true;
+  EXPECT_FALSE(bootstrapper.DownloadAndRegister(true, nullptr, logger, &downloaded));
+  EXPECT_FALSE(downloaded);
+}
 
 TEST(WebGpuEpBootstrapperTest, PlatformSupportMatchesPublishedBundles) {
 #if (defined(_WIN32) && (defined(_M_ARM64) || defined(_M_X64))) || (defined(__APPLE__) && defined(__aarch64__))
