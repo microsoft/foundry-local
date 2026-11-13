@@ -115,7 +115,8 @@ PreparedChatPrompt PrepareMediaChatPrompt(const std::vector<MessageItem>& messag
   }
 
   PreparedChatPrompt prepared;
-  const auto messages_json = OnnxChatGenerator::TransformMessagesForMedia(messages);
+  const auto messages_json =
+      OnnxChatGenerator::TransformMessagesForMedia(messages, tool_ctx.supports_reasoning_history);
   const char* tools = tool_ctx.tools_json.empty() ? nullptr : tool_ctx.tools_json.c_str();
   const char* kwargs = tool_ctx.template_kwargs_json.empty() ? nullptr : tool_ctx.template_kwargs_json.c_str();
   prepared.prompt =
@@ -171,6 +172,20 @@ PreparedChatPrompt PrepareMediaChatPrompt(const std::vector<MessageItem>& messag
   }
 
   prepared.prompt_token_count = shape.back();
+
+  // Keep the expanded ids so a retained generator can match its resident prefix and append only new turns.
+  const auto token_count = static_cast<size_t>(prepared.prompt_token_count);
+  prepared.token_ids.reserve(token_count);
+  if (input_ids->Type() == OgaElementType_int64) {
+    const auto* ids = static_cast<const int64_t*>(input_ids->Data());
+    for (size_t i = 0; i < token_count; ++i) {
+      prepared.token_ids.push_back(static_cast<int32_t>(ids[i]));
+    }
+  } else if (input_ids->Type() == OgaElementType_int32) {
+    const auto* ids = static_cast<const int32_t*>(input_ids->Data());
+    prepared.token_ids.assign(ids, ids + token_count);
+  }
+  prepared.has_audio = !audios.empty();
   return prepared;
 }
 

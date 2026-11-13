@@ -33,6 +33,7 @@ struct PreparedChatPrompt {
   std::vector<int32_t> token_ids;
   std::unique_ptr<OgaNamedTensors> media_tensors;
   int64_t prompt_token_count = 0;
+  bool has_audio = false;
 
   bool HasMedia() const noexcept {
     return media_tensors != nullptr;

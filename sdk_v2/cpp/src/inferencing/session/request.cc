@@ -22,8 +22,20 @@ std::unique_ptr<Item> CloneChatItem(const Item& item) {
       const auto& text = static_cast<const TextItem&>(item);
       return std::make_unique<TextItem>(text.text, text.text_type);
     }
-    case FOUNDRY_LOCAL_ITEM_MESSAGE:
-      return std::make_unique<MessageItem>(static_cast<const MessageItem&>(item));
+    case FOUNDRY_LOCAL_ITEM_MESSAGE: {
+      const auto& message = static_cast<const MessageItem&>(item);
+      auto clone = std::make_unique<MessageItem>();
+      clone->role = message.role;
+      clone->name = message.name;
+      clone->content.reserve(message.content.size());
+      for (const auto& part : message.content) {
+        if (part.view) {
+          clone->content.push_back(MessagePart::Own(CloneChatItem(*part.view)));
+        }
+      }
+
+      return clone;
+    }
     case FOUNDRY_LOCAL_ITEM_TOOL_CALL: {
       const auto& call = static_cast<const ToolCallItem&>(item);
       auto clone = std::make_unique<ToolCallItem>(call.call_id, call.name, call.arguments, call.replayed_from_store,

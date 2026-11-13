@@ -1,11 +1,6 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
-// Tests for media collection and the conversation-scoped media policy.
-//
-// The media prompt path (OnnxChatGenerator::CreateWithMedia) renders MediaInput::messages and nothing else, and the
-// image / audio bytes never enter the transcript. These tests pin the one rule that follows: media is allowed only
-// while a conversation has no history and declares no tools, and the rule does not depend on whether the session
-// happened to still be cached.
+// Tests for media collection, conversation history, and the media policy.
 
 #include "inferencing/generative/chat/media_input.h"
 
@@ -19,13 +14,17 @@
 #include "items/text_item.h"
 #include "items/tool_call_item.h"
 #include "items/tool_result_item.h"
+#include "utils/temp_path.h"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace fl;
@@ -102,34 +101,40 @@ TEST(MediaInputTest, ToolActivityWithoutMediaIsAccepted) {
   request.AddOwnedItem(std::make_unique<ToolCallItem>("call_1", "get_weather", R"({"city":"Seattle"})"));
   request.AddOwnedItem(std::make_unique<ToolResultItem>("call_1", "sunny"));
 
-  EXPECT_FALSE(RejectionFor(request, {.session_has_history = true, .tools_declared = true}).has_value());
+  EXPECT_FALSE(RejectionFor(request, {.tools_declared = true}).has_value());
 }
 
 // ---------------------------------------------------------------------------
-// Prior history — rejected identically whether it is live or replayed.
+// Image history is accepted identically whether it is live or replayed.
 // ---------------------------------------------------------------------------
 
-TEST(MediaInputTest, MediaOnAWarmContinuationIsRejected) {
-  // The session still holds the conversation, so the request carries only the new media turn.
+TEST(MediaInputTest, ImageOnAWarmContinuationIsAccepted) {
   Request request;
   request.AddOwnedItem(ImageMessage("Does this photo match?"));
 
-  EXPECT_EQ(RejectionFor(request, {.session_has_history = true, .tools_declared = false}),
-            FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  std::vector<TranscriptMessage> conversation{
+      {FOUNDRY_LOCAL_ROLE_USER, "Weather in Seattle?"},
+      {FOUNDRY_LOCAL_ROLE_ASSISTANT, "It is sunny."},
+  };
+  auto current = BuildTranscriptMessages(request.items);
+  conversation.insert(conversation.end(), current.begin(), current.end());
+  auto media = CollectMediaInput(conversation);
+
+  ASSERT_EQ(media.messages.size(), 3u);
+  EXPECT_NO_THROW(ValidateMediaTurn(media, conversation, {}));
 }
 
-TEST(MediaInputTest, MediaOnAColdContinuationIsRejectedTheSameWay) {
+TEST(MediaInputTest, ImageOnAColdContinuationIsAccepted) {
   // Same conversation, but the session cache dropped it, so the history arrives replayed in the request items.
   Request request;
   request.AddOwnedItem(std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_USER, "Weather in Seattle?"));
   request.AddOwnedItem(std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_ASSISTANT, "It is sunny."));
   request.AddOwnedItem(ImageMessage("Does this photo match?"));
 
-  EXPECT_EQ(RejectionFor(request, {.session_has_history = false, .tools_declared = false}),
-            FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  EXPECT_FALSE(RejectionFor(request, {}).has_value());
 }
 
-TEST(MediaInputTest, WarmAndColdMediaContinuationsRejectIdentically) {
+TEST(MediaInputTest, WarmAndColdImageContinuationsAgree) {
   Request warm;
   warm.AddOwnedItem(ImageMessage("Does this photo match?"));
 
@@ -138,8 +143,7 @@ TEST(MediaInputTest, WarmAndColdMediaContinuationsRejectIdentically) {
   cold.AddOwnedItem(std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_ASSISTANT, "It is sunny."));
   cold.AddOwnedItem(ImageMessage("Does this photo match?"));
 
-  EXPECT_EQ(RejectionFor(warm, {.session_has_history = true, .tools_declared = false}),
-            RejectionFor(cold, {.session_has_history = false, .tools_declared = false}));
+  EXPECT_EQ(RejectionFor(warm, {}), RejectionFor(cold, {}));
 }
 
 TEST(MediaInputTest, ReplayedToolExchangeWithANewImageIsRejectedNotDropped) {
@@ -165,7 +169,7 @@ TEST(MediaInputTest, ReplayedToolExchangeWithANewImageIsRejectedNotDropped) {
     FAIL() << "expected the media + replayed tool exchange to be rejected";
   } catch (const fl::Exception& ex) {
     EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
-    EXPECT_NE(std::string(ex.what()).find("only allowed on the first turn"), std::string::npos) << ex.what();
+    EXPECT_NE(std::string(ex.what()).find("tool"), std::string::npos) << ex.what();
   }
 }
 
@@ -179,9 +183,7 @@ TEST(MediaInputTest, ToolResultOnlyWithANewAudioClipIsRejected) {
   EXPECT_EQ(RejectionFor(request, {}), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
 }
 
-TEST(MediaInputTest, ReplayedAssistantBoundaryAloneStillCountsAsHistory) {
-  // A hop whose output was reasoning-only replays as an assistant message with no entries. It is still a prior turn,
-  // so a media continuation behind it must be rejected exactly as any other continuation is.
+TEST(MediaInputTest, ImageCanFollowAReplayedAssistantBoundary) {
   std::vector<std::unique_ptr<Item>> boundary_parts;
   boundary_parts.push_back(std::make_unique<TextItem>(std::string{}));
 
@@ -190,11 +192,11 @@ TEST(MediaInputTest, ReplayedAssistantBoundaryAloneStillCountsAsHistory) {
   request.AddOwnedItem(std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_ASSISTANT, std::move(boundary_parts)));
   request.AddOwnedItem(ImageMessage("Now look at this."));
 
-  EXPECT_EQ(RejectionFor(request, {}), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  EXPECT_FALSE(RejectionFor(request, {}).has_value());
 }
 
 // ---------------------------------------------------------------------------
-// Declared tools — a generated call on a media turn could never be answered.
+// The multimodal template cannot represent tool calls or results.
 // ---------------------------------------------------------------------------
 
 TEST(MediaInputTest, FirstTurnMediaWithDeclaredToolsIsRejected) {
@@ -204,7 +206,7 @@ TEST(MediaInputTest, FirstTurnMediaWithDeclaredToolsIsRejected) {
   try {
     auto media = CollectMediaInput(request);
     auto inputs = BuildTranscriptMessages(request.items);
-    ValidateMediaTurn(media, inputs, {.session_has_history = false, .tools_declared = true});
+    ValidateMediaTurn(media, inputs, {.tools_declared = true});
     FAIL() << "expected first-turn media with declared tools to be rejected";
   } catch (const fl::Exception& ex) {
     EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
@@ -216,15 +218,33 @@ TEST(MediaInputTest, AudioWithDeclaredToolsIsRejected) {
   Request request;
   request.AddOwnedItem(AudioMessage("Transcribe this."));
 
-  EXPECT_EQ(RejectionFor(request, {.session_has_history = false, .tools_declared = true}),
-            FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  EXPECT_EQ(RejectionFor(request, {.tools_declared = true}), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
 }
 
 TEST(MediaInputTest, TextTurnWithDeclaredToolsIsUnaffected) {
   Request request;
   request.AddOwnedItem(std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_USER, "Weather in Seattle?"));
 
-  EXPECT_FALSE(RejectionFor(request, {.session_has_history = false, .tools_declared = true}).has_value());
+  EXPECT_FALSE(RejectionFor(request, {.tools_declared = true}).has_value());
+}
+
+TEST(MediaInputTest, SecondImageIsRejectedWhenLimitedToOneImage) {
+  // The earlier image stays in the conversation, so a later image makes two in the prompt.
+  Request request;
+  request.AddOwnedItem(ImageMessage("What is this?"));
+  request.AddOwnedItem(std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_ASSISTANT, "A cat."));
+  request.AddOwnedItem(ImageMessage("And this?"));
+
+  EXPECT_EQ(RejectionFor(request, {.single_image_only = true}), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  EXPECT_FALSE(RejectionFor(request, {}).has_value());
+}
+
+TEST(MediaInputTest, OneImageWithAudioIsAcceptedWhenLimitedToOneImage) {
+  Request request;
+  request.AddOwnedItem(ImageMessage("What is this?"));
+  request.AddOwnedItem(AudioMessage("Describe the sound too."));
+
+  EXPECT_FALSE(RejectionFor(request, {.single_image_only = true}).has_value());
 }
 
 // ---------------------------------------------------------------------------
@@ -253,7 +273,7 @@ TEST(MediaInputTest, ResponsesRequestMixingAnImageWithAToolExchangeIsRejected) {
   EXPECT_EQ(RejectionFor(request, {}), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
 }
 
-TEST(MediaInputTest, ResponsesChainContinuationWithAnImageIsRejected) {
+TEST(MediaInputTest, ResponsesChainContinuationWithAnImageIsAccepted) {
   // The full cold path: a stored conversation is reconstructed and the new turn carries an image.
   ResponseStore store;
 
@@ -280,12 +300,10 @@ TEST(MediaInputTest, ResponsesChainContinuationWithAnImageIsRejected) {
   auto params = body.get<ResponseCreateParams>();
   auto request = ResponseConverter::ToSessionRequest(params, &(*context));
 
-  EXPECT_EQ(RejectionFor(request, {}), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  EXPECT_FALSE(RejectionFor(request, {}).has_value());
 }
 
-TEST(MediaInputTest, StoredMediaOnlyUserTurnIsReplayedNotSilentlyDropped) {
-  // A first turn that was image-only is stored with no text. Replay cannot reproduce the bytes, but the turn must
-  // still appear in the rebuilt conversation — dropping it would remove a user turn the model saw.
+TEST(MediaInputTest, StoredImageOnlyUserTurnReplaysTheOriginalImage) {
   ResponseStore store;
 
   json response;
@@ -306,23 +324,23 @@ TEST(MediaInputTest, StoredMediaOnlyUserTurnIsReplayedNotSilentlyDropped) {
   params.input = std::string("What colour was it?");
 
   auto request = ResponseConverter::ToSessionRequest(params, &(*context));
+  auto media = CollectMediaInput(request);
   auto messages = BuildTranscriptMessages(request.items);
 
+  ASSERT_EQ(media.images.size(), 1u);
+  EXPECT_EQ(media.images[0]->ReadBytes(), (std::vector<std::uint8_t>{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}));
   ASSERT_EQ(messages.size(), 3u);
   EXPECT_EQ(messages[0].role, FOUNDRY_LOCAL_ROLE_USER);
   EXPECT_EQ(messages[0].VisibleText(), " ") << "the media-only user turn must survive replay";
   EXPECT_EQ(messages[1].VisibleText(), "A cat.");
   EXPECT_EQ(messages[2].VisibleText(), "What colour was it?");
 
-  // The continuation itself carries no media, so it is a normal text turn and is accepted.
   EXPECT_FALSE(RejectionFor(request, {}).has_value());
 
-  // Warm parity, so the placeholder is not a silent degradation unique to replay: a live session ingests the same
-  // image-only message into exactly the same transcript message. The bytes go straight to the generator and never
-  // enter the transcript, so the very next turn of that live session rebuilds its prompt without them too.
+  // An image-only live message and the replayed message have the same visible text and media-bearing shape.
   std::vector<std::unique_ptr<Item>> live_parts;
-  live_parts.push_back(std::make_unique<TextItem>(" "));
   live_parts.push_back(std::make_unique<ImageItem>(std::vector<std::uint8_t>{1, 2, 3}, "image/png"));
+  live_parts.push_back(std::make_unique<TextItem>(" "));
 
   Request live;
   live.AddOwnedItem(std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_USER, std::move(live_parts)));
@@ -331,4 +349,81 @@ TEST(MediaInputTest, StoredMediaOnlyUserTurnIsReplayedNotSilentlyDropped) {
   ASSERT_EQ(live_messages.size(), 1u);
   EXPECT_EQ(live_messages[0].role, messages[0].role);
   EXPECT_EQ(live_messages[0].VisibleText(), messages[0].VisibleText());
+  ASSERT_EQ(live_messages[0].entries.size(), messages[0].entries.size());
+  for (size_t i = 0; i < live_messages[0].entries.size(); ++i) {
+    EXPECT_EQ(live_messages[0].entries[i].kind, messages[0].entries[i].kind);
+  }
+}
+
+TEST(MediaInputTest, StoredMixedMediaReplaysInTheSameOrderAsTypedInput) {
+  const json body = {
+      {"model", "test-model"},
+      {"input", json::array({{{"role", "user"},
+                              {"content", json::array({{{"type", "input_text"}, {"text", "before"}},
+                                                       {{"type", "input_image"},
+                                                        {"image_url", "data:image/png;base64,AQI="}},
+                                                       {{"type", "input_audio"}, {"format", "wav"}, {"data", "AwQ="}},
+                                                       {{"type", "input_text"}, {"text", "after"}}})}}})}};
+  auto warm = ResponseConverter::ToSessionRequest(body.get<ResponseCreateParams>());
+  ResponseChainContext context;
+  context.emplace_back(ResponseConverter::ToInputItems(body), json::array());
+
+  ResponseCreateParams next;
+  next.model = "test-model";
+  next.input = std::string("continue");
+  auto cold = ResponseConverter::ToSessionRequest(next, &context);
+  const auto warm_messages = BuildTranscriptMessages(warm.items);
+  const auto cold_messages = BuildTranscriptMessages(cold.items);
+
+  ASSERT_FALSE(warm_messages.empty());
+  ASSERT_FALSE(cold_messages.empty());
+  ASSERT_EQ(warm_messages[0].entries.size(), 4u);
+  ASSERT_EQ(cold_messages[0].entries.size(), 4u);
+  for (size_t i = 0; i < warm_messages[0].entries.size(); ++i) {
+    EXPECT_EQ(warm_messages[0].entries[i].kind, cold_messages[0].entries[i].kind);
+    EXPECT_EQ(warm_messages[0].entries[i].text, cold_messages[0].entries[i].text);
+  }
+
+  auto media = CollectMediaInput(cold);
+  ASSERT_EQ(media.images.size(), 1u);
+  ASSERT_EQ(media.audios.size(), 1u);
+  EXPECT_EQ(media.images[0]->ReadBytes(), (std::vector<std::uint8_t>{1, 2}));
+  const auto* audio = static_cast<const std::uint8_t*>(media.audios[0]->data);
+  EXPECT_EQ(std::vector<std::uint8_t>(audio, audio + media.audios[0]->data_size),
+            (std::vector<std::uint8_t>{3, 4}));
+}
+
+TEST(MediaInputTest, LocalImageIsReferencedAndReadAgainOnReplay) {
+  const auto dir = fl::test::TempPath::CreateTempDir("fl_media_replay_");
+  const auto image_path = dir.path() / "image%41.png";
+  const auto write_image = [&](std::string_view bytes) {
+    std::ofstream file(image_path, std::ios::binary | std::ios::trunc);
+    file.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    ASSERT_TRUE(file.good());
+  };
+  write_image("\x01\x02\x03");
+
+  const json body = {{"model", "test-model"},
+                     {"input", json::array({{{"role", "user"},
+                                             {"content", json::array({{{"type", "input_image"},
+                                                                       {"image_url", image_path.string()}}})}}})}};
+  auto request = ResponseConverter::ToSessionRequest(body.get<ResponseCreateParams>());
+  auto media = CollectMediaInput(request);
+  ASSERT_EQ(media.images.size(), 1u);
+  EXPECT_EQ(media.images[0]->data, nullptr);
+  EXPECT_EQ(media.images[0]->ReadBytes(), (std::vector<std::uint8_t>{1, 2, 3}));
+
+  ResponseChainContext chain;
+  chain.emplace_back(ResponseConverter::ToInputItems(body), json::array());
+  ResponseCreateParams next;
+  next.model = "test-model";
+  next.input = std::string("continue");
+  write_image("\x04");
+  auto replay = ResponseConverter::ToSessionRequest(next, &chain);
+  auto replay_media = CollectMediaInput(replay);
+  ASSERT_EQ(replay_media.images.size(), 1u);
+  EXPECT_EQ(replay_media.images[0]->ReadBytes(), (std::vector<std::uint8_t>{4}));
+
+  ASSERT_TRUE(std::filesystem::remove(image_path));
+  EXPECT_THROW(ResponseConverter::ToSessionRequest(next, &chain), fl::Exception);
 }

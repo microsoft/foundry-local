@@ -93,7 +93,8 @@ class OnnxChatGenerator : public ChatGenerator {
 
   /// Rewind the generator to a previous token position.
   /// Used for error recovery — restores the KV cache to the state before the last turn.
-  bool CanRewind() const override { return true; }
+  /// Multimodal pipelines restart their prompt stage after a rewind, so media generators are rebuilt instead.
+  bool CanRewind() const override { return named_tensors_ == nullptr; }
   void RewindTo(int token_count) override;
 
   /// True when the most recent prompt fed to the generator ends inside an open reasoning block, because the model's
@@ -136,18 +137,14 @@ class OnnxChatGenerator : public ChatGenerator {
                                                            const SearchOptions& options,
                                                            GenAIModelInstance& model,
                                                            const ToolCallContext& tool_ctx = {},
-                                                           bool use_full_context = false);
+                                                           bool use_full_context = false,
+                                                           int continuation_reserve_tokens = 0);
 
   // ---- Static helpers exposed for unit testing ----
 
-  /// Build the JSON messages array fed to OgaTokenizer::ApplyChatTemplate when
-  /// the request includes one or more images. The last user message's content
-  /// is rewritten to the structured form
-  /// `[{"type":"image"},{"type":"text","text":"..."}]` so that the model's
-  /// chat template inserts the appropriate vision sentinel tokens. Other
-  /// messages are emitted in their plain `{"role","content"}` form.
-  ///
-  static std::string TransformMessagesForMedia(const std::vector<MessageItem>& messages);
+  /// Project all media-bearing user messages and the final user message into structured template content.
+  static std::string TransformMessagesForMedia(const std::vector<MessageItem>& messages,
+                                               bool preserve_reasoning_history = false);
 
  private:
   OnnxChatGenerator(std::unique_ptr<OgaGeneratorParams> gen_params,
@@ -174,6 +171,8 @@ class OnnxChatGenerator : public ChatGenerator {
   GenAIModelInstance& model_;  // non-owning reference — model outlives generator
   int prompt_token_count_ = 0;
   int turn_start_token_count_ = 0;
+  // Resident prompt prefix reused by the current turn; zero for a freshly prefilled generator.
+  int cached_prompt_tokens_ = 0;
   int max_length_ = 0;
   int max_output_tokens_ = 0;
   // Kept so each appended turn can be re-probed for a template-opened reasoning block.

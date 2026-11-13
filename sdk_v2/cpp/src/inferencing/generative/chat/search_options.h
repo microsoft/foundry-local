@@ -102,6 +102,9 @@ struct RequestBudget {
 
 inline constexpr int kDefaultChatTextMaxOutputTokens = 2048;
 inline constexpr int kDefaultChatMediaMaxOutputTokens = 3072;
+/// KV headroom kept beyond input+output on media generators so text follow-ups can extend the image prefill. Bounded
+/// because media generators do not reserve the full context window (262k-token models would preallocate ~17 GB).
+inline constexpr int kMediaContinuationReserveTokens = 4096;
 
 /// Return the host default for classic Generator and media turns. Engine text turns remain unset unless specified.
 constexpr int GetDefaultMaxOutputTokens(bool has_media) noexcept {
@@ -169,13 +172,16 @@ EngineTurnOptionsPlan BuildEngineTurnOptionsPlan(const SearchOptions& options,
 ///                           instead of input+output. Used for continuous decoding (cached generators).
 /// @param default_max_output_tokens  Default applied when the request does not specify
 ///                                   max_output_tokens. C# uses 2048 for text, 3072 for vision.
+/// @param continuation_reserve_tokens  Extra tokens reserved beyond input+output when not using the full context, so
+///                                     later turns can be appended without preallocating the whole context window.
 int ApplySearchOptions(const SearchOptions& options,
                        int input_token_count,
                        const GenAIConfig& config,
                        OgaGeneratorParams& gen_params,
                        ExecutionProvider ep,
                        bool use_full_context = false,
-                       int default_max_output_tokens = kDefaultChatTextMaxOutputTokens);
+                       int default_max_output_tokens = kDefaultChatTextMaxOutputTokens,
+                       int continuation_reserve_tokens = 0);
 
 /// Applies request-level grammar guidance to generator parameters when the tool context requires tool-only output.
 void ApplyGuidanceOptions(const ToolCallContext& tool_ctx,

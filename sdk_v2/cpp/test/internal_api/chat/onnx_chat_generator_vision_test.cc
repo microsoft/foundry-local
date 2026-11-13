@@ -10,6 +10,7 @@
 
 #include "inferencing/generative/chat/onnx_chat_generator.h"
 
+#include "exception.h"
 #include "items/audio_item.h"
 #include "items/image_item.h"
 #include "items/message_item.h"
@@ -152,8 +153,7 @@ TEST(OnnxChatGeneratorVision, TransformPreservesPriorTextOnlyMessages) {
   EXPECT_EQ(json[2]["content"][1]["text"], "what is this");
 }
 
-TEST(OnnxChatGeneratorVision, TransformOnlyRewritesFinalUserMessage) {
-  // Two user messages; only the latter should be rewritten.
+TEST(OnnxChatGeneratorVision, TransformKeepsEarlierTextOnlyUserUnstructured) {
   std::vector<MessageItem> messages;
   messages.push_back(MakeTextMessage(FOUNDRY_LOCAL_ROLE_USER, "first"));
   messages.push_back(MakeTextMessage(FOUNDRY_LOCAL_ROLE_ASSISTANT, "ok"));
@@ -190,10 +190,50 @@ TEST(OnnxChatGeneratorMedia, TransformIncludesImageAndAudioMarkers) {
   EXPECT_EQ(json[0]["content"][2]["text"], "describe both");
 }
 
-TEST(OnnxChatGeneratorMedia, TransformRejectsMediaOutsideFinalUserMessage) {
+TEST(OnnxChatGeneratorVision, TransformPreservesImagesAcrossUserTurns) {
   std::vector<MessageItem> messages;
-  messages.push_back(MakeAudioMessage(FOUNDRY_LOCAL_ROLE_USER, "transcribe this"));
-  messages.push_back(MakeTextMessage(FOUNDRY_LOCAL_ROLE_USER, "then summarize it"));
+  messages.push_back(MakeImageMessage(FOUNDRY_LOCAL_ROLE_USER, "first image"));
+  messages.push_back(MakeTextMessage(FOUNDRY_LOCAL_ROLE_ASSISTANT, "first answer"));
+  messages.push_back(MakeImageMessage(FOUNDRY_LOCAL_ROLE_USER, "second image"));
+  messages.push_back(MakeTextMessage(FOUNDRY_LOCAL_ROLE_ASSISTANT, "second answer"));
+  messages.push_back(MakeTextMessage(FOUNDRY_LOCAL_ROLE_USER, "compare them"));
 
-  EXPECT_THROW(OnnxChatGenerator::TransformMessagesForMedia(messages), fl::Exception);
+  const auto json = nlohmann::json::parse(OnnxChatGenerator::TransformMessagesForMedia(messages));
+
+  ASSERT_EQ(json.size(), 5u);
+  EXPECT_EQ(json[0]["content"][0]["type"], "image");
+  EXPECT_EQ(json[0]["content"][1]["text"], "first image");
+  EXPECT_EQ(json[1]["content"], "first answer");
+  EXPECT_EQ(json[2]["content"][0]["type"], "image");
+  EXPECT_EQ(json[2]["content"][1]["text"], "second image");
+  EXPECT_EQ(json[3]["content"], "second answer");
+  EXPECT_EQ(json[4]["content"][0]["text"], "compare them");
+}
+
+TEST(OnnxChatGeneratorVision, TransformPreservesNamesAndConditionalAssistantReasoning) {
+  std::vector<std::unique_ptr<Item>> assistant_parts;
+  assistant_parts.push_back(std::make_unique<TextItem>("private", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING));
+  assistant_parts.push_back(std::make_unique<TextItem>("answer"));
+  std::vector<MessageItem> messages;
+  messages.push_back(MakeImageMessage(FOUNDRY_LOCAL_ROLE_USER, "first"));
+  messages[0].name = "observer";
+  messages.emplace_back(FOUNDRY_LOCAL_ROLE_ASSISTANT, std::move(assistant_parts), "helper");
+  messages.push_back(MakeTextMessage(FOUNDRY_LOCAL_ROLE_USER, "continue"));
+
+  const auto ordinary = nlohmann::json::parse(OnnxChatGenerator::TransformMessagesForMedia(messages));
+  const auto reasoning = nlohmann::json::parse(OnnxChatGenerator::TransformMessagesForMedia(messages, true));
+
+  EXPECT_EQ(ordinary[0]["name"], "observer");
+  EXPECT_EQ(ordinary[1]["name"], "helper");
+  EXPECT_EQ(ordinary[1]["content"], "answer");
+  EXPECT_FALSE(ordinary[1].contains("reasoning_content"));
+  EXPECT_EQ(reasoning[1]["reasoning_content"], "private");
+}
+
+TEST(OnnxChatGeneratorVision, TransformRejectsImagesOutsideUserMessages) {
+  for (const auto role : {FOUNDRY_LOCAL_ROLE_SYSTEM, FOUNDRY_LOCAL_ROLE_ASSISTANT, FOUNDRY_LOCAL_ROLE_TOOL}) {
+    std::vector<MessageItem> messages;
+    messages.push_back(MakeImageMessage(role, "image"));
+    EXPECT_THROW(OnnxChatGenerator::TransformMessagesForMedia(messages), fl::Exception);
+  }
 }

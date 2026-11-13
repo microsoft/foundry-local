@@ -208,6 +208,7 @@ std::optional<ChatTurnUsage> OnnxChatGenerator::GetTurnUsage() const {
       generated_tokens,
       termination.finish_reason,
       termination.cause,
+      cached_prompt_tokens_,
   };
 }
 
@@ -273,6 +274,11 @@ int OnnxChatGenerator::AppendPreparedPrompt(const std::vector<TranscriptMessage>
   const int max_output_tokens = ResolveMaxOutputTokens(options);
   ValidateGeneratorRequestBudget(prepared.prompt_token_count, max_output_tokens,
                                  GetModelMaxContextLength(model.GetGenAIConfig()));
+  // A generator sized below the full context (media continuation reserve) may lack room for this turn. Rebuilding
+  // sizes a new generator for the whole prompt, so report it as a prefix mismatch rather than failing the request.
+  if (static_cast<int64_t>(TokenCount()) + static_cast<int64_t>(suffix.size()) + max_output_tokens > max_length_) {
+    throw RetainedPromptMismatchError();
+  }
 
   auto suffix_sequences = OgaSequences::Create();
   suffix_sequences->Append(suffix.data(), suffix.size());
@@ -288,6 +294,7 @@ int OnnxChatGenerator::AppendPreparedPrompt(const std::vector<TranscriptMessage>
   prompt_opens_reasoning_ = fl::PromptOpensReasoning(full_prompt, reasoning_markers_, prepared.prompt);
   prompt_token_count_ = static_cast<int>(prepared.prompt_token_count);
   turn_start_token_count_ = TokenCount();
+  cached_prompt_tokens_ = static_cast<int>(*suffix_start);
   max_output_tokens_ = max_output_tokens;
   ResetTurnState();
 
@@ -312,11 +319,8 @@ void OnnxChatGenerator::ResetTurnState() {
 // Media helpers
 // ---------------------------------------------------------------------------
 
-std::string OnnxChatGenerator::TransformMessagesForMedia(const std::vector<MessageItem>& messages) {
-  // Find the index of the last user message so we can rewrite only that one
-  // into structured content, preserving the positions of text and media.
-  // Other messages are emitted in plain `{"role","content"}` form so the chat
-  // template renders them the same way it does for text-only requests.
+std::string OnnxChatGenerator::TransformMessagesForMedia(const std::vector<MessageItem>& messages,
+                                                         bool preserve_reasoning_history) {
   size_t last_user_idx = messages.size();
   for (size_t i = messages.size(); i-- > 0;) {
     if (messages[i].role == FOUNDRY_LOCAL_ROLE_USER) {
@@ -330,8 +334,15 @@ std::string OnnxChatGenerator::TransformMessagesForMedia(const std::vector<Messa
     const auto& msg = messages[i];
     nlohmann::json entry;
     entry["role"] = Utils::RoleToString(msg.role);
+    const bool has_media = std::any_of(msg.content.begin(), msg.content.end(), [](const MessagePart& part) {
+      return part.view && (part.view->type == FOUNDRY_LOCAL_ITEM_IMAGE ||
+                           part.view->type == FOUNDRY_LOCAL_ITEM_AUDIO);
+    });
+    if (has_media && msg.role != FOUNDRY_LOCAL_ROLE_USER) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "image or audio input must belong to a user message");
+    }
 
-    if (i == last_user_idx) {
+    if (i == last_user_idx || has_media) {
       auto content = nlohmann::json::array();
       for (const auto& part : msg.content) {
         if (!part.view) {
@@ -351,15 +362,24 @@ std::string OnnxChatGenerator::TransformMessagesForMedia(const std::vector<Messa
 
       entry["content"] = std::move(content);
     } else {
+      entry["content"] = RenderMessageForPrompt(msg);
+    }
+
+    if (preserve_reasoning_history && msg.role == FOUNDRY_LOCAL_ROLE_ASSISTANT) {
+      std::string reasoning;
       for (const auto& part : msg.content) {
-        if (part.view &&
-            (part.view->type == FOUNDRY_LOCAL_ITEM_IMAGE || part.view->type == FOUNDRY_LOCAL_ITEM_AUDIO)) {
-          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-                   "media input must belong to the final user message");
+        if (part.view && part.view->type == FOUNDRY_LOCAL_ITEM_TEXT) {
+          const auto& text = static_cast<const TextItem&>(*part.view);
+          if (text.text_type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING) {
+            reasoning += text.text;
+          }
         }
       }
-      // Non-final message: render visible text parts only via the canonical helper.
-      entry["content"] = RenderMessageForPrompt(msg);
+
+      entry["reasoning_content"] = std::move(reasoning);
+    }
+    if (!msg.name.empty()) {
+      entry["name"] = msg.name;
     }
 
     arr.push_back(std::move(entry));
@@ -408,13 +428,14 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreatePrepared(
     const SearchOptions& options,
     GenAIModelInstance& model,
     const ToolCallContext& tool_ctx,
-    bool use_full_context) {
+    bool use_full_context,
+    int continuation_reserve_tokens) {
   const int input_token_count = static_cast<int>(prepared.prompt_token_count);
   auto gen_params = OgaGeneratorParams::Create(model.GetOgaModel());
   const int default_max_output_tokens = GetDefaultMaxOutputTokens(prepared.HasMedia());
   const int max_length =
       ApplySearchOptions(options, input_token_count, model.GetGenAIConfig(), *gen_params, model.EP(),
-                         use_full_context, default_max_output_tokens);
+                         use_full_context, default_max_output_tokens, continuation_reserve_tokens);
   const int max_output_tokens = ResolveMaxOutputTokens(options, default_max_output_tokens);
 
   auto reasoning_markers = ResolveReasoningMarkers(tool_ctx, model);

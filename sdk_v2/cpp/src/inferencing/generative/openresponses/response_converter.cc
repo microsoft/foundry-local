@@ -170,8 +170,8 @@ namespace {
 /// What a stored message contributes to replay.
 struct StoredMessageContent {
   std::string text;
-  /// The message carried image or audio parts. Their bytes are not stored and cannot be replayed, but the turn
-  /// itself still happened and must not vanish from the rebuilt conversation.
+  /// Media messages use the typed input converter so their parts are replayed in order. Local image files are read
+  /// again, so a replay requires them to remain available and unchanged.
   bool has_media = false;
 };
 
@@ -324,6 +324,8 @@ flMessageRole ReplayRole(const std::string& role) {
 
 }  // namespace
 
+static void AddTypedInputMessage(Request& request, const InputMessage& msg);
+
 /// Replay a hop's own input items — the request the caller sent for that hop, in the shape they sent it.
 static void AddJsonItemsToRequest(Request& request, const nlohmann::json& items) {
   if (!items.is_array()) {
@@ -378,17 +380,9 @@ static void AddJsonItemsToRequest(Request& request, const nlohmann::json& items)
     auto r = ReplayRole(role);
 
     auto content = ReadStoredContent(entry);
-    if (content.text.empty() && content.has_media) {
-      // A media-only message. The placeholder is not an invention standing in for the image: it is exactly what the
-      // live path recorded for this turn. A media-only message has no text of its own, so AddTypedInputItems gives
-      // it this single space to satisfy the chat template, and that space — not the bytes — is what reached the
-      // transcript. Replaying it therefore reproduces the live record verbatim.
-      //
-      // The bytes are absent on both sides: a media turn drops its generator, so the very next turn of the live
-      // session also rebuilds its prompt from a transcript that never held them. Dropping the message instead would
-      // silently remove a user turn the model saw; failing here would make the cold path reject a continuation the
-      // warm path serves.
-      content.text = kMediaOnlyPlaceholder;
+    if (content.has_media) {
+      AddTypedInputMessage(request, entry.get<InputMessage>());
+      continue;
     }
 
     if (content.text.empty()) {
@@ -477,7 +471,7 @@ static void AddChainContextToRequest(Request& request, const ResponseChainContex
 //   - data URLs:  "data:<mime-type>;base64,<payload>"
 //                 → base64-decoded into an owning byte buffer.
 //   - local files: absolute path or a `file://` URI
-//                 → bytes read from disk.
+//                 → validated now and read from disk when each prompt is prepared.
 //
 // Anything else (http/https URL, file_id reference) is rejected with
 // NOT_IMPLEMENTED. Matches upstream C# ResponseInputConverter behaviour:
@@ -525,22 +519,25 @@ std::unique_ptr<ImageItem> MakeImageItemFromLocalFile(const std::string& url,
   }
 
   in.seekg(0, std::ios::end);
-  auto size = in.tellg();
-  in.seekg(0, std::ios::beg);
-
-  if (size <= 0) {
+  if (in.tellg() <= 0) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
              std::string("image_url local file is empty: ") + path);
   }
 
-  std::vector<std::uint8_t> bytes(static_cast<size_t>(size));
-  if (!in.read(reinterpret_cast<char*>(bytes.data()), size)) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             std::string("image_url local file read failed: ") + path);
+  // The bytes are read when a prompt is prepared, so the caller must keep the file available and unchanged for the
+  // conversation. ImageItem::ReadBytes percent-decodes its uri; escape '%' so it opens exactly this path.
+  std::string uri;
+  uri.reserve(path.size());
+  for (const char ch : path) {
+    if (ch == '%') {
+      uri += "%25";
+    } else {
+      uri += ch;
+    }
   }
 
   std::string media_type = explicit_media_type.value_or(MimeFromExtension(path));
-  return std::make_unique<ImageItem>(std::move(bytes), std::move(media_type));
+  return std::make_unique<ImageItem>(std::move(uri), std::move(media_type));
 }
 
 std::unique_ptr<ImageItem> MakeImageItemFromInputImage(const InputImageContent& c) {
@@ -605,6 +602,40 @@ std::unique_ptr<AudioItem> MakeAudioItemFromInputAudio(const InputAudioContent& 
 // Helper: add typed InputItems to a session request
 // ---------------------------------------------------------------------------
 
+static void AddTypedInputMessage(Request& request, const InputMessage& msg) {
+  std::vector<std::unique_ptr<Item>> parts;
+  bool has_text = false;
+  for (const auto& c : msg.content) {
+    if (auto* tc = std::get_if<InputTextContent>(&c)) {
+      if (!tc->text.empty()) {
+        parts.push_back(std::make_unique<TextItem>(tc->text));
+        has_text = true;
+      }
+    } else if (auto* ic = std::get_if<InputImageContent>(&c)) {
+      parts.push_back(MakeImageItemFromInputImage(*ic));
+    } else if (auto* ac = std::get_if<InputAudioContent>(&c)) {
+      parts.push_back(MakeAudioItemFromInputAudio(*ac));
+    } else {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED,
+               "input message content type not supported (only input_text, input_image, and input_audio)");
+    }
+  }
+
+  if (parts.empty()) {
+    if (ReplayRole(msg.role) == FOUNDRY_LOCAL_ROLE_ASSISTANT) {
+      request.AddOwnedItem(MakeAssistantTurnBoundary());
+    }
+
+    return;
+  }
+
+  if (!has_text) {
+    parts.push_back(std::make_unique<TextItem>(kMediaOnlyPlaceholder));
+  }
+
+  request.AddOwnedItem(std::make_unique<MessageItem>(ReplayRole(msg.role), std::move(parts)));
+}
+
 static void AddTypedInputItems(Request& request,
                                const std::vector<InputItem>& input_items) {
   for (const auto& input_item : input_items) {
@@ -631,47 +662,7 @@ static void AddTypedInputItems(Request& request,
                                               ToolKind::kCustom);
       request.AddOwnedItem(std::move(i));
     } else if (auto* msg = std::get_if<InputMessage>(&input_item)) {
-      // Build typed parts from the message's content array.
-      std::vector<std::unique_ptr<Item>> parts;
-      bool has_text = false;
-      for (const auto& c : msg->content) {
-        if (auto* tc = std::get_if<InputTextContent>(&c)) {
-          if (!tc->text.empty()) {
-            parts.push_back(std::make_unique<TextItem>(tc->text));
-            has_text = true;
-          }
-        } else if (auto* ic = std::get_if<InputImageContent>(&c)) {
-          parts.push_back(MakeImageItemFromInputImage(*ic));
-        } else if (auto* ac = std::get_if<InputAudioContent>(&c)) {
-          parts.push_back(MakeAudioItemFromInputAudio(*ac));
-        } else {
-          FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED,
-                   "input message content type not supported (only input_text, input_image, and input_audio)");
-        }
-      }
-
-      // A message with no replayable content is normally nothing to say. An assistant message is the exception: it
-      // is the boundary of a turn whose output did not survive replay (a reasoning-only turn, or one truncated
-      // before any visible text), and the live session commits that boundary.
-      if (parts.empty()) {
-        if (ReplayRole(msg->role) == FOUNDRY_LOCAL_ROLE_ASSISTANT) {
-          request.AddOwnedItem(MakeAssistantTurnBoundary());
-        }
-
-        continue;
-      }
-
-      // The chat template requires every message to carry at least one
-      // text part. A pure-image message (e.g. "input_image" with no
-      // accompanying "input_text") would render as an empty content
-      // string. Inject the placeholder so the template still renders the
-      // message and the model receives the image sentinel.
-      if (!has_text) {
-        parts.push_back(std::make_unique<TextItem>(kMediaOnlyPlaceholder));
-      }
-
-      auto i = std::make_unique<MessageItem>(ReplayRole(msg->role), std::move(parts));
-      request.AddOwnedItem(std::move(i));
+      AddTypedInputMessage(request, *msg);
     }
   }
 }
