@@ -1333,6 +1333,21 @@ TEST_F(WebServiceTest, ChatCompletionsRejectsUnknownModel) {
                std::exception);
 }
 
+TEST_F(WebServiceTest, ExpectContinueRequestsReceiveAFinalResponse) {
+  // curl and httplib send Expect: 100-continue for large bodies such as inline images. The interim response must end
+  // its header block, or the client keeps waiting for it while the server waits for the body.
+  json body = {
+      {"model", "nonexistent-model"},
+      {"messages", json::array({{{"role", "user"}, {"content", std::string(4096, 'x')}}})},
+  };
+  httplib::Client client(base_url_);
+  client.set_read_timeout(10, 0);
+  const auto result =
+      client.Post("/v1/chat/completions", httplib::Headers{{"Expect", "100-continue"}}, body.dump(), "application/json");
+  ASSERT_TRUE(result) << httplib::to_string(result.error());
+  EXPECT_EQ(result->status, 404) << result->body;
+}
+
 TEST_F(WebServiceTest, ChatCompletionsRejectsInvalidMessage) {
   // Message missing "content" field
   json body = {
@@ -1760,10 +1775,6 @@ struct HttpResult {
 };
 
 /// POST a JSON body and report the status alongside the parsed body.
-///
-/// Uses the product's own HTTP client rather than httplib: httplib keeps the connection alive and
-/// stalls against this server once a request body grows past a few kilobytes, which a realistic
-/// tool inventory does immediately.
 HttpResult PostJson(const std::string& url, const json& body) {
   http::HttpRequestOptions options;
   options.close_connection = true;
