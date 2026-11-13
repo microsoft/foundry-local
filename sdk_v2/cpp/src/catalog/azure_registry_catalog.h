@@ -43,6 +43,7 @@ class AzureRegistryCatalog final : public RemoteModelCatalog {
 
  private:
   std::optional<ModelInfo> Adapt(const nlohmann::json& model) const;
+  std::vector<ModelInfo> AdaptModels(const std::vector<nlohmann::json>& models) const;
   std::vector<Model*> RetainedVariants() const;
   std::vector<Model> CachedVariants(const std::string& alias) const;
   void ReconcileCachedAlias(Model& model) const;

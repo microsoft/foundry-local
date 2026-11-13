@@ -142,7 +142,7 @@ export class FoundryLocalManager {
   /** Select a catalog. AzureRegistry requires a `name` and optionally a `credential` option. */
   getCatalog(type: CatalogType = CatalogType.Public, options?: Readonly<Record<string, string>>): Catalog {
     if (type !== CatalogType.Public && type !== CatalogType.Local && type !== CatalogType.AzureRegistry) {
-      throw new TypeError("Invalid catalog type.");
+      throw new TypeError("Catalog type must be CatalogType.Public, CatalogType.Local, or CatalogType.AzureRegistry.");
     }
     if (options !== undefined && (options === null || typeof options !== "object" || Array.isArray(options))) {
       throw new TypeError("Catalog options must be an object of strings.");

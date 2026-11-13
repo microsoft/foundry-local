@@ -482,6 +482,19 @@ TEST_F(AzureRegistryCatalogTest, NamedHistoryReturnsEmptyForMissingModelWithoutS
   EXPECT_TRUE(Catalog()->GetModelVersions("tiny", kCpuName, 1).empty());
 }
 
+TEST_F(AzureRegistryCatalogTest, NamedHistorySkipsInvalidRecordsBeforeApplyingVersionLimit) {
+  Discovery();
+  auto malformed = TaggedModel(2);
+  malformed["properties"]["tags"].erase("alias");
+  transport_->Queue(kBase + "/models/" + kCpuName + "/versions" + kApi,
+                    {{"value", {TaggedModel(10), malformed}}});
+
+  auto catalog = Catalog();
+  const auto versions = catalog->GetModelVersions("tiny", kCpuName, 1);
+  ASSERT_EQ(versions.size(), 1);
+  EXPECT_EQ(versions.front()->Info().version, 10);
+}
+
 TEST_F(AzureRegistryCatalogTest, StrictTagsMapMetadataAndIgnoreUnrelatedAssets) {
   auto unrelated = LegacyModel("unrelated");
   unrelated["properties"]["tags"] = {{"alias", "other"}, {"task", "chat-completion"}};

@@ -952,7 +952,7 @@ TEST_P(WebServiceModelManagementTest, EmptyNameDoesNotMatchManagementRoute) {
   }
 }
 
-TEST_P(WebServiceModelManagementTest, SameIdAtDifferentArtifactPathCannotReturnLoadedContextOrUnloadOriginal) {
+TEST_P(WebServiceModelManagementTest, SameIdAtDifferentArtifactPathsLoadAndUnloadIndependently) {
   auto& other_catalog = GetParam() ? public_catalog_ : local_catalog_;
   auto replacement = test::MakeTestModelInfo("replacement-model");
   replacement.model_id = kExactId;
@@ -961,19 +961,31 @@ TEST_P(WebServiceModelManagementTest, SameIdAtDifferentArtifactPathCannotReturnL
   other_catalog.AddModel(Model::FromModelInfo(std::move(replacement), other_path, bindings_.download_manager,
                                               bindings_.model_load_manager));
   ExpectStatus("load", kEncodedId, "loaded");
+  auto* const original = ExactModel();
+  auto* const alternate = other_catalog.GetModelVariant(kExactId);
+  ASSERT_NE(original, nullptr);
+  ASSERT_NE(alternate, nullptr);
+  EXPECT_NE(NormalizeModelPath(original->GetPath()), NormalizeModelPath(alternate->GetPath()));
+  EXPECT_NE(bindings_.model_load_manager.GetLoadedModel(kExactId, original->GetPath()), nullptr);
 
   const std::string other_prefix = GetParam() ? "" : "/catalogs/local";
   const auto response = client_->Get(other_prefix + "/models/load/" + kEncodedId);
   ASSERT_TRUE(response);
-  EXPECT_EQ(response->status, 500) << response->body;
+  ASSERT_EQ(response->status, 200) << response->body;
   const auto body = json::parse(response->body);
-  EXPECT_NE(body.at("error").at("message").get<std::string>().find("different path"), std::string::npos);
-  EXPECT_FALSE(body.contains("context_length"));
+  EXPECT_EQ(body.at("status"), "loaded");
+  EXPECT_EQ(body.at("model_id"), kExactId);
+  EXPECT_EQ(body.at("model_path"), NormalizeModelPath(alternate->GetPath()));
+  EXPECT_EQ(body.at("context_length"), 512);
+  EXPECT_NE(bindings_.model_load_manager.GetLoadedModel(kExactId, alternate->GetPath()), nullptr);
+
   const auto unload = client_->Get(other_prefix + "/models/unload/" + kEncodedId);
   ASSERT_TRUE(unload);
-  EXPECT_EQ(unload->status, 200) << unload->body;
-  EXPECT_EQ(json::parse(unload->body).at("status"), "not_loaded");
-  EXPECT_TRUE(ExactModel()->IsLoaded());
+  ASSERT_EQ(unload->status, 200) << unload->body;
+  EXPECT_EQ(json::parse(unload->body).at("status"), "unloaded");
+  EXPECT_EQ(bindings_.model_load_manager.GetLoadedModel(kExactId, alternate->GetPath()), nullptr);
+  EXPECT_NE(bindings_.model_load_manager.GetLoadedModel(kExactId, original->GetPath()), nullptr);
+  EXPECT_TRUE(original->IsLoaded());
   ExpectStatus("load", kEncodedId, "already_loaded");
   ExpectStatus("unload", kEncodedId, "unloaded");
 }

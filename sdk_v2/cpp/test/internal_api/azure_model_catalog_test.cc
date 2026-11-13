@@ -658,7 +658,10 @@ TEST_F(AzureModelCatalogTest, ProviderRefreshPreservesLoadedArtifactUntilItIsUnl
   auto cuda = MakeModelInfo("model-cuda-gpu:1", "model-cuda-gpu", 1, "model", "Azure");
   cuda.execution_provider = "CUDA";
   WriteSnapshot({cpu, cuda});
-  const auto path = fl::test::GetTestDataPath("tiny-paged-attention");
+  auto package = fl::test::TempPath::CreateTempDir("fl_completed_model_");
+  const auto path = package.path() / "tiny-paged-attention";
+  fs::copy(fl::test::GetTestDataPath("tiny-paged-attention"), path, fs::copy_options::recursive);
+  std::ofstream(path / "inference_model.json") << nlohmann::json({{"Name", cpu.model_id}}).dump();
   ASSERT_TRUE(fs::exists(path / "genai_config.json"));
   for (int release = 0; release < 3; ++release) {
     SCOPED_TRACE(release);

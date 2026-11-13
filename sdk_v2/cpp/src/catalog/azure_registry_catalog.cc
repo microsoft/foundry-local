@@ -126,6 +126,22 @@ AzureRegistryCatalog::AzureRegistryCatalog(std::string registry, const Configura
       });
 }
 
+std::vector<ModelInfo> AzureRegistryCatalog::AdaptModels(const std::vector<nlohmann::json>& models) const {
+  std::vector<ModelInfo> infos;
+  for (const auto& model : models) {
+    // One malformed opted-in asset must not hide valid records; exact-ID lookups still fail explicitly.
+    try {
+      if (auto info = Adapt(model)) infos.push_back(std::move(*info));
+    } catch (const nlohmann::json::exception& error) {
+      logger_.Log(LogLevel::Warning, std::string("Skipping malformed Azure ML model metadata: ") + error.what());
+    } catch (const Exception& error) {
+      if (error.code() != FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT) throw;
+      logger_.Log(LogLevel::Warning, std::string("Skipping invalid Azure ML model metadata: ") + error.what());
+    }
+  }
+  return infos;
+}
+
 AzureMlRegistryClient& AzureRegistryCatalog::Client() const {
   if (cache_only_) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot access the registry in cache-only mode");
@@ -424,17 +440,7 @@ std::vector<ModelInfo> AzureRegistryCatalog::FetchModelInfos() const {
     }
     live_infos = *cached;
   } else {
-    for (const auto& model : Client().ListModelVersions()) {
-      // One malformed opted-in asset must not hide the rest of the registry; exact-ID lookups still fail explicitly.
-      try {
-        if (auto info = Adapt(model)) live_infos.push_back(std::move(*info));
-      } catch (const nlohmann::json::exception& error) {
-        logger_.Log(LogLevel::Warning, std::string("Skipping malformed Azure ML model metadata: ") + error.what());
-      } catch (const Exception& error) {
-        if (error.code() != FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT) throw;
-        logger_.Log(LogLevel::Warning, std::string("Skipping invalid Azure ML model metadata: ") + error.what());
-      }
-    }
+    live_infos = AdaptModels(Client().ListModelVersions());
     cache.Load();
     auto snapshot_infos = live_infos;
     if (const auto existing = cache.GetCachedModels()) {
@@ -481,9 +487,7 @@ std::vector<ModelInfo> AzureRegistryCatalog::FetchModelVersionInfos(const std::s
   } else {
     std::lock_guard snapshot_lock(snapshot_mutex_);
     FileLock transaction(std::filesystem::path(cache_dir_) / "foundry.modelinfo.lock");
-    for (const auto& model : Client().ListModelVersions(name)) {
-      if (auto info = Adapt(model)) models.push_back(std::move(*info));
-    }
+    models = AdaptModels(Client().ListModelVersions(name));
     CatalogCache cache(cache_dir_, logger_);
     cache.Load();
     auto snapshot = cache.GetCachedModels().value_or(std::vector<ModelInfo>{});
