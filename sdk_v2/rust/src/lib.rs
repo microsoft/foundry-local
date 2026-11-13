@@ -8,6 +8,7 @@ mod error;
 mod foundry_local_manager;
 mod item;
 mod item_queue;
+mod non_generative;
 mod request;
 mod response;
 mod session;
@@ -26,6 +27,11 @@ pub use self::item::{
     SpeechSegmentKind, SpeechWord, Tensor, TensorDataType, TextKind, ToolCall, ToolResult,
 };
 pub use self::item_queue::ItemQueue;
+pub use self::non_generative::{
+    DecisionAnswer, DecisionAnswerValue, DecisionQuestion, DecisionQuestionType, DecisionRequest,
+    DecisionResult, DecisionSession, DecisionUsage, RankedCandidate, RankingRequest, RankingResult,
+    RankingSession,
+};
 pub use self::request::{Request, RequestOptions, SearchOptions, ToolChoice};
 pub use self::response::{FinishReason, Response, Usage};
 pub use self::session::{
@@ -33,8 +39,8 @@ pub use self::session::{
     RequestPreflightResult, Session, ToolDefinition,
 };
 pub use self::types::{
-    CatalogType, ChatResponseFormat, ChatToolChoice, DeviceType, EpDownloadResult, EpInfo,
-    ModelInfo, ModelInfoBuilder, ModelSettings, Parameter, PromptTemplate, Runtime,
+    CatalogOptions, CatalogType, ChatResponseFormat, ChatToolChoice, DeviceType, EpDownloadResult,
+    EpInfo, ModelInfo, ModelInfoBuilder, ModelSettings, Parameter, PromptTemplate, Runtime,
 };
 
 // Re-export OpenAI request types so callers can construct typed messages.

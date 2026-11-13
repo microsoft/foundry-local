@@ -2,8 +2,9 @@
   "name": "foundry-local",
   "version-semver": "0.1.0",
   "description": "Foundry Local C++ SDK",
-  "builtin-baseline": "67e816ef4b11c01fa923a18d16ecf863216fda55",
+  "builtin-baseline": "65886d79ccce671dc24ffbf9a348836beacb7f6f",
   "dependencies": [
+    "azure-identity-cpp",
     {
       "name": "azure-core-cpp",
       "default-features": false,
@@ -69,7 +70,7 @@
   "overrides": [
     {
       "name": "cpp-client-telemetry",
-      "version": "3.10.281.1"
+      "version": "3.10.309.1"
     },
     {
       "name": "nlohmann-json",

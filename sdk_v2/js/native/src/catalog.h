@@ -3,8 +3,8 @@
 //
 // Napi::ObjectWrap<Catalog> over the C++ wrapper's foundry_local::ICatalog.
 //
-// The Catalog wrapper stores its catalog type and weak native Manager ownership. Each operation acquires a strong
-// Manager lease before resolving its manager-owned ICatalog reference, so explicit disposal rejects new calls while
+// The Catalog wrapper stores a manager-owned ICatalog pointer and weak native Manager ownership.
+// Each operation acquires a strong Manager lease, so explicit disposal rejects new calls while
 // already queued workers can finish safely.
 //
 // Constructed only by Manager.getCatalog() / .getCatalogSync(). User code that
@@ -23,7 +23,7 @@
 namespace foundry_local_node {
 
 struct CatalogCtorToken {
-  flCatalogType catalog_type = FOUNDRY_LOCAL_CATALOG_PUBLIC;
+  foundry_local::ICatalog* catalog = nullptr;
   std::weak_ptr<foundry_local::Manager> manager_lifetime;
   std::shared_ptr<std::atomic_bool> disposed;
   Napi::ObjectReference manager;  // pins the owning Manager
@@ -52,7 +52,7 @@ class Catalog : public Napi::ObjectWrap<Catalog> {
 
   std::shared_ptr<foundry_local::Manager> LockManager(Napi::Env env) const;
 
-  flCatalogType catalog_type_ = FOUNDRY_LOCAL_CATALOG_PUBLIC;
+  foundry_local::ICatalog* catalog_ = nullptr;
   std::weak_ptr<foundry_local::Manager> manager_lifetime_;
   std::shared_ptr<std::atomic_bool> disposed_;
   Napi::ObjectReference manager_;

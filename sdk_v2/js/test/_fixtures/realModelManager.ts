@@ -11,10 +11,13 @@
 // a multi-gigabyte download. Local devs implicitly opt into downloads simply
 // by setting FOUNDRY_TEST_DATA_DIR.
 import { existsSync, statSync } from "node:fs";
+import { join } from "node:path";
 
 import type { Catalog } from "../../src/catalog.js";
 import { FoundryLocalManager } from "../../src/foundryLocalManager.js";
 import type { IModel } from "../../src/imodel.js";
+import { ModelInfoStringProperty, MutableModelInfo } from "../../src/modelInfo.js";
+import { CatalogType } from "../../src/types.js";
 
 const envCache = process.env.FOUNDRY_TEST_DATA_DIR;
 const cacheDirExists =
@@ -41,11 +44,16 @@ export interface RealModelManagerOptions {
    */
   readonly task?: string;
   /**
-   * Preferred model alias, name, or full variant ID. If supplied AND the model is in the
-   * catalog, it wins over the smallest-by-task fallback. Defaults to
-   * "qwen2.5-0.5b" — alias of the smallest chat model we ship.
+   * Preferred public model alias, name, or full variant ID. Staged predictive packages take precedence when available.
+   * Otherwise, a catalog match wins over the smallest-by-task fallback. Defaults to "qwen2.5-0.5b".
    */
   readonly namePreference?: string;
+  /**
+   * Whether to load the selected model before returning. Defaults to true.
+   * Set false when a test needs to exercise the explicit caller-owned model
+   * lifecycle itself.
+   */
+  readonly loadModel?: boolean;
 }
 
 export interface RealModelManagerFixture {
@@ -73,16 +81,28 @@ export async function setupRealModelManager(opts: RealModelManagerOptions = {}):
     appName: opts.appName ?? "foundry-local-js-sdk-v2-real-tests",
     modelCacheDir: envCache,
   });
-  const catalog = manager.catalog;
+  let catalog = manager.catalog;
   const namePref = opts.namePreference ?? "qwen2.5-0.5b";
 
-  // Preference 1: exact name / alias hit (V1 throws on miss, so swallow).
   let model: IModel | undefined;
-  try {
-    const exact = namePref.includes(":") ? await catalog.getModelVariant(namePref) : await catalog.getModel(namePref);
-    model = exact.info.deviceType === "CPU" ? exact : undefined;
-  } catch {
-    model = undefined;
+
+  // Keep predictive tests on their staged packages, independent of public catalog version gates.
+  if (opts.task !== undefined) {
+    const staged = await registerStagedNonGenerativeModel(manager, opts.task);
+    if (staged !== undefined) {
+      catalog = staged.catalog;
+      model = staged.model;
+    }
+  }
+
+  // Preference 1: exact name / alias hit (V1 throws on miss, so swallow).
+  if (model === undefined) {
+    try {
+      const exact = namePref.includes(":") ? await catalog.getModelVariant(namePref) : await catalog.getModel(namePref);
+      model = exact.info.deviceType === "CPU" ? exact : undefined;
+    } catch {
+      model = undefined;
+    }
   }
 
   // Preference 1b: catalog entries often carry a `-N` version suffix
@@ -107,7 +127,7 @@ export async function setupRealModelManager(opts: RealModelManagerOptions = {}):
     });
     if (matching.length === 0) {
       manager.dispose();
-      throw new Error(
+      throw new SkipFixture(
         `No catalog model matches task='${task}' deviceType='CPU' (and preference '${namePref}' missing)`,
       );
     }
@@ -122,15 +142,59 @@ export async function setupRealModelManager(opts: RealModelManagerOptions = {}):
   }
 
   // CI gate: refuse to trigger a real download.
-  if (isCi && !model.isCached) {
+  if (!model.isCached && (isCi || opts.loadModel === false)) {
+    const modelName = model.info.name;
     manager.dispose();
     throw new SkipFixture(
-      `[CI] selected model '${model.info.name}' is not in the cache; skipping to avoid a download.`,
+      `Selected model '${modelName}' is not in the cache; skipping because this fixture cannot use the requested lifecycle.`,
     );
   }
 
-  await model.load();
+  if (opts.loadModel ?? true) {
+    await model.load();
+  }
   return { manager, catalog, model };
+}
+
+async function registerStagedNonGenerativeModel(
+  manager: FoundryLocalManager,
+  task: string,
+): Promise<{ catalog: Catalog; model: IModel } | undefined> {
+  if (envCache === undefined) return undefined;
+  const packageInfo =
+    task === "text-ranking"
+      ? {
+          directory: "clm-v0.1-8b-mixed-generic-cpu-1",
+          modelId: "clm-v0.1-8b-mixed-generic-cpu:1",
+        }
+      : task === "typed-decision"
+        ? {
+            directory: "kev-0.8b-mixed-generic-cpu-1",
+            modelId: "kev-0.8b-mixed-generic-cpu:1",
+          }
+        : undefined;
+  if (packageInfo === undefined) return undefined;
+
+  const packagePath = join(envCache, "Microsoft", packageInfo.directory);
+  if (!existsSync(packagePath) || !statSync(packagePath).isDirectory()) return undefined;
+
+  const localCatalog = manager.getCatalog(CatalogType.Local);
+  try {
+    return {
+      catalog: localCatalog,
+      model: await localCatalog.getModelVariant(packageInfo.modelId),
+    };
+  } catch {
+    const metadata = new MutableModelInfo().setStringProperty(ModelInfoStringProperty.Task, task);
+    try {
+      return {
+        catalog: localCatalog,
+        model: await localCatalog.registerModel(packagePath, packageInfo.modelId, metadata),
+      };
+    } finally {
+      metadata.dispose();
+    }
+  }
 }
 
 export function teardownRealModelManager(fixture: RealModelManagerFixture | undefined): void {

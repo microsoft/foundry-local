@@ -10,7 +10,8 @@ applyTo: "sdk_v2/cpp/src/inferencing/generative/{chat,toolcalling}/**"
 - Generation guidance constrains canonical JSON syntax, envelopes, names, and call cardinality, not JSON Schema
   semantics. Do not reintroduce the native JSON Schema compiler: its property-order and Unicode-escape restrictions
   can corrupt otherwise valid tool values. Keep one original-schema authority rather than handwritten subsets.
-  Permit JSON whitespace at structural boundaries explicitly; never use global whitespace ignoring inside strings.
+  Permit bounded JSON whitespace at structural boundaries so greedy decoding makes progress; leave string
+  contents unrestricted and never use global whitespace ignoring inside strings.
 - Reasoning and executable tool boundaries use published token IDs. Added tokens may have `special:false`; quoted
   marker spellings are data. Preserve payload ownership once a canonical or explicit raw envelope has opened.
 - Automatic structured output must explicitly choose `MESSAGE\n` plus ordinary text or an executable tool boundary.

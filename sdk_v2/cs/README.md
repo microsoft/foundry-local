@@ -12,6 +12,7 @@ For the v2 inference concepts and typed, stateful session examples, see
 - **Lifecycle management** — download, load, unload, and remove models programmatically
 - **Chat completions** — synchronous and `IAsyncEnumerable` streaming via OpenAI-compatible types
 - **Audio transcription** — transcribe audio files with streaming support
+- **Ranking and typed decisions** — strongly typed sessions for `text-ranking` and `typed-decision` models
 - **Download progress** — wire up an `Action<float>` callback for real-time download percentage
 - **Model variants** — select specific hardware/quantization variants per model alias
 - **Optional web service** — start an OpenAI-compatible REST endpoint (`/v1/chat_completions`, `/v1/models`)
@@ -170,6 +171,22 @@ var cached = await catalog.GetCachedModelsAsync();
 var loaded = await catalog.GetLoadedModelsAsync();
 ```
 
+### Azure ML registry catalog
+
+Use `GetCatalogAsync(CatalogType.AzureRegistry, options)` with a registry `name` and optional
+`credential` (`azure_cli` or `workload_identity`). Registry HTTP access and authentication are
+handled by the native runtime; sign in with `az login` when using `azure_cli`.
+Catalog options require native C API v4. Existing public/local calls still work with v2/v3 runtimes.
+Wrappers are reused when the native runtime returns the same catalog handle.
+
+The [minimal registry example](examples/AzureRegistryCatalog/Program.cs) downloads and loads
+`qwen2.5-0.5b` from `azureml-dev`, sends one chat prompt, and unloads the model.
+Review the model license before running; change the registry/model names to match your catalog.
+
+```powershell
+dotnet run --project examples\AzureRegistryCatalog
+```
+
 ### Bring your own model
 
 Select the local catalog to register an existing model directory. The directory must contain a valid
@@ -229,6 +246,85 @@ await model.UnloadAsync();
 // Remove from local cache entirely
 await model.RemoveFromCacheAsync();
 ```
+
+### Ranking and typed decisions
+
+The typed sessions use the same request and response contracts as `POST /v1/rank` and
+`POST /v1/systemone`. Structured context, state, criteria, and instructions are `JsonElement`
+values so their JSON shape is preserved.
+
+Discover predictive models from the local catalog after registering their already-cached package
+directories (see [Bring your own model](#bring-your-own-model)). Registration records the package
+source path without copying or downloading it:
+
+```csharp
+using System.Text.Json;
+
+var localCatalog = await FoundryLocalManager.Instance.GetCatalogAsync(CatalogType.Local);
+var rankingModel = await localCatalog.GetModelAsync("clm")
+    ?? throw new InvalidOperationException("Register a cached CLM package with alias 'clm'.");
+
+await rankingModel.LoadAsync();
+try
+{
+    // Reuse a session for multiple requests to the same loaded model.
+    using var ranking = new RankingSession(rankingModel);
+    foreach (var weather in new[] { "heavy rain", "sunshine" })
+    {
+        var ranked = await ranking.RankAsync(new RankingRequest
+        {
+            Context = JsonSerializer.SerializeToElement(new { weather }),
+            Question = "Which activity is more suitable?",
+            Answers = ["Have a picnic outdoors", "Visit an indoor museum"],
+        });
+        Console.WriteLine(ranked.Ranked.OrderBy(candidate => candidate.Rank).First().Candidate);
+    }
+}
+finally
+{
+    await rankingModel.UnloadAsync();
+}
+
+var decisionModel = await localCatalog.GetModelAsync("kev")
+    ?? throw new InvalidOperationException("Register a cached KEV package with alias 'kev'.");
+await decisionModel.LoadAsync();
+try
+{
+    using var decisions = new DecisionSession(decisionModel);
+    var result = await decisions.DecideAsync(new DecisionRequest
+    {
+        State = JsonSerializer.SerializeToElement(new { weather = "heavy rain" }),
+        Questions = new Dictionary<string, DecisionQuestion>
+        {
+            ["umbrella"] = DecisionQuestion.Noul(
+                JsonSerializer.SerializeToElement("Should I take an umbrella?")),
+        },
+    });
+    Console.WriteLine(result.Answers["umbrella"].Noul);
+}
+finally
+{
+    await decisionModel.UnloadAsync();
+}
+```
+
+`RankingSession` requires a loaded model with task `text-ranking`; `DecisionSession` requires a
+loaded model with task `typed-decision`. The caller owns the model: call `LoadAsync` before creating
+a session, dispose every session before `UnloadAsync`, and unload in a `finally` block. Requests
+omit `Model` and `Temperature` by default so the bound model and session options apply; set either
+property only for an explicit compatible override.
+
+Use `DecisionQuestion.Noul`, `Choice`, and `Score` (or the constants in `DecisionQuestionKind`) to
+construct supported questions. `noul` is a binary likelihood in `[0, 1]` and has no criteria.
+`choice` criteria are an object whose keys identify the choices. `score` criteria are an ordered,
+non-empty array: the result uses zero-based positions, can be fractional because it is a
+probability-weighted score, and ranges from zero through `criteria.Length - 1`. Optional
+`Confidence` and `Probabilities` are values in `[0, 1]`; `Legend` maps returned identifiers to
+display text. Ranking probabilities are relative to the submitted candidates, and `Rank` gives
+the result order (starting at one), independent of the original zero-based `Index`.
+
+Requests and native results are validated at the SDK boundary. Each call sends exactly one
+`TextItem.OpenAIJson` containing Foundry task JSON and expects exactly one such item in response.
 
 ### Chat Completions
 

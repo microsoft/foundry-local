@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <functional>
 #include <regex>
 #include <string>
@@ -121,6 +122,9 @@ TEST(ToolCallPlanTest, StructuralWhitespaceIsExplicitOnlyAtJsonBoundariesAndUses
     EXPECT_TRUE(std::regex_match(text, whitespace));
   }
 
+  EXPECT_TRUE(std::regex_match(std::string(16, ' '), whitespace));
+  EXPECT_FALSE(std::regex_match(std::string(17, ' '), whitespace));
+
   for (const std::string text : {"", "\v", "\f", "\xC2\xA0", "x", " ,", "1 "}) {
     EXPECT_FALSE(std::regex_match(text, whitespace));
   }
@@ -143,6 +147,12 @@ TEST(ToolCallPlanTest, SpacedNestedCallsPreserveStringDataAndRejectNonJsonWhites
   EXPECT_EQ(arguments.at("empty"), Json::object());
   EXPECT_EQ(arguments.at("array"), Json::array());
   EXPECT_EQ(Json::parse(calls[0].argument_source), arguments);
+  const std::string indented_code = std::string(64, ' ') + "return value;\n" + std::string(64, '\t');
+  EXPECT_TRUE(std::regex_match(Json(indented_code).dump(), GrammarTerminal(*plan, "TOOL_JSON_STRING")));
+  const auto indented_calls = plan->ParseCalls(std::string(64, ' ') + Batch({{"input", indented_code}}));
+  ASSERT_EQ(indented_calls.size(), 1u);
+  EXPECT_EQ(Json::parse(indented_calls[0].arguments).at("input"), indented_code);
+
   for (const std::string whitespace : {"\v", "\f", "\xC2\xA0"}) {
     const auto invalid = "[{\"name\"" + whitespace + ":\"edit\",\"parameters\":{\"input\":\"x\"}}]";
     ExpectError([&] { plan->ParseCalls(invalid); }, FOUNDRY_LOCAL_ERROR_INTERNAL, "");
@@ -501,6 +511,85 @@ TEST(ToolCallPlanTest, EntireBatchFailsIfLaterCallIsInvalid) {
                                   {{"name", "edit"}, {"parameters", {{"n", "bad"}}}}})
                          .dump();
   ExpectError([&] { plan->ParseCalls(batch); }, FOUNDRY_LOCAL_ERROR_INTERNAL, "/n");
+}
+
+TEST(ToolCallPlanTest, PreparsedBatchPreservesIdsArgumentBytesAndCustomSource) {
+  const auto plan = Plan(Json::object());
+  ParsedToolCall ordinary{"supplied-id", "edit", " \t{ \"n\" : 1 }\n"};
+  ParsedToolCall custom{"custom-id", "edit", "line one\n\"quoted\"\\path"};
+  custom.argument_source = R"( { "input" : "line one\n\"quoted\"\\path" } )";
+  const std::vector calls{ordinary, custom};
+  EXPECT_NO_THROW(plan->ValidateBatch(calls));
+  EXPECT_EQ(calls[0].id, ordinary.id);
+  EXPECT_EQ(calls[0].arguments, ordinary.arguments);
+  EXPECT_TRUE(calls[0].argument_source.empty());
+  EXPECT_EQ(calls[1].id, custom.id);
+  EXPECT_EQ(calls[1].arguments, custom.arguments);
+  EXPECT_EQ(calls[1].argument_source, custom.argument_source);
+}
+
+TEST(ToolCallPlanTest, PreparsedBatchRejectsEmptyAndNonparallelCallsDirectly) {
+  const auto tools = Json::array({Tool("edit", Json::object())}).dump();
+  const std::vector<ParsedToolCall> calls{{"a", "edit", "{}"}, {"b", "edit", "{}"}};
+  for (const bool parallel : {false, true}) {
+    const auto plan = ToolCallPlan::Create(tools, parallel);
+    ExpectError([&] { plan->ValidateBatch({}); }, FOUNDRY_LOCAL_ERROR_INTERNAL, "non-empty");
+    EXPECT_NO_THROW(plan->ValidateBatch({calls[0]}));
+    if (parallel) {
+      EXPECT_NO_THROW(plan->ValidateBatch(calls));
+    } else {
+      ExpectError([&] { plan->ValidateBatch(calls); }, FOUNDRY_LOCAL_ERROR_INTERNAL, "parallel");
+    }
+  }
+}
+
+TEST(ToolCallPlanTest, PreparsedBatchChecksExactAggregateNameAndSourceByteLimits) {
+  const auto plan = Plan(Json::object());
+  ParsedToolCall call{"existing", "edit", "{}"};
+  call.argument_source = "{}" + std::string(ToolCallPlan::kMaxArgumentBytes - call.name.size() - 2, ' ');
+  std::vector calls(4, call);
+  ASSERT_EQ(calls.size() * (call.name.size() + call.argument_source.size()), ToolCallPlan::kMaxBatchBytes);
+  EXPECT_NO_THROW(plan->ValidateBatch(calls));
+  calls.back().argument_source.push_back(' ');
+  ExpectError([&] { plan->ValidateBatch(calls); }, FOUNDRY_LOCAL_ERROR_INTERNAL, "batch exceeds byte limit");
+  calls.back().argument_source.pop_back();
+  calls.push_back({"last", "edit", "{}"});
+  ExpectError([&] { plan->ValidateBatch(calls); }, FOUNDRY_LOCAL_ERROR_INTERNAL, "batch exceeds byte limit");
+  call.argument_source = "{}" + std::string(ToolCallPlan::kMaxArgumentBytes - 1, ' ');
+  ExpectError([&] { plan->ValidateBatch({call}); }, FOUNDRY_LOCAL_ERROR_INTERNAL, "byte limit");
+}
+
+TEST(ToolCallPlanTest, PreparsedBatchRejectsAnInvalidFinalCallWithoutChangingInputs) {
+  const auto plan = Plan({{"properties", {{"n", {{"type", "integer"}}}}}, {"required", {"n"}}});
+  const std::vector<ParsedToolCall> calls{{"first", "edit", R"({ "n": 1 })"},
+                                        {"last", "edit", R"({"n":"bad"})"}};
+  ExpectError([&] { plan->ValidateBatch(calls); }, FOUNDRY_LOCAL_ERROR_INTERNAL, "/n");
+  EXPECT_EQ(calls[0].id, "first");
+  EXPECT_EQ(calls[0].arguments, R"({ "n": 1 })");
+  EXPECT_EQ(calls[1].id, "last");
+  EXPECT_EQ(calls[1].arguments, R"({"n":"bad"})");
+}
+
+TEST(ToolCallPlanTest, ObjectGrammarUsesOnlyAnObjectAndValidatesCallerRoots) {
+  const auto plan = Plan(Json::object());
+  EXPECT_TRUE(plan->ObjectGrammar().starts_with("start: tool_json_ws tool_json_object tool_json_ws\n"));
+  EXPECT_TRUE(plan->ObjectGrammar("arguments").starts_with("arguments: tool_json_ws tool_json_object tool_json_ws\n"));
+  EXPECT_EQ(plan->ObjectGrammar("arguments").find("tool_json_call"), std::string::npos);
+  for (const std::string root : {"", "UPPER", "bad-name", "x\nstart", "tool_json_value"}) {
+    ExpectError([&] { plan->ObjectGrammar(root); }, FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "root rule");
+  }
+}
+
+TEST(ToolCallPlanTest, AllowedNamesAndPreparsedAdmissionApplyForcedNameFiltering) {
+  const auto tools = Json::array({Tool("first", Json::object()), Tool("second", Json::object())}).dump();
+  auto names = ToolCallPlan::Create(tools)->AllowedNames();
+  std::sort(names.begin(), names.end());
+  EXPECT_EQ(names, (std::vector<std::string>{"first", "second"}));
+  const auto plan = ToolCallPlan::Create(tools, true, ForcedToolChoice{"second"});
+  EXPECT_EQ(plan->AllowedNames(), (std::vector<std::string>{"second"}));
+  EXPECT_NO_THROW(plan->ValidateBatch({{"keep-id", "second", "{}"}}));
+  ExpectError([&] { plan->ValidateBatch({{"keep-id", "first", "{}"}}); },
+              FOUNDRY_LOCAL_ERROR_INTERNAL, "first");
 }
 
 }  // namespace

@@ -23,7 +23,7 @@ BaseModelCatalog::~BaseModelCatalog() = default;
 
 void BaseModelCatalog::SelectDefaultVariant(Model& model, const VariantEligibility& is_eligible,
                                             bool preserve_explicit_selection) const {
-  if (type_ == CatalogType::kPublic) {
+  if (type_ != CatalogType::kLocal) {
     model.SetDefaultVariantRefresh([this] { EnsurePopulated(); });
   }
 
@@ -350,8 +350,8 @@ void BaseModelCatalog::EnsurePopulated(bool allow_refresh) const {
   // not worth the complexity to optimise.)
   std::lock_guard<std::mutex> lock(mutex_);
 
-  const bool needs_refresh = IsAuthoritativeSnapshot() || next_refresh_at_ == std::chrono::steady_clock::time_point{} ||
-                             (allow_refresh && std::chrono::steady_clock::now() >= next_refresh_at_);
+  const bool needs_refresh = RefreshOnEveryAccess() || next_refresh_at_ == std::chrono::steady_clock::time_point{} ||
+                             (allow_refresh && (lookup_only_ || std::chrono::steady_clock::now() >= next_refresh_at_));
 
   if (populated_ && !needs_refresh) {
     return;
@@ -362,8 +362,10 @@ void BaseModelCatalog::EnsurePopulated(bool allow_refresh) const {
                 fmt::format("Catalog '{}' refreshing (cache expired).", name_));
   }
 
-  auto variants = FetchModels();
-  PopulateModels(std::move(variants));
+  auto cached = !allow_refresh ? FetchLookupModels() : std::nullopt;
+  const bool lookup_only = cached.has_value();
+  PopulateModels(cached ? std::move(*cached) : FetchModels());
+  lookup_only_ = lookup_only;
   next_refresh_at_ = std::chrono::steady_clock::now() + kCacheDuration;
 }
 
@@ -382,6 +384,13 @@ std::vector<Model*> BaseModelCatalog::ListModels() const {
   }
 
   return result;
+}
+
+std::optional<ModelInfo> BaseModelCatalog::FindIndexedModelInfo(const std::string& model_id) const {
+  const auto index = GetIndex();
+  if (!index) return std::nullopt;
+  const auto found = index->id_index.find(model_id);
+  return found == index->id_index.end() ? std::nullopt : std::optional<ModelInfo>(found->second->Info());
 }
 
 Model* BaseModelCatalog::GetModel(const std::string& alias) const {
@@ -427,11 +436,13 @@ Model* BaseModelCatalog::GetModelVariant(const std::string& model_id) const {
     try {
       fetched = FetchModelsByIds({model_id});
     } catch (const std::exception& ex) {
+      if (ShouldRethrowFetchErrors()) throw;
       logger_.Log(LogLevel::Warning,
                   fmt::format("GetModelVariant: direct fetch for '{}' failed — {}",
                               model_id, ex.what()));
       return nullptr;
     } catch (...) {
+      if (ShouldRethrowFetchErrors()) throw;
       logger_.Log(LogLevel::Warning,
                   fmt::format("GetModelVariant: direct fetch for '{}' failed — unknown error",
                               model_id));
@@ -483,13 +494,22 @@ std::vector<Model*> BaseModelCatalog::GetCachedModels() const {
 
   std::lock_guard<std::mutex> lock(mutex_);
   std::vector<Model*> result;
+  std::unordered_set<std::string> seen_ids;
   for (auto& stored : models_) {
     if (!stored.active) {
       continue;
     }
 
     for (auto* variant : stored.model->Variants()) {
-      if (variant->IsCached()) {
+      if (variant->IsCached() && seen_ids.insert(variant->Id()).second) {
+        result.push_back(variant);
+      }
+    }
+  }
+
+  for (auto& container : version_query_models_) {
+    for (auto* variant : container->Variants()) {
+      if (variant->IsCached() && seen_ids.insert(variant->Id()).second) {
         result.push_back(variant);
       }
     }
@@ -503,13 +523,22 @@ std::vector<Model*> BaseModelCatalog::GetLoadedModels() const {
 
   std::lock_guard<std::mutex> lock(mutex_);
   std::vector<Model*> result;
+  std::unordered_set<std::string> seen_ids;
   for (auto& stored : models_) {
     if (!stored.active) {
       continue;
     }
 
     for (auto* variant : stored.model->Variants()) {
-      if (variant->IsLoaded()) {
+      if (variant->IsLoaded() && seen_ids.insert(variant->Id()).second) {
+        result.push_back(variant);
+      }
+    }
+  }
+
+  for (auto& container : version_query_models_) {
+    for (auto* variant : container->Variants()) {
+      if (variant->IsLoaded() && seen_ids.insert(variant->Id()).second) {
         result.push_back(variant);
       }
     }
@@ -589,11 +618,13 @@ std::vector<Model*> BaseModelCatalog::GetModelVersions(const std::string& model_
   try {
     fetched = FetchModelVersions(model_alias, variant_name, max_versions);
   } catch (const std::exception& ex) {
+    if (ShouldRethrowFetchErrors()) throw;
     logger_.Log(LogLevel::Warning,
                 fmt::format("GetModelVersions: fetch for alias '{}' failed — {}",
                             model_alias, ex.what()));
     return {};
   } catch (...) {
+    if (ShouldRethrowFetchErrors()) throw;
     logger_.Log(LogLevel::Warning,
                 fmt::format("GetModelVersions: fetch for alias '{}' failed — unknown error",
                             model_alias));

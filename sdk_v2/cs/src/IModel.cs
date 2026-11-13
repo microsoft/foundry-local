@@ -42,7 +42,8 @@ public interface IModel
     Task<string> GetPathAsync(CancellationToken? ct = null);
 
     /// <summary>
-    /// Load the model into memory if not already loaded.
+    /// Load the model into memory if not already loaded. A model must be loaded before creating
+    /// a <see cref="Session"/> for it.
     /// </summary>
     /// <param name="ct">Optional cancellation token.</param>
     Task LoadAsync(CancellationToken? ct = null);
@@ -54,7 +55,7 @@ public interface IModel
     Task RemoveFromCacheAsync(CancellationToken? ct = null);
 
     /// <summary>
-    /// Unload the model if loaded.
+    /// Unload the model if loaded. Dispose every session created from this model before unloading it.
     /// </summary>
     /// <param name="ct">Optional cancellation token.</param>
     Task UnloadAsync(CancellationToken? ct = null);

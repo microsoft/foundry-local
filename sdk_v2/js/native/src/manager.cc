@@ -254,12 +254,14 @@ Napi::Value Manager::GetCatalog(const Napi::CallbackInfo& info) {
   flCatalogType type = FOUNDRY_LOCAL_CATALOG_PUBLIC;
   if (info.Length() >= 1 && !info[0].IsUndefined()) {
     if (!info[0].IsNumber()) {
-      Napi::TypeError::New(env, "getCatalog: type must be CatalogType.Public or CatalogType.Local")
+      Napi::TypeError::New(env, "getCatalog: type must be a CatalogType")
           .ThrowAsJavaScriptException();
       return env.Undefined();
     }
-    const int value = info[0].As<Napi::Number>().Int32Value();
-    if (value != FOUNDRY_LOCAL_CATALOG_PUBLIC && value != FOUNDRY_LOCAL_CATALOG_LOCAL) {
+    const double value = info[0].As<Napi::Number>().DoubleValue();
+    if (value != static_cast<int>(FOUNDRY_LOCAL_CATALOG_PUBLIC) &&
+        value != static_cast<int>(FOUNDRY_LOCAL_CATALOG_LOCAL) &&
+        value != static_cast<int>(FOUNDRY_LOCAL_CATALOG_AZURE_REGISTRY)) {
       Napi::TypeError::New(env, "getCatalog: invalid catalog type").ThrowAsJavaScriptException();
       return env.Undefined();
     }
@@ -267,9 +269,32 @@ Napi::Value Manager::GetCatalog(const Napi::CallbackInfo& info) {
   }
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(info.This().As<Napi::Object>(), 1);
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
-    impl_->GetCatalog(type);
+    foundry_local::ICatalog* catalog;
+    if (info.Length() >= 2 && !info[1].IsUndefined()) {
+      if (!info[1].IsObject() || info[1].IsNull() || info[1].IsArray()) {
+        throw std::invalid_argument("getCatalog: options must be an object of strings");
+      }
+      foundry_local::KeyValuePairs options;
+      auto object = info[1].As<Napi::Object>();
+      auto keys = object.GetPropertyNames();
+      for (uint32_t i = 0; i < keys.Length(); ++i) {
+        auto key = keys.Get(i).As<Napi::String>().Utf8Value();
+        auto value = object.Get(key);
+        if (key.empty() || key.find('\0') != std::string::npos || !value.IsString()) {
+          throw std::invalid_argument("getCatalog: options require nonempty keys and string values");
+        }
+        auto text = value.As<Napi::String>().Utf8Value();
+        if (text.find('\0') != std::string::npos) {
+          throw std::invalid_argument("getCatalog: option values cannot contain null characters");
+        }
+        options.Set(key.c_str(), text.c_str());
+      }
+      catalog = &impl_->GetCatalog(type, options);
+    } else {
+      catalog = &impl_->GetCatalog(type);
+    }
     CatalogCtorToken token;
-    token.catalog_type = type;
+    token.catalog = catalog;
     token.manager_lifetime = impl_;
     token.disposed = disposed_;
     token.manager = std::move(owner);

@@ -100,12 +100,12 @@ bool DeclaresNonGenerativePackage(const fs::path& package_root) {
 }
 
 std::optional<NonGenerativePackageMetadata> ReadNonGenerativePackage(
-    const fs::path& package_root) {
+    const fs::path& package_root, bool allow_in_progress) {
   std::error_code ec;
   const auto canonical_root = fs::canonical(package_root, ec);
   if (ec || !fs::is_directory(canonical_root, ec)) return std::nullopt;
   if (!DeclaresNonGenerativePackage(canonical_root)) return std::nullopt;
-  if (fs::exists(canonical_root / "download.tmp")) {
+  if (!allow_in_progress && fs::exists(canonical_root / "download.tmp")) {
     throw std::invalid_argument("package contains download.tmp");
   }
 

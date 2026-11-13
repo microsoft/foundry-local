@@ -35,7 +35,7 @@ public static partial class NativeMethods
 {
     // Baseline table and payload layouts. New table-only features negotiate separately.
     public const uint ApiVersion = 2;
-    public const uint LatestApiVersion = 3;
+    public const uint LatestApiVersion = 4;
     public const string LibraryName = "foundry_local";
 
     // The first P/Invoke through this class can come from any of several entry
@@ -96,6 +96,7 @@ public enum FlCatalogType
 {
     Public = 0,
     Local = 1,
+    AzureRegistry = 2,
 }
 
 public enum FlTensorDataType
@@ -542,6 +543,10 @@ public delegate bool FlApi_ManagerIsShutdownRequestedDelegate(IntPtr manager);
 public delegate IntPtr FlApi_ManagerGetCatalogByTypeDelegate(
     IntPtr manager, FlCatalogType catalogType, out IntPtr outCatalog);
 
+[UnmanagedFunctionPointer(CallingConvention.Winapi)]
+public delegate IntPtr FlApi_ManagerGetCatalogWithOptionsDelegate(
+    IntPtr manager, FlCatalogType catalogType, IntPtr options, out IntPtr outCatalog);
+
 // --- Item API (flItemApi) delegates ---
 
 [UnmanagedFunctionPointer(CallingConvention.Winapi)]
@@ -922,6 +927,8 @@ public struct FlApi
 
     // V2
     public FlApi_ManagerGetCatalogByTypeDelegate ManagerGetCatalogByType;
+    // V3 does not extend this table. The appended V4 slot is read separately
+    // so marshalling this baseline struct remains safe on V2/V3 runtimes.
 }
 
 /// <summary>Item API table — field order MUST match flItemApi in foundry_local_c.h.</summary>

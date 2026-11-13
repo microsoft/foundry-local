@@ -82,6 +82,7 @@ typedef enum flDeviceType {
 typedef enum flCatalogType {
     FOUNDRY_LOCAL_CATALOG_PUBLIC = 0,
     FOUNDRY_LOCAL_CATALOG_LOCAL = 1,
+    FOUNDRY_LOCAL_CATALOG_AZURE_REGISTRY = 2,
 } flCatalogType;
 
 typedef enum flTensorDataType {
@@ -411,6 +412,7 @@ typedef struct flApi {
     flStatusPtr (*Manager_Shutdown)(flManager* manager);
     _Bool (*Manager_IsShutdownRequested)(const flManager* manager);
     flStatusPtr (*Manager_GetCatalogByType)(const flManager* manager, flCatalogType catalog_type, flCatalog** out_catalog);
+    flStatusPtr (*Manager_GetCatalogWithOptions)(const flManager* manager, flCatalogType catalog_type, const flKeyValuePairs* options, flCatalog** out_catalog);
 } flApi;
 
 /* -----------------------------------------------------------------------

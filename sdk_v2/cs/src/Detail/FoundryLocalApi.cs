@@ -31,6 +31,7 @@ internal static class Api
     internal static FlInferenceApi Inference;
     internal static FlConfigurationApi Config;
     internal static FlConfig_SetUseSharedHostDelegate? SetUseSharedHost;
+    internal static FlApi_ManagerGetCatalogWithOptionsDelegate? GetCatalogWithOptions;
     internal static FlCatalogApi Catalog;
     internal static FlModelApi Model;
     private static volatile bool _initialized;
@@ -50,13 +51,7 @@ internal static class Api
                 return;
             }
 
-            var version = NativeMethods.LatestApiVersion;
-            var apiPtr = NativeMethods.FoundryLocalGetApi(version);
-            if (apiPtr == IntPtr.Zero)
-            {
-                version = NativeMethods.ApiVersion;
-                apiPtr = NativeMethods.FoundryLocalGetApi(version);
-            }
+            var apiPtr = NegotiateApi(NativeMethods.FoundryLocalGetApi, out var version);
 
             if (apiPtr == IntPtr.Zero)
             {
@@ -65,6 +60,7 @@ internal static class Api
             }
 
             Root = Marshal.PtrToStructure<FlApi>(apiPtr);
+            GetCatalogWithOptions = ReadCatalogWithOptions(apiPtr, version);
 
             var p = Root.GetItemApi();
             if (p != IntPtr.Zero)
@@ -99,6 +95,36 @@ internal static class Api
 
             _initialized = true;
         }
+    }
+
+    internal static IntPtr NegotiateApi(Func<uint, IntPtr> getApi, out uint version)
+    {
+        for (version = NativeMethods.LatestApiVersion; version >= NativeMethods.ApiVersion; version--)
+        {
+            var ptr = getApi(version);
+            if (ptr != IntPtr.Zero)
+            {
+                return ptr;
+            }
+        }
+
+        return IntPtr.Zero;
+    }
+
+    internal static FlApi_ManagerGetCatalogWithOptionsDelegate? ReadCatalogWithOptions(IntPtr rootApi, uint version)
+    {
+        if (version < 4)
+        {
+            return null;
+        }
+
+        var getter = Marshal.ReadIntPtr(rootApi, Marshal.SizeOf<FlApi>());
+        if (getter == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("The native runtime returned an incomplete v4 catalog API.");
+        }
+
+        return Marshal.GetDelegateForFunctionPointer<FlApi_ManagerGetCatalogWithOptionsDelegate>(getter);
     }
 
     internal static FlConfig_SetUseSharedHostDelegate? ReadSharedHostSetting(IntPtr configApi, uint version)
@@ -305,9 +331,68 @@ public sealed class Manager : IDisposable
     }
 
     public Catalog GetCatalog(FlCatalogType catalogType = FlCatalogType.Public)
+        => GetCatalog(catalogType, null);
+
+    public Catalog GetCatalog(FlCatalogType catalogType, IReadOnlyDictionary<string, string>? options)
     {
-        var status = Api.Root.ManagerGetCatalogByType(Ptr, catalogType, out var catalogPtr);
+        if (catalogType is not FlCatalogType.Public and not FlCatalogType.Local and not FlCatalogType.AzureRegistry)
+        {
+            throw new ArgumentOutOfRangeException(nameof(catalogType), catalogType, "Unknown catalog type.");
+        }
+
+        if (options != null)
+        {
+            foreach (var pair in options)
+            {
+                Throw.IfNull(pair.Key);
+                Throw.IfNull(pair.Value);
+                if (pair.Key.Length == 0)
+                {
+                    throw new ArgumentException("Catalog option keys must not be empty.", nameof(options));
+                }
+                Throw.IfContainsEmbeddedNul(pair.Key);
+                Throw.IfContainsEmbeddedNul(pair.Value);
+            }
+        }
+
+        IntPtr status;
+        IntPtr catalogPtr;
+        if (catalogType == FlCatalogType.AzureRegistry || options?.Count > 0)
+        {
+            var getCatalog = Api.GetCatalogWithOptions
+                ?? throw new FoundryLocalException("Catalog options require native API version 4 or newer.");
+            Api.Root.CreateKeyValuePairs(out var pairs);
+            if (pairs == IntPtr.Zero)
+            {
+                throw new FoundryLocalException("Failed to allocate catalog options.");
+            }
+
+            try
+            {
+                if (options != null)
+                {
+                    foreach (var pair in options)
+                    {
+                        Api.Root.AddKeyValuePair(pairs, pair.Key, pair.Value);
+                    }
+                }
+                status = getCatalog(Ptr, catalogType, pairs, out catalogPtr);
+            }
+            finally
+            {
+                Api.Root.KeyValuePairsRelease(pairs);
+            }
+        }
+        else
+        {
+            status = Api.Root.ManagerGetCatalogByType(Ptr, catalogType, out catalogPtr);
+        }
+
         Api.CheckStatus(status);
+        if (catalogPtr == IntPtr.Zero)
+        {
+            throw new FoundryLocalException($"GetCatalog returned no {catalogType} catalog.");
+        }
         return new Catalog(catalogPtr);
     }
 

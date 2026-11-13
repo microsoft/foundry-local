@@ -11,6 +11,7 @@ export enum DeviceType {
 export enum CatalogType {
   Public = 0,
   Local = 1,
+  AzureRegistry = 2,
 }
 
 /**

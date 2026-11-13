@@ -126,9 +126,43 @@ stages:
     - checkout: self
       clean: true
     - template: fetch-models-from-artifacts-feed.yml
+    - template: fetch-models-from-artifacts-feed.yml
+      parameters:
+        destinationPath: '$(Build.SourcesDirectory)/test-data-shared'
+        modelSet: non-generative
+    - bash: |
+        set -euo pipefail
+        root="$(Build.SourcesDirectory)/test-data-shared/Microsoft"
+        for model in \
+          clm-v0.1-8b-mixed-generic-cpu-1 \
+          kev-0.8b-mixed-generic-cpu-1; do
+          path="$root/$model"
+          if [[ ! -d "$path" ]]; then
+            echo "Required C# predictive integration model is missing: $path" >&2
+            exit 1
+          fi
+        done
+      displayName: 'Verify C# predictive integration models'
     - template: steps-test-cs.yml
       parameters:
         flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
+    - task: PowerShell@2
+      displayName: 'Run required C# predictive real-model integration'
+      inputs:
+        targetType: inline
+        pwsh: true
+        script: |
+          $proj = "$(Build.SourcesDirectory)/sdk_v2/cs/test/FoundryLocal.Tests/Microsoft.AI.Foundry.Local.Tests.csproj"
+          dotnet test $proj `
+            --no-build --configuration Release `
+            --framework net8.0 `
+            -- `
+            --treenode-filter "/*/*/NonGenerativeIntegrationTests/*"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      env:
+        TF_BUILD: 'true'
+        FOUNDRY_TEST_DATA_DIR: '$(Build.SourcesDirectory)/test-data-shared'
+        FOUNDRY_REQUIRE_NON_GENERATIVE_MODELS: 'true'
 
 # ====================================================================
 # Test — Linux ARM64

@@ -6,6 +6,7 @@
 #include "hosting/bootstrap_descriptor.h"
 #include "hosting/host_profile.h"
 #include "hosting/host_coordinator.h"
+#include "hosting/host_lifetime.h"
 #include "hosting/host_process.h"
 #include "hosting/runtime_assets.h"
 #include "hosting/sdk_connection.h"
@@ -40,6 +41,10 @@
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <libproc.h>
+#include <sys/proc_info.h>
+#endif
 extern char** environ;
 #endif
 
@@ -617,13 +622,37 @@ TEST_F(BootstrapDescriptorTest, CoordinatorStartsOnceSharesOwnersReconnectsAndRe
 #endif
   const auto record = first.Store().Read();
   ASSERT_TRUE(record && record->process);
+#ifdef __APPLE__
+  proc_bsdinfo process_info{};
+  constexpr auto process_info_size = static_cast<int>(sizeof(process_info));
+  const auto bytes = proc_pidinfo(static_cast<int>(record->process->pid), PROC_PIDTBSDINFO, 0, &process_info,
+                                  process_info_size);
+  ASSERT_EQ(bytes, process_info_size);
+  EXPECT_NE(process_info.pbi_flags & PROC_FLAG_EXEC, 0u) << "The detached host must exec before loading runtime libraries";
+  {
+    const auto startup_lock = first.Store().Lock(Clock::now() + 1s);
+    ASSERT_TRUE(startup_lock) << "The resumed host must release its startup lease after publishing its identity";
+  }
+#endif
   ProcessWatch predecessor(*record->process);
   EXPECT_EQ(owner_a->Call(Operation::Observe, Json::object()).at("owners"), 2);
   owner_a->Close();
-  EXPECT_EQ(owner_b->Call(Operation::Observe, Json::object()).at("state"), 1);
+  // Closing one transport does not synchronize the other peer's server-side owner removal.
+  auto remaining = owner_b->Call(Operation::Observe, Json::object());
+  const auto removal_deadline = Clock::now() + 5s;
+  while (remaining.at("owners") != 1 && Clock::now() < removal_deadline) {
+    std::this_thread::sleep_for(10ms);
+    remaining = owner_b->Call(Operation::Observe, Json::object());
+  }
+
+  ASSERT_EQ(remaining.at("owners"), 1);
+  EXPECT_EQ(remaining.at("state"), static_cast<int>(HostLifetime::State::kAccepting));
   owner_b->Close();
   reconnected = first.Connect(true);
-  EXPECT_EQ(first.Store().Read()->process, record->process);
+  ASSERT_TRUE(reconnected);
+  const auto reconnected_record = first.Store().Read();
+  ASSERT_TRUE(reconnected_record && reconnected_record->process);
+  EXPECT_EQ(reconnected_record->process, record->process);
   EXPECT_FALSE(predecessor.IsExited());
   reconnected->Close();
   ASSERT_TRUE(predecessor.WaitUntil(Clock::now() + 15s));
