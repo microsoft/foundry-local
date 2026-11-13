@@ -7,7 +7,7 @@
 #include "utils.h"
 
 #include <fmt/format.h>
-#include <onnxruntime_c_api.h>
+#include <onnxruntime_cxx_api.h>
 
 #include <cstdint>
 #include <filesystem>
@@ -107,11 +107,9 @@ namespace fl {
 BuiltInWebGpuEpBootstrapper::BuiltInWebGpuEpBootstrapper(const OrtApi& ort_api, const OrtEnv& ort_env, ILogger& logger) {
   const OrtEpDevice* const* devices = nullptr;
   size_t count = 0;
-  OrtStatus* status = ort_api.GetEpDevices(&ort_env, &devices, &count);
-  if (status != nullptr) {
-    const std::string message = ort_api.GetErrorMessage(status);
-    ort_api.ReleaseStatus(status);
-    logger.Log(LogLevel::Warning, "WebGPU EP: failed to query built-in provider: " + message);
+  Ort::Status status(ort_api.GetEpDevices(&ort_env, &devices, &count));
+  if (!status.IsOK()) {
+    logger.Log(LogLevel::Warning, "WebGPU EP: failed to query built-in provider: " + status.GetErrorMessage());
     return;
   }
 
