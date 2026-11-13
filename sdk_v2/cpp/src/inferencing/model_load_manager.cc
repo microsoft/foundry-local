@@ -547,10 +547,11 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
   }
 
   if (resolved_ep == ExecutionProvider::kDefault) {
-    // Auto-select EP for generic-gpu models: DML models are compatible with
-    // CUDA and WebGPU, so try those in order when available.
+    // OGA overrides only the decoder provider, so avoid promoting multimodal models to CUDA while component sessions
+    // remain configured for another device. Text-only models retain the CUDA preference.
     if (id_str.find("generic-gpu") != std::string::npos) {
-      if (HasEP("CUDAExecutionProvider")) {
+      const bool is_multimodal = genai_config.model && genai_config.model->IsMultiModal();
+      if (!is_multimodal && HasEP("CUDAExecutionProvider")) {
         resolved_ep = ExecutionProvider::kCUDA;
         logger_.Log(LogLevel::Information, fmt::format("using CUDA EP for model: {}", id_str));
       } else if (HasEP("WebGpuExecutionProvider")) {
