@@ -15,6 +15,7 @@
 #include "catalog.h"
 #include "catalog/azure_model_catalog.h"
 #include "catalog/local_model_catalog.h"
+#include "catalog/azure_registry_catalog.h"
 #include "download/download_manager.h"
 #if FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS
 #include "ep_detection/cuda_ep_bootstrapper.h"
@@ -479,6 +480,7 @@ Manager::~Manager() {
   download_manager_.reset();
   local_catalog_.reset();
   public_catalog_.reset();
+  azure_registry_catalogs_.clear();
   telemetry_.reset();
 
   for (auto it = oga_registered_ep_libraries_.rbegin();
@@ -594,9 +596,40 @@ ICatalog& Manager::GetCatalog(CatalogType type) {
       return *public_catalog_;
     case CatalogType::kLocal:
       return *local_catalog_;
+    case CatalogType::kAzureRegistry:
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+               "Azure Registry catalog requires option 'name'; call GetCatalog(type, options)");
     default:
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
   }
+}
+
+ICatalog& Manager::GetCatalog(CatalogType type, const KeyValuePairs& options) {
+  if (type != CatalogType::kAzureRegistry) {
+    if (!options.empty()) FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "this catalog does not accept options");
+    return GetCatalog(type);
+  }
+  const auto settings = AzureRegistryCatalog::NormalizeOptions(options);
+  std::lock_guard lock(azure_registry_catalogs_mutex_);
+  auto& catalog = azure_registry_catalogs_[settings.Entries()];
+  if (!catalog) {
+    catalog = std::make_unique<AzureRegistryCatalog>(settings.Find("name"), config_, *ep_detector_, *model_load_manager_,
+        *logger_, *telemetry_, nullptr, settings.Find("credential"),
+        IsAdditionalOptionEnabled(config_, "AzureRegistryModelCacheOnly"));
+    if (catalog_runtime_devices_) {
+      static_cast<RemoteModelCatalog&>(*catalog).SetRuntimeDevices(*catalog_runtime_devices_);
+    }
+  }
+  return *catalog;
+}
+
+void Manager::SetCatalogRuntimeDevices(std::map<std::string, std::vector<std::string>> devices) {
+  std::lock_guard lock(azure_registry_catalogs_mutex_);
+  static_cast<RemoteModelCatalog&>(*public_catalog_).SetRuntimeDevices(devices);
+  for (auto& [registry, catalog] : azure_registry_catalogs_) {
+    static_cast<RemoteModelCatalog&>(*catalog).SetRuntimeDevices(devices);
+  }
+  catalog_runtime_devices_ = std::move(devices);
 }
 
 void Manager::StartWebService() {
@@ -762,6 +795,8 @@ EpDownloadResult Manager::DownloadAndRegisterEps(const std::vector<std::string>*
   // another EP failed — so the next catalog query re-fetches with the updated filters.
   if (!result.registered_eps.empty()) {
     public_catalog_->InvalidateCache();
+    std::lock_guard lock(azure_registry_catalogs_mutex_);
+    for (auto& [registry, catalog] : azure_registry_catalogs_) catalog->InvalidateCache();
   }
 
   // Warn if any EPs failed to download or register, but keep going: CPU is always available and

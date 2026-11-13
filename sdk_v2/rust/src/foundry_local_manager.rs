@@ -15,7 +15,7 @@ use crate::detail::api::Api;
 use crate::detail::manager::{EpProgressCallback, NativeManager};
 use crate::detail::task::spawn_blocking;
 use crate::error::{FoundryLocalError, Result};
-use crate::types::{CatalogType, EpDownloadResult, EpInfo};
+use crate::types::{CatalogOptions, CatalogType, EpDownloadResult, EpInfo};
 
 /// Process-wide bookkeeping for the manager singleton.
 ///
@@ -241,6 +241,28 @@ impl FoundryLocalManager {
     /// Get a catalog by source type. [`CatalogType::Public`] is equivalent to [`Self::catalog`].
     pub fn get_catalog(&self, catalog_type: CatalogType) -> Result<Catalog> {
         let ptr = self.native.catalog_ptr_by_type(catalog_type.as_native())?;
+        Catalog::new(
+            self.native.api(),
+            ptr,
+            Arc::clone(&self.native),
+            catalog_type,
+        )
+    }
+
+    /// Select a catalog with source-specific settings (requires native API v4).
+    ///
+    /// Azure Registry requires `name` and accepts `credential` (`azure_cli`, the
+    /// default, or `workload_identity`). Public and local catalogs accept no settings;
+    /// empty options preserve their legacy API route, including on v2/v3 runtimes.
+    /// Catalog identity, model caching and refresh remain managed by the native core.
+    pub fn get_catalog_with_options(
+        &self,
+        catalog_type: CatalogType,
+        options: &CatalogOptions,
+    ) -> Result<Catalog> {
+        let ptr = self
+            .native
+            .catalog_ptr_with_options(catalog_type.as_native(), options)?;
         Catalog::new(
             self.native.api(),
             ptr,

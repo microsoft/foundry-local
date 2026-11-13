@@ -1289,6 +1289,70 @@ TEST_F(ModelCacheRemovalTest, RemovesCorruptDownloadAndCanDownloadAgain) {
   EXPECT_EQ(ReadFile(root_ / "v3" / "weights.onnx"), expected_content);
 }
 
+TEST_F(ModelCacheRemovalTest, RetainedHandleRetriesAfterAnotherHandleRemovesAndDownloadIsCanceled) {
+  auto blobs = std::make_unique<MockBlobDownloader>();
+  blobs->download_content = R"({"model":{"type":"phi3"}})";
+  blobs->blobs_to_return = {{"genai_config.json", static_cast<int64_t>(blobs->download_content.size())}};
+  DownloadManager manager(cache_.string(), "", 1, services_.logger, services_.telemetry,
+                          true, nullptr, std::move(blobs),
+                          [](const ModelInfo&) { return ModelContainer{"https://storage.test/container?sig=mock", "", ""}; });
+  info_.uri = "azureml://registries/test/models/test-model/versions/1";
+  info_.task = "coding";
+  fs::create_directories(root_);
+  WriteInferenceModelJson(root_.string(), info_.model_id, {});
+  std::ofstream(root_ / "genai_config.json") << R"({"model":{"type":"phi3"}})";
+  auto exact = Model::FromModelInfo(info_, root_.string(), manager, services_.model_load_manager);
+  auto alias = Model::FromModelInfo(info_, root_.string(), manager, services_.model_load_manager);
+  alias.RemoveFromCache();
+  EXPECT_THROW(exact.Download([](float) { return 1; }), Exception);
+  EXPECT_TRUE(fs::exists(root_ / "download.tmp"));
+  EXPECT_FALSE(exact.IsCached());
+  EXPECT_FALSE(manager.IsModelCached(info_));
+  std::vector<float> progress;
+  ASSERT_NO_THROW(exact.Download([&](float percent) {
+    progress.push_back(percent);
+    return 0;
+  }));
+  ASSERT_FALSE(progress.empty());
+  EXPECT_EQ(progress.front(), 0.0f);
+  EXPECT_EQ(progress.back(), 100.0f);
+  EXPECT_TRUE(exact.IsCached());
+  EXPECT_TRUE(manager.IsModelCached(info_));
+  EXPECT_TRUE(fs::exists(root_ / "genai_config.json"));
+  EXPECT_FALSE(fs::exists(root_ / "download.tmp"));
+}
+
+TEST(DownloadManagerTest, RegistryPackagesRequireConfigurationForEverySupportedTask) {
+  for (const auto* task : {"chat-completion", "coding", "vision-language-chat",
+                           "automatic-speech-recognition", "embeddings", "text-ranking", "typed-decision"}) {
+    SCOPED_TRACE(task);
+    auto cache = TempPath::CreateTempDir();
+    auto blobs = std::make_unique<MockBlobDownloader>();
+    blobs->blobs_to_return = {{"weights.onnx", 100}};
+    DownloadManager manager(cache.string(), "", 1, fl::test::NullLog(), fl::test::TestTelemetrySink(),
+                            true, nullptr, std::move(blobs),
+                            [](const ModelInfo&) { return ModelContainer{"https://storage.test/container?sig=mock", "", ""}; });
+    ModelInfo info;
+    info.model_id = "model:1";
+    info.uri = "azureml://registries/test/models/model/versions/1";
+    info.task = task;
+    EXPECT_THROW(manager.DownloadModel(info), std::exception);
+    EXPECT_FALSE(manager.IsModelCached(info));
+    EXPECT_TRUE(fs::exists(cache.path() / "model-1" / "download.tmp"));
+    EXPECT_FALSE(fs::exists(cache.path() / "model-1" / "inference_model.json"));
+  }
+}
+
+TEST(DownloadManagerTest, RevisionCompletionHonorsParentDownloadMarker) {
+  auto cache = TempPath::CreateTempDir();
+  const auto revision = cache.path() / "v3";
+  fs::create_directories(revision);
+  WriteInferenceModelJson(revision.string(), "model:1", {});
+  EXPECT_TRUE(DownloadManager::IsCompletedModelPath(revision.string()));
+  std::ofstream(cache.path() / "download.tmp");
+  EXPECT_FALSE(DownloadManager::IsCompletedModelPath(revision.string()));
+}
+
 TEST_F(ModelCacheRemovalTest, PreservesScannerDiscoveredNonstandardPath) {
   auto scanned_path = fs::path(cache_.string()) / "imported-model";
   fs::create_directories(scanned_path);
@@ -1452,6 +1516,8 @@ TEST_F(ModelCacheRemovalTest, RechecksNonstandardOwnershipAfterTakingParentLock)
 
 TEST_F(ModelCacheRemovalTest, RejectsRemovalDuringCachedDownloadCallbacksAndReleasesGuardOnFailure) {
   fs::create_directories(root_);
+  WriteInferenceModelJson(root_.string(), info_.model_id, {});
+  std::ofstream(root_ / "genai_config.json") << "{}";
   std::ofstream(root_ / "weights.onnx") << "preserve";
   auto model = MakeModel(root_.string());
 
@@ -1979,11 +2045,9 @@ TEST(DownloadManagerTest, ConcurrentDownloadsOfSameModelSerialize) {
   }
 }
 
-// All model downloads serialize through the process-wide download_mutex_, even
-// for two *different* models. A concurrency probe records the peak number of
-// downloads running at once; correct serialization keeps that peak at 1 (the
-// second download can't enter until the first releases the mutex).
-TEST(DownloadManagerTest, ModelDownloadsSerializeUnderGlobalLock) {
+// Downloads through one manager serialize even for two different models. The
+// probe verifies that they never overlap.
+TEST(DownloadManagerTest, DifferentModelDownloadsSerializeWithinManager) {
   auto tmpdir = TempPath::CreateTempDir();
 
   auto registry = std::make_unique<ModelRegistryClient>(
@@ -1993,8 +2057,8 @@ TEST(DownloadManagerTest, ModelDownloadsSerializeUnderGlobalLock) {
             R"({"blobSasUri": "https://storage.blob.core.windows.net/c?sig=test"})");
       });
 
-  // Tracks the peak number of downloads running at once. The global download
-  // mutex must keep this at 1 even for different models.
+  // Tracks the peak number of downloads running at once. The manager's
+  // download mutex must keep this at 1 even for different models.
   class ConcurrencyProbe : public IBlobDownloader {
    public:
     std::atomic<int> active{0};
@@ -2064,7 +2128,23 @@ TEST(DownloadManagerTest, ModelDownloadsSerializeUnderGlobalLock) {
 
   EXPECT_EQ(exceptions.load(), 0);
   EXPECT_EQ(probe_raw->peak.load(), 1)
-      << "The global download mutex must serialize all model downloads, even for different models.";
+      << "The manager download mutex must serialize all model downloads, even for different models.";
+}
+
+TEST(DownloadManagerTest, RegistryPackageWithoutFilesIsNotMarkedComplete) {
+  auto tmpdir = TempPath::CreateTempDir();
+  DownloadManager manager(tmpdir.string(), "", 1, fl::test::NullLog(), fl::test::TestTelemetrySink(), true, nullptr,
+                          std::make_unique<MockBlobDownloader>(), [](const ModelInfo&) {
+                            return ModelContainer{"https://storage.blob.core.windows.net/c?sig=test", "", "missing/"};
+                          });
+  ModelInfo info;
+  info.model_id = "empty-model:1";
+  info.name = "empty-model";
+  info.task = "text-ranking";
+  info.uri = "azureml://registries/test/models/empty-model/versions/1";
+
+  EXPECT_THROW(manager.DownloadModel(info), fl::Exception);
+  EXPECT_FALSE(manager.IsModelCached(info));
 }
 
 // Exercise the cross-process file-lock branch of DownloadModel that

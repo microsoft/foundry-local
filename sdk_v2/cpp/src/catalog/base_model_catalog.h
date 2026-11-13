@@ -10,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -57,6 +58,9 @@ class BaseModelCatalog : public ICatalog {
   /// Append a newly registered active model. Inactive tombstones are never revived.
   Model* AppendActiveModel(Model model);
 
+  /// Read already-indexed immutable metadata without fetching or exposing a refresh-owned model handle.
+  std::optional<ModelInfo> FindIndexedModelInfo(const std::string& model_id) const;
+
   /// Remove a model from catalog lookup while retaining its storage for pointer safety.
   bool RetireModel(const std::string& alias_or_model_id);
 
@@ -67,6 +71,8 @@ class BaseModelCatalog : public ICatalog {
   /// Returns the full variant list. Base class handles caching and indexing.
   /// Maps to C# FetchModelInfoAsync.
   virtual std::vector<Model> FetchModels() const = 0;
+
+  virtual std::optional<std::vector<Model>> FetchLookupModels() const { return std::nullopt; }
 
   /// Derived classes implement this to fetch all versions of a model from the
   /// underlying catalog source, bypassing the "latest only" filter.
@@ -93,6 +99,8 @@ class BaseModelCatalog : public ICatalog {
   /// Authoritative catalogs reconcile removals and replacements from every fetched snapshot.
   virtual bool IsAuthoritativeSnapshot() const { return false; }
 
+  virtual bool RefreshOnEveryAccess() const { return IsAuthoritativeSnapshot(); }
+
   /// Reconcile a retained ID absent from metadata against the cache inventory collected by FetchModels().
   /// Called under the catalog mutex; the default leaves source-specific cache state unchanged.
   virtual void RefreshRetainedVariantCache(Model&) const {}
@@ -100,6 +108,8 @@ class BaseModelCatalog : public ICatalog {
   /// Each selection pass uses one provider snapshot; an empty predicate makes every variant eligible.
   using VariantEligibility = std::function<bool(const Model&)>;
   virtual VariantEligibility MakeVariantEligibility() const { return {}; }
+
+  virtual bool ShouldRethrowFetchErrors() const { return false; }
 
  private:
   /// Lookup indices into the stable models_ storage.
@@ -127,6 +137,7 @@ class BaseModelCatalog : public ICatalog {
   std::shared_ptr<const ModelIndex> GetIndex() const;
 
   mutable bool populated_ = false;
+  mutable bool lookup_only_ = false;
   mutable std::mutex mutex_;
   mutable std::chrono::steady_clock::time_point next_refresh_at_{};
 
@@ -148,9 +159,11 @@ class BaseModelCatalog : public ICatalog {
   /// Builds a complete new ModelIndex locally, then atomically swaps it into index_.
   void RebuildIndex() const;
 
+ protected:
   /// Thread-safe access: ensures catalog is populated, refreshes if allowed and stale.
   void EnsurePopulated(bool allow_refresh = false) const;
 
+ private:
   /// Append-only storage for GetModelVersions query results. Each call appends a new
   /// container, so all previously returned Model* pointers remain valid for the catalog's
   /// lifetime. These models are intentionally not integrated into the main lookup indices.

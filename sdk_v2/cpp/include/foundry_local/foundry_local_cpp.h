@@ -31,6 +31,8 @@
 #include <cstdlib>
 #include <functional>
 #include <memory>
+#include <map>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -65,7 +67,12 @@ inline const char* Version() noexcept;
 namespace detail {
 
 inline uint32_t api_version() {
-  static const uint32_t version = FoundryLocalGetApi(FOUNDRY_LOCAL_API_VERSION) ? FOUNDRY_LOCAL_API_VERSION : 2;
+  static const uint32_t version = [] {
+    for (uint32_t candidate = FOUNDRY_LOCAL_API_VERSION; candidate >= 2; --candidate) {
+      if (FoundryLocalGetApi(candidate)) return candidate;
+    }
+    throw std::runtime_error("Foundry Local runtime does not support API versions 4, 3 or 2");
+  }();
   return version;
 }
 
@@ -895,6 +902,8 @@ class Manager {
 
   /// Get a manager-owned catalog for querying models.
   ICatalog& GetCatalog(flCatalogType type = FOUNDRY_LOCAL_CATALOG_PUBLIC) const;
+  /// Azure Registry accepts "name" (required) and "credential" (azure_cli or workload_identity).
+  ICatalog& GetCatalog(flCatalogType type, const KeyValuePairs& options) const;
 
   /// Start the embedded web service.
   void StartWebService();
@@ -932,6 +941,11 @@ class Manager {
 
     mutable Catalog public_;
     mutable Catalog local_;
+    struct Configured {
+      std::mutex mutex;
+      std::map<flCatalog*, std::unique_ptr<Catalog>> catalogs;
+    };
+    std::shared_ptr<Configured> configured_ = std::make_shared<Configured>();
   };
 
   detail::Base<flManager> handle_;

@@ -40,10 +40,6 @@ namespace {
 /// The expected config filename inside a model directory.
 constexpr const char* kGenAIConfigFileName = "genai_config.json";
 
-std::string GenerativeRuntimeKey(std::string_view model_id) {
-  return "generative|" + std::string(model_id);
-}
-
 class ManagedGenerativeRuntime final : public ManagedModelRuntime {
  public:
   explicit ManagedGenerativeRuntime(
@@ -117,6 +113,11 @@ std::pair<std::string, std::string> SelectionIdentity(std::string_view model_id,
   path = ToLower(std::move(path));
 #endif
   return {std::string(model_id), std::move(path)};
+}
+
+std::string GenerativeRuntimeKey(std::string_view model_id, std::string_view model_path) {
+  const auto [id, path] = SelectionIdentity(model_id, model_path);
+  return "generative|" + std::to_string(id.size()) + "|" + id + "|" + path;
 }
 
 }  // namespace
@@ -511,17 +512,11 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
 
   const auto path_str = NormalizeModelPath(model_path);
   std::string id_str(model_id);
-  const auto runtime_key = GenerativeRuntimeKey(id_str);
+  const auto runtime_key = GenerativeRuntimeKey(id_str, path_str);
   std::lock_guard<std::mutex> lock(mutex_);
 
   auto it = loaded_runtimes_.find(runtime_key);
   if (it != loaded_runtimes_.end()) {
-    if (!ModelPathsEqual(path_str, it->second->ModelPath())) {
-      FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model '", id_str,
-                       "' is already loaded from a different path: ", it->second->ModelPath(),
-                       "; requested path: ", path_str);
-    }
-
     return {LoadStatus::kModelAlreadyLoaded, it->second->GenAI()};
   }
 
@@ -623,17 +618,13 @@ bool ModelLoadManager::UnloadModel(std::string_view model_id, const std::string*
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::string id_str(model_id);
-  auto it = loaded_runtimes_.find(GenerativeRuntimeKey(id_str));
-  if (it == loaded_runtimes_.end()) {
+  auto* loaded = FindLoadedModelLocked(model_id, normalized_model_path);
+  if (!loaded) {
     logger_.Log(LogLevel::Information, fmt::format("model was not loaded: {}", id_str));
     return false;
   }
 
-  if (normalized_model_path && !ModelPathsEqual(*normalized_model_path, it->second->ModelPath())) {
-    logger_.Log(LogLevel::Information,
-                fmt::format("model '{}' is loaded from a different path", id_str));
-    return false;
-  }
+  auto it = loaded_runtimes_.find(GenerativeRuntimeKey(model_id, loaded->ModelPath()));
 
   // Refuse to unload while sessions hold the instance — the OGA objects must outlive
   // every session that referenced them. Asking to unload an in-use model is a caller
@@ -724,7 +715,7 @@ void ModelLoadManager::UnloadAll(std::chrono::milliseconds timeout) {
     }
 
     try {
-      UnloadModel(id);
+      UnloadModel(id, runtime->ModelPath());
     } catch (const std::exception& ex) {
       // A new session attached between our refcount poll and the lock acquisition inside
       // UnloadModel. Log and move on — IsShutdownRequested-gated callers shouldn't be
@@ -835,14 +826,20 @@ GenAIModelInstance* ModelLoadManager::GetLoadedModel(std::string_view model_id,
 
 GenAIModelInstance* ModelLoadManager::FindLoadedModelLocked(std::string_view model_id,
                                                             const std::string* normalized_model_path) {
-  std::string id_str(model_id);
-  auto it = loaded_runtimes_.find(GenerativeRuntimeKey(id_str));
-  if (it != loaded_runtimes_.end() &&
-      (!normalized_model_path || ModelPathsEqual(*normalized_model_path, it->second->ModelPath()))) {
-    return it->second->GenAI();
+  if (normalized_model_path) {
+    const auto it = loaded_runtimes_.find(GenerativeRuntimeKey(model_id, *normalized_model_path));
+    return it == loaded_runtimes_.end() ? nullptr : it->second->GenAI();
   }
-
-  return nullptr;
+  GenAIModelInstance* found = nullptr;
+  for (const auto& [key, runtime] : loaded_runtimes_) {
+    if (runtime->GenAI() && runtime->ModelId() == model_id) {
+      if (found) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model ID has multiple loaded artifacts; specify its path: ", model_id);
+      }
+      found = runtime->GenAI();
+    }
+  }
+  return found;
 }
 
 std::optional<ModelLoadManager::LoadedModelState> ModelLoadManager::GetLoadedModelState(

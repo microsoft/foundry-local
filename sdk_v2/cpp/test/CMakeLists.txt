@@ -15,6 +15,9 @@ if(NOT CMAKE_CROSSCOMPILING AND NOT ANDROID AND NOT IOS)
     target_compile_options(cpp-api-v2-compatibility PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
     set_target_properties(cpp-api-v2-compatibility PROPERTIES CXX_STANDARD 17)
     add_test(NAME cpp-api-v2-compatibility COMMAND cpp-api-v2-compatibility)
+    add_test(NAME cpp-api-v3-compatibility COMMAND cpp-api-v2-compatibility 3)
+    add_test(NAME cpp-api-v4-compatibility COMMAND cpp-api-v2-compatibility 4)
+    add_test(NAME cpp-api-unsupported-compatibility COMMAND cpp-api-v2-compatibility 0)
 endif()
 
 if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux" OR
@@ -96,6 +99,7 @@ add_executable(foundry_local_tests
     internal_api/c_api_test.cc
     internal_api/callback_handler_test.cc
     internal_api/catalog_cache_test.cc
+    internal_api/azure_registry_catalog_test.cc
     internal_api/chat/chat_generator_test.cc
     internal_api/chat/reasoning_stream_splitter_test.cc
     internal_api/chat/chat_session_test.cc

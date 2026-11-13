@@ -132,13 +132,14 @@ class ModelLoadManager {
   /// @throws  FoundryLocalException(INVALID_USAGE) if the model still has live sessions.
   ///          Drop the sessions before unloading — using a model while unloading it is a
   ///          contract violation.
+  ///          An ID shared by multiple loaded artifacts requires the path overload.
   bool UnloadModel(std::string_view model_id);
 
   /// Unload only when the loaded model's normalized path matches `model_path`.
   /// Returns false when the ID is absent or belongs to a different path.
   bool UnloadModel(std::string_view model_id, std::string_view model_path);
 
-  /// Get a loaded model by ID. Returns nullptr if not loaded.
+  /// Get a loaded model by ID. Returns nullptr if not loaded; throws if multiple artifacts share the ID.
   /// The returned pointer is valid until UnloadModel is called for this model_id.
   GenAIModelInstance* GetLoadedModel(std::string_view model_id);
 
