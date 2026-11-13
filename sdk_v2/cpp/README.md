@@ -23,6 +23,8 @@ and streaming across languages, see [Inference with the Foundry Local SDK](../IN
 For Azure ML registries, see the short [registry catalog example](examples/azure_registry_catalog/main.cc).
 Run `az login` first; registry access requires native API v4 or newer and defaults to `azure_cli`
 credentials (`workload_identity` is also supported).
+The example downloads and loads `qwen2.5-0.5b` from `azureml-dev`, sends one chat prompt,
+and unloads it. Review the model license before running; adjust the registry/model names as needed.
 
 - **Model catalog** -- discover model aliases, variants, cached models, and loaded models
 - **Model lifecycle** -- download, load, unload, remove, and register local model assets

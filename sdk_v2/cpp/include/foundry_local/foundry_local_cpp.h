@@ -71,7 +71,7 @@ inline uint32_t api_version() {
     for (uint32_t candidate = FOUNDRY_LOCAL_API_VERSION; candidate >= 2; --candidate) {
       if (FoundryLocalGetApi(candidate)) return candidate;
     }
-    return uint32_t{0};
+    throw std::runtime_error("Foundry Local runtime does not support API versions 4, 3 or 2");
   }();
   return version;
 }

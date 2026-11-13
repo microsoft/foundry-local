@@ -22,7 +22,7 @@ class AzureMlRegistryClient {
                         std::shared_ptr<Azure::Core::Credentials::TokenCredential> credential,
                         std::shared_ptr<Azure::Core::Http::HttpTransport> transport = nullptr);
 
-  std::vector<nlohmann::json> ListModelVersions();
+  std::vector<nlohmann::json> ListModelVersions(const std::string& name = "");
   std::optional<nlohmann::json> GetModelVersion(const std::string& name, const std::string& version);
   ModelContainer ResolveArtifacts(const std::string& name, int version);
 
@@ -34,7 +34,7 @@ class AzureMlRegistryClient {
   std::optional<nlohmann::json> Request(const Azure::Core::Http::HttpMethod& method, const std::string& url,
                                        bool discovery = false, const nlohmann::json* body = nullptr,
                                        bool allow_not_found = false);
-  std::vector<nlohmann::json> List(const std::string& url);
+  std::vector<nlohmann::json> List(const std::string& url, bool allow_not_found = false);
 
   std::string registry_;
   std::string base_url_;

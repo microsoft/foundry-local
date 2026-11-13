@@ -1289,6 +1289,70 @@ TEST_F(ModelCacheRemovalTest, RemovesCorruptDownloadAndCanDownloadAgain) {
   EXPECT_EQ(ReadFile(root_ / "v3" / "weights.onnx"), expected_content);
 }
 
+TEST_F(ModelCacheRemovalTest, RetainedHandleRetriesAfterAnotherHandleRemovesAndDownloadIsCanceled) {
+  auto blobs = std::make_unique<MockBlobDownloader>();
+  blobs->download_content = R"({"model":{"type":"phi3"}})";
+  blobs->blobs_to_return = {{"genai_config.json", static_cast<int64_t>(blobs->download_content.size())}};
+  DownloadManager manager(cache_.string(), "", 1, services_.logger, services_.telemetry,
+                          true, nullptr, std::move(blobs),
+                          [](const ModelInfo&) { return ModelContainer{"https://storage.test/container?sig=mock", "", ""}; });
+  info_.uri = "azureml://registries/test/models/test-model/versions/1";
+  info_.task = "coding";
+  fs::create_directories(root_);
+  WriteInferenceModelJson(root_.string(), info_.model_id, {});
+  std::ofstream(root_ / "genai_config.json") << R"({"model":{"type":"phi3"}})";
+  auto exact = Model::FromModelInfo(info_, root_.string(), manager, services_.model_load_manager);
+  auto alias = Model::FromModelInfo(info_, root_.string(), manager, services_.model_load_manager);
+  alias.RemoveFromCache();
+  EXPECT_THROW(exact.Download([](float) { return 1; }), Exception);
+  EXPECT_TRUE(fs::exists(root_ / "download.tmp"));
+  EXPECT_FALSE(exact.IsCached());
+  EXPECT_FALSE(manager.IsModelCached(info_));
+  std::vector<float> progress;
+  ASSERT_NO_THROW(exact.Download([&](float percent) {
+    progress.push_back(percent);
+    return 0;
+  }));
+  ASSERT_FALSE(progress.empty());
+  EXPECT_EQ(progress.front(), 0.0f);
+  EXPECT_EQ(progress.back(), 100.0f);
+  EXPECT_TRUE(exact.IsCached());
+  EXPECT_TRUE(manager.IsModelCached(info_));
+  EXPECT_TRUE(fs::exists(root_ / "genai_config.json"));
+  EXPECT_FALSE(fs::exists(root_ / "download.tmp"));
+}
+
+TEST(DownloadManagerTest, RegistryPackagesRequireConfigurationForEverySupportedTask) {
+  for (const auto* task : {"chat-completion", "coding", "vision-language-chat",
+                           "automatic-speech-recognition", "embeddings", "text-ranking", "typed-decision"}) {
+    SCOPED_TRACE(task);
+    auto cache = TempPath::CreateTempDir();
+    auto blobs = std::make_unique<MockBlobDownloader>();
+    blobs->blobs_to_return = {{"weights.onnx", 100}};
+    DownloadManager manager(cache.string(), "", 1, fl::test::NullLog(), fl::test::TestTelemetrySink(),
+                            true, nullptr, std::move(blobs),
+                            [](const ModelInfo&) { return ModelContainer{"https://storage.test/container?sig=mock", "", ""}; });
+    ModelInfo info;
+    info.model_id = "model:1";
+    info.uri = "azureml://registries/test/models/model/versions/1";
+    info.task = task;
+    EXPECT_THROW(manager.DownloadModel(info), std::exception);
+    EXPECT_FALSE(manager.IsModelCached(info));
+    EXPECT_TRUE(fs::exists(cache.path() / "model-1" / "download.tmp"));
+    EXPECT_FALSE(fs::exists(cache.path() / "model-1" / "inference_model.json"));
+  }
+}
+
+TEST(DownloadManagerTest, RevisionCompletionHonorsParentDownloadMarker) {
+  auto cache = TempPath::CreateTempDir();
+  const auto revision = cache.path() / "v3";
+  fs::create_directories(revision);
+  WriteInferenceModelJson(revision.string(), "model:1", {});
+  EXPECT_TRUE(DownloadManager::IsCompletedModelPath(revision.string()));
+  std::ofstream(cache.path() / "download.tmp");
+  EXPECT_FALSE(DownloadManager::IsCompletedModelPath(revision.string()));
+}
+
 TEST_F(ModelCacheRemovalTest, PreservesScannerDiscoveredNonstandardPath) {
   auto scanned_path = fs::path(cache_.string()) / "imported-model";
   fs::create_directories(scanned_path);
@@ -1452,6 +1516,8 @@ TEST_F(ModelCacheRemovalTest, RechecksNonstandardOwnershipAfterTakingParentLock)
 
 TEST_F(ModelCacheRemovalTest, RejectsRemovalDuringCachedDownloadCallbacksAndReleasesGuardOnFailure) {
   fs::create_directories(root_);
+  WriteInferenceModelJson(root_.string(), info_.model_id, {});
+  std::ofstream(root_ / "genai_config.json") << "{}";
   std::ofstream(root_ / "weights.onnx") << "preserve";
   auto model = MakeModel(root_.string());
 

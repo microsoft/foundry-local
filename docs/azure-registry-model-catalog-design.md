@@ -49,6 +49,11 @@ policy belongs in this shared processing path, not in an Azure-specific adapter.
 Listings select the latest compatible numeric version per variant. Exact
 `<variant-name>:<version>` lookup and version history can still access older
 versions. Cache-first alias lookup can select a completed older package.
+Named history queries fetch only that model's paginated versions; full discovery
+fetches up to four models' version lists concurrently, using the same retry policy.
+Retained aliases discover newly cached members without reacquisition and preserve
+loaded or explicitly selected variants. Loaded entries remain visible if their alias
+disappears remotely, until they are unloaded and the catalog refreshes.
 
 ## Registry metadata
 
@@ -84,9 +89,23 @@ inside the model cache, separate from public publisher directories. Completed
 packages can be reused after restart. Snapshot read/merge/write uses the
 cross-process file lock to prevent concurrent catalog instances from losing
 updates. Online listings discard snapshot entries for a different registry
-resource ID. A download is complete only when files exist and, for
-chat-completion packages (or packages containing `genai_config.json`), the
-configuration is valid.
+resource ID. Artifact grants accept the original Blob host or an account-bound
+regional Azure ML data-proxy host, always over HTTPS and for the original container.
+A download is complete only after package validation, completion metadata is
+written, and the in-progress marker is removed. All supported generative tasks
+require a valid `genai_config.json`; non-generative tasks validate their component
+package. Retained handles use these same completion rules after removal or cancellation.
+The runtime identifies generative artifacts by model ID and normalized path, so
+independent catalogs can load different packages with the same public model ID.
+
+The simple registry examples for [Python](../sdk_v2/python/examples/azure_registry_catalog.py),
+[C++](../sdk_v2/cpp/examples/azure_registry_catalog/main.cc),
+[C#](../sdk_v2/cs/examples/AzureRegistryCatalog/Program.cs),
+[JavaScript](../sdk_v2/js/examples/azure_registry_catalog.mjs), and
+[Rust](../sdk_v2/rust/examples/azure_registry_catalog.rs) download and load
+`qwen2.5-0.5b` from `azureml-dev`, send one prompt, then clean up.
+Review the model license before running; change the registry/model names for your catalog.
+Java's existing speech-recognition preview is unchanged and does not expose registry catalogs.
 
 Mocked unit tests cover discovery, compatibility, version selection, caching,
 and failures without Azure access or model downloads.

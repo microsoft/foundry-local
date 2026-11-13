@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -52,6 +53,7 @@ class FakeCredential final : public Azure::Core::Credentials::TokenCredential {
   Azure::Core::Credentials::AccessToken GetToken(
       const Azure::Core::Credentials::TokenRequestContext& context,
       const Azure::Core::Context&) const override {
+    std::lock_guard lock(mutex_);
     scopes.insert(context.Scopes.begin(), context.Scopes.end());
     if (fail) throw Azure::Core::Credentials::AuthenticationException("mock authentication failure");
     return {"mock-token", Azure::DateTime(std::chrono::system_clock::now() + std::chrono::hours(1))};
@@ -59,6 +61,8 @@ class FakeCredential final : public Azure::Core::Credentials::TokenCredential {
 
   bool fail = false;
   mutable std::set<std::string> scopes;
+ private:
+  mutable std::mutex mutex_;
 };
 
 class MockRegistryTransport final : public Azure::Core::Http::HttpTransport {
@@ -70,6 +74,7 @@ class MockRegistryTransport final : public Azure::Core::Http::HttpTransport {
     HttpStatusCode status;
     std::optional<Json> request_body;
     std::vector<uint8_t> bytes;
+    bool consumed = false;
   };
 
   void Queue(const std::string& url, const Json& body, HttpMethod method = HttpMethod::Get,
@@ -82,8 +87,14 @@ class MockRegistryTransport final : public Azure::Core::Http::HttpTransport {
     size_t index;
     {
       std::lock_guard lock(mutex_);
-      if (calls >= responses.size()) throw std::runtime_error("unexpected mocked Azure ML request");
-      index = calls++;
+      const auto match = std::find_if(responses.begin(), responses.end(), [&](const Response& response) {
+        return !response.consumed && response.url == request.GetUrl().GetAbsoluteUrl() &&
+            response.method == request.GetMethod();
+      });
+      if (match == responses.end()) throw std::runtime_error("unexpected mocked Azure ML request");
+      index = static_cast<size_t>(match - responses.begin());
+      match->consumed = true;
+      ++calls;
     }
     if (before_response) before_response(index);
     auto& expected = responses[index];
@@ -451,12 +462,24 @@ TEST_F(AzureRegistryCatalogTest, ExactVersionLookupPropagatesTransportFailures) 
 }
 
 TEST_F(AzureRegistryCatalogTest, VersionHistoryPreservesOlderVersionsAndAppliesPerNameLimit) {
-  Inventory({LegacyModel(kCpuName, 2), LegacyModel(kCpuName, 10), LegacyModel(kCpuName, 1)});
+  Discovery();
+  transport_->Queue(kBase + "/models/" + kCpuName + "/versions" + kApi,
+                    {{"value", {LegacyModel(kCpuName, 2), LegacyModel(kCpuName, 1)}},
+                     {"nextLink", kBase + "/models/" + kCpuName + "/versions?page=2"}});
+  transport_->Queue(kBase + "/models/" + kCpuName + "/versions?page=2",
+                    {{"value", {LegacyModel(kCpuName, 10)}}});
   auto catalog = Catalog();
   auto versions = catalog->GetModelVersions("tiny", kCpuName, 2);
   ASSERT_EQ(versions.size(), 2);
   EXPECT_EQ(versions[0]->Info().version, 10);
   EXPECT_EQ(versions[1]->Info().version, 2);
+}
+
+TEST_F(AzureRegistryCatalogTest, NamedHistoryReturnsEmptyForMissingModelWithoutScanningInventory) {
+  Discovery();
+  transport_->Queue(kBase + "/models/" + kCpuName + "/versions" + kApi,
+                    Json{}, HttpMethod::Get, HttpStatusCode::NotFound);
+  EXPECT_TRUE(Catalog()->GetModelVersions("tiny", kCpuName, 1).empty());
 }
 
 TEST_F(AzureRegistryCatalogTest, StrictTagsMapMetadataAndIgnoreUnrelatedAssets) {
@@ -542,20 +565,88 @@ TEST_F(AzureRegistryCatalogTest, RetainedHandlesObservePackageChangesMadeThrough
   EXPECT_EQ(alias->Variants().size(), 1);
 
   Package(10);
-  ASSERT_EQ(catalog->GetModel("tiny"), alias);
+  ASSERT_NO_THROW(alias->Download());
   EXPECT_EQ(alias->Variants().size(), 2);
   EXPECT_EQ(alias->Id(), kCpuName + ":10");
 
   auto* exact = catalog->GetModelVariant(kCpuName + ":10");
   ASSERT_NE(exact, nullptr);
   ASSERT_NO_THROW(exact->RemoveFromCache());
-  EXPECT_THROW(alias->Download(), Exception);
-  ASSERT_NO_THROW(alias->RefreshCachedState());
-  EXPECT_FALSE(alias->IsCached());
-
-  Package(10);
+  ASSERT_NO_THROW(alias->Download());
+  EXPECT_EQ(alias->Id(), kCpuName + ":2");
+  ASSERT_NO_THROW(exact->RefreshCachedState());
+  EXPECT_FALSE(exact->IsCached());
   ASSERT_NO_THROW(alias->RefreshCachedState());
   EXPECT_TRUE(alias->IsCached());
+
+  Package(10);
+  ASSERT_NO_THROW(alias->Download());
+  EXPECT_EQ(alias->Id(), kCpuName + ":10");
+  ASSERT_NO_THROW(alias->RefreshCachedState());
+  EXPECT_TRUE(alias->IsCached());
+}
+
+TEST_F(AzureRegistryCatalogTest, LoadedListingSurvivesAliasDisappearanceUntilUnloaded) {
+  Inventory({LegacyModel(kCpuName, 2)});
+  auto catalog = Catalog();
+  auto* listed = catalog->ListModels().front();
+  const auto path = CachePath() / (kCpuName + "-2");
+  std::filesystem::copy(test::GetTestDataPath("tiny-paged-attention"), path,
+                        std::filesystem::copy_options::recursive);
+  std::ofstream(path / "inference_model.json") << "{}";
+  listed->RefreshCachedState();
+  listed->Load();
+  Inventory({}, false);
+  catalog->InvalidateCache();
+  EXPECT_EQ(catalog->ListModels(), (std::vector<Model*>{listed}));
+  EXPECT_TRUE(listed->IsLoaded());
+  EXPECT_EQ(catalog->GetLoadedModels().size(), 1);
+  listed->Unload();
+  Inventory({}, false);
+  catalog->InvalidateCache();
+  EXPECT_TRUE(catalog->ListModels().empty());
+  EXPECT_FALSE(listed->IsLoaded());
+  EXPECT_TRUE(catalog->GetLoadedModels().empty());
+}
+
+TEST_F(AzureRegistryCatalogTest, DiscoveryBoundsParallelVersionRequests) {
+  std::vector<Json> models;
+  for (int i = 0; i < 9; ++i) models.push_back(LegacyModel("model-" + std::to_string(i) + "-generic-cpu"));
+  Inventory(models);
+  std::mutex mutex;
+  std::condition_variable ready;
+  size_t entered = 0;
+  bool released = false;
+  transport_->before_response = [&](size_t index) {
+    if (index < 2) return;
+    std::unique_lock lock(mutex);
+    ++entered;
+    ready.notify_all();
+    EXPECT_TRUE(ready.wait_for(lock, std::chrono::seconds(5), [&] { return released; }));
+  };
+  auto listing = std::async(std::launch::async, [&] { return Client()->ListModelVersions(); });
+  {
+    std::unique_lock lock(mutex);
+    EXPECT_TRUE(ready.wait_for(lock, std::chrono::seconds(5), [&] { return entered >= 4; }));
+    EXPECT_FALSE(ready.wait_for(lock, std::chrono::milliseconds(200), [&] { return entered > 4; }));
+    released = true;
+    ready.notify_all();
+  }
+  EXPECT_EQ(listing.get().size(), models.size());
+}
+
+TEST_F(AzureRegistryCatalogTest, RetainedAliasKeepsExplicitSelectionWhenNewCachedMembersAppear) {
+  Snapshot({CachedInfo(2), CachedInfo(10)});
+  Package(2);
+  config_.additional_options["AzureRegistryModelCacheOnly"] = "true";
+  auto catalog = Catalog(false);
+  auto* alias = catalog->GetModel("tiny");
+  ASSERT_NE(alias, nullptr);
+  alias->SelectVariant(*alias->Variants().front());
+  Package(10);
+  ASSERT_NO_THROW(alias->Download());
+  EXPECT_EQ(alias->Variants().size(), 2);
+  EXPECT_EQ(alias->Id(), kCpuName + ":2");
 }
 
 TEST_F(AzureRegistryCatalogTest, ListingDropsSnapshotEntriesFromAnotherRegistryResource) {
@@ -716,7 +807,9 @@ TEST_P(AzureRegistryCatalogConcurrencyTest, SnapshotTransactionsPreserveExactIds
   if (GetParam() == ConcurrencyMode::kExactId) {
     transport_->Queue(kBase + "/models/" + kCpuName + "/versions/3" + kApi, LegacyModel(kCpuName, 3));
   } else {
-    transport_->Queue(kBase + "/models" + kApi, {{"value", {{{"name", kCpuName}}}}});
+    if (GetParam() == ConcurrencyMode::kListing) {
+      transport_->Queue(kBase + "/models" + kApi, {{"value", {{{"name", kCpuName}}}}});
+    }
     transport_->Queue(kBase + "/models/" + kCpuName + "/versions" + kApi,
                       {{"value", {LegacyModel(kCpuName, 10), LegacyModel(kCpuName, 2), LegacyModel(kCpuName, 3)}}});
   }
@@ -998,6 +1091,34 @@ TEST_F(AzureRegistryCatalogTest, ArtifactGrantForAnotherContainerIsRejected) {
   EXPECT_THROW(client->ResolveArtifacts(kCpuName, 1), Exception);
 }
 
+TEST_F(AzureRegistryCatalogTest, RegionalArtifactProxyStaysBoundToStorageAccountAndContainer) {
+  for (const auto& [url, accepted] : std::vector<std::pair<std::string, bool>>{
+           {"https://storage-blob.dataproxy.eastus.api.azureml.ms/container?sig=mock", true},
+           {"https://storage-blob.dataproxy.westus2.api.azureml.ms/container?sig=mock", true},
+           {"https://storage-blob.dataproxy.northeurope.api.azureml.ms/container?sig=mock", true},
+           {"https://other-blob.dataproxy.eastus.api.azureml.ms/container?sig=mock", false},
+           {"https://storage-blob.dataproxy.eastus.api.azureml.ms/other?sig=mock", false},
+           {"https://storage-blob.dataproxy.eastus.api.azureml.ms.example.com/container?sig=mock", false},
+           {"https://storage-blob.dataproxy.eastus.evil.api.azureml.ms/container?sig=mock", false},
+           {"https://storage-blob.dataproxy..api.azureml.ms/container?sig=mock", false},
+           {"https://storage-blob.dataproxy.int.api.azureml-test.ms/container?sig=mock", false},
+           {"http://storage-blob.dataproxy.eastus.api.azureml.ms/container?sig=mock", false},
+           {"https://storage-blob.dataproxy.eastus.api.azureml.ms:444/container?sig=mock", false},
+           {"https://storage-blob.dataproxy.eastus.api.azureml.ms/container", false}}) {
+    SCOPED_TRACE(url);
+    Discovery();
+    transport_->Queue(kBase + "/models/" + kCpuName + "/versions/1" + kApi, LegacyModel(kCpuName));
+    transport_->Queue(kBase + "/datarefs/" + kCpuName + "/versions/1" + kApi,
+                      {{"blobReferenceForConsumption",
+                        {{"credential", {{"credentialType", "SAS"}, {"sasUri", url}}}}}}, HttpMethod::Post);
+    auto client = Client();
+    if (accepted) {
+      EXPECT_EQ(client->ResolveArtifacts(kCpuName, 1).blob_sas_uri, url);
+    } else {
+      EXPECT_THROW(client->ResolveArtifacts(kCpuName, 1), Exception);
+    }
+  }
+}
 TEST_F(AzureRegistryCatalogTest, CacheFirstAliasMaintainsIndependenceFromListingAndLoadedVersion) {
   std::filesystem::create_directories(CachePath());
   const auto package_path = CachePath() / (kCpuName + "-2");

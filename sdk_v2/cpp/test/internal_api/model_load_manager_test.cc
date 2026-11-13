@@ -498,27 +498,34 @@ TEST_F(ModelLoadManagerUnloadTest, UnloadFailsWhenInUseAndSucceedsAfterSessionsR
   EXPECT_EQ(mgr_->GetLoadedModel(fl::test::kTestChatModelAlias), nullptr);
 }
 
-TEST_F(ModelLoadManagerUnloadTest, SameIdRequiresSameCanonicalPathForLoadLookupAndUnload) {
+TEST_F(ModelLoadManagerUnloadTest, SameIdUsesCanonicalPathForIndependentLoadLookupAndUnload) {
   const auto equivalent_path = std::filesystem::path(model_path_) / ".";
-  const auto different_path = std::filesystem::path(model_path_).parent_path();
+  const auto copy = fl::test::TempPath::CreateTempDir();
+  const auto different_path = copy.path() / "model";
+  std::filesystem::copy(fl::test::GetTestDataPath("tiny-paged-attention"), different_path,
+                        std::filesystem::copy_options::recursive);
 
   const auto idempotent = mgr_->LoadModel(equivalent_path.string(), fl::test::kTestChatModelAlias);
   EXPECT_EQ(idempotent.status, fl::ModelLoadManager::LoadStatus::kModelAlreadyLoaded);
   EXPECT_EQ(idempotent.model, instance_);
 
-  try {
-    mgr_->LoadModel(different_path.string(), fl::test::kTestChatModelAlias);
-    FAIL() << "Expected a same-ID path collision";
-  } catch (const fl::Exception& e) {
-    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
-    EXPECT_NE(std::string(e.what()).find("different path"), std::string::npos);
+  const auto other = mgr_->LoadModel(different_path.string(), fl::test::kTestChatModelAlias);
+  ASSERT_EQ(other.status, fl::ModelLoadManager::LoadStatus::kSuccess);
+  EXPECT_NE(other.model, instance_);
+  EXPECT_EQ(mgr_->GetLoadedModel(fl::test::kTestChatModelAlias, different_path.string()), other.model);
+  EXPECT_EQ(mgr_->GetLoadedModel(fl::test::kTestChatModelAlias, equivalent_path.string()), instance_);
+  EXPECT_THROW(mgr_->GetLoadedModel(fl::test::kTestChatModelAlias), fl::Exception);
+  EXPECT_THROW(mgr_->UnloadModel(fl::test::kTestChatModelAlias), fl::Exception);
+
+  {
+    auto session = mgr_->AcquireSessionModel(fl::test::kTestChatModelAlias, different_path.string());
+    EXPECT_EQ(other.model->SessionRefCount(), 1);
+    EXPECT_EQ(instance_->SessionRefCount(), 0);
+    EXPECT_TRUE(mgr_->UnloadModel(fl::test::kTestChatModelAlias, equivalent_path.string()));
+    EXPECT_EQ(mgr_->GetLoadedModel(fl::test::kTestChatModelAlias), other.model);
+    EXPECT_THROW(mgr_->UnloadModel(fl::test::kTestChatModelAlias, different_path.string()), fl::Exception);
   }
-
-  EXPECT_EQ(mgr_->GetLoadedModel(fl::test::kTestChatModelAlias, different_path.string()), nullptr);
-  EXPECT_FALSE(mgr_->UnloadModel(fl::test::kTestChatModelAlias, different_path.string()));
-  EXPECT_EQ(mgr_->GetLoadedModel(fl::test::kTestChatModelAlias), instance_);
-
-  EXPECT_TRUE(mgr_->UnloadModel(fl::test::kTestChatModelAlias, equivalent_path.string()));
+  EXPECT_TRUE(mgr_->UnloadModel(fl::test::kTestChatModelAlias, different_path.string()));
   EXPECT_EQ(mgr_->GetLoadedModel(fl::test::kTestChatModelAlias), nullptr);
 }
 

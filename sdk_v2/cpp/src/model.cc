@@ -43,12 +43,6 @@ bool ContainsCaseInsensitive(const std::string& text, const std::string& pattern
   return it != text.end();
 }
 
-/// Cache removal keeps the package root (and its lock), so a cached path must still contain files.
-bool HasPackageFiles(const std::string& path) {
-  std::error_code ec;
-  return !path.empty() && std::filesystem::is_directory(path, ec) && !std::filesystem::is_empty(path, ec);
-}
-
 /// Extract device-type priority from model_id.
 /// Format: <model_name>-<device>:<version>
 /// Returns: 0(NPU) < 1(vendor-GPU) < 2(CUDA-GPU) < 3(generic-GPU)
@@ -331,6 +325,11 @@ bool Model::TryDeactivateForRefresh() {
   std::unique_lock<std::mutex> lifecycle_lock(lifecycle_mutex_, std::try_to_lock);
   if (!lifecycle_lock.owns_lock()) {
     return false;
+  }
+  for (const auto* variant : Variants()) {
+    if (variant->HasPreservedLoadedSelection() || variant->IsLoaded() || variant->active_downloads_.load() != 0) {
+      return false;
+    }
   }
 
   Deactivate();
@@ -635,13 +634,11 @@ void Model::Download(std::function<int(float)> progress_cb) {
     return;
   }
 
-  // Already cached (scanner found the model on disk during catalog construction).
-  // No need to re-derive the path via DownloadManager — local_path_ is authoritative while it still exists; another
-  // handle for the same package may have removed it.
+  RefreshCachedState();
   bool already_cached;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    already_cached = cached_.load() && HasPackageFiles(local_path_);
+    already_cached = cached_.load();
   }
 
   if (already_cached) {
@@ -745,7 +742,7 @@ void Model::RefreshCachedState() {
 
   if (cached_) {
     std::lock_guard state_lock(state_mutex_);
-    if (HasPackageFiles(local_path_)) {
+    if (download_manager_->IsCompletedModelPath(local_path_)) {
       return;
     }
   }

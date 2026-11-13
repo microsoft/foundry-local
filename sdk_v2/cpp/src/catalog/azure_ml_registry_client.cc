@@ -19,6 +19,7 @@
 #include <array>
 #include <chrono>
 #include <cctype>
+#include <future>
 #include <set>
 
 namespace fl {
@@ -211,7 +212,7 @@ const std::string& AzureMlRegistryClient::ResourceId() {
   return resource_id_;
 }
 
-std::vector<Json> AzureMlRegistryClient::List(const std::string& url) {
+std::vector<Json> AzureMlRegistryClient::List(const std::string& url, bool allow_not_found) {
   std::vector<Json> items;
   std::set<std::string> visited;
   const Url base(base_url_);
@@ -230,7 +231,9 @@ std::vector<Json> AzureMlRegistryClient::List(const std::string& url) {
         !visited.insert(next).second) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK, "Azure ML returned an invalid pagination link");
     }
-    auto response = Request(HttpMethod::Get, next).value();
+    auto page_response = Request(HttpMethod::Get, next, false, nullptr, allow_not_found && next == url);
+    if (!page_response) return items;
+    auto& response = *page_response;
     if (!response.contains("value") || !response["value"].is_array()) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK, "Azure ML list response missing value array");
     }
@@ -241,15 +244,26 @@ std::vector<Json> AzureMlRegistryClient::List(const std::string& url) {
   return items;
 }
 
-std::vector<Json> AzureMlRegistryClient::ListModelVersions() {
+std::vector<Json> AzureMlRegistryClient::ListModelVersions(const std::string& name) {
+  if (!name.empty()) ValidateSegment(name);
   Discover();
+  if (!name.empty()) {
+    auto versions = List(base_url_ + "/models/" + name + "/versions" + kApiQuery, /*allow_not_found=*/true);
+    for (auto& version : versions) version["foundryVariantName"] = name;
+    return versions;
+  }
+  const auto models = List(base_url_ + "/models" + kApiQuery);
   std::vector<Json> versions;
-  for (const auto& model : List(base_url_ + "/models" + kApiQuery)) {
-    const auto name = RequiredString(model, "name");
-    ValidateSegment(name);
-    for (auto& version : List(base_url_ + "/models/" + name + "/versions" + kApiQuery)) {
-      version["foundryVariantName"] = name;
-      versions.push_back(std::move(version));
+  constexpr size_t kConcurrency = 4;
+  for (size_t start = 0; start < models.size(); start += kConcurrency) {
+    std::vector<std::future<std::vector<Json>>> requests;
+    for (size_t i = start; i < std::min(start + kConcurrency, models.size()); ++i) {
+      requests.push_back(std::async(std::launch::async, [this, name = RequiredString(models[i], "name")] {
+        return ListModelVersions(name);
+      }));
+    }
+    for (auto& request : requests) {
+      for (auto& version : request.get()) versions.push_back(std::move(version));
     }
   }
   return versions;
@@ -291,11 +305,18 @@ ModelContainer AzureMlRegistryClient::ResolveArtifacts(const std::string& name, 
   const Url container(sas);
   const auto query = container.GetQueryParameters();
   const auto artifact_host = ToLower(artifact.GetHost());
-  const auto proxy_host = artifact_host.substr(0, artifact_host.find('.')) +
-      "-blob.dataproxy.int.api.azureml-test.ms";
   const auto container_host = ToLower(container.GetHost());
-  const bool test_proxy = is_test_endpoint_ && container_host == proxy_host;
-  if (container.GetScheme() != "https" || (container_host != artifact_host && !test_proxy) ||
+  const auto proxy_prefix = artifact_host.substr(0, artifact_host.find('.')) + "-blob.dataproxy.";
+  const auto proxy_suffix = is_test_endpoint_ ? ".api.azureml-test.ms" : ".api.azureml.ms";
+  bool proxy = false;
+  if (container_host.starts_with(proxy_prefix) && container_host.ends_with(proxy_suffix)) {
+    const auto region = container_host.substr(
+        proxy_prefix.size(), container_host.size() - proxy_prefix.size() - std::string(proxy_suffix).size());
+    proxy = !region.empty() && std::all_of(region.begin(), region.end(), [](unsigned char ch) {
+      return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-';
+    });
+  }
+  if (container.GetScheme() != "https" || (container_host != artifact_host && !proxy) ||
       (container.GetPort() != 0 && container.GetPort() != 443) ||
       CleanPath(container) != path.substr(0, slash) ||
       !query.contains("sig") || query.at("sig").empty()) {

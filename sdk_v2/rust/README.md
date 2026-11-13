@@ -159,6 +159,8 @@ name) and optionally `credential` (`azure_cli`, the default, or `workload_identi
 Authenticate with Azure CLI (`az login`) or configure workload identity as appropriate.
 See the minimal [registry example](examples/azure_registry_catalog.rs):
 `cargo run --example azure_registry_catalog`.
+It downloads and loads `qwen2.5-0.5b` from `azureml-dev`, sends one chat prompt, and unloads it.
+Review the model license before running; adjust the registry/model names as needed.
 
 Registry catalogs/options require native API v4. The SDK negotiates v4, v3, then
 v2; existing `catalog()`, `get_catalog(Public/Local)` and empty-options public/local

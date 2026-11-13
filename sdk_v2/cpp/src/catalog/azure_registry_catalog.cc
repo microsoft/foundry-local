@@ -238,31 +238,34 @@ std::vector<Model*> AzureRegistryCatalog::ListModels() const {
   return models;
 }
 
+std::vector<Model> AzureRegistryCatalog::CachedVariants(const std::string& alias) const {
+  std::lock_guard snapshot_lock(snapshot_mutex_);
+  CatalogCache cache(cache_dir_, logger_);
+  cache.Load();
+  auto infos = cache.GetCachedModels().value_or(std::vector<ModelInfo>{});
+  std::erase_if(infos, [&](const ModelInfo& info) {
+    return info.alias != alias || GetModelPath(info, Query::Lookup).empty();
+  });
+  return CreateModels(infos, Query::Lookup);
+}
+
+void AzureRegistryCatalog::ReconcileCachedAlias(Model& model) const {
+  std::unordered_set<std::string> known_ids;
+  for (auto* variant : model.Variants()) {
+    known_ids.insert(variant->Id());
+    RefreshRetainedVariantCache(*variant);
+  }
+  for (auto& variant : CachedVariants(model.Alias())) {
+    if (!known_ids.contains(variant.Id())) model.AddVariant(std::move(variant));
+  }
+  model.SelectDefaultVariant(MakeVariantEligibility(), /*preserve_explicit_selection=*/true);
+}
+
 Model* AzureRegistryCatalog::GetModel(const std::string& alias) const {
   std::lock_guard lock(alias_models_mutex_);
-  // Cache-first alias behavior: completed packages for this alias, including ones finished after the alias was built.
-  const auto cached_variants = [&] {
-    std::lock_guard snapshot_lock(snapshot_mutex_);
-    CatalogCache cache(cache_dir_, logger_);
-    cache.Load();
-    auto infos = cache.GetCachedModels().value_or(std::vector<ModelInfo>{});
-    std::erase_if(infos, [&](const ModelInfo& info) {
-      return info.alias != alias || GetModelPath(info, Query::Lookup).empty();
-    });
-    return CreateModels(infos, Query::Lookup);
-  };
-
   auto it = alias_models_.find(alias);
   if (it != alias_models_.end()) {
-    std::unordered_set<std::string> known_ids;
-    for (auto* variant : it->second->Variants()) {
-      known_ids.insert(variant->Id());
-      RefreshRetainedVariantCache(*variant);
-    }
-    for (auto& variant : cached_variants()) {
-      if (!known_ids.contains(variant.Id())) it->second->AddVariant(std::move(variant));
-    }
-    it->second->SelectDefaultVariant(MakeVariantEligibility(), /*preserve_explicit_selection=*/true);
+    ReconcileCachedAlias(*it->second);
     if (it->second->HasEligibleDefaultVariant()) {
       return it->second.get();
     }
@@ -276,7 +279,8 @@ Model* AzureRegistryCatalog::GetModel(const std::string& alias) const {
     for (size_t i = 1; i < variants.size(); ++i) container->AddVariant(std::move(variants[i]));
     container->SetDefaultVariantRefresh([this, c = container.get()] {
       EnsurePopulated();
-      c->SelectDefaultVariant(MakeVariantEligibility(), /*preserve_explicit_selection=*/true);
+      std::lock_guard lock(alias_models_mutex_);
+      ReconcileCachedAlias(*c);
     });
     container->SelectDefaultVariant(MakeVariantEligibility());
     if (container->HasEligibleDefaultVariant()) {
@@ -284,7 +288,7 @@ Model* AzureRegistryCatalog::GetModel(const std::string& alias) const {
     }
     return nullptr;
   };
-  if (auto* cached = make_alias(cached_variants())) return cached;
+  if (auto* cached = make_alias(CachedVariants(alias))) return cached;
 
   if (cache_only_) {
     return nullptr;
@@ -471,7 +475,24 @@ std::optional<std::vector<ModelInfo>> AzureRegistryCatalog::FetchLookupModelInfo
 
 std::vector<ModelInfo> AzureRegistryCatalog::FetchModelVersionInfos(const std::string& alias, const std::string& name,
                                                                   int /*max_versions*/) const {
-  auto models = FetchModelInfos();
+  std::vector<ModelInfo> models;
+  if (name.empty() || cache_only_) {
+    models = FetchModelInfos();
+  } else {
+    std::lock_guard snapshot_lock(snapshot_mutex_);
+    FileLock transaction(std::filesystem::path(cache_dir_) / "foundry.modelinfo.lock");
+    for (const auto& model : Client().ListModelVersions(name)) {
+      if (auto info = Adapt(model)) models.push_back(std::move(*info));
+    }
+    CatalogCache cache(cache_dir_, logger_);
+    cache.Load();
+    auto snapshot = cache.GetCachedModels().value_or(std::vector<ModelInfo>{});
+    for (const auto& info : models) {
+      std::erase_if(snapshot, [&](const ModelInfo& cached) { return cached.model_id == info.model_id; });
+      snapshot.push_back(info);
+    }
+    cache.Save(snapshot, true);
+  }
   std::erase_if(models, [&](const ModelInfo& model) {
     return model.alias != alias || (!name.empty() && model.name != name);
   });

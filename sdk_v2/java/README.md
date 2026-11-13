@@ -59,9 +59,8 @@ code, Foundry Local native libraries, execution providers, or model weights.
 
 Prepare a directory containing the matching Foundry Local native runtime for
 the current OS and architecture. Pass that directory through `Configuration`.
-The Java binding negotiates C API v4, v3, then v2. Runtimes exposing only v1
-are rejected before their native function tables are accessed. Public and local
-catalogs still work on v2/v3; catalog options and Azure ML registries require v4.
+The Java binding requires C API v2. Runtimes exposing only v1 are rejected
+before their native function tables are accessed.
 
 The runtime directory must contain:
 
@@ -143,29 +142,6 @@ queries an exact variant and throws `ModelNotFoundException` when unavailable.
 individual variants. `manager.catalog()` is the public catalog shortcut.
 Use `manager.catalog(CatalogType.LOCAL)` for cached or caller-registered local
 models and future bring-your-own-model scenarios.
-
-**Azure ML registry catalog**
-
-Use `manager.catalog(CatalogType.AZURE_REGISTRY, Map.of("name", "azureml-dev",
-"credential", "azure_cli"))`. The native runtime requires `name` and accepts
-`credential` values `azure_cli` or `workload_identity`; omitting the credential
-uses the native default. Authenticate with `az login` for `azure_cli`, or configure
-Azure workload identity for `workload_identity`. Options are forwarded unchanged;
-the native runtime validates source-specific settings. Existing `catalog()`
-and `catalog(CatalogType)` calls are unchanged.
-
-The [minimal example](examples/AzureRegistryCatalog.java) prints only aliases
-and variant IDs, without downloading or loading models. From `sdk_v2\java`
-on Windows, with JDK 17+ and Maven:
-
-```powershell
-mvn package dependency:copy-dependencies -DincludeScope=runtime
-java -cp "target\foundry-local-sdk-0.1.0-preview.2-SNAPSHOT.jar;target\dependency\*" examples\AzureRegistryCatalog.java C:\path\to\native-runtime
-```
-
-Use a matching v4 native runtime. Java catalog unit tests mock the native function-table boundary, not
-HTTP; the shared C++ registry tests cover mocked HTTP. Native HTTP/client
-injection seams are not exposed through the C ABI.
 
 `Model.info()` returns a detached immutable snapshot that remains usable after
 the manager closes. Named accessors cover common metadata, while

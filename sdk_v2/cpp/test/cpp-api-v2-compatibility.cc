@@ -3,6 +3,7 @@
 #include <foundry_local/foundry_local_cpp.h>
 
 #include <iostream>
+#include <vector>
 
 struct flConfiguration {};
 struct flKeyValuePairs {};
@@ -15,6 +16,7 @@ int configurations_created = 0;
 int configurations_released = 0;
 int options_applied = 0;
 uint32_t runtime_api_version = 2;
+std::vector<uint32_t> requested_versions;
 
 flStatus* FL_API_CALL CreateConfiguration(const char*, flConfiguration** output) noexcept {
   ++configurations_created;
@@ -51,6 +53,7 @@ void FL_API_CALL ReleaseOptions(flKeyValuePairs*) noexcept {}
 }  // namespace
 
 extern "C" const flApi* FL_API_CALL FoundryLocalGetApi(uint32_t version) noexcept {
+  requested_versions.push_back(version);
   static const flApi api = [] {
     flApi table{};
     table.GetConfigurationApi = ConfigurationApi;
@@ -66,6 +69,14 @@ extern "C" const char* FL_API_CALL FoundryLocalGetVersionString() noexcept { ret
 
 int main(int argc, char** argv) {
   if (argc > 1) runtime_api_version = static_cast<uint32_t>(std::strtoul(argv[1], nullptr, 10));
+  if (runtime_api_version == 0) {
+    try {
+      foundry_local::detail::api();
+    } catch (const std::runtime_error&) {
+      return requested_versions == std::vector<uint32_t>{4, 3, 2} ? 0 : 1;
+    }
+    return 1;
+  }
   try {
     if (foundry_local::detail::api_version() != runtime_api_version || !foundry_local::detail::api()) {
       throw std::runtime_error("C++ wrapper did not negotiate the highest available API");

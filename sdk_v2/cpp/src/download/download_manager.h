@@ -75,6 +75,9 @@ class DownloadManager {
   /// Check if a model is cached locally (directory exists and download is complete).
   bool IsModelCached(const ModelInfo& info) const;
 
+  /// Check completion metadata and download markers, including a revision's parent marker.
+  static bool IsCompletedModelPath(const std::string& path);
+
   /// Get the local cache path for a model. Returns empty string if not determinable.
   std::string GetModelCachePath(const ModelInfo& info) const;
 
