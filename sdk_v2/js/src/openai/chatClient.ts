@@ -279,7 +279,8 @@ function validateToolChoice(choice?: ToolChoice): void {
   }
   if (choice.type === "function" && (typeof choice.name !== "string" || choice.name.trim() === "")) {
     throw new Error('ToolChoice with type "function" must have a valid name string.');
-  } else if (choice.type !== "function" && choice.name) {
+  }
+  if (choice.type !== "function" && choice.name) {
     throw new Error(`ToolChoice with type "${choice.type}" should not have a name property.`);
   }
 }

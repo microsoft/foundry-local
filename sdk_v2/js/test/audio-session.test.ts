@@ -18,9 +18,9 @@ import { fileURLToPath } from "node:url";
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { FoundryLocalManager } from "../src/foundryLocalManager.js";
 import { ItemQueue } from "../src/item-queue.js";
 import { type AudioItem, Item } from "../src/items.js";
-import { FoundryLocalManager } from "../src/foundryLocalManager.js";
 import { Request } from "../src/request.js";
 import { AudioSession } from "../src/session.js";
 
@@ -373,7 +373,9 @@ describe.skipIf(!haveTestModelCache)("AudioSession (real whisper-tiny model)", (
       expect(result.text.length).toBeGreaterThan(0);
       const lower = result.text.toLowerCase();
       for (const phrase of EXPECTED_PHRASES) {
-        expect(lower, `Expected aggregated transcription to contain '${phrase}'. Got: ${result.text}`).toContain(phrase);
+        expect(lower, `Expected aggregated transcription to contain '${phrase}'. Got: ${result.text}`).toContain(
+          phrase,
+        );
       }
     },
     2 * 60_000,

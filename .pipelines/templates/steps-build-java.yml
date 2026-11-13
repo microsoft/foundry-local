@@ -111,9 +111,7 @@ steps:
       --batch-mode --no-transfer-progress --settings "$(foundryMavenSettings)"
       -Drevision=$(javaSdkVersion)-preview -Dfoundry.test.native.required=true
       -Dfoundry.test.legacy.required=${{ eq(parameters.rid, 'win-x64') }}
-    publishJUnitResults: true
-    testResultsFiles: 'sdk_v2/java/target/surefire-reports/TEST-*.xml'
-    testRunTitle: 'Java SDK ${{ parameters.rid }}'
+    publishJUnitResults: false
     javaHomeOption: Path
     jdkDirectory: '$(foundryJavaHome)'
     mavenVersionOption: Path
@@ -127,6 +125,16 @@ steps:
     ORT_DISABLE_TELEMETRY: '1'
     ${{ if eq(parameters.rid, 'win-x64') }}:
       FOUNDRY_TEST_LEGACY_BIN_DIR: $(foundryLegacyNativeDir)
+
+- task: PublishTestResults@2
+  displayName: 'Publish Java SDK test results (${{ parameters.rid }})'
+  condition: succeededOrFailed()
+  retryCountOnTaskFailure: 5
+  inputs:
+    testResultsFormat: JUnit
+    testResultsFiles: 'sdk_v2/java/target/surefire-reports/TEST-*.xml'
+    testRunTitle: 'Java SDK ${{ parameters.rid }}'
+    failTaskOnFailureToPublishResults: true
 
 - ${{ if eq(parameters.rid, 'win-x64') }}:
   - task: Maven@4

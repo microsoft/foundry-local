@@ -110,8 +110,7 @@ export class LiveAudioTranscriptionSession implements AsyncDisposable, Disposabl
         // locally concatenated tokens so we get the canonical model output (with whatever post-processing the
         // native side applied) and stay consistent with non-streaming Response semantics.
         const response = await stream.response;
-        const finalText =
-          response.output.find((it): it is SpeechResultItem => it.type === "speechResult")?.text ?? "";
+        const finalText = response.output.find((it): it is SpeechResultItem => it.type === "speechResult")?.text ?? "";
         if (finalText !== "") {
           this.#enqueueResponse({
             is_final: true,
