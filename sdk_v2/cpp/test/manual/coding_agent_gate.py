@@ -10,7 +10,7 @@ Example (PowerShell, from the repository root; substitute the candidate endpoint
 Optional: --copilot C:/path/to/copilot.exe. Discovery prefers the standalone
 copilot executable, not VS Code's copilot.ps1 wrapper or the desktop github.exe.
 Requires a recent CLI with BYOK, COPILOT_OFFLINE, and --no-custom-instructions
-support (developed against 1.0.98). No login, installation, global configuration
+support (qualified with 1.0.98 and 1.0.103). No login, installation, global configuration
 changes, model downloads, SDK build, or baseline workload is performed implicitly.
 
 Each invocation creates a fresh run-* directory beneath --output-dir, which must
@@ -25,7 +25,7 @@ substitution, and counts/restricts requests. Streaming is forwarded incrementall
 --schema-profile native|minlength|oneof (default native) explicitly controls
 outbound schema qualification. Native forwards original request bytes unchanged.
 Minlength adds minLength:1 only to required string properties named command,
-path, or pattern (never old_str/new_str). Oneof adds a root powershell mode
+path, or pattern (never old_str/new_str). Oneof adds a root shell mode
 composition preserving omitted/default sync and explicit sync/async. These are
 real CLI definitions, not mock tools: names, client execution, message contents,
 and returned content are untouched. Transformed requests are *.request.json;
@@ -246,11 +246,11 @@ def transform_tool_schemas(payload: dict, profile: str) -> tuple[dict, list[dict
             continue
         if profile == "minlength":
             minlength(schema, name, "")
-        elif name == "powershell":
+        elif name in {"bash", "powershell"}:
             mode = schema.get("properties", {}).get("mode", {})
             if mode.get("type") != "string" or set(mode.get("enum", [])) != {"sync", "async"} \
                     or "mode" in schema.get("required", []) or "oneOf" in schema:
-                raise ValueError("powershell_mode_contract_changed")
+                raise ValueError("shell_mode_contract_changed")
             schema["oneOf"] = [
                 {"properties": {"mode": {"const": "sync"}}},
                 {"properties": {"mode": {"const": "async"}}, "required": ["mode"]},
@@ -321,6 +321,7 @@ class ProcessTree:
     def __init__(self) -> None:
         self.process: subprocess.Popen | None = None
         self.job = None
+        self.shared_group = os.name != "nt" and os.environ.get("FOUNDRY_GATE_SHARED_PROCESS_GROUP") == "1"
         if os.name == "nt":
             from ctypes import wintypes
 
@@ -362,7 +363,7 @@ class ProcessTree:
     def start(self, command: list[str], cwd: Path, env: dict, stdout, stderr) -> subprocess.Popen:
         self.process = subprocess.Popen(
             command, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
-            start_new_session=os.name != "nt",
+            start_new_session=os.name != "nt" and not self.shared_group,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
         )
         if self.job and not self.kernel.AssignProcessToJobObject(self.job, int(self.process._handle)):
@@ -375,7 +376,7 @@ class ProcessTree:
         if self.job:
             self.kernel.CloseHandle(self.job)
             self.job = None
-        elif self.process and os.name != "nt":
+        elif self.process and os.name != "nt" and not self.shared_group:
             try:
                 os.killpg(self.process.pid, signal.SIGKILL)
             except ProcessLookupError:
@@ -603,6 +604,9 @@ use workflows, access the network, or change configuration. Complete these steps
    These strings are receipt data, not tool/reasoning boundaries. Do not encode them into
    escapes in the Python source or alter tests/gate_tasks.py. A full-file create.file_text
    replacement is acceptable if edit is unavailable; use unchanged real tool contracts.
+   The file-reading result is authoritative. Do not inspect byte encodings, run od/hexdump,
+   calculate hashes, or reason through individual Unicode code points; copy the source directly
+   into one edit call. The gate validates exact bytes independently after the edit.
 6. Run `{invocation} -B gate_tasks.py test` again. Fix the edit if necessary until all SEVEN
    tests pass with GATE_TEST_PASS. Finish with a brief explanation of the error and repair.
 Do not claim execution without actual tool calls. Do not write audit or evidence yourself."""
@@ -812,6 +816,19 @@ def self_test(args: argparse.Namespace) -> int:
         if not condition:
             raise RuntimeError("self_test_" + name)
 
+    for tool_name in ("bash", "powershell"):
+        payload = {"tools": [{"type": "function", "function": {
+            "name": tool_name,
+            "parameters": {
+                "type": "object",
+                "properties": {"mode": {"type": "string", "enum": ["sync", "async"]}},
+            },
+        }}]}
+        transformed, edits = transform_tool_schemas(payload, "oneof")
+        schema = transformed["tools"][0]["function"]["parameters"]
+        require(len(edits) == 1 and len(schema.get("oneOf", [])) == 2,
+                "oneof_" + tool_name + "_schema_transformed")
+
     try:
         env = isolated_environment(run, "unused-no-inference", args.max_prompt_tokens, args.max_output_tokens)
         workspace, baseline = make_fixture(run)
@@ -984,6 +1001,12 @@ def main() -> int:
     args = parse_args()
     if args.self_test:
         return self_test(args)
+    def interrupt_run(_signum, _frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, interrupt_run)
+    if os.name == "nt":
+        signal.signal(signal.SIGBREAK, interrupt_run)
     started = time.monotonic()
     deadline = started + args.timeout_seconds
     run = args.output_dir / ("run-" + time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8])
@@ -1011,7 +1034,7 @@ def main() -> int:
             raise RuntimeError("not_actual_github_copilot")
         required_flags = [
             "--no-custom-instructions", "--disable-builtin-mcps", "--no-auto-update",
-            "--output-format", "--no-ask-user", "--no-remote-export", "--no-bash-env",
+            "--output-format", "--no-ask-user", "--no-bash-env",
             "--usage-output-file", "--available-tools",
         ]
         required_env = ["COPILOT_OFFLINE", "COPILOT_HOME", "COPILOT_PROVIDER_BASE_URL",
@@ -1028,7 +1051,7 @@ def main() -> int:
         command = [
             str(cli), "--model", args.model, "--prompt", prompt, "--allow-all-tools",
             "--no-custom-instructions", "--disable-builtin-mcps", "--no-auto-update",
-            "--no-ask-user", "--no-remote-export", "--no-bash-env", "--no-color",
+            "--no-ask-user", "--no-bash-env", "--no-color",
             "--disallow-temp-dir", "--output-format", "json", "--stream", "on",
             "--log-dir", str(run / "logs"), "--log-level", "debug",
             "--usage-output-file", str(run / "usage.json"),
@@ -1037,10 +1060,13 @@ def main() -> int:
             "--available-tools", "powershell", "read_powershell", "stop_powershell",
             "bash", "read_bash", "stop_bash", "view", "grep", "glob", "edit", "create",
         ]
+        if "--no-remote-export" in help_text:
+            command.insert(command.index("--no-bash-env"), "--no-remote-export")
         write_json(run / "configuration.json", {
             "copilot": str(cli), "endpoint": args.endpoint, "model": args.model,
             "schema_profile": args.schema_profile, "schema_transform_requested": args.schema_profile != "native",
             "fixture_test_count": FIXTURE_TEST_COUNT, "literal_receipt_payload_required": True,
+            "remote_export_flag_available": "--no-remote-export" in help_text,
             "environment": {key: value for key, value in env.items()
                             if key.startswith("COPILOT_") or key in {"HOME", "USERPROFILE", "TEMP", "TMP"}},
             "limits": {"wall_seconds": args.timeout_seconds, "requests": args.max_requests,
