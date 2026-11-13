@@ -725,6 +725,12 @@ internal sealed class ChatSessionTests
         // Turn 1 — get tool call
         using var session = new ChatSession(model!);
 
+        // Request-level options do not carry over to the tool-result turn; keep both turns greedy.
+        session.SetOptions(new RequestOptions
+        {
+            Search = new SearchOptions { Temperature = 0.0f },
+        });
+
         session.AddToolDefinition(
             "multiply_numbers",
             "A tool for multiplying two numbers.",
@@ -747,7 +753,6 @@ internal sealed class ChatSessionTests
 
         request1.SetOptions(new RequestOptions
         {
-            Search = new SearchOptions { Temperature = 0.0f },
             ToolChoice = ToolChoice.Required,
         });
 
