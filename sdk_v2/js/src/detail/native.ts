@@ -25,7 +25,7 @@ export interface NativeManagerCtor {
 
 export interface NativeManager {
   getWebServiceEndpoints(): string[];
-  getCatalog(type?: 0 | 1): NativeCatalog;
+  getCatalog(type?: 0 | 1 | 2, options?: Readonly<Record<string, string>>): NativeCatalog;
   startWebService(): void;
   stopWebService(): void;
   discoverEps(): Array<{ name: string; isRegistered: boolean }>;

@@ -1060,7 +1060,10 @@ TEST_F(AzureModelCatalogTest, ProviderRefreshPreservesLoadedArtifactUntilItIsUnl
   auto cuda = MakeModelInfo("model-cuda-gpu:1", "model-cuda-gpu", 1, "model", "Azure");
   cuda.execution_provider = "CUDA";
   WriteSnapshot({cpu, cuda});
-  const auto path = fl::test::GetTestDataPath("tiny-paged-attention");
+  auto package = fl::test::TempPath::CreateTempDir("fl_completed_model_");
+  const auto path = package.path() / "tiny-paged-attention";
+  fs::copy(fl::test::GetTestDataPath("tiny-paged-attention"), path, fs::copy_options::recursive);
+  std::ofstream(path / "inference_model.json") << nlohmann::json({{"Name", cpu.model_id}}).dump();
   ASSERT_TRUE(fs::exists(path / "genai_config.json"));
   for (int release = 0; release < 3; ++release) {
     SCOPED_TRACE(release);
@@ -1598,6 +1601,53 @@ TEST_F(AzureModelCatalogTest, LiveAggregationDeduplicatesAndSavesOnlyResolvedPub
   }
 
   EXPECT_EQ(persisted_ids, (std::unordered_set<std::string>{"latest-model:2", "old-model:1"}));
+}
+
+TEST_F(AzureModelCatalogTest, SharedCompatibilityFiltersLiveListingAndVersionHistoryBeforeLimits) {
+  const auto behavior = AddBehavior("https://catalog.test");
+  auto compatible = MakeModelInfo("model:1", "model", 1, "test-alias", "TestProvider");
+  auto future = MakeModelInfo("model:2", "model", 2, "test-alias", "TestProvider");
+  future.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR] = "999.0.0";
+  behavior->all_models = {compatible, future};
+  behavior->all_versions = {compatible, future};
+  auto catalog = CreateCatalog({{"https://catalog.test", std::nullopt}});
+
+  const auto models = catalog->ListModels();
+  EXPECT_NE(FindVariant(models, "model:1"), nullptr);
+  EXPECT_EQ(FindVariant(models, "model:2"), nullptr);
+
+  const auto versions = catalog->GetModelVersions("test-alias", "", 1);
+  ASSERT_EQ(versions.size(), 1u);
+  EXPECT_NE(FindVariant(versions, "model:1"), nullptr);
+  EXPECT_EQ(FindVariant(versions, "model:2"), nullptr);
+
+  CatalogCache persisted_cache(cache_directory_.string(), services_.logger);
+  persisted_cache.Load();
+  const auto persisted = persisted_cache.GetCachedModels();
+  ASSERT_TRUE(persisted.has_value());
+  ASSERT_EQ(persisted->size(), 1u);
+  EXPECT_EQ(persisted->front().model_id, "model:1");
+}
+
+TEST_F(AzureModelCatalogTest, IncompatibleExactResultDoesNotPreventTryingNextEndpoint) {
+  auto compatible = MakeModelInfo("model:1", "model", 1, "test-alias", "TestProvider");
+  auto future = compatible;
+  future.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR] = "999.0.0";
+  const auto first = AddBehavior("https://catalog-one.test");
+  first->models_by_id = {future};
+  const auto second = AddBehavior("https://catalog-two.test");
+  second->models_by_id = {compatible};
+  auto catalog = CreateCatalog({
+      {"https://catalog-one.test", std::nullopt},
+      {"https://catalog-two.test", std::nullopt},
+  });
+
+  const auto* model = catalog->GetModelVariant("model:1");
+
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->Info().model_id, "model:1");
+  EXPECT_EQ(first->fetch_by_id_calls, 1);
+  EXPECT_EQ(second->fetch_by_id_calls, 1);
 }
 
 TEST_F(AzureModelCatalogTest, VersionHistoryDeduplicatesBeforeApplyingLimit) {

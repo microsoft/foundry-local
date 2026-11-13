@@ -32,6 +32,8 @@ const char* CatalogName(CatalogType catalog) {
       return "public";
     case CatalogType::kLocal:
       return "local";
+    case CatalogType::kAzureRegistry:
+      return "azure_registry";
   }
 
   FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
@@ -508,6 +510,9 @@ class HostedManager final : public ManagerBackend {
         return public_catalog_;
       case CatalogType::kLocal:
         return local_catalog_;
+      case CatalogType::kAzureRegistry:
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                 "Azure Registry catalog requires option 'name'");
     }
 
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
@@ -579,7 +584,8 @@ class HostedManager final : public ManagerBackend {
       }
     } else {
       for (const auto& ep : state_->metadata->GetDiscoverableEps()) {
-        values.push_back({ep.name, false});
+        // Built-in WebGPU is ready even before a host starts; plugin EPs are not.
+        values.push_back({ep.name, std::string_view(ep.name) == "WebGpuExecutionProvider" && ep.is_registered});
       }
     }
 

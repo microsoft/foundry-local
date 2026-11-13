@@ -27,7 +27,8 @@ bool DeclaresNonGenerativePackage(const std::filesystem::path& package_root);
 
 /// Parse and validate a multi-component package root. Returns nullopt when the
 /// directory is not a multi-component package; malformed packages throw.
+/// Only the downloader may allow its own in-progress marker during final validation.
 std::optional<NonGenerativePackageMetadata> ReadNonGenerativePackage(
-    const std::filesystem::path& package_root);
+    const std::filesystem::path& package_root, bool allow_in_progress = false);
 
 }  // namespace fl

@@ -1,24 +1,19 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "catalog/azure_model_catalog.h"
-#include "catalog/capacity_compatibility.h"
 #include "catalog/azure_catalog_client.h"
 #include "catalog/catalog_cache.h"
 #include "catalog/catalog_client.h"
 #include "catalog/local_model_scanner.h"
-#include "inferencing/execution_provider.h"
-#include "inferencing/generative/genai_config.h"
 #include "model.h"
 #include "model_info.h"
 #include "telemetry/telemetry.h"
-#include "version.h"
 
 #include <foundry_local/foundry_local_c.h>
 #include <fmt/format.h>
 
 #include <algorithm>
 #include <cstdint>
-#include <filesystem>
 #include <iterator>
 #include <mutex>
 #include <unordered_map>
@@ -137,78 +132,7 @@ void RemoveLegacyLocalEntries(std::vector<ModelInfo>& model_infos) {
   });
 }
 
-void RemoveIncompatibleModels(std::vector<ModelInfo>& model_infos) {
-  std::erase_if(model_infos, [](const ModelInfo& info) {
-    const auto* minimum_version =
-        info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR);
-    return minimum_version && !minimum_version->empty() &&
-           !IsFoundryLocalVersionCompatible(FOUNDRY_LOCAL_VERSION, *minimum_version);
-  });
-}
-
 }  // namespace
-
-class AzureModelCatalog::CatalogDevices final : public IEpDetector {
- public:
-  using Devices = std::map<std::string, std::vector<std::string>>;
-
-  explicit CatalogDevices(const IEpDetector& local) : local_(local) {}
-
-  Devices GetAvailableDevicesToEPs() const override {
-    std::lock_guard lock(mutex_);
-    return hosted_ ? *hosted_ : local_.GetAvailableDevicesToEPs();
-  }
-
-  std::map<std::string, std::vector<DeviceCapacity>> GetDeviceCapacities() const override {
-    std::lock_guard lock(mutex_);
-    if (!hosted_) {
-      return local_.GetDeviceCapacities();
-    }
-
-    std::map<std::string, std::vector<DeviceCapacity>> capacities;
-    for (const auto& target : execution_targets_) {
-      capacities[target.provider].push_back(target.capacity);
-    }
-
-    return capacities;
-  }
-
-  std::vector<ExecutionTarget> GetExecutionTargets() const override {
-    std::lock_guard lock(mutex_);
-    if (!hosted_) {
-      return local_.GetExecutionTargets();
-    }
-    auto targets = execution_targets_;
-    for (const auto& [type, providers] : *hosted_) {
-      for (const auto& provider : providers) {
-        if (std::none_of(targets.begin(), targets.end(), [&](const auto& target) {
-              return ToLower(EPUtils::NormalizeRegistrationName(target.provider)) ==
-                     ToLower(EPUtils::NormalizeRegistrationName(provider));
-            })) {
-          targets.push_back({provider, 0, type, {}});
-        }
-      }
-    }
-    return targets;
-  }
-
-  bool Set(Devices devices, std::vector<ExecutionTarget> execution_targets) {
-    std::lock_guard lock(mutex_);
-    if (hosted_ && *hosted_ == devices && execution_targets_ == execution_targets) {
-      return false;
-    }
-
-    hosted_ = std::move(devices);
-    execution_targets_ = std::move(execution_targets);
-    return true;
-  }
-
- private:
-  const IEpDetector& local_;
-  mutable std::mutex mutex_;
-  std::optional<Devices> hosted_;
-  std::vector<ExecutionTarget> execution_targets_;
-};
 
 AzureModelCatalog::AzureModelCatalog(std::vector<std::pair<std::string, std::optional<std::string>>> catalog_urls,
                                      std::string cache_dir,
@@ -217,11 +141,10 @@ AzureModelCatalog::AzureModelCatalog(std::vector<std::pair<std::string, std::opt
                                      ILogger& logger,
                                      bool cache_only,
                                      ITelemetry& telemetry)
-    : BaseModelCatalog(catalog_urls.empty() ? kDefaultCatalogUrl : catalog_urls.front().first, logger),
+    : RemoteModelCatalog(catalog_urls.empty() ? kDefaultCatalogUrl : catalog_urls.front().first,
+                         CatalogType::kPublic, std::move(model_factory), ep_detector, logger),
       catalog_urls_(std::move(catalog_urls)),
       cache_dir_(std::move(cache_dir)),
-      model_factory_(std::move(model_factory)),
-      catalog_devices_(std::make_unique<CatalogDevices>(ep_detector)),
       logger_(logger),
       cache_only_(cache_only),
       telemetry_(telemetry) {
@@ -236,114 +159,9 @@ AzureModelCatalog::AzureModelCatalog(std::vector<std::pair<std::string, std::opt
 
 AzureModelCatalog::~AzureModelCatalog() = default;
 
-void AzureModelCatalog::SetRuntimeDevices(std::map<std::string, std::vector<std::string>> devices,
-                                        std::vector<ExecutionTarget> execution_targets) {
-  if (catalog_devices_->Set(std::move(devices), std::move(execution_targets))) {
-    InvalidateCache();
-  }
-}
-
-BaseModelCatalog::VariantEligibility AzureModelCatalog::MakeVariantEligibility() const {
-  return MakeCompatibilityPredicate(false);
-}
-
-BaseModelCatalog::VariantEligibility AzureModelCatalog::MakeVariantVisibility() const {
-  return [this, compatible = VariantEligibility{}](const Model& variant) mutable {
-    if (variant.Info().device_type != DeviceType::kGPU ||
-        !variant.Info().GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_MIN_VRAM_BYTES_INT)) {
-      return true;
-    }
-    if (!compatible) {
-      compatible = MakeCompatibilityPredicate(true);
-    }
-    return compatible(variant);
-  };
-}
-
-BaseModelCatalog::VariantEligibility AzureModelCatalog::MakeCompatibilityPredicate(bool capacity_only) const {
-  auto targets = catalog_devices_->GetExecutionTargets();
-  std::unordered_set<std::string> providers;
-  for (const auto& target : targets) {
-    providers.insert(ToLower(EPUtils::NormalizeRegistrationName(target.provider)));
-  }
-
-  // Cache config requirements only within this pass so artifact edits and provider changes are seen on refresh.
-  return [this, capacity_only, providers = std::move(providers), targets = std::move(targets),
-          configured_providers = std::unordered_map<std::string, std::optional<std::string>>{}](
-             const Model& variant) mutable {
-    const auto& info = variant.Info();
-    ModelCapacityRequirements requirements;
-    if (const auto* bytes = info.GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_MIN_VRAM_BYTES_INT); bytes && *bytes >= 0) {
-      requirements.minimum_vram_bytes = static_cast<uint64_t>(*bytes);
-    }
-    if (capacity_only && (info.device_type != DeviceType::kGPU || !requirements.minimum_vram_bytes)) {
-      return true;
-    }
-    const auto meets_capacity = [&](const std::string& provider, bool generic_gpu = false) {
-      return EvaluateProviderCapacity(info.device_type == DeviceType::kGPU, requirements, targets,
-                                      provider, generic_gpu).state != CompatibilityState::kDoesNotFit;
-    };
-    if (info.model_id.find("generic-gpu") != std::string::npos &&
-        (providers.contains("cudaexecutionprovider") || providers.contains("webgpuexecutionprovider"))) {
-      return meets_capacity({}, true);
-    }
-
-    auto provider = info.execution_provider;
-    if (provider.empty()) {
-      const auto local_path = variant.LocalPathSnapshot();
-      if (!local_path.empty()) {
-        auto [entry, inserted] = configured_providers.try_emplace(local_path);
-        if (inserted) {
-          try {
-            const auto config_path = std::filesystem::path(local_path) / "genai_config.json";
-            entry->second = GenAIConfig::LoadFromFile(config_path.string()).DefaultProvider();
-          } catch (const std::exception& ex) {
-            logger_.Log(LogLevel::Warning,
-                        fmt::format("Cannot determine execution provider for model '{}': {}", info.model_id, ex.what()));
-          }
-        }
-
-        if (!entry->second) {
-          return capacity_only;
-        }
-
-        provider = *entry->second;
-      }
-    }
-
-    if (provider.empty()) {
-      provider = EPUtils::RequiredEpForModelId(info.model_id);
-    }
-
-    provider = ToLower(EPUtils::NormalizeRegistrationName(provider));
-    return (capacity_only || provider.empty() || provider == "cpuexecutionprovider" || providers.contains(provider)) &&
-           meets_capacity(provider);
-  };
-}
-
-void AzureModelCatalog::FilterCapacityIncompatibleModels(std::vector<Model>& models) const {
-  const bool has_requirements = std::any_of(models.begin(), models.end(), [](const Model& model) {
-    return model.Info().device_type == DeviceType::kGPU &&
-           model.Info().GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_MIN_VRAM_BYTES_INT) != nullptr;
-  });
-  if (!has_requirements) {
-    return;
-  }
-  auto compatible = MakeCompatibilityPredicate(true);
-  std::erase_if(models, [&](const Model& model) {
-    if (compatible(model)) {
-      return false;
-    }
-    logger_.Log(LogLevel::Information,
-                fmt::format("Catalog: filtering variant '{}' because its minimum total GPU VRAM exceeds capacity.",
-                            model.Info().model_id));
-    return true;
-  });
-}
-
 std::unique_ptr<ICatalogClient> AzureModelCatalog::CreateCatalogClient(const std::string& url,
                                                                        const std::string& filter) const {
-  return MakeCatalogClient(url, filter, *catalog_devices_, logger_, cache_dir_);
+  return MakeCatalogClient(url, filter, CatalogDevices(), logger_, cache_dir_);
 }
 
 AzureModelCatalog::CatalogResult AzureModelCatalog::GetLiveCatalogOrLocalSnapshot(
@@ -390,21 +208,14 @@ AzureModelCatalog::CatalogResult AzureModelCatalog::GetLiveCatalogOrLocalSnapsho
   };
 }
 
-std::vector<Model> AzureModelCatalog::CreateModelsWithLocalPaths(const std::vector<ModelInfo>& model_infos,
-                                                                 const LocalModels& local_models) const {
-  std::vector<Model> models;
-  models.reserve(model_infos.size());
-
-  for (const auto& info : model_infos) {
-    auto local_model = local_models.find(info.model_id);
-    auto local_path = local_model != local_models.end() ? local_model->second : std::string{};
-    models.push_back(model_factory_(ModelInfo(info), std::move(local_path)));
-  }
-
-  return models;
+std::string AzureModelCatalog::GetModelPath(const ModelInfo& info, Query query) const {
+  if (query == Query::History) return {};
+  std::lock_guard lock(paths_mutex_);
+  const auto found = scanned_local_models_.find(info.model_id);
+  return found == scanned_local_models_.end() ? std::string{} : found->second;
 }
 
-std::vector<Model> AzureModelCatalog::FetchModels() const {
+std::vector<ModelInfo> AzureModelCatalog::FetchModelInfos() const {
   logger_.Log(LogLevel::Information, "Getting catalog metadata and locally cached models.");
 
   auto local_models = ScanLocalModels(cache_dir_, logger_);
@@ -417,26 +228,25 @@ std::vector<Model> AzureModelCatalog::FetchModels() const {
   logger_.Log(LogLevel::Information, fmt::format("Found {} locally cached models.", cached_model_ids.size()));
 
   auto catalog_result = GetLiveCatalogOrLocalSnapshot(cached_model_ids);
-  RemoveIncompatibleModels(catalog_result.model_infos);
+  std::erase_if(catalog_result.model_infos, [this](const ModelInfo& info) { return !IsModelCompatible(info); });
 
   if (catalog_result.source == CatalogSource::kLive && !catalog_result.model_infos.empty()) {
     CatalogCache cache(cache_dir_, logger_);
     cache.Save(catalog_result.model_infos);
   }
 
-  auto models = CreateModelsWithLocalPaths(catalog_result.model_infos, local_models);
-  scanned_local_models_ = std::move(local_models);
-  logger_.Log(LogLevel::Information, fmt::format("Populated model info for {} models.", models.size()));
-
-  return models;
+  {
+    std::lock_guard lock(paths_mutex_);
+    scanned_local_models_ = std::move(local_models);
+  }
+  return catalog_result.model_infos;
 }
 
 void AzureModelCatalog::RefreshRetainedVariantCache(Model& model) const {
-  const auto found = scanned_local_models_.find(model.Id());
-  model.UpdateCachedState(found == scanned_local_models_.end() ? std::string{} : found->second);
+  model.UpdateCachedState(GetModelPath(model.Info(), Query::Lookup));
 }
 
-std::vector<Model> AzureModelCatalog::FetchModelVersions(
+std::vector<ModelInfo> AzureModelCatalog::FetchModelVersionInfos(
     const std::string& model_alias,
     const std::string& model_name,
     int max_versions) const {
@@ -452,7 +262,7 @@ std::vector<Model> AzureModelCatalog::FetchModelVersions(
     try {
       auto client = CreateCatalogClient(url, filter.value_or(""));
       auto fetched = client->FetchAllVersionsByAlias(model_alias, model_name, max_versions);
-      RemoveIncompatibleModels(fetched);
+      std::erase_if(fetched, [this](const ModelInfo& info) { return !IsModelCompatible(info); });
       model_infos.insert(model_infos.end(), std::make_move_iterator(fetched.begin()),
                          std::make_move_iterator(fetched.end()));
     } catch (const std::exception& ex) {
@@ -463,21 +273,14 @@ std::vector<Model> AzureModelCatalog::FetchModelVersions(
 
   model_infos = DeduplicateByModelId(std::move(model_infos));
   model_infos = LimitVersionsPerName(std::move(model_infos), max_versions);
-  std::vector<Model> out;
-  out.reserve(model_infos.size());
-  for (auto& info : model_infos) {
-    out.push_back(model_factory_(std::move(info), /*local_path=*/""));
-  }
-
-  FilterCapacityIncompatibleModels(out);
   logger_.Log(LogLevel::Information,
               fmt::format("FetchModelVersions('{}') returned {} variant(s).",
-                          model_alias, out.size()));
+                          model_alias, model_infos.size()));
 
-  return out;
+  return model_infos;
 }
 
-std::vector<Model> AzureModelCatalog::FetchModelsByIds(const std::vector<std::string>& model_ids) const {
+std::vector<ModelInfo> AzureModelCatalog::FetchModelInfosByIds(const std::vector<std::string>& model_ids) const {
   if (model_ids.empty()) {
     return {};
   }
@@ -489,8 +292,11 @@ std::vector<Model> AzureModelCatalog::FetchModelsByIds(const std::vector<std::st
   }
 
   auto local_models = ScanLocalModels(cache_dir_, logger_);
-
-  std::vector<Model> models;
+  {
+    std::lock_guard lock(paths_mutex_);
+    scanned_local_models_ = std::move(local_models);
+  }
+  std::vector<ModelInfo> models;
   // Track which IDs are still unresolved so we can stop calling further
   // endpoints once everything has been found.
   std::vector<std::string> remaining(model_ids);
@@ -503,14 +309,8 @@ std::vector<Model> AzureModelCatalog::FetchModelsByIds(const std::vector<std::st
     try {
       auto client = CreateCatalogClient(url, filter.value_or(""));
       auto model_infos = client->FetchModelsByIds(remaining);
-      RemoveIncompatibleModels(model_infos);
-
       for (auto& info : model_infos) {
-        std::string local_path;
-        auto it = local_models.find(info.model_id);
-        if (it != local_models.end()) {
-          local_path = it->second;
-        }
+        if (!IsModelCompatible(info)) continue;
 
         // Drop this id from the remaining list now that it's resolved.
         auto rit = std::find(remaining.begin(), remaining.end(), info.model_id);
@@ -518,7 +318,7 @@ std::vector<Model> AzureModelCatalog::FetchModelsByIds(const std::vector<std::st
           remaining.erase(rit);
         }
 
-        models.push_back(model_factory_(std::move(info), std::move(local_path)));
+        models.push_back(std::move(info));
       }
     } catch (const std::exception& ex) {
       logger_.Log(LogLevel::Error,

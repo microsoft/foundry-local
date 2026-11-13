@@ -60,7 +60,7 @@
  * Incremented with each release.
  * Used to request the API function table via FoundryLocalGetApi.
  * ----------------------------------------------------------------------- */
-#define FOUNDRY_LOCAL_API_VERSION 3
+#define FOUNDRY_LOCAL_API_VERSION 4
 
 // Payload schemas evolve independently of the function-table ABI.
 #define FOUNDRY_LOCAL_DATA_VERSION 2
@@ -213,6 +213,7 @@ typedef enum flDeviceType {
 typedef enum flCatalogType {
   FOUNDRY_LOCAL_CATALOG_PUBLIC = 0,
   FOUNDRY_LOCAL_CATALOG_LOCAL = 1,
+  FOUNDRY_LOCAL_CATALOG_AZURE_REGISTRY = 2,
 } flCatalogType;
 
 /// Tensor element data types. Values match ONNX TensorProto.DataType.
@@ -779,6 +780,10 @@ typedef struct flApi {
                 _Outptr_ flCatalog** out_catalog);
 
   // End V2
+  // V3 adds versioned inference structures without extending this table.
+  FL_API_STATUS(Manager_GetCatalogWithOptions, _In_ const flManager* manager, flCatalogType catalog_type,
+                _In_opt_ const flKeyValuePairs* options, _Outptr_ flCatalog** out_catalog);
+  // End V4
   /* Append new function pointers at the end for future versions and add marker for the end of each version */
 } flApi;
 

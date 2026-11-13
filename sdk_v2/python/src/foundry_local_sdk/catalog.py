@@ -19,6 +19,7 @@ class CatalogType(IntEnum):
 
     PUBLIC = 0
     LOCAL = 1
+    AZURE_REGISTRY = 2
 
 
 class Catalog:
@@ -53,7 +54,7 @@ class Catalog:
 
     @property
     def catalog_type(self) -> CatalogType:
-        """Whether this is the public or local catalog."""
+        """Whether this is the public, local, or Azure Registry model catalog."""
         return self._catalog_type
 
     def _ensure_manager_open(self) -> None:

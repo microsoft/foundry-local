@@ -88,18 +88,41 @@ class AmdGpuEpDetector : public fl::IEpDetector {
   std::string prepared_ep;
 };
 
+class CapacityGpuEpDetector final : public fl::IEpDetector {
+ public:
+  std::map<std::string, std::vector<std::string>> GetAvailableDevicesToEPs() const override {
+    return {{"GPU", {"CUDAExecutionProvider", "WebGpuExecutionProvider"}}};
+  }
+
+  std::vector<fl::ExecutionTarget> GetExecutionTargets() const override {
+    return {{"CUDAExecutionProvider", 99, "GPU", {cuda_fits ? 24u : 8u}},
+            {"WebGpuExecutionProvider", 77, "GPU", {webgpu_fits ? 24u : 8u}}};
+  }
+
+  bool PrepareForModelLoad(std::string_view provider) override {
+    prepared = provider;
+    return false;
+  }
+
+  bool cuda_fits = true;
+  bool webgpu_fits = true;
+  std::string prepared;
+};
+
 /// Creates a minimal model directory with a dummy genai_config.json.
 /// Cleans up on destruction.
 class TempModelDir {
  public:
-  explicit TempModelDir(const std::string& model_name, const std::string& provider = "")
+  explicit TempModelDir(const std::string& model_name,
+                        const std::string& provider = "",
+                        const std::string& model_type = "phi3")
       : root_(fl::test::TempPath::CreateTempDir("fl_model_load_" + model_name + "_")), path_(root_.string()) {
     // Write a minimal genai_config.json
     std::ofstream config(std::filesystem::path(path_) / "genai_config.json");
     if (provider.empty()) {
-      config << R"({"model": {"type": "phi3"}})";
+      config << R"({"model": {"type": ")" << model_type << R"("}})";
     } else {
-      config << R"({"model":{"type":"phi3","decoder":{"session_options":{"provider_options":[{")"
+      config << R"({"model":{"type":")" << model_type << R"(","decoder":{"session_options":{"provider_options":[{")"
              << provider << R"(":{}}]}}}})";
     }
   }
@@ -327,37 +350,24 @@ TEST(ModelLoadManagerTest, GenericGpuAutoSelectionDoesNotSelectAmdGpu) {
   EXPECT_TRUE(ep.prepared_ep.empty());
 }
 
-TEST(ModelLoadManagerTest, GenericGpuAutoSelectionStillPrefersCudaThenWebGpuWithAmdGpuAvailable) {
-  for (const auto preferred : {"CUDAExecutionProvider", "WebGpuExecutionProvider"}) {
+TEST(ModelLoadManagerTest, GenericGpuTextModelAutoSelectionPrefersCudaThenWebGpu) {
+  for (const bool cuda_available : {false, true}) {
+    SCOPED_TRACE(cuda_available);
     AmdGpuEpDetector ep;
-    ep.providers.push_back("WebGpuExecutionProvider");
-    if (std::string_view(preferred) == "CUDAExecutionProvider") {
+    if (cuda_available) {
       ep.providers.push_back("CUDAExecutionProvider");
     }
+    ep.providers.push_back("WebGpuExecutionProvider");
     fl::StderrLogger logger;
     TempModelDir dir("generic-gpu-priority");
     fl::ModelLoadManager mgr(ep, logger);
     EXPECT_THROW(mgr.LoadModel(dir.path(), "model-generic-gpu:1"), fl::Exception);
-    EXPECT_EQ(ep.prepared_ep, preferred);
+    EXPECT_EQ(ep.prepared_ep, cuda_available ? "CUDAExecutionProvider" : "WebGpuExecutionProvider");
   }
 }
 
 TEST(ModelLoadManagerTest, CapacityAwareGenericGpuLoadPreparesFittingProvider) {
-  class TargetDetector final : public fl::IEpDetector {
-   public:
-    std::map<std::string, std::vector<std::string>> GetAvailableDevicesToEPs() const override {
-      return {{"GPU", {"CUDAExecutionProvider", "WebGpuExecutionProvider"}}};
-    }
-    std::vector<fl::ExecutionTarget> GetExecutionTargets() const override {
-      return {{"CUDAExecutionProvider", 99, "GPU", {8}},
-              {"WebGpuExecutionProvider", 77, "GPU", {24}}};
-    }
-    bool PrepareForModelLoad(std::string_view provider) override {
-      prepared = provider;
-      return false;
-    }
-    std::string prepared;
-  } detector;
+  CapacityGpuEpDetector detector;
   fl::ModelInfo info;
   info.model_id = "model-generic-gpu:1";
   info.device_type = fl::DeviceType::kGPU;
@@ -365,13 +375,52 @@ TEST(ModelLoadManagerTest, CapacityAwareGenericGpuLoadPreparesFittingProvider) {
   TempModelDir directory("capacity-generic", "dml");
   fl::StderrLogger logger;
   fl::ModelLoadManager manager(detector, logger);
-  EXPECT_THROW(manager.LoadModel(directory.path(), info.model_id, fl::ExecutionProvider::kDefault, &info),
-               fl::Exception);
-  EXPECT_EQ(detector.prepared, "WebGpuExecutionProvider");
-  detector.prepared.clear();
-  EXPECT_THROW(manager.LoadModel(directory.path(), info.model_id, fl::ExecutionProvider::kCUDA, &info),
-               fl::Exception);
-  EXPECT_TRUE(detector.prepared.empty());
+  for (const bool cuda_fits : {false, true}) {
+    SCOPED_TRACE(cuda_fits);
+    detector.cuda_fits = cuda_fits;
+    detector.prepared.clear();
+    EXPECT_THROW(manager.LoadModel(directory.path(), info.model_id, fl::ExecutionProvider::kDefault, &info),
+                 fl::Exception);
+    EXPECT_EQ(detector.prepared, cuda_fits ? "CUDAExecutionProvider" : "WebGpuExecutionProvider");
+    detector.prepared.clear();
+    EXPECT_THROW(manager.LoadModel(directory.path(), info.model_id, fl::ExecutionProvider::kCUDA, &info),
+                 fl::Exception);
+    EXPECT_EQ(detector.prepared, cuda_fits ? "CUDAExecutionProvider" : "");
+  }
+}
+
+TEST(ModelLoadManagerTest, CapacityAwareGenericGpuMultimodalLoadPreservesWebGpuRestrictionAndCudaOverride) {
+  CapacityGpuEpDetector detector;
+  fl::ModelInfo info;
+  info.model_id = "model-generic-gpu:1";
+  info.device_type = fl::DeviceType::kGPU;
+  info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_VRAM_BYTES_INT] = 16;
+  TempModelDir directory("capacity-generic-multimodal", "webgpu", "phi3v");
+  fl::StderrLogger logger;
+  fl::ModelLoadManager manager(detector, logger);
+  for (const bool webgpu_fits : {false, true}) {
+    SCOPED_TRACE(webgpu_fits);
+    detector.webgpu_fits = webgpu_fits;
+    for (const auto override_ep : {fl::ExecutionProvider::kDefault, fl::ExecutionProvider::kCUDA}) {
+      SCOPED_TRACE(static_cast<int>(override_ep));
+      detector.prepared.clear();
+      const bool insufficient_capacity = !webgpu_fits && override_ep == fl::ExecutionProvider::kDefault;
+      try {
+        manager.LoadModel(directory.path(), info.model_id, override_ep, &info);
+        FAIL() << "Expected capacity rejection or injected preparation failure";
+      } catch (const fl::Exception& error) {
+        EXPECT_EQ(error.code(),
+                  insufficient_capacity ? FOUNDRY_LOCAL_ERROR_INVALID_USAGE : FOUNDRY_LOCAL_ERROR_INTERNAL);
+        EXPECT_NE(std::string(error.what()).find(insufficient_capacity ? "sufficient total GPU memory"
+                                                                       : "failed to prepare"),
+                  std::string::npos);
+      }
+
+      const auto expected_provider = override_ep == fl::ExecutionProvider::kCUDA ? "CUDAExecutionProvider"
+                                                                                : "WebGpuExecutionProvider";
+      EXPECT_EQ(detector.prepared, insufficient_capacity ? "" : expected_provider);
+    }
+  }
 }
 
 TEST(ModelLoadManagerTest, CapacityAwareLoadSelectsSecondCudaOrdinalNotHardwareId) {
@@ -401,6 +450,33 @@ TEST(ModelLoadManagerTest, CapacityAwareLoadSelectsSecondCudaOrdinalNotHardwareI
                fl::Exception);
   EXPECT_NE(logger.messages.find(R"(hardware_id=99 options={"device_id":"1"})"), std::string::npos);
   EXPECT_EQ(logger.messages.find(R"(options={"device_id":"0"})"), std::string::npos);
+}
+
+TEST(ModelLoadManagerTest, GenericGpuMultimodalModelPrefersWebGpuEvenWithCudaAvailable) {
+  for (const bool cuda_available : {false, true}) {
+    SCOPED_TRACE(cuda_available);
+    AmdGpuEpDetector ep;
+    ep.providers.push_back("WebGpuExecutionProvider");
+    if (cuda_available) {
+      ep.providers.push_back("CUDAExecutionProvider");
+    }
+    fl::StderrLogger logger;
+    TempModelDir dir("generic-gpu-priority", "webgpu", "phi3v");
+    fl::ModelLoadManager mgr(ep, logger);
+    EXPECT_THROW(mgr.LoadModel(dir.path(), "model-generic-gpu:1"), fl::Exception);
+    EXPECT_EQ(ep.prepared_ep, "WebGpuExecutionProvider");
+  }
+}
+
+TEST(ModelLoadManagerTest, LoadGenericGpuModel_ExplicitCudaOverride_StillSelectsCuda) {
+  AmdGpuEpDetector ep;
+  ep.providers = {"CUDAExecutionProvider", "WebGpuExecutionProvider"};
+  fl::StderrLogger logger;
+  TempModelDir dir("generic-gpu-explicit-cuda", "webgpu");
+  fl::ModelLoadManager mgr(ep, logger);
+
+  EXPECT_THROW(mgr.LoadModel(dir.path(), "model-generic-gpu:1", fl::ExecutionProvider::kCUDA), fl::Exception);
+  EXPECT_EQ(ep.prepared_ep, "CUDAExecutionProvider");
 }
 
 TEST(ModelLoadManagerTest, LoadRuntimeIdWithFullDmlProviderName_DoesNotRequireDownloadableEp) {
@@ -473,22 +549,28 @@ TEST(ModelLoadManagerTest, LoadCpuModel_AlwaysSucceeds_NoEpGuard) {
   }
 }
 
-TEST(ModelLoadManagerTest, LoadGenericGpuModel_CudaAvailable_AutoSelectsCuda) {
-  GpuEpDetector ep;
-  fl::StderrLogger logger;
-  TempModelDir dir("phi-4-mini-generic-gpu");
-  fl::ModelLoadManager mgr(ep, logger);
+TEST(ModelLoadManagerTest, LoadGenericGpuModel_OnlyCudaAvailable_DoesNotOverrideConfiguredProvider) {
+  for (const auto provider : {"dml", "webgpu"}) {
+    SCOPED_TRACE(provider);
+    GpuEpDetector ep;
+    fl::StderrLogger logger;
+    TempModelDir dir("phi-4-mini-generic-gpu", provider, "phi3v");
+    fl::ModelLoadManager mgr(ep, logger);
 
-  // Will fail at GenAIModelInstance construction, but should NOT fail at EP guard.
-  // The auto-select logic should pick CUDA, and CUDA IS available.
-  try {
-    mgr.LoadModel(dir.path(), "phi-4-mini-generic-gpu");
-  } catch (const fl::Exception& e) {
-    // Should NOT be an EP guard error
-    EXPECT_NE(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+    try {
+      mgr.LoadModel(dir.path(), "phi-4-mini-generic-gpu");
+      FAIL() << "Expected exception";
+    } catch (const fl::Exception& e) {
+      if (std::string_view(provider) == "webgpu") {
+        EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+        EXPECT_NE(std::string(e.what()).find("WebGpuExecutionProvider"), std::string::npos);
+      } else {
+        EXPECT_NE(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+      }
+    }
+
+    EXPECT_TRUE(ep.prepared_ep.empty());
   }
-
-  EXPECT_EQ(ep.prepared_ep, "CUDAExecutionProvider");
 }
 
 TEST(ModelLoadManagerTest, LoadGenericGpuModel_WebGpuAvailable_AutoSelectsWebGpu) {
@@ -560,27 +642,34 @@ TEST_F(ModelLoadManagerUnloadTest, UnloadFailsWhenInUseAndSucceedsAfterSessionsR
   EXPECT_EQ(mgr_->GetLoadedModel(fl::test::kTestChatModelAlias), nullptr);
 }
 
-TEST_F(ModelLoadManagerUnloadTest, SameIdRequiresSameCanonicalPathForLoadLookupAndUnload) {
+TEST_F(ModelLoadManagerUnloadTest, SameIdUsesCanonicalPathForIndependentLoadLookupAndUnload) {
   const auto equivalent_path = std::filesystem::path(model_path_) / ".";
-  const auto different_path = std::filesystem::path(model_path_).parent_path();
+  const auto copy = fl::test::TempPath::CreateTempDir();
+  const auto different_path = copy.path() / "model";
+  std::filesystem::copy(fl::test::GetTestDataPath("tiny-paged-attention"), different_path,
+                        std::filesystem::copy_options::recursive);
 
   const auto idempotent = mgr_->LoadModel(equivalent_path.string(), fl::test::kTestChatModelAlias);
   EXPECT_EQ(idempotent.status, fl::ModelLoadManager::LoadStatus::kModelAlreadyLoaded);
   EXPECT_EQ(idempotent.model, instance_);
 
-  try {
-    mgr_->LoadModel(different_path.string(), fl::test::kTestChatModelAlias);
-    FAIL() << "Expected a same-ID path collision";
-  } catch (const fl::Exception& e) {
-    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
-    EXPECT_NE(std::string(e.what()).find("different path"), std::string::npos);
+  const auto other = mgr_->LoadModel(different_path.string(), fl::test::kTestChatModelAlias);
+  ASSERT_EQ(other.status, fl::ModelLoadManager::LoadStatus::kSuccess);
+  EXPECT_NE(other.model, instance_);
+  EXPECT_EQ(mgr_->GetLoadedModel(fl::test::kTestChatModelAlias, different_path.string()), other.model);
+  EXPECT_EQ(mgr_->GetLoadedModel(fl::test::kTestChatModelAlias, equivalent_path.string()), instance_);
+  EXPECT_THROW(mgr_->GetLoadedModel(fl::test::kTestChatModelAlias), fl::Exception);
+  EXPECT_THROW(mgr_->UnloadModel(fl::test::kTestChatModelAlias), fl::Exception);
+
+  {
+    auto session = mgr_->AcquireSessionModel(fl::test::kTestChatModelAlias, different_path.string());
+    EXPECT_EQ(other.model->SessionRefCount(), 1);
+    EXPECT_EQ(instance_->SessionRefCount(), 0);
+    EXPECT_TRUE(mgr_->UnloadModel(fl::test::kTestChatModelAlias, equivalent_path.string()));
+    EXPECT_EQ(mgr_->GetLoadedModel(fl::test::kTestChatModelAlias), other.model);
+    EXPECT_THROW(mgr_->UnloadModel(fl::test::kTestChatModelAlias, different_path.string()), fl::Exception);
   }
-
-  EXPECT_EQ(mgr_->GetLoadedModel(fl::test::kTestChatModelAlias, different_path.string()), nullptr);
-  EXPECT_FALSE(mgr_->UnloadModel(fl::test::kTestChatModelAlias, different_path.string()));
-  EXPECT_EQ(mgr_->GetLoadedModel(fl::test::kTestChatModelAlias), instance_);
-
-  EXPECT_TRUE(mgr_->UnloadModel(fl::test::kTestChatModelAlias, equivalent_path.string()));
+  EXPECT_TRUE(mgr_->UnloadModel(fl::test::kTestChatModelAlias, different_path.string()));
   EXPECT_EQ(mgr_->GetLoadedModel(fl::test::kTestChatModelAlias), nullptr);
 }
 

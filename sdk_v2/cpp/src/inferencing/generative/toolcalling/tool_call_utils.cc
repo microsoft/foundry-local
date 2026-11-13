@@ -535,8 +535,9 @@ std::vector<ParsedToolCall> DeserializeToolCalls(const std::string& json_text,
       } else if (call.size() == 1 && !call.contains("name") &&
                  !call.contains("function") && !call.contains("arguments") &&
                  !call.contains("parameters") && !call.contains("args")) {
-        const auto& [name, arguments] = *call.items().begin();
-        tc.name = CleanToolName(name);
+        const auto member = call.begin();
+        const auto& arguments = member.value();
+        tc.name = CleanToolName(member.key());
         const auto argument_source =
             source != nullptr ? source->singleton_value : std::optional<std::string_view>{};
         SetArguments(tc, arguments, argument_source);

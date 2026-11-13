@@ -45,19 +45,23 @@ TEST(CApiTest, SupportedVersionsReturnSameExpandedApiTables) {
   const flApi* v1 = FoundryLocalGetApi(1);
   const flApi* v2 = FoundryLocalGetApi(2);
   const flApi* v3 = FoundryLocalGetApi(3);
+  const flApi* v4 = FoundryLocalGetApi(4);
   ASSERT_NE(v0, nullptr);
   ASSERT_NE(v1, nullptr);
   ASSERT_NE(v2, nullptr);
   ASSERT_NE(v3, nullptr);
+  ASSERT_NE(v4, nullptr);
 
   EXPECT_EQ(v0, v2);
   EXPECT_EQ(v1, v2);
   EXPECT_EQ(v2, v3);
+  EXPECT_EQ(v3, v4);
   EXPECT_EQ(v1->GetCatalogApi(), v2->GetCatalogApi());
   EXPECT_EQ(v1->GetModelApi(), v2->GetModelApi());
   EXPECT_NE(v1->GetCatalogApi()->RegisterModel, nullptr);
   EXPECT_NE(v1->GetModelApi()->CreateModelInfo, nullptr);
   EXPECT_NE(v3->GetConfigurationApi()->SetUseSharedHost, nullptr);
+  EXPECT_NE(v4->Manager_GetCatalogWithOptions, nullptr);
 }
 
 TEST(CApiTest, VersionReturnsNonNull) {
@@ -380,6 +384,27 @@ TEST(CApiTest, GetCatalogFromManager) {
   flCatalog* repeated_local = nullptr;
   ASSERT_FL_OK(api, api->Manager_GetCatalogByType(mgr, FOUNDRY_LOCAL_CATALOG_LOCAL, &repeated_local));
   EXPECT_EQ(local, repeated_local);
+
+  flCatalog* configured = nullptr;
+  ASSERT_FL_OK(api, api->Manager_GetCatalogWithOptions(mgr, FOUNDRY_LOCAL_CATALOG_LOCAL, nullptr, &configured));
+  EXPECT_EQ(configured, local);
+  flKeyValuePairs* options = nullptr;
+  api->CreateKeyValuePairs(&options);
+  ASSERT_NE(options, nullptr);
+  api->AddKeyValuePair(options, "name", "Mock-Registry");
+  ASSERT_FL_OK(api, api->Manager_GetCatalogWithOptions(
+      mgr, FOUNDRY_LOCAL_CATALOG_AZURE_REGISTRY, options, &configured));
+  flCatalog* repeated = nullptr;
+  api->AddKeyValuePair(options, "name", "mock-registry");
+  api->AddKeyValuePair(options, "credential", "azure_cli");
+  ASSERT_FL_OK(api, api->Manager_GetCatalogWithOptions(
+      mgr, FOUNDRY_LOCAL_CATALOG_AZURE_REGISTRY, options, &repeated));
+  EXPECT_EQ(configured, repeated);
+  api->AddKeyValuePair(options, "credential", "workload_identity");
+  ASSERT_FL_OK(api, api->Manager_GetCatalogWithOptions(
+      mgr, FOUNDRY_LOCAL_CATALOG_AZURE_REGISTRY, options, &repeated));
+  EXPECT_NE(configured, repeated);
+  api->KeyValuePairs_Release(options);
 
   const flCatalogApi* catalog_api = api->GetCatalogApi();
   const flModelApi* model_api = api->GetModelApi();

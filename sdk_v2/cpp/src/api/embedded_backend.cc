@@ -219,9 +219,21 @@ class EmbeddedManager final : public ManagerBackend {
         return public_catalog_;
       case CatalogType::kLocal:
         return local_catalog_;
+      case CatalogType::kAzureRegistry:
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                 "Azure Registry catalog requires option 'name'");
     }
 
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
+  }
+
+  CatalogBackend& GetCatalog(CatalogType type, const KeyValuePairs& options) override {
+    auto& source = owner_.manager.GetCatalog(type, options);
+    if (type != CatalogType::kAzureRegistry) return GetCatalog(type);
+    std::lock_guard lock(catalogs_mutex_);
+    auto& catalog = azure_registry_catalogs_[&source];
+    if (!catalog) catalog = std::make_unique<EmbeddedCatalog>(source, models_);
+    return *catalog;
   }
 
   std::unique_ptr<ModelBackend> CaptureModel(
@@ -261,8 +273,7 @@ class EmbeddedManager final : public ManagerBackend {
   }
 
   void SetCatalogRuntimeDevices(DeviceProviders devices, std::vector<ExecutionTarget> execution_targets) override {
-    static_cast<AzureModelCatalog&>(owner_.manager.GetCatalog(CatalogType::kPublic))
-        .SetRuntimeDevices(std::move(devices), std::move(execution_targets));
+    owner_.manager.SetCatalogRuntimeDevices(std::move(devices), std::move(execution_targets));
   }
 
   EpDownloadResult DownloadAndRegisterEps(const std::vector<std::string>* names,
@@ -279,6 +290,8 @@ class EmbeddedManager final : public ManagerBackend {
   ModelHandles models_;
   EmbeddedCatalog public_catalog_;
   EmbeddedCatalog local_catalog_;
+  std::mutex catalogs_mutex_;
+  std::map<ICatalog*, std::unique_ptr<EmbeddedCatalog>> azure_registry_catalogs_;
 };
 
 }  // namespace

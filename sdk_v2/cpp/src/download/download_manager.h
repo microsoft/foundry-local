@@ -45,7 +45,8 @@ class DownloadManager {
                   ITelemetry& telemetry,
                   bool disable_region_fallback = false,
                   std::unique_ptr<ModelRegistryClient> registry_client = nullptr,
-                  std::unique_ptr<IBlobDownloader> blob_downloader = nullptr);
+                  std::unique_ptr<IBlobDownloader> blob_downloader = nullptr,
+                  std::function<ModelContainer(const ModelInfo&)> artifact_resolver = {});
   ~DownloadManager();
 
   /// Download a model to the local cache.
@@ -73,6 +74,9 @@ class DownloadManager {
 
   /// Check if a model is cached locally (directory exists and download is complete).
   bool IsModelCached(const ModelInfo& info) const;
+
+  /// Check completion metadata and download markers, including a revision's parent marker.
+  static bool IsCompletedModelPath(const std::string& path);
 
   /// Get the local cache path for a model. Returns empty string if not determinable.
   std::string GetModelCachePath(const ModelInfo& info) const;
@@ -106,9 +110,10 @@ class DownloadManager {
   ILogger& logger_;
   std::unique_ptr<ModelRegistryClient> registry_client_;
   std::unique_ptr<IBlobDownloader> blob_downloader_;
+  std::function<ModelContainer(const ModelInfo&)> artifact_resolver_;
   ITelemetry& telemetry_;
 
-  /// Serializes all model downloads in this process: only one runs at a time, so
+  /// Serializes downloads through this manager: only one runs at a time, so
   /// each gets the full network/disk instead of competing with another download.
   /// Cross-process serialization is handled separately by CrossProcessFileLock.
   std::mutex download_mutex_;

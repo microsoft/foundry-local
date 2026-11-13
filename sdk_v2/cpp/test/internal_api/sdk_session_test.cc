@@ -5,7 +5,9 @@
 #include "api/request_admission.h"
 #include "c_api_types.h"
 #include "catalog.h"
+#include "catalog/catalog_cache.h"
 #include "catalog/local_model_catalog.h"
+#include "catalog/azure_registry_catalog.h"
 #include "configuration.h"
 #include "download/download_manager.h"
 #include "exception.h"
@@ -18,11 +20,13 @@
 #include "hosting/session_dispatcher.h"
 #include "inferencing/generative/chat/search_options.h"
 #include "inferencing/session/session.h"
+#include "internal_api/test_helpers.h"
 #include "items/message_item.h"
 #include "items/text_item.h"
 #include "model_info.h"
 #include "manager.h"
 #include "util/scope_guard.h"
+#include "util/sha256.h"
 #include "utils/temp_path.h"
 
 #include <gtest/gtest.h>
@@ -31,8 +35,10 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <future>
 #include <mutex>
+#include <set>
 #include <thread>
 #include <vector>
 
@@ -221,6 +227,7 @@ class SdkSessionTest : public testing::Test {
     config.model_cache_dir = (root_ / "models").string();
     config.logs_dir = (root_ / "logs").string();
     config.disable_nonessential_telemetry = true;
+    config.additional_options["AzureRegistryModelCacheOnly"] = "true";
     manager_ = api::CreateEmbeddedBackend(config);
     ModelInfo metadata;
     metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "coding");
@@ -345,6 +352,43 @@ class SdkSessionTest : public testing::Test {
     return std::make_shared<api::HostedContext>(client_, "session-test-host", 1);
   }
 
+  void WriteTestCatalogSnapshot(const std::string& registry) {
+    const auto cache = root_ / "models" / (registry + "-" + Sha256String("azureml://registries/" + registry));
+    struct Variant {
+      const char* name;
+      DeviceType device;
+      const char* provider;
+    };
+    std::vector<ModelInfo> models;
+    for (const auto& variant : {Variant{"shared-generic-cpu", DeviceType::kCPU, "CPUExecutionProvider"},
+                                Variant{"shared-generic-gpu", DeviceType::kGPU, "WebGpuExecutionProvider"},
+                                Variant{"shared-qnn-npu", DeviceType::kNPU, "QNNExecutionProvider"}}) {
+      ModelInfo info;
+      info.name = variant.name;
+      info.model_id = info.name + ":1";
+      info.version = 1;
+      info.alias = "shared";
+      info.device_type = variant.device;
+      info.execution_provider = variant.provider;
+      info.string_properties[AzureRegistryCatalog::kRegistryProperty] = registry;
+      models.push_back(std::move(info));
+      const auto path = cache / (std::string(variant.name) + "-1");
+      std::filesystem::create_directories(path);
+      std::ofstream(path / "genai_config.json") << "{}";
+      std::ofstream(path / "inference_model.json") << "{}";
+    }
+    CatalogCache(cache.string(), test::NullLog()).Save(models, true);
+    ASSERT_TRUE(std::filesystem::exists(cache / "foundry.modelinfo.json"));
+  }
+
+  static std::set<std::string> CatalogVariantIds(api::CatalogBackend& catalog) {
+    std::set<std::string> ids;
+    for (const auto* model : catalog.ListModels()) {
+      for (const auto* variant : model->Variants()) ids.insert(variant->Info().model_id);
+    }
+    return ids;
+  }
+
   static std::string AssistantText(const Response& response) {
     for (const auto& item : response.items) {
       if (item->type == FOUNDRY_LOCAL_ITEM_MESSAGE) {
@@ -405,6 +449,15 @@ TEST_F(SdkSessionTest, DormantHostedManagerKeepsMetadataDownloadsAndRegistration
   EXPECT_TRUE(catalog.GetLoadedModels().empty());
   EXPECT_TRUE(hosted->GetWebServiceUrls().empty());
   EXPECT_FALSE(hosted->IsEpDownloadInProgress());
+  const auto metadata_eps = manager_->GetDiscoverableEps();
+  const auto hosted_eps = hosted->GetDiscoverableEps();
+  ASSERT_EQ(hosted_eps.size(), metadata_eps.size());
+  for (size_t i = 0; i < metadata_eps.size(); ++i) {
+    EXPECT_STREQ(hosted_eps[i].name, metadata_eps[i].name);
+    EXPECT_EQ(hosted_eps[i].is_registered,
+              std::string_view(metadata_eps[i].name) == "WebGpuExecutionProvider" && metadata_eps[i].is_registered);
+  }
+
   model->Unload();
   ModelInfo metadata;
   metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "coding");
@@ -896,6 +949,56 @@ TEST_F(SdkSessionTest, HostedRuntimeSnapshotWithoutHostNeverUsesClientHardware) 
   const auto snapshot = hosted->GetRuntimeDeviceSnapshot();
   EXPECT_TRUE(snapshot.devices.empty());
   EXPECT_TRUE(snapshot.execution_targets.empty());
+}
+
+TEST_F(SdkSessionTest, CatalogRuntimeDevicesInvalidateExistingTestRegistriesAndApplyToNewOnes) {
+  WriteTestCatalogSnapshot("existing-registry");
+  WriteTestCatalogSnapshot("new-registry");
+  const auto local_devices = manager_->GetRuntimeDevices();
+  const api::DeviceProviders cpu_only{{"CPU", {"CPUExecutionProvider"}}};
+  const api::DeviceProviders host_devices{{"CPU", {"CPUExecutionProvider"}},
+                                         {"GPU", {"WebGpuExecutionProvider"}},
+                                         {"NPU", {"QNNExecutionProvider"}}};
+  const std::set<std::string> cpu_ids{"shared-generic-cpu:1"};
+  const std::set<std::string> all_ids{"shared-generic-cpu:1", "shared-generic-gpu:1", "shared-qnn-npu:1"};
+  manager_->SetCatalogRuntimeDevices(cpu_only);
+  KeyValuePairs existing_options;
+  existing_options.Add("name", "existing-registry");
+  KeyValuePairs new_options;
+  new_options.Add("name", "new-registry");
+  auto& existing = manager_->GetCatalog(CatalogType::kAzureRegistry, existing_options);
+  EXPECT_EQ(CatalogVariantIds(existing), cpu_ids);
+
+  manager_->SetCatalogRuntimeDevices(host_devices);
+  EXPECT_EQ(CatalogVariantIds(existing), all_ids);
+  auto& created_later = manager_->GetCatalog(CatalogType::kAzureRegistry, new_options);
+  EXPECT_EQ(CatalogVariantIds(created_later), all_ids);
+  EXPECT_EQ(manager_->GetRuntimeDevices(), local_devices);
+
+  manager_->SetCatalogRuntimeDevices(cpu_only);
+  EXPECT_EQ(CatalogVariantIds(existing), cpu_ids);
+  EXPECT_EQ(CatalogVariantIds(created_later), cpu_ids);
+}
+
+TEST_F(SdkSessionTest, CatalogOptionsValidateAndDistinguishEffectiveSettings) {
+  KeyValuePairs options;
+  EXPECT_THROW(manager_->GetCatalog(CatalogType::kAzureRegistry, options), Exception);
+  options.Add("name", "Mock-Registry");
+  auto& first = manager_->GetCatalog(CatalogType::kAzureRegistry, options);
+  options.Add("name", "mock-registry");
+  options.Add("credential", "azure_cli");
+  EXPECT_EQ(&manager_->GetCatalog(CatalogType::kAzureRegistry, options), &first);
+  options.Add("credential", "workload_identity");
+  EXPECT_NE(&manager_->GetCatalog(CatalogType::kAzureRegistry, options), &first);
+  options.Add("credential", "invalid");
+  EXPECT_THROW(manager_->GetCatalog(CatalogType::kAzureRegistry, options), Exception);
+  options.Add("credential", "azure_cli");
+  options.Add("unsupported", "value");
+  EXPECT_THROW(manager_->GetCatalog(CatalogType::kAzureRegistry, options), Exception);
+  EXPECT_THROW(manager_->GetCatalog(CatalogType::kPublic, options), Exception);
+  EXPECT_THROW(manager_->GetCatalog(CatalogType::kLocal, options), Exception);
+  EXPECT_EQ(&manager_->GetCatalog(CatalogType::kPublic, KeyValuePairs{}),
+            &manager_->GetCatalog(CatalogType::kPublic));
 }
 
 TEST_F(SdkSessionTest, HostedSessionAndCapturedPreflightKeepTheClientDependencyGraphAlive) {

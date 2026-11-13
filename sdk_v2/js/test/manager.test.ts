@@ -7,6 +7,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { FoundryLocalManager } from "../src/foundryLocalManager.js";
+import { CatalogType } from "../src/types.js";
 
 import {
   type CacheOnlyManagerFixture,
@@ -72,6 +73,17 @@ describeIfBuilt("FoundryLocalManager", () => {
 
   it("disposed is false while the manager is alive", () => {
     expect(fixture.manager.disposed).toBe(false);
+  });
+
+  it("keeps configured registry catalogs separate through the native bridge without network access", async () => {
+    const first = fixture.manager.getCatalog(CatalogType.AzureRegistry, { name: "mock-registry-a" });
+    const second = fixture.manager.getCatalog(CatalogType.AzureRegistry, { name: "mock-registry-b" });
+    expect(first).not.toBe(second);
+    expect(first.name).toBe("azure_registry");
+    expect(second.name).toBe("azure_registry");
+    expect(await first.getCachedModels()).toEqual([]);
+    expect(await second.getCachedModels()).toEqual([]);
+    expect(fixture.manager.getCatalog(CatalogType.AzureRegistry, { name: "mock-registry-a" })).toBe(first);
   });
 
   it("isShutdownRequested is false on a fresh manager", () => {

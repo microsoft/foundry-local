@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use super::api::{cstr_to_string, Api};
 use super::ffi::*;
 use crate::error::{FoundryLocalError, Result};
-use crate::types::EpInfo;
+use crate::types::{CatalogOptions, EpInfo};
 
 /// Serializes native manager creation against release.
 ///
@@ -110,6 +110,19 @@ impl NativeManager {
         &self,
         catalog_type: flCatalogType,
     ) -> Result<*mut flCatalog> {
+        self.catalog_ptr_with_options(catalog_type, &CatalogOptions::new())
+    }
+
+    pub(crate) fn catalog_ptr_with_options(
+        &self,
+        catalog_type: flCatalogType,
+        options: &CatalogOptions,
+    ) -> Result<*mut flCatalog> {
+        if catalog_type == FOUNDRY_LOCAL_CATALOG_AZURE_REGISTRY || !options.is_empty() {
+            return self
+                .api
+                .get_catalog_with_options(self.ptr, catalog_type, options);
+        }
         let mut catalog: *mut flCatalog = std::ptr::null_mut();
         let status = unsafe {
             (self.api.root().Manager_GetCatalogByType)(self.ptr, catalog_type, &mut catalog)

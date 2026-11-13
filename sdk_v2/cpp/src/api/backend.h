@@ -6,6 +6,8 @@
 
 #include "ep_detection/execution_target.h"
 #include "inferencing/session/streaming_callback.h"
+#include "exception.h"
+#include "util/key_value_pairs.h"
 
 #include <functional>
 #include <memory>
@@ -128,6 +130,10 @@ class ManagerBackend : public BackendObject {
  public:
   using BackendObject::BackendObject;
   virtual CatalogBackend& GetCatalog(CatalogType type) = 0;
+  virtual CatalogBackend& GetCatalog(CatalogType type, const KeyValuePairs& options) {
+    if (!options.empty()) FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED, "catalog options are unavailable in this backend");
+    return GetCatalog(type);
+  }
   // Capture an active selection for admitted execution, not for retaining catalog/discovery handles.
   // A requested reservation is published atomically with capture and rolls back unless committed after Load.
   virtual std::unique_ptr<ModelBackend> CaptureModel(

@@ -64,8 +64,17 @@ struct EPUtils {
       std::string normalized(ep);
       std::transform(normalized.begin(), normalized.end(), normalized.begin(),
                      [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-      if (normalized == "amdgpu" || normalized == "amdgpuexecutionprovider") {
-        return ExecutionProvider::kAMDGPU;
+      for (const auto provider : {ExecutionProvider::kCPU, ExecutionProvider::kCUDA,
+                                 ExecutionProvider::kWebGPU, ExecutionProvider::kOpenVINO,
+                                 ExecutionProvider::kTensorRT_RTX, ExecutionProvider::kVitisAI,
+                                 ExecutionProvider::kRyzenAI, ExecutionProvider::kQNN,
+                                 ExecutionProvider::kAMDGPU}) {
+        for (const auto name : {EPtoRegistrationName(provider), EPtoGenAI(provider)}) {
+          std::string candidate(name);
+          std::transform(candidate.begin(), candidate.end(), candidate.begin(),
+                         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+          if (!candidate.empty() && normalized == candidate) return provider;
+        }
       }
 
       return ExecutionProvider::kUnknown;
