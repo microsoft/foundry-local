@@ -3,7 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::detail::api::{to_cstring, Api};
-use crate::detail::ffi::{flModelInfo, FOUNDRY_LOCAL_CATALOG_LOCAL, FOUNDRY_LOCAL_CATALOG_PUBLIC};
+use crate::detail::ffi::{
+    flModelInfo, FOUNDRY_LOCAL_CATALOG_AZURE_REGISTRY, FOUNDRY_LOCAL_CATALOG_LOCAL,
+    FOUNDRY_LOCAL_CATALOG_PUBLIC,
+};
 use crate::error::{FoundryLocalError, Result};
 
 /// Catalog source type.
@@ -15,6 +18,9 @@ pub enum CatalogType {
     Public,
     /// Mutable catalog containing explicitly registered local models.
     Local,
+    /// Azure ML registry catalog, configured through [`CatalogOptions`].
+    #[serde(rename = "azure_registry")]
+    AzureRegistry,
 }
 
 impl CatalogType {
@@ -22,9 +28,17 @@ impl CatalogType {
         match self {
             Self::Public => FOUNDRY_LOCAL_CATALOG_PUBLIC,
             Self::Local => FOUNDRY_LOCAL_CATALOG_LOCAL,
+            Self::AzureRegistry => FOUNDRY_LOCAL_CATALOG_AZURE_REGISTRY,
         }
     }
 }
+
+/// Source-specific string settings for [`FoundryLocalManager::get_catalog_with_options`](crate::FoundryLocalManager::get_catalog_with_options).
+///
+/// Azure Registry requires `name` and accepts `credential` (`azure_cli`, the
+/// default, or `workload_identity`). Public and local catalogs accept no settings.
+/// The native runtime validates source-specific settings and owns catalog caching.
+pub type CatalogOptions = std::collections::BTreeMap<String, String>;
 
 /// Mutable, caller-owned metadata used when registering a local model.
 ///

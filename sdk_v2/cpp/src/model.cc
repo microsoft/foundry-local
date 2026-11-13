@@ -47,7 +47,7 @@ bool ContainsCaseInsensitive(const std::string& text, const std::string& pattern
 /// Format: <model_name>-<device>:<version>
 /// Returns: 0(NPU) < 1(vendor-GPU) < 2(CUDA-GPU) < 3(generic-GPU)
 ///        < 4(vendor-CPU) < 5(generic-CPU) < 6(unknown)
-int GetModelDevicePriority(const std::string& model_id) {
+int GetModelIdDevicePriority(const std::string& model_id) {
   if (ContainsCaseInsensitive(model_id, "-npu:")) {
     return 0;
   }
@@ -76,6 +76,30 @@ int GetModelDevicePriority(const std::string& model_id) {
   return 6;
 }
 
+/// Uses the ID suffix when it agrees with the device metadata, so public IDs keep their vendor/generic ordering.
+/// Otherwise ranks from metadata, so registry variants with arbitrary names still order by device.
+int GetModelDevicePriority(const ModelInfo& info) {
+  const int from_id = GetModelIdDevicePriority(info.model_id);
+  const auto id_device = from_id == 0 ? DeviceType::kNPU
+                         : from_id <= 3 ? DeviceType::kGPU
+                         : from_id <= 5 ? DeviceType::kCPU
+                                        : DeviceType::kNotSet;
+  if (info.device_type == DeviceType::kNotSet || info.device_type == id_device) {
+    return from_id;
+  }
+
+  const auto& ep = info.execution_provider;
+  switch (info.device_type) {
+    case DeviceType::kNPU:
+      return 0;
+    case DeviceType::kGPU:
+      return ep == "CUDAExecutionProvider" ? 2
+             : ep == "DmlExecutionProvider" || ep == "WebGpuExecutionProvider" ? 3 : 1;
+    default:
+      return ep == "CPUExecutionProvider" ? 5 : 4;
+  }
+}
+
 /// Comparator for sorting variants by priority within a container.
 /// Criteria (matching C# CompareModelsForSort):
 ///   1. Device-type priority (ascending — lower number = better)
@@ -86,8 +110,8 @@ bool CompareModelsForSort(const Model& m1, const Model& m2) {
   const auto& info1 = m1.Info();
   const auto& info2 = m2.Info();
 
-  int p1 = GetModelDevicePriority(info1.model_id);
-  int p2 = GetModelDevicePriority(info2.model_id);
+  int p1 = GetModelDevicePriority(info1);
+  int p2 = GetModelDevicePriority(info2);
 
   if (p1 != p2) {
     return p1 < p2;
@@ -245,8 +269,9 @@ bool Model::TryReconcileVariants(Model& incoming) {
 
   auto* previous_selection = selected_variant_.load(std::memory_order_acquire);
   const bool was_explicit = selection_is_explicit_;
-  const bool preserve_selection =
-      was_explicit || previous_selection->HasPreservedLoadedSelection() || previous_selection->IsLoaded();
+  const bool in_use = previous_selection == loading_variant_ || previous_selection->active_downloads_.load() != 0 ||
+                      previous_selection->HasPreservedLoadedSelection() || previous_selection->IsLoaded();
+  const bool preserve_selection = was_explicit || in_use;
 
   for (auto current = variants_.begin(); current != variants_.end();) {
     const auto match = std::find_if(incoming.variants_.begin(), incoming.variants_.end(), [&](const auto& candidate) {
@@ -254,6 +279,16 @@ bool Model::TryReconcileVariants(Model& incoming) {
     });
     if (match != incoming.variants_.end()) {
       incoming.variants_.erase(match);
+      ++current;
+      continue;
+    }
+
+    // A listing that no longer contains the in-use selection must not retarget or deactivate it; a later refresh
+    // retires it once it is idle.
+    if (in_use && current->get() == previous_selection &&
+        std::none_of(incoming.variants_.begin(), incoming.variants_.end(), [&](const auto& candidate) {
+          return candidate->Id() == previous_selection->Id();
+        })) {
       ++current;
       continue;
     }
@@ -290,6 +325,11 @@ bool Model::TryDeactivateForRefresh() {
   std::unique_lock<std::mutex> lifecycle_lock(lifecycle_mutex_, std::try_to_lock);
   if (!lifecycle_lock.owns_lock()) {
     return false;
+  }
+  for (const auto* variant : Variants()) {
+    if (variant->HasPreservedLoadedSelection() || variant->IsLoaded() || variant->active_downloads_.load() != 0) {
+      return false;
+    }
   }
 
   Deactivate();
@@ -594,12 +634,11 @@ void Model::Download(std::function<int(float)> progress_cb) {
     return;
   }
 
-  // Already cached (scanner found the model on disk during catalog construction).
-  // No need to re-derive the path via DownloadManager — local_path_ is authoritative.
+  RefreshCachedState();
   bool already_cached;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    already_cached = cached_.load() && !local_path_.empty();
+    already_cached = cached_.load();
   }
 
   if (already_cached) {
@@ -697,16 +736,21 @@ void Model::RefreshCachedState() {
   if (!active_ || unregistering_) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
   }
-  if (external_registration_ || cached_) {
+  if (external_registration_) {
     return;
   }
 
-  auto path = download_manager_->GetCompletedModelCachePath(*info_);
-  if (!path.empty()) {
+  if (cached_) {
     std::lock_guard state_lock(state_mutex_);
-    local_path_ = std::move(path);
-    cached_.store(true, std::memory_order_release);
+    if (download_manager_->IsCompletedModelPath(local_path_)) {
+      return;
+    }
   }
+
+  auto path = download_manager_->GetCompletedModelCachePath(*info_);
+  std::lock_guard state_lock(state_mutex_);
+  local_path_ = std::move(path);
+  cached_.store(!local_path_.empty(), std::memory_order_release);
 }
 
 void Model::ForgetCachedState() {

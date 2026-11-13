@@ -436,6 +436,16 @@ Models registered with task `coding` use the existing text-only `ChatSession` in
 
 ---
 
+### 4.2 Azure ML registry catalog
+
+After `az login`, select a registry with
+`manager.getCatalog(CatalogType.AzureRegistry, { name: "azureml-dev", credential: "azure_cli" })`.
+The optional credential defaults to `azure_cli`; `workload_identity` is also supported.
+This requires native API v4 or newer. Public and local catalog calls are unchanged.
+See the short [registry example](examples/azure_registry_catalog.mjs).
+It downloads and loads `qwen2.5-0.5b` from `azureml-dev`, sends one chat prompt, and unloads it.
+Review the model license before running; adjust the registry/model names as needed.
+
 ## 5. Testing
 
 Test runner: **Vitest**. From `sdk_v2/js/`:

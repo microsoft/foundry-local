@@ -48,7 +48,12 @@ std::optional<ProcessIdentity> SpawnNativeHost(const std::filesystem::path& exec
                  "capture launched native host process");
   return ProcessIdentity{process.dwProcessId, (uint64_t{creation.dwHighDateTime} << 32) | creation.dwLowDateTime};
 #else
+#ifdef __APPLE__
+  // Ensure the spawn action dup2(lease, 3) clears CLOEXEC rather than duplicating fd3 onto itself.
+  const int lease = fcntl(startup_lock.Descriptor(), F_DUPFD_CLOEXEC, 4);
+#else
   const int lease = fcntl(startup_lock.Descriptor(), F_DUPFD_CLOEXEC, 3);
+#endif
   if (lease < 0) {
     throw HostLaunchRejected(errno, std::generic_category(), "duplicate native host startup lease");
   }

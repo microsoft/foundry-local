@@ -20,7 +20,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "WindowsStore" OR VCPKG_TARGET_TRIPLET MATCHES "uw
 endif()
 list(APPEND VCPKG_MANIFEST_FEATURES "telemetry")
 
-project(foundry_local VERSION 2.0.1 LANGUAGES CXX C)
+project(foundry_local VERSION 2.5.0 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -94,6 +94,7 @@ include(cmake/Sanitizers.cmake)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(jsoncons CONFIG REQUIRED)
 find_package(azure-storage-blobs-cpp CONFIG REQUIRED)
+find_package(azure-identity-cpp CONFIG REQUIRED)
 find_package(semver CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 find_package(LibArchive REQUIRED)
@@ -252,7 +253,10 @@ set(FOUNDRY_LOCAL_SOURCES
     src/items/message_item.cc
     src/items/speech_segment_item.cc
     src/catalog/base_model_catalog.cc
+    src/catalog/remote_model_catalog.cc
     src/catalog/azure_model_catalog.cc
+    src/catalog/azure_registry_catalog.cc
+    src/catalog/azure_ml_registry_client.cc
     src/catalog/azure_catalog_client.cc
     src/catalog/azure_catalog_models.cc
     src/catalog/catalog_cache.cc
@@ -421,6 +425,7 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
             nlohmann_json::nlohmann_json
             jsoncons::jsoncons
             Azure::azure-core
+            Azure::azure-identity
             Azure::azure-storage-blobs
             semver::semver
             spdlog::spdlog
@@ -771,6 +776,8 @@ endif()
 # --------------------------------------------------------------------------
 if(FOUNDRY_LOCAL_BUILD_EXAMPLES)
     add_subdirectory(examples/basic_chat)
+    add_subdirectory(examples/azure_registry_catalog)
+    set_target_properties(azure_registry_catalog_example PROPERTIES FOLDER "Examples")
     add_subdirectory(examples/tool_calling)
     add_subdirectory(examples/realtime_audio)
     add_subdirectory(examples/embeddings)

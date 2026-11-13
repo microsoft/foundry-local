@@ -97,12 +97,12 @@ void CatalogCache::Load() {
   cached_models_ = ParseCatalogSnapshot(contents, path, logger_);
 }
 
-void CatalogCache::Save(const std::vector<ModelInfo>& models) {
+void CatalogCache::Save(const std::vector<ModelInfo>& models, bool force) {
   try {
     auto path = CacheFilePath();
 
     // Freshness check: skip save if existing cache file is less than 6 hours old.
-    if (fs::exists(path)) {
+    if (!force && fs::exists(path)) {
       try {
         std::ifstream existing_file(path);
         if (existing_file.is_open()) {
