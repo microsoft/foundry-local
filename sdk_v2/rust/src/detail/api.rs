@@ -15,6 +15,7 @@ use libloading::Library;
 
 use super::ffi::*;
 use crate::error::{FoundryLocalError, NativeErrorCode, Result};
+use crate::types::CatalogOptions;
 
 // ── Library file names ───────────────────────────────────────────────────────
 
@@ -79,15 +80,26 @@ fn map_error(code: flErrorCode, message: String) -> FoundryLocalError {
 // ── Api ──────────────────────────────────────────────────────────────────────
 
 unsafe fn negotiate_api(get_api: FoundryLocalGetApiFn) -> Result<(*const flApiVtable, u32)> {
-    for version in [FOUNDRY_LOCAL_LATEST_API_VERSION, FOUNDRY_LOCAL_API_VERSION] {
+    for version in (FOUNDRY_LOCAL_API_VERSION..=FOUNDRY_LOCAL_LATEST_API_VERSION).rev() {
         let root = get_api(version);
         if !root.is_null() {
             return Ok((root, version));
         }
     }
     Err(FoundryLocalError::LibraryLoad {
-        reason: "native runtime does not support API version 3 or 2".into(),
+        reason: "native runtime does not support API version 4, 3 or 2".into(),
     })
+}
+
+unsafe fn read_catalog_with_options(
+    root: *const flApiVtable,
+    version: u32,
+) -> Option<FlGetCatalogWithOptionsFn> {
+    if version < 4 || root.is_null() {
+        return None;
+    }
+    // Read only the appended slot, never a V4 reference over a legacy table.
+    std::ptr::addr_of!((*root.cast::<flApiV4Vtable>()).Manager_GetCatalogWithOptions).read()
 }
 
 unsafe fn read_shared_host_setting(
@@ -112,6 +124,7 @@ pub(crate) struct Api {
     catalog: *const flCatalogApiVtable,
     config: *const flConfigurationApiVtable,
     shared_host_setting: Option<FlSetUseSharedHostFn>,
+    catalog_with_options: Option<FlGetCatalogWithOptionsFn>,
     item: *const flItemApiVtable,
     inference: *const flInferenceApiVtable,
     model: *const flModelApiVtable,
@@ -196,6 +209,8 @@ impl Api {
             config,
             // SAFETY: config is non-null and version identifies the available table extent.
             shared_host_setting: unsafe { read_shared_host_setting(config, version) },
+            // SAFETY: root is non-null and negotiation determines its available extent.
+            catalog_with_options: unsafe { read_catalog_with_options(root, version) },
             item,
             inference,
             model,
@@ -206,6 +221,47 @@ impl Api {
     pub(crate) fn root(&self) -> &flApiVtable {
         // SAFETY: non-null and valid for the library's lifetime.
         unsafe { &*self.root }
+    }
+
+    pub(crate) fn get_catalog_with_options(
+        self: &Arc<Self>,
+        manager: *const flManager,
+        catalog_type: flCatalogType,
+        options: &CatalogOptions,
+    ) -> Result<*mut flCatalog> {
+        for (key, value) in options {
+            if key.is_empty() {
+                return Err(FoundryLocalError::Validation {
+                    reason: "catalog option keys must not be empty".into(),
+                });
+            }
+            to_cstring(key)?;
+            to_cstring(value)?;
+        }
+        let get_catalog = self.catalog_with_options.ok_or_else(|| {
+            map_error(
+                FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED,
+                "catalog options require native API version 4 or newer".into(),
+            )
+        })?;
+        let mut pairs = Kvps::new(Arc::clone(self));
+        if pairs.as_ptr().is_null() {
+            return Err(FoundryLocalError::Internal {
+                reason: "failed to allocate catalog options".into(),
+            });
+        }
+        for (key, value) in options {
+            pairs.set(key, value)?;
+        }
+        let mut catalog = std::ptr::null_mut();
+        // SAFETY: manager and pairs stay alive for this call; native code copies the settings.
+        self.check(unsafe { get_catalog(manager, catalog_type, pairs.as_ptr(), &mut catalog) })?;
+        if catalog.is_null() {
+            return Err(FoundryLocalError::Internal {
+                reason: "Manager_GetCatalogWithOptions returned a null catalog".into(),
+            });
+        }
+        Ok(catalog)
     }
     #[inline]
     pub(crate) fn catalog_api(&self) -> &flCatalogApiVtable {
@@ -474,6 +530,10 @@ fn resolve_library_path(library_path: Option<&str>) -> Result<(PathBuf, Option<P
     // 5. Fall back to the bare library name (system loader search path).
     Ok((PathBuf::from(LIB_FILE), None))
 }
+
+#[cfg(test)]
+#[path = "catalog_tests.rs"]
+mod catalog_tests;
 
 #[cfg(test)]
 mod tests {

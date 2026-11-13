@@ -237,6 +237,9 @@ TEST_F(LocalModelScannerTest, IncompleteBundleDownloadIsExcluded) {
   CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
   CreateFile("microsoft/clm/download.tmp", "");
   EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
+  const auto root = fs::path(test_dir_) / "microsoft" / "clm";
+  EXPECT_THROW(ReadNonGenerativePackage(root), std::invalid_argument);
+  EXPECT_TRUE(ReadNonGenerativePackage(root, /*allow_in_progress=*/true).has_value());
 }
 
 TEST_F(LocalModelScannerTest, BundleWithoutGenAiConfigIsExcluded) {

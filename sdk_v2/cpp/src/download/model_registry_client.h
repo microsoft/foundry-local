@@ -21,6 +21,7 @@ using HttpGetResponseFn = std::function<http::HttpResponse(const std::string& ur
 struct ModelContainer {
   std::string blob_sas_uri;
   std::string description;
+  std::string path_prefix;
 };
 
 /// Client for the Azure model registry API.

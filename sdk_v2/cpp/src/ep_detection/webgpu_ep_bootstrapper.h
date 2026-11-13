@@ -9,9 +9,28 @@
 #include <filesystem>
 #include <string>
 
+struct OrtApi;
+struct OrtEnv;
+
 namespace fl {
 
 class ILogger;
+
+/// Exposes WebGPU supplied by ORT without installing or owning a plugin.
+class BuiltInWebGpuEpBootstrapper : public IEpBootstrapper {
+ public:
+  BuiltInWebGpuEpBootstrapper(const OrtApi& ort_api, const OrtEnv& ort_env, ILogger& logger);
+
+  const std::string& Name() const override;
+  bool IsRegistered() const override;
+  bool DownloadAndRegister(bool force, const ProgressCallback& progress_cb, ILogger& logger,
+                           bool* downloaded = nullptr) override;
+  bool PrepareForModelLoad(ILogger& logger) override;
+
+ private:
+  std::string name_ = "WebGpuExecutionProvider";
+  bool registered_ = false;
+};
 
 /// Bootstrapper for the WebGPU execution provider.
 ///

@@ -59,7 +59,7 @@ function installExitHandlersOnce(): void {
 
 export class FoundryLocalManager {
   readonly #native: NativeManager;
-  readonly #catalogs = new Map<CatalogType, Catalog>();
+  readonly #catalogs = new Map<string, Catalog>();
 
   constructor(config: FoundryLocalConfig) {
     if (config === null || config === undefined) {
@@ -139,15 +139,29 @@ export class FoundryLocalManager {
     return this.getCatalog();
   }
 
-  /** Return the selected manager-owned catalog. Omitting `type` preserves the public-catalog default. */
-  getCatalog(type: CatalogType = CatalogType.Public): Catalog {
-    if (type !== CatalogType.Public && type !== CatalogType.Local) {
-      throw new TypeError("Catalog type must be CatalogType.Public or CatalogType.Local.");
+  /** Select a catalog. AzureRegistry requires a `name` and optionally a `credential` option. */
+  getCatalog(type: CatalogType = CatalogType.Public, options?: Readonly<Record<string, string>>): Catalog {
+    if (type !== CatalogType.Public && type !== CatalogType.Local && type !== CatalogType.AzureRegistry) {
+      throw new TypeError("Catalog type must be CatalogType.Public, CatalogType.Local, or CatalogType.AzureRegistry.");
     }
-    let catalog = this.#catalogs.get(type);
+    if (options !== undefined && (options === null || typeof options !== "object" || Array.isArray(options))) {
+      throw new TypeError("Catalog options must be an object of strings.");
+    }
+    const entries = Object.entries(options ?? {}).sort(([a], [b]) => a.localeCompare(b));
+    for (const [key, value] of entries) {
+      if (key.length === 0 || key.includes("\0") || typeof value !== "string" || value.includes("\0")) {
+        throw new TypeError("Catalog options must have nonempty keys and string values without null characters.");
+      }
+    }
+    const key = JSON.stringify([type, entries]);
+    let catalog = this.#catalogs.get(key);
     if (catalog === undefined) {
-      catalog = wrapNativeCatalog(this.#native.getCatalog(type));
-      this.#catalogs.set(type, catalog);
+      catalog = wrapNativeCatalog(
+        entries.length === 0 && type !== CatalogType.AzureRegistry
+          ? this.#native.getCatalog(type)
+          : this.#native.getCatalog(type, Object.fromEntries(entries)),
+      );
+      this.#catalogs.set(key, catalog);
     }
     return catalog;
   }

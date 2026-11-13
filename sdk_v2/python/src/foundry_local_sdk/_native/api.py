@@ -17,7 +17,7 @@ from foundry_local_sdk._native.lib_loader import find_library, prepare_native_de
 from foundry_local_sdk.exception import FoundryLocalException
 
 # Function tables negotiate separately from versioned payload layouts, which remain at v2.
-_FOUNDRY_LOCAL_API_VERSION: int = 3
+_FOUNDRY_LOCAL_API_VERSION: int = 4
 _MINIMUM_API_VERSION: int = 2
 
 _lib_path = find_library()
@@ -74,11 +74,10 @@ class _Api:
     """
 
     def __init__(self) -> None:
-        self.api_version = _FOUNDRY_LOCAL_API_VERSION
-        root_ptr = _lib.FoundryLocalGetApi(self.api_version)
-        if root_ptr == ffi.NULL:
-            self.api_version = _MINIMUM_API_VERSION
+        for self.api_version in range(_FOUNDRY_LOCAL_API_VERSION, _MINIMUM_API_VERSION - 1, -1):
             root_ptr = _lib.FoundryLocalGetApi(self.api_version)
+            if root_ptr != ffi.NULL:
+                break
         if root_ptr == ffi.NULL:
             raise FoundryLocalException(
                 f"FoundryLocalGetApi({self.api_version}) returned NULL — "

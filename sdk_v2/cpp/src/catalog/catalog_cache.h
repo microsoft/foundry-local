@@ -37,7 +37,7 @@ class CatalogCache {
   void Load();
 
   /// Save models to disk. Skips if the existing cache was saved less than 4 hours ago.
-  void Save(const std::vector<ModelInfo>& models);
+  void Save(const std::vector<ModelInfo>& models, bool force = false);
 
   /// Return cached models, or nullopt if no cache is available.
   std::optional<std::vector<ModelInfo>> GetCachedModels() const;

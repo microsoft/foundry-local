@@ -18,7 +18,7 @@ use std::os::raw::{c_char, c_int};
 pub const FOUNDRY_LOCAL_API_VERSION: u32 = 2;
 
 /// Latest function-table version understood by this binding; payload versions remain 2.
-pub const FOUNDRY_LOCAL_LATEST_API_VERSION: u32 = 3;
+pub const FOUNDRY_LOCAL_LATEST_API_VERSION: u32 = 4;
 
 // ── Opaque handle types ──────────────────────────────────────────────────────
 
@@ -78,6 +78,7 @@ pub const FOUNDRY_LOCAL_DEVICE_NPU: flDeviceType = 3;
 pub type flCatalogType = c_int;
 pub const FOUNDRY_LOCAL_CATALOG_PUBLIC: flCatalogType = 0;
 pub const FOUNDRY_LOCAL_CATALOG_LOCAL: flCatalogType = 1;
+pub const FOUNDRY_LOCAL_CATALOG_AZURE_REGISTRY: flCatalogType = 2;
 
 pub type flTensorDataType = c_int;
 pub const FOUNDRY_LOCAL_TENSOR_UNDEFINED: flTensorDataType = 0;
@@ -497,6 +498,20 @@ pub struct flApiVtable {
     ) -> flStatusPtr,
 }
 
+pub type FlGetCatalogWithOptionsFn = unsafe extern "system" fn(
+    manager: *const flManager,
+    catalog_type: flCatalogType,
+    options: *const flKeyValuePairs,
+    out_catalog: *mut *mut flCatalog,
+) -> flStatusPtr;
+
+/// V3 leaves the root table unchanged; V4 appends catalog options after its prefix.
+#[repr(C)]
+pub struct flApiV4Vtable {
+    pub v3: flApiVtable,
+    pub Manager_GetCatalogWithOptions: Option<FlGetCatalogWithOptionsFn>,
+}
+
 /// Item API table (`flItemApi`).
 #[repr(C)]
 pub struct flItemApiVtable {
@@ -877,6 +892,15 @@ mod tests {
         assert_eq!(size_of::<flToolKind>(), 4);
         assert_eq!(FOUNDRY_LOCAL_TOOL_KIND_FUNCTION, 0);
         assert_eq!(FOUNDRY_LOCAL_TOOL_KIND_CUSTOM, 1);
+    }
+
+    #[test]
+    fn catalog_options_append_after_the_v3_root_table() {
+        assert_eq!(
+            size_of::<flApiVtable>(),
+            std::mem::offset_of!(flApiV4Vtable, Manager_GetCatalogWithOptions)
+        );
+        assert_eq!(align_of::<flApiV4Vtable>(), align_of::<flApiVtable>());
     }
 
     // `kind` is only read by the native side from a version 2 or later definition, so this crate

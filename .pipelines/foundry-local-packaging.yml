@@ -26,7 +26,7 @@ parameters:
 - name: version
   displayName: 'Package version (sdk_v2/...)'
   type: string
-  default: '2.0.0'
+  default: '2.5.0'
 - name: prereleaseId
   displayName: 'Pre-release identifier (e.g. rc1, beta).'
   type: string

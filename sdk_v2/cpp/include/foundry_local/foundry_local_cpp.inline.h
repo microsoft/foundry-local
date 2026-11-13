@@ -242,6 +242,21 @@ inline ICatalog& Manager::GetCatalog(flCatalogType type) const {
   }
 }
 
+inline ICatalog& Manager::GetCatalog(flCatalogType type, const KeyValuePairs& options) const {
+  if (options.GetAll().empty() && type != FOUNDRY_LOCAL_CATALOG_AZURE_REGISTRY) return GetCatalog(type);
+  if (detail::api_version() < 4) {
+    throw Error("catalog options require native API version 4 or newer", FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED);
+  }
+  flCatalog* source = nullptr;
+  Check(detail::api()->Manager_GetCatalogWithOptions(handle_.get(), type, options.native_handle(), &source));
+  if (type == FOUNDRY_LOCAL_CATALOG_PUBLIC) return catalogs_.public_;
+  if (type == FOUNDRY_LOCAL_CATALOG_LOCAL) return catalogs_.local_;
+  std::lock_guard lock(catalogs_.configured_->mutex);
+  auto& catalog = catalogs_.configured_->catalogs[source];
+  if (!catalog) catalog = std::make_unique<Catalog>(*source);
+  return *catalog;
+}
+
 inline void Manager::StartWebService() {
   Check(detail::api()->Manager_WebServiceStart(handle_.get_mutable()));
 }

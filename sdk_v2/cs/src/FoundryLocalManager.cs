@@ -34,8 +34,7 @@ public class FoundryLocalManager : IDisposable
     private NativeConfig _nativeConfig = default!;
     private NativeManager _nativeManager = default!;
     private readonly ManagerLifetime _nativeLifetime = new();
-    private Catalog? _publicCatalog;
-    private Catalog? _localCatalog;
+    private readonly Dictionary<IntPtr, Catalog> _catalogs = new();
     private readonly AsyncLock _lock = new();
     private readonly ILogger _logger;
 
@@ -147,7 +146,23 @@ public class FoundryLocalManager : IDisposable
     /// <returns>The requested model catalog.</returns>
     public async Task<ICatalog> GetCatalogAsync(CatalogType catalogType, CancellationToken? ct = null)
     {
-        return await Utils.CallWithExceptionHandlingAsync(() => GetCatalogImplAsync(catalogType, ct),
+        return await Utils.CallWithExceptionHandlingAsync(() => GetCatalogImplAsync(catalogType, null, ct),
+                                                          "Error getting Catalog.", _logger).ConfigureAwait(false);
+    }
+
+    /// <summary>Get a catalog with source-specific string settings.</summary>
+    /// <param name="catalogType">Catalog type to retrieve.</param>
+    /// <param name="options">AzureRegistry requires "name" and accepts "credential"
+    /// ("azure_cli" or "workload_identity"). Public and local catalogs do not accept settings.</param>
+    /// <param name="ct">Optional cancellation token.</param>
+    /// <returns>A stable catalog wrapper owned by this manager.</returns>
+    public async Task<ICatalog> GetCatalogAsync(CatalogType catalogType,
+                                               IReadOnlyDictionary<string, string> options,
+                                               CancellationToken? ct = null)
+    {
+        Throw.IfNull(options);
+        var snapshot = options.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+        return await Utils.CallWithExceptionHandlingAsync(() => GetCatalogImplAsync(catalogType, snapshot, ct),
                                                           "Error getting Catalog.", _logger).ConfigureAwait(false);
     }
 
@@ -359,9 +374,11 @@ public class FoundryLocalManager : IDisposable
         _ => FlLogLevel.Warning,
     };
 
-    private async Task<ICatalog> GetCatalogImplAsync(CatalogType catalogType, CancellationToken? ct = null)
+    private async Task<ICatalog> GetCatalogImplAsync(CatalogType catalogType,
+                                                    IReadOnlyDictionary<string, string>? options,
+                                                    CancellationToken? ct = null)
     {
-        if (catalogType is not CatalogType.Public and not CatalogType.Local)
+        if (catalogType is not CatalogType.Public and not CatalogType.Local and not CatalogType.AzureRegistry)
         {
             throw new ArgumentOutOfRangeException(nameof(catalogType), catalogType, "Unknown catalog type.");
         }
@@ -370,38 +387,20 @@ public class FoundryLocalManager : IDisposable
         {
         }
 
-        var catalog = catalogType == CatalogType.Public ? _publicCatalog : _localCatalog;
-        if (catalog != null)
-        {
-            return catalog;
-        }
-
         using var disposable = await _lock.LockAsync().ConfigureAwait(false);
-
-        catalog = catalogType == CatalogType.Public ? _publicCatalog : _localCatalog;
-        if (catalog == null)
+        return await Task.Run(() =>
         {
-            catalog = await Task.Run(() =>
+            return WithNativeManager(manager =>
             {
-                return WithNativeManager(manager =>
+                var nativeCatalog = manager.GetCatalog((FlCatalogType)catalogType, options);
+                if (!_catalogs.TryGetValue(nativeCatalog.Ptr, out var catalog))
                 {
-                    var nativeType = catalogType == CatalogType.Public ? FlCatalogType.Public : FlCatalogType.Local;
-                    var nativeCatalog = manager.GetCatalog(nativeType);
-                    return new Catalog(nativeCatalog, _logger, _nativeLifetime);
-                });
-            }, ct ?? CancellationToken.None).ConfigureAwait(false);
-
-            if (catalogType == CatalogType.Public)
-            {
-                _publicCatalog = catalog;
-            }
-            else
-            {
-                _localCatalog = catalog;
-            }
-        }
-
-        return catalog;
+                    catalog = new Catalog(nativeCatalog, _logger, _nativeLifetime);
+                    _catalogs.Add(nativeCatalog.Ptr, catalog);
+                }
+                return catalog;
+            });
+        }, ct ?? CancellationToken.None).ConfigureAwait(false);
     }
 
     private async Task<EpDownloadResult> DownloadAndRegisterEpsAsyncImpl(
