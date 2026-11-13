@@ -58,7 +58,7 @@ std::optional<nlohmann::ordered_json> ParseToolCallArguments(const std::string& 
 ///
 /// kFunction defers to ParseToolCallArguments and can fail. kCustom never fails: the payload is free-form text by
 /// definition, so it is wrapped as `{"input": <arguments>}` — the exact shape the synthesized custom-tool schema
-/// asks the model for, and therefore the shape a replayed call must render back to. Wrapping unconditionally keeps
+/// uses for admission. Native raw-body history bypasses this object during rendering. Wrapping unconditionally keeps
 /// the rule unambiguous: a payload that happens to look like `{"input": "..."}` is still just text.
 static std::optional<nlohmann::ordered_json> NormalizeToolCallArguments(ToolKind kind,
                                                                         const std::string& arguments) {
@@ -86,7 +86,7 @@ GeneratedToolCall MakeGeneratedToolCall(std::string call_id, std::string name, s
   const bool usable = normalized.has_value();
 
   return {{std::move(call_id), std::move(name), std::move(arguments),
-           usable ? std::move(*normalized) : nlohmann::ordered_json::object(), kind, encoding},
+           usable ? std::move(*normalized) : nlohmann::ordered_json::object(), kind, encoding, true},
           usable};
 }
 

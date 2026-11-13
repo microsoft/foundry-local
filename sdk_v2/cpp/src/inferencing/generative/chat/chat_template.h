@@ -99,6 +99,16 @@ std::string BuildCanonicalToolMessagesJson(const std::vector<TranscriptMessage>&
                                            const ToolCallContext& tool_ctx,
                                            const std::function<std::string(std::string)>& protect_literal = {});
 
+struct HarmonyPromptProjection {
+  std::string messages_json;
+  std::string tools_json;
+};
+
+/// Reject non-leading instructions and tool names containing Harmony header separators before rendering.
+HarmonyPromptProjection BuildHarmonyPromptProjection(
+    const std::vector<TranscriptMessage>& messages, const ToolCallContext& context,
+    const std::function<std::string(std::string)>& protect_literal);
+
 /// Build a chat prompt string from the transcript messages of a conversation.
 /// Uses the tokenizer's built-in chat template (via GenAIModelInstance::ApplyChatTemplate).
 ///

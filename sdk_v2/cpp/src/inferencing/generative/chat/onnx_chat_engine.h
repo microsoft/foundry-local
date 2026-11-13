@@ -45,6 +45,7 @@ class OnnxChatEngine {
     uint64_t generated_tokens = 0;
     uint64_t cached_prompt_tokens = 0;
     uint32_t finish_reason = 0;
+    std::optional<int32_t> terminal_token_id = std::nullopt;
   };
 
   class Conversation {

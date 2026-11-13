@@ -3,6 +3,7 @@
 #pragma once
 
 #include "inferencing/generative/chat/chat_template.h"
+#include "inferencing/generative/chat/harmony_protocol.h"
 
 #include <cstdint>
 #include <memory>
@@ -33,6 +34,7 @@ struct PreparedChatPrompt {
   std::vector<int32_t> token_ids;
   std::unique_ptr<OgaNamedTensors> media_tensors;
   int64_t prompt_token_count = 0;
+  std::optional<HarmonyContinuation> harmony_continuation;
 
   bool HasMedia() const noexcept {
     return media_tensors != nullptr;

@@ -208,6 +208,8 @@ std::optional<ChatTurnUsage> OnnxChatGenerator::GetTurnUsage() const {
       generated_tokens,
       termination.finish_reason,
       termination.cause,
+      0,
+      eos_matched ? last_generated_token_ : std::nullopt,
   };
 }
 

@@ -22,7 +22,6 @@
 #include <chrono>
 #include <fmt/format.h>
 #include <thread>
-#include <unordered_set>
 
 namespace fl {
 
@@ -61,11 +60,18 @@ struct PublishRequest {
   std::string model_id;
   nlohmann::json response;
   nlohmann::json input_items;
-  std::unordered_set<std::string> raw_envelope_call_ids;
 };
 
 /// Publish a completed response: store its metadata and cache its session as one indivisible step.
 void PublishResponse(PublishRequest request) {
+  ToolCallEncodings call_encodings;
+  for (const auto& message : request.session->Transcript().Messages()) {
+    for (const auto* call : message.ToolCalls()) {
+      if (call->has_recorded_encoding) {
+        call_encodings.emplace(call->call_id, call->generated_encoding);
+      }
+    }
+  }
   // Deregister before caching — the session is idle, not actively working. Must happen before admission, otherwise
   // another thread could check the session out while this guard still holds it registered.
   request.registration.Release();
@@ -79,7 +85,7 @@ void PublishResponse(PublishRequest request) {
   const bool published = request.store.Commit(
       request.lease,
       ResponseStore::StoredResponse{request.response_id, request.model_id, std::move(request.response),
-                                    std::move(request.input_items), std::move(request.raw_envelope_call_ids)},
+                                    std::move(request.input_items), std::move(call_encodings)},
       &admission);
 
   if (!published) {
@@ -426,14 +432,6 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleNo
   session->ProcessRequest(session_request, session_response);
 
   auto [output, output_text] = ResponseConverter::FromSessionResponse(session_response);
-  std::unordered_set<std::string> raw_envelope_call_ids;
-  for (const auto& item : output) {
-    if (const auto* custom = std::get_if<CustomToolCallOutputItem>(&item);
-        custom != nullptr && custom->generated_encoding == GeneratedCallEncoding::kRawEnvelope) {
-      raw_envelope_call_ids.insert(custom->call_id);
-    }
-  }
-
   auto response = ResponseConverter::BuildResponseObject(turn.response_id, turn.created_at, turn.model_name, params,
                                                          std::move(output), output_text, session_response);
 
@@ -449,8 +447,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleNo
                                    .response_id = turn.response_id,
                                    .model_id = turn.model_id,
                                    .response = response_json,
-                                   .input_items = ResponseConverter::ToInputItems(req_json),
-                                   .raw_envelope_call_ids = std::move(raw_envelope_call_ids)});
+                                   .input_items = ResponseConverter::ToInputItems(req_json)});
   }
 
   return JsonResponse(Status::CODE_200, response_json);
@@ -531,7 +528,6 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
     // Items that have been *closed* (or, for the currently-open item at end-of-stream, finalized in place).
     // Used to construct the final `output[]` array for the response.completed event.
     std::vector<ResponseOutputItem> closed_items;
-    std::unordered_set<std::string> raw_envelope_call_ids;
 
     auto push_event = [&](const std::string& event_name, const StreamEvent& ev) {
       stream->Push("event: " + event_name + "\ndata: " + nlohmann::json(ev).dump() + "\n\n");
@@ -669,9 +665,6 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
       }
 
       closed_items.push_back(std::move(output.completed_item));
-      if (call.generated_encoding == GeneratedCallEncoding::kRawEnvelope) {
-        raw_envelope_call_ids.insert(call.call_id);
-      }
     };
 
     try {
@@ -778,8 +771,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
                                            .response_id = turn.response_id,
                                            .model_id = turn.model_id,
                                            .response = std::move(response_json),
-                                           .input_items = ResponseConverter::ToInputItems(req_copy),
-                                           .raw_envelope_call_ids = std::move(raw_envelope_call_ids)});
+                                           .input_items = ResponseConverter::ToInputItems(req_copy)});
           })) {
         stream->Finish();
         return;

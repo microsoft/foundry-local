@@ -30,13 +30,15 @@ struct TranscriptToolCall {
   std::string arguments;
   /// Object form used for template projection. Always a JSON object, so projecting a committed transcript can never
   /// fail. For kFunction this is the parsed `arguments`, or an empty object when model output failed to produce one.
-  /// For kCustom it is the payload rewrapped as `{"input": arguments}` — the exact shape the model emitted and the
-  /// only shape the chat template and the tool-call grammar understand.
+  /// For kCustom it is the payload rewrapped as `{"input": arguments}` for schema admission and JSON transport.
+  /// A native raw call instead replays `arguments` using its recorded encoding.
   nlohmann::ordered_json normalized_arguments = nlohmann::ordered_json::object();
   /// Which of the session's tool kinds produced this call. Recorded so the authoritative transcript reports the call
   /// as what it was, and so a replayed call normalizes the same way the generated one did.
   ToolKind kind = ToolKind::kFunction;
   GeneratedCallEncoding generated_encoding = GeneratedCallEncoding::kStructured;
+  /// Unannotated caller history follows current declarations; generated and stored calls retain their encoding.
+  bool has_recorded_encoding = false;
 };
 
 /// One event within a message, stored in the order it occurred.

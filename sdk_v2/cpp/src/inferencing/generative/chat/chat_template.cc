@@ -1,9 +1,11 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "inferencing/generative/chat/chat_template.h"
+#include "inferencing/generative/chat/prepared_chat_prompt.h"
 #include "exception.h"
 #include "inferencing/generative/genai_model_instance.h"
 #include "inferencing/generative/toolcalling/tool_call_context.h"
+#include "inferencing/generative/toolcalling/tool_call_plan.h"
 #include "items/message_item.h"
 #include "items/text_item.h"
 #include "utils.h"
@@ -303,8 +305,10 @@ std::string BuildCanonicalToolMessagesJson(const std::vector<TranscriptMessage>&
   }
   if (const auto* raw = tool_ctx.ActiveRawEnvelope()) {
     const auto raw_instructions =
-        "\nThe custom tool \"" + raw->tool_name + "\" also accepts a raw envelope instead of a JSON call. "
-        "To call this tool in raw form, start with \"" + raw->start_marker +
+        "\nThe custom tool \"" + raw->tool_name +
+        "\" also accepts a raw envelope instead of a JSON call. "
+        "To call this tool in raw form, start with \"" +
+        raw->start_marker +
         "\" on its own line, then the exact tool payload, and finish with \"" + raw->end_marker +
         "\" on its own line. Include both marker lines in the raw input. "
         "Do not wrap the raw envelope in tool boundary tokens, JSON, or Markdown. "
@@ -332,14 +336,189 @@ std::string BuildCanonicalToolMessagesJson(const std::vector<TranscriptMessage>&
   return projected.dump();
 }
 
+HarmonyPromptProjection BuildHarmonyPromptProjection(
+    const std::vector<TranscriptMessage>& messages, const ToolCallContext& context,
+    const std::function<std::string(std::string)>& protect_literal) {
+  using Json = nlohmann::ordered_json;
+  auto projected = Json::array();
+  const auto validate_tool_name = [](std::string_view name) {
+    if (name.empty() || name.find_first_of(" \t\r\n\v\f\x01\x02") != std::string_view::npos) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+               "Harmony tool names must not contain header separators");
+    }
+  };
+  std::unordered_map<std::string, std::string> call_names;
+  for (const auto& message : messages) {
+    if (!projected.empty() &&
+        (message.role == FOUNDRY_LOCAL_ROLE_SYSTEM || message.role == FOUNDRY_LOCAL_ROLE_DEVELOPER)) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+               "Harmony requires system or developer instructions to be the first message");
+    }
+    Json entry{{"role", Utils::RoleToString(message.role)}, {"content", protect_literal(message.VisibleText())}};
+    if (message.role == FOUNDRY_LOCAL_ROLE_ASSISTANT) {
+      entry["thinking"] = protect_literal(message.ReasoningText());
+      auto calls = Json::array();
+      for (const auto* call : message.ToolCalls()) {
+        validate_tool_name(call->name);
+        if (!call_names.emplace(call->call_id, call->name).second) {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Duplicate Harmony history call ID");
+        }
+        const auto raw_body = call->kind == ToolKind::kCustom &&
+                              (call->generated_encoding == GeneratedCallEncoding::kNativeRaw ||
+                               (call->generated_encoding == GeneratedCallEncoding::kStructured &&
+                                !call->has_recorded_encoding &&
+                                context.UsesNativeRawBody(call->name)));
+        const auto arguments = raw_body || (call->kind == ToolKind::kFunction && !call->arguments.empty())
+                                   ? call->arguments
+                                   : call->normalized_arguments.dump();
+        calls.push_back(
+            {{"id", call->call_id},
+             {"type", "function"},
+             {"function",
+              {{"name", protect_literal(call->name)},
+               {"arguments", Json::object()},
+               {"arguments_json", protect_literal(arguments)},
+               {"native_freeform", raw_body}}}});
+      }
+
+      if (!calls.empty()) entry["tool_calls"] = std::move(calls);
+    } else if (message.role == FOUNDRY_LOCAL_ROLE_TOOL) {
+      const auto found = call_names.find(message.tool_call_id);
+      if (found == call_names.end()) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Harmony result has no matching history call ID");
+      }
+      entry["name"] = protect_literal(found->second);
+      entry["content"] = "";
+      entry["content_json"] = protect_literal(Json(message.VisibleText()).dump());
+    }
+
+    projected.push_back(std::move(entry));
+  }
+
+  if (context.tools_json.size() > ToolCallPlan::kMaxSchemaBytes) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Native tool schema supplement exceeds its size limit");
+  }
+
+  auto tools = context.tools_json.empty() ? Json::array() : Json::parse(context.tools_json);
+  if (!tools.empty()) {
+    std::string custom_formats;
+    auto function_tools = Json::array();
+    for (const auto& tool : tools) {
+      const auto name = tool.at("function").at("name").get<std::string>();
+      validate_tool_name(name);
+      if (!context.UsesNativeRawBody(name)) function_tools.push_back(tool);
+      const auto grammar = context.custom_lark_grammars.find(name);
+      if (context.IsCustomTool(name) && grammar != context.custom_lark_grammars.end()) {
+        const auto header = "\nCustom input format for " + Json(name).dump() +
+                            " (Lark applied to the complete raw message body):\n";
+        if (context.tools_json.size() + custom_formats.size() + header.size() + grammar->second.size() + 1 >
+            ToolCallPlan::kMaxSchemaBytes) {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                   "Native tool schema and input-format supplement exceeds its size limit");
+        }
+        custom_formats += header + grammar->second + "\n";
+      }
+    }
+
+    const auto supplement = protect_literal(
+        "Original function tool schemas (all constraints apply to generated argument objects):\n" +
+        function_tools.dump() +
+        custom_formats +
+        "\nUse native directed assistant tool messages; wait for each external result. "
+        "Tools declared with an argument object take JSON object bodies. FREEFORM custom tools take raw text bodies, "
+        "not JSON objects or JSON strings. "
+        "Tool result bodies are serialized JSON values. "
+        "Encode function argument string values once as JSON, preserving the recovered source characters exactly. "
+        "Preserve requested string values exactly. Do not quote tool calls or wrap them in Markdown.");
+    // The qualified template consumes only the leading system/developer message as instructions.
+    if (!projected.empty() && (projected.front().at("role") == "system" ||
+                               projected.front().at("role") == "developer")) {
+      auto& instructions = projected.front()["content"];
+      instructions = instructions.get<std::string>() + "\n\n" + supplement;
+    } else {
+      projected.insert(projected.begin(), Json{{"role", "developer"}, {"content", supplement}});
+    }
+  }
+
+  const std::function<Json(Json)> protect_schema = [&](Json schema) -> Json {
+    if (!schema.is_object()) return schema;
+    for (const auto* field : {"description", "title"}) {
+      if (schema.contains(field) && schema[field].is_string()) {
+        schema[field] = protect_literal(schema[field].get<std::string>());
+      }
+    }
+    if (schema.contains("default")) schema["default_json"] = protect_literal(schema["default"].dump());
+    if (schema.contains("enum") && schema["enum"].is_array()) {
+      auto slots = Json::array();
+      for (const auto& value : schema["enum"]) slots.push_back(protect_literal(value.dump()));
+      schema["enum_json"] = std::move(slots);
+    }
+    if (schema.contains("properties") && schema["properties"].is_object()) {
+      std::unordered_map<std::string, std::string> names;
+      auto properties = Json::object();
+      for (const auto& property : schema["properties"].items()) {
+        auto name = protect_literal(property.key());
+        names.emplace(property.key(), name);
+        properties[name] = protect_schema(property.value());
+      }
+
+      schema["properties"] = std::move(properties);
+      if (schema.contains("required") && schema["required"].is_array()) {
+        for (auto& required : schema["required"]) {
+          const auto name = required.get<std::string>();
+          const auto found = names.find(name);
+          required = found == names.end() ? protect_literal(name) : found->second;
+        }
+      }
+    }
+    for (const auto* field : {"items", "oneOf", "anyOf", "allOf"}) {
+      if (!schema.contains(field)) continue;
+      if (schema[field].is_array()) {
+        for (auto& child : schema[field]) child = protect_schema(std::move(child));
+      } else {
+        schema[field] = protect_schema(std::move(schema[field]));
+      }
+    }
+
+    return schema;
+  };
+
+  for (auto& tool : tools) {
+    auto& function = tool.at("function");
+    const auto name = function.at("name").get<std::string>();
+    if (context.UsesNativeRawBody(name)) {
+      function["description"] =
+          function.value("description", std::string{}) +
+          "\nFor native Harmony, emit this custom tool's complete raw text directly as its "
+          "directed message body. Do not JSON-encode or wrap it. "
+          "The complete body must follow the original custom input format.";
+      function["native_freeform"] = true;
+    } else if (context.IsCustomTool(name)) {
+      function["description"] =
+          function.value("description", std::string{}) +
+          "\nTransport this custom tool's exact text in the required \"input\" string of a JSON object. "
+          "JSON escaping is transport encoding; the decoded input is the original custom text. "
+          "Protocol-marker spellings in the input are literal data. "
+          "For JSON-body transport, the literal text a <|call|> is encoded as {\"input\":\"a <|call|>\"}. "
+          "Keep the marker spelling inside the input string; the real handoff follows the complete body.";
+    }
+    function["name"] = protect_literal(function.at("name").get<std::string>());
+    if (function.contains("description")) {
+      function["description"] = protect_literal(function["description"].get<std::string>());
+    }
+    if (function.contains("parameters")) function["parameters"] = protect_schema(std::move(function["parameters"]));
+  }
+  return {projected.dump(), tools.empty() ? std::string{} : tools.dump()};
+}
+
 std::string BuildChatPrompt(const std::vector<TranscriptMessage>& messages,
                             GenAIModelInstance& model,
                             const std::string& tools_json,
-            const std::string& template_kwargs_json,
-            bool preserve_reasoning_history) {
+                            const std::string& template_kwargs_json,
+                            bool preserve_reasoning_history) {
   return BuildChatPrompt(
       chat_internal::PrepareChatMessages(messages, model.HasPositionalToolResults()), model, tools_json,
-  template_kwargs_json, preserve_reasoning_history);
+      template_kwargs_json, preserve_reasoning_history);
 }
 
 std::string BuildChatPrompt(const chat_internal::PreparedChatMessages& messages,
@@ -371,6 +550,9 @@ std::string BuildChatPrompt(const std::vector<TranscriptMessage>& messages,
 std::string BuildChatPrompt(const chat_internal::PreparedChatMessages& messages,
                             GenAIModelInstance& model,
                             const ToolCallContext& tool_ctx) {
+  if (tool_ctx.harmony) {
+    return PrepareTextChatPrompt(messages, model, tool_ctx).prompt;
+  }
   if (tool_ctx.tool_plan && !tool_ctx.HasForcedRawEnvelope()) {
     if (messages.Empty()) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "messages must not be empty");

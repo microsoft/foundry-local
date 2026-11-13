@@ -62,6 +62,7 @@ ChatTurnUsage BuildTurnUsage(int prompt_tokens, const OnnxChatEngine::TurnResult
       MapFinishReason(static_cast<OgaFinishReason>(result.finish_reason)),
       MapTerminationCause(result.finish_reason),
       static_cast<int>(result.cached_prompt_tokens),
+      result.terminal_token_id,
   };
 }
 

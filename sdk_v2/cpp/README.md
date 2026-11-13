@@ -353,7 +353,7 @@ The unchanged original parameter schema is validated with jsoncons before any
 call in the batch is published. Structural guidance alone does not guarantee
 schema compliance or that the model chose the user's intended argument value.
 
-Automatic tool turns select their response mode explicitly: ordinary assistant
+Canonical automatic tool turns select their response mode explicitly: ordinary assistant
 text starts with an internal `MESSAGE` line, while executable calls start with
 the model's dedicated tool boundary. The runtime removes the text framing line
 incrementally; callers still receive normal content and tool-call events.
@@ -402,6 +402,49 @@ not an empty successful response.
 Recovery also shares implicit classic Generator output limits; it cannot acquire a
 fresh default allowance or use the retained conversation's full context as an output
 budget. Engine text turns remain uncapped when the caller leaves their limit unset.
+
+### Native Harmony
+
+GPT-OSS packages use their qualified native template and assistant channel/recipient
+headers, not canonical `MESSAGE` framing or tool-call arrays. Model loading checks
+the tokenizer's distinct control/literal encodings, EOS configuration, protected
+argument/result slots, reasoning/commentary projection, and generation prefix.
+The model must use the Engine backend. An incompatible template, tokenizer, or
+runtime is rejected rather than falling back to string-based parsing.
+
+Native support requires matching GenAI headers and libraries exposing
+`OgaEngineEventGetTerminalTokenId`, plus the matching CUDA add-on when applicable.
+The CMake capability probe checks both compilation and linking. Existing pinned
+packages without this API still build for canonical models but cannot load a
+qualified GPT-OSS package. Sampled handoff and answer completion are metadata,
+not extra retained sequence tokens.
+
+Each generated turn supports analysis, optional visible commentary, then a final
+answer or one directed tool call. Only sampled handoff authorizes a call. Output-budget
+exhaustion before handoff discards provisional arguments without retry, preserves visible
+commentary, and returns a length-limited response. Calls are validated before publication; JSON
+argument bytes are preserved. Custom tools with the admitted stock patch grammar
+use native raw bodies; unframed text custom tools retain JSON input-object transport.
+Both reuse the synthesized `{"input":"raw text"}` object for schema admission and
+deliver unchanged text to callers. Recorded native and canonical body encodings survive tool
+definition changes during history replay, including encoding metadata attached to
+stored input calls as well as generated output calls.
+Unannotated caller-supplied calls use the current declaration's body encoding when first
+admitted, then retain that encoding in warm history and stored replay.
+Tool results are correlated by call ID
+and rendered as named, protected JSON values. Source text and literal marker spellings remain data.
+Original schemas and custom input formats are supplied as bounded literal prompt
+information; schema admission remains owned by the existing `ToolCallPlan`.
+
+GPT-OSS generation is sequential even when the client permits parallel calls.
+Native reasoning effort supports `low`, `medium`, and `high`; model-owned reasoning
+cannot be disabled with `enable_thinking` or altered with `preserve_thinking`.
+Top-level API effort overrides the generic thinking-switch mapping for this
+protocol. Explicit whole-response guidance is incompatible with native Harmony.
+Rejected selected calls use the shared one-retry policy with a whole-message
+checkpoint and a legal, literal developer correction.
+
+### Local coding qualification
 
 General-chat function qualification is separate from coding-agent qualification. With a locally registered model
 already loaded, select the ordinary chat cases explicitly:
