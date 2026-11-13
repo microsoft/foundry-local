@@ -689,13 +689,7 @@ FunctionSchemas ParseFunctionSchemas(
   return schemas;
 }
 
-bool IsCompatibleParameterValue(const Json& value, const Json& schema, size_t depth = 0);
-
-bool IsCompatibleJsonValue(const Json& value, const Json& schema, size_t depth = 0) {
-  if (depth >= kMaxSchemaNesting) {
-    return false;
-  }
-
+bool IsCompatibleJsonValue(const Json& value, const Json& schema) {
   const auto type = GetSupportedType(schema);
   if (!type.has_value()) {
     return false;
@@ -707,66 +701,18 @@ bool IsCompatibleJsonValue(const Json& value, const Json& schema, size_t depth =
     compatible = IsCompatibleScalarType(value, *type);
   }
   if (*type == "array") {
-    compatible = value.is_array() &&
-                 (!schema.contains("items") ||
-                  std::ranges::all_of(value, [&](const auto& item) {
-                    return IsCompatibleParameterValue(item, schema["items"], depth + 1);
-                  }));
+    compatible = value.is_array();
   }
   if (*type == "object") {
     compatible = value.is_object();
-    if (compatible) {
-      const auto& properties = schema.value("properties", Json::object());
-      compatible = (!schema.contains("required") ||
-                    std::ranges::all_of(schema["required"], [&](const auto& required) {
-                      return value.contains(required.template get_ref<const std::string&>());
-                    })) &&
-                   std::ranges::all_of(value.items(), [&](const auto& item) {
-                     if (properties.contains(item.key())) {
-                       return IsCompatibleParameterValue(item.value(), properties[item.key()], depth + 1);
-                     }
-
-                     if (!schema.contains("additionalProperties")) {
-                       return true;
-                     }
-
-                     const auto& additional = schema["additionalProperties"];
-                     return additional.is_boolean() ? additional.get<bool>() : IsCompatibleParameterValue(item.value(), additional, depth + 1);
-                   });
-    }
   }
+  // Nested JSON already carries explicit types. Only the original plan may decide semantic composition.
   return compatible &&
          (!schema.contains("enum") ||
           std::ranges::any_of(schema["enum"], [&](const auto& expected) {
             return JsonScalarEquals(value, expected);
           })) &&
          (!schema.contains("const") || JsonScalarEquals(value, schema["const"]));
-}
-
-bool IsCompatibleParameterValue(const Json& value, const Json& schema, size_t depth) {
-  if (depth >= kMaxSchemaNesting) {
-    return false;
-  }
-
-  if (schema.contains("oneOf")) {
-    size_t matches = 0;
-    for (const auto& branch : schema["oneOf"]) {
-      matches += IsCompatibleParameterValue(value, branch, depth + 1) ? 1u : 0u;
-      if (matches > 1) {
-        return false;
-      }
-    }
-
-    return matches == 1;
-  }
-
-  if (!schema.contains("anyOf")) {
-    return IsCompatibleJsonValue(value, schema, depth);
-  }
-
-  return std::ranges::any_of(schema["anyOf"], [&](const auto& branch) {
-    return IsCompatibleParameterValue(value, branch, depth + 1);
-  });
 }
 
 std::optional<Json> ParseJsonWithoutDuplicateObjectKeys(
@@ -1600,15 +1546,13 @@ std::vector<ParsedToolCall> ParseQwenGuidedToolCalls(
       }
 
       arguments = call_json["parameters"];
-      if (std::ranges::any_of(arguments.items(), [&](const auto& argument) {
-            const auto property = schema->second.properties.find(argument.key());
-            return property == schema->second.properties.end() ||
-                   !IsCompatibleParameterValue(argument.value(), *property);
-          }) ||
-          !std::ranges::all_of(schema->second.required, [&](const auto& required) {
-            return arguments.contains(required);
-          })) {
-        return {};
+      for (const auto& argument : arguments.items()) {
+        const auto property = schema->second.properties.find(argument.key());
+        if (property != schema->second.properties.end() &&
+            GetSupportedType(*property).has_value() &&
+            !IsCompatibleJsonValue(argument.value(), *property)) {
+          return {};
+        }
       }
     }
 

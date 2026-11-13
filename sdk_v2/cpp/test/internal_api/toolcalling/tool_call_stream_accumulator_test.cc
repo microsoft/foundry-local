@@ -415,6 +415,43 @@ TEST(QwenXmlToolCallAccumulatorTest, NativeJsonAlternativePreservesAdversarialSt
   }
 }
 
+TEST(QwenXmlToolCallAccumulatorTest, NestedSemanticOneOfUsesOriginalPlanForXmlAndTaggedJson) {
+  const auto kinds = std::unordered_map<std::string, ToolKind>{{"typed", ToolKind::kFunction}};
+  for (const auto* branches : {
+           R"([{"type":"string","maxLength":1},{"type":"string","minLength":2}])",
+           R"([{"type":"number","maximum":1},{"type":"number","minimum":2}])"}) {
+    const auto choices = nlohmann::json::parse(branches);
+    const auto tools = nlohmann::json::array({{{"type", "function"},
+                                               {"function", {{"name", "typed"}, {"parameters", {{"type", "object"}, {"properties", {{"value", {{"type", "object"}, {"properties", {{"token", {{"oneOf", choices}}}}}, {"required", {"token"}}, {"additionalProperties", false}}}}}, {"required", {"value"}}, {"additionalProperties", false}}}}}}})
+                           .dump();
+    ASSERT_TRUE(CanDecodeQwenXmlToolSchemas(tools, kinds));
+    const bool strings = choices[0]["type"] == "string";
+    const std::vector<nlohmann::json> values = strings
+                                                   ? std::vector<nlohmann::json>{"x", "long", 3}
+                                                   : std::vector<nlohmann::json>{1, 2, 1.5};
+    for (size_t i = 0; i < values.size(); ++i) {
+      const auto args = nlohmann::json{{"value", {{"token", values[i]}}}};
+      const auto xml = "<tool_call>\n<function=typed>\n<parameter=value>\n" +
+                       args["value"].dump() + "\n</parameter>\n</function>\n</tool_call>";
+      const auto tagged = "<tool_call>" + nlohmann::json{{"name", "typed"}, {"arguments", args}}.dump() + "</tool_call>";
+      for (const bool json : {false, true}) {
+        auto parser = json ? CreateQwenTaggedJsonToolCallPayloadParser(tools, kinds)
+                           : CreateQwenXmlToolCallPayloadParser(tools, kinds);
+        const auto parsed = parser(json ? tagged : xml, true);
+        EXPECT_EQ(parsed.disposition, i < 2 ? ToolCallPayloadDisposition::kParsed
+                                            : ToolCallPayloadDisposition::kMalformed)
+            << parsed.error;
+        if (i < 2) {
+          ASSERT_EQ(parsed.calls.size(), 1u);
+          EXPECT_EQ(nlohmann::json::parse(parsed.calls[0].arguments), args);
+        } else {
+          EXPECT_TRUE(parsed.calls.empty());
+        }
+      }
+    }
+  }
+}
+
 TEST(QwenXmlToolCallAccumulatorTest, RootCompositionDoesNotChangeDeclaredParameterTransport) {
   const std::string tools =
       R"([{"type":"function","function":{"name":"typed","parameters":{"type":"object",)"

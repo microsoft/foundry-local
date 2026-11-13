@@ -365,6 +365,13 @@ representable native calls. An unambiguous XML string remains a string; a body
 valid as both string and container is rejected, not assigned a guessed type.
 Tagged JSON carries either type explicitly for the same original schema.
 
+This is protocol infrastructure, not production coding-agent qualification for every
+model/backend/runtime combination. XML-only backends without guidance reject
+ambiguous string/null offers before generation unless a separately qualified
+tagged-JSON protocol is available. Nullable schema rendering alone does not remove
+that admission limit. Full coding/error/repair qualification and rollout remain
+separate work; deterministic protocol tests do not establish production readiness.
+
 Otherwise, the model emits a nonempty canonical JSON array inside its published tool
 markers, for example:
 

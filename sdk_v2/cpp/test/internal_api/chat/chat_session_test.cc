@@ -2089,6 +2089,39 @@ TEST_F(QwenNativeProductionIntegrationTest, QualifiedNativeContinuationPreserves
   }
 }
 
+TEST_F(QwenNativeProductionIntegrationTest, NestedSemanticOneOfAcceptsXmlWithoutRecoveryBudget) {
+  for (auto* model : qualified_models_) {
+    for (const auto* branches : {
+             R"([{"type":"string","maxLength":1},{"type":"string","minLength":2}])",
+             R"([{"type":"number","maximum":1},{"type":"number","minimum":2}])"}) {
+      const auto choices = nlohmann::json::parse(branches);
+      const auto schema = nlohmann::json{
+          {"type", "object"}, {"properties", {{"value", {{"type", "object"}, {"properties", {{"token", {{"oneOf", choices}}}}}, {"required", {"token"}}, {"additionalProperties", false}}}}}, {"required", {"value"}}, {"additionalProperties", false}}
+                              .dump();
+      const auto value = choices[0]["type"] == "string" ? nlohmann::json("x") : nlohmann::json(1);
+      const auto arguments = nlohmann::json{{"value", {{"token", value}}}};
+      const auto wire = "<tool_call>\n<function=typed>\n<parameter=value>\n" +
+                        arguments["value"].dump() + "\n</parameter>\n</function>\n</tool_call>";
+      auto catalog = MakeCatalogModel();
+      int attempts = 0;
+      ChatSession session(catalog, *model, *logger_, telemetry_, {},
+                          [&](const auto& messages, const auto& options, auto& instance, const auto& context, bool retry) {
+                            ++attempts;
+                            EXPECT_TRUE(context.native_qwen_xml_tool_calls);
+                            return OutputFactory(wire)(messages, options, instance, context, retry);
+                          });
+      session.AddToolDefinition({"typed", "", schema, ToolKind::kFunction});
+      auto request = MakeStatefulRequest("call typed");
+      StoreStopStringsOption({"never matches"}, request.options);
+      Response response;
+      session.ProcessRequest(request, response);
+      ASSERT_EQ(Calls(response).size(), 1u);
+      EXPECT_EQ(nlohmann::json::parse(Calls(response)[0]->arguments), arguments);
+      EXPECT_EQ(attempts, 1);
+    }
+  }
+}
+
 TEST_F(QwenNativeProductionIntegrationTest, NativeSchemaRefusalSelectsSupportedFallbackBeforeGeneration) {
   for (auto* model : qualified_models_) {
     for (const auto* schema : {
