@@ -222,7 +222,10 @@ HarmonyDecoder::Output HarmonyDecoder::Finish(std::optional<int32_t> terminal_to
     return Push(terminal_token, {});
   }
   if (phase_ == Phase::kDone) return {};
-  if (!recipient_.empty() || natural_end) return Fail("Incomplete or interrupted Harmony turn");
+  if (natural_end) return Fail("Incomplete Harmony turn");
+  arguments_.clear();
+  recipient_.clear();
+  phase_ = Phase::kDone;
   return {};
 }
 

@@ -1538,6 +1538,16 @@ std::unique_ptr<PreparedChatRequest> PrepareChatRequest(
                                                           model_info, model, logger);
   prepared->ingest = IngestRequestItems(request.items, request.item_segment_starts,
                                         prepared->tool_context.tool_kinds);
+  if (prepared->tool_context.harmony) {
+    for (auto& message : prepared->ingest.messages) {
+      for (auto& entry : message.entries) {
+        if (entry.kind != TranscriptEntry::Kind::kToolCall || entry.tool_call.has_recorded_encoding) continue;
+        auto& call = entry.tool_call;
+        call.generated_encoding = prepared->tool_context.CallEncoding(call.name, false);
+        call.has_recorded_encoding = true;
+      }
+    }
+  }
   transcript.ValidateInputs(prepared->ingest.messages);
   prepared->options = SearchOptions::FromParameters(effective_kvp);
   prepared->backend_kind = model.GetGenAIConfig().GetChatBackendKind();

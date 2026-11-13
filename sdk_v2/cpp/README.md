@@ -420,14 +420,17 @@ qualified GPT-OSS package. Sampled handoff and answer completion are metadata,
 not extra retained sequence tokens.
 
 Each generated turn supports analysis, optional visible commentary, then a final
-answer or one directed tool call. Calls are validated before publication; JSON
+answer or one directed tool call. Only sampled handoff authorizes a call. Output-budget
+exhaustion before handoff discards provisional arguments without retry, preserves visible
+commentary, and returns a length-limited response. Calls are validated before publication; JSON
 argument bytes are preserved. Custom tools with the admitted stock patch grammar
 use native raw bodies; unframed text custom tools retain JSON input-object transport.
 Both reuse the synthesized `{"input":"raw text"}` object for schema admission and
 deliver unchanged text to callers. Recorded native and canonical body encodings survive tool
 definition changes during history replay, including encoding metadata attached to
 stored input calls as well as generated output calls.
-Unannotated caller-supplied calls continue to use the current declaration's body encoding.
+Unannotated caller-supplied calls use the current declaration's body encoding when first
+admitted, then retain that encoding in warm history and stored replay.
 Tool results are correlated by call ID
 and rendered as named, protected JSON values. Source text and literal marker spellings remain data.
 Original schemas and custom input formats are supplied as bounded literal prompt
