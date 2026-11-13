@@ -256,6 +256,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/catalog/local_model_scanner.cc
     src/catalog/non_generative_package.cc
     src/inferencing/generative/audio/audio_generator.cc
+    src/inferencing/generative/audio/asr_transcript.cc
     src/inferencing/generative/audio/audio_session.cc
     src/inferencing/generative/audio/onnx_audio_generator.cc
     src/inferencing/generative/audio/pcm_utils.cc

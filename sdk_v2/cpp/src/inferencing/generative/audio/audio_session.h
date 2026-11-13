@@ -16,6 +16,7 @@ struct OgaGenerator;
 struct OgaStreamingProcessor;
 struct OgaNamedTensors;
 struct OgaTokenizerStream;
+struct OgaASRPostProcessor;
 
 namespace fl {
 
@@ -24,6 +25,7 @@ struct AudioTranscriptionRequest;
 struct AudioItem;
 struct ItemQueue;
 struct SpeechSegmentItem;
+class ASRTranscript;
 
 namespace AudioInternal {
 
@@ -65,17 +67,15 @@ class AudioSession : public Session {
 
   void ProcessNemotronFileTranscription(const AudioTranscriptionRequest& req,
                                         const Request& original_request,
-                                        Response& response);
+                                        Response& response, bool openai_json = true);
 
   void RunNemotronDecodePass(std::unique_ptr<OgaNamedTensors> tensors, OgaGenerator& generator,
-                             OgaTokenizerStream& tokenizer_stream, std::string& text,
-                             const std::unique_ptr<CallbackHandler>& streaming_callback,
-                             const std::string& response_id, const Request& original_request,
+                             OgaASRPostProcessor& postprocessor, ASRTranscript& transcript,
+                             const Request& original_request,
                              int& completion_tokens) const;
 
-  void DecodeNemotronTokens(OgaGenerator& generator, OgaTokenizerStream& tokenizer_stream, std::string& text,
-                            const std::unique_ptr<CallbackHandler>& streaming_callback,
-                            const std::string& response_id, const Request& original_request,
+  void DecodeNemotronTokens(OgaGenerator& generator, OgaASRPostProcessor& postprocessor,
+                            ASRTranscript& transcript, const Request& original_request,
                             int& completion_tokens) const;
 
   void TryNemotronLanguageId(OgaGenerator& generator, const std::string& language) const;
@@ -90,19 +90,15 @@ class AudioSession : public Session {
   /// `segments` accumulates a SpeechSegmentItem per decoded token; the same per-token
   /// segments are also what gets pushed to the streaming callback.
   void ProcessChunk(OgaStreamingProcessor& processor, OgaGenerator& generator,
-                    OgaTokenizerStream& tokenizer_stream, const std::vector<float>& samples,
-                    std::vector<std::string>& token_texts,
-                    std::vector<std::unique_ptr<SpeechSegmentItem>>& segments,
-                    const std::unique_ptr<CallbackHandler>& callback,
+                    OgaASRPostProcessor& postprocessor, const std::vector<float>& samples,
+                    ASRTranscript& transcript,
                     const Request& request,
                     int& completion_tokens);
 
   /// Decode all available tokens from the generator. This MUST run to completion
   /// (IsDone() == true) before the next SetInputs() call.
-  void DecodeTokens(OgaGenerator& generator, OgaTokenizerStream& tokenizer_stream,
-                    std::vector<std::string>& token_texts,
-                    std::vector<std::unique_ptr<SpeechSegmentItem>>& segments,
-                    const std::unique_ptr<CallbackHandler>& callback,
+  void DecodeTokens(OgaGenerator& generator, OgaASRPostProcessor& postprocessor,
+                    ASRTranscript& transcript,
                     const Request& request,
                     int& completion_tokens);
 

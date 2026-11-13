@@ -45,13 +45,13 @@ OnnxAudioGenerator::OnnxAudioGenerator(std::unique_ptr<OgaAudios> audios,
                                        std::unique_ptr<OgaNamedTensors> inputs,
                                        std::unique_ptr<OgaGeneratorParams> gen_params,
                                        std::unique_ptr<OgaGenerator> generator,
-                                       std::unique_ptr<OgaTokenizerStream> stream,
+                                       std::unique_ptr<OgaASRPostProcessor> postprocessor,
                                        int prompt_token_count)
     : audios_(std::move(audios)),
       inputs_(std::move(inputs)),
       gen_params_(std::move(gen_params)),
       generator_(std::move(generator)),
-      stream_(std::move(stream)),
+      postprocessor_(std::move(postprocessor)),
       prompt_token_count_(prompt_token_count) {}
 
 // ---------------------------------------------------------------------------
@@ -76,6 +76,13 @@ void OnnxAudioGenerator::GenerateNextToken() {
 
   try {
     generator_->GenerateNextToken();
+    postprocessor_->ProcessNext();
+    decoded_text_.clear();
+    for (const auto* result : postprocessor_->GetNextResults()) decoded_text_ += result->GetText();
+    if (generator_->IsDone() && !generator_->IsSessionTerminated()) {
+      postprocessor_->Finalize();
+      for (const auto* result : postprocessor_->GetNextResults()) decoded_text_ += result->GetText();
+    }
   } catch (const std::runtime_error& e) {
     // If cancelled while generating, the OGA engine throws when the session is terminated.
     // This is expected — not an error.
@@ -92,16 +99,7 @@ std::string OnnxAudioGenerator::Decode() {
     return "";
   }
 
-  auto next_tokens = generator_->GetNextTokens();
-
-  if (next_tokens.empty()) {
-    return "";
-  }
-
-  int32_t token_id = next_tokens[0];
-  const char* token_text = stream_->Decode(token_id);
-
-  return token_text ? std::string(token_text) : "";
+  return decoded_text_;
 }
 
 int OnnxAudioGenerator::TokenCount() const {
@@ -172,15 +170,14 @@ std::unique_ptr<OnnxAudioGenerator> OnnxAudioGenerator::Create(const std::string
   // 6. Capture prompt token count after inputs are set
   int prompt_token_count = static_cast<int>(generator->GetSequenceCount(0));
 
-  // 7. Create tokenizer stream for decoding (no special-token stream needed for audio)
-  auto stream = model.GetPreprocessor().CreateTokenizerStream();
+  auto postprocessor = OgaASRPostProcessor::Create(*generator);
 
   // `std::make_unique` cannot access the private constructor, so use `new` directly.
   return std::unique_ptr<OnnxAudioGenerator>(new OnnxAudioGenerator(std::move(audios),
                                                                     std::move(inputs),
                                                                     std::move(gen_params),
                                                                     std::move(generator),
-                                                                    std::move(stream),
+                                                                    std::move(postprocessor),
                                                                     prompt_token_count));
 }
 

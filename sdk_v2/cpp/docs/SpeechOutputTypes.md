@@ -161,25 +161,34 @@ submit the resulting audio file through the existing file-transcription API.
 The SDK does not add another recording buffer. Nemotron's incremental
 processing is unchanged.
 
-The current producer (`AudioSession` over ORT GenAI — Whisper, Parakeet TDT,
-Nemotron streaming) emits one segment **per decoded token, all with kind `NONE`**.
-Today's models surface only decoded tokens with no hypothesis-revision signal,
-so `PARTIAL` / `FINAL` and `utterance_start` are part of the contract but not
-yet produced. `NONE` is the honest label until a segmenting ASR exists.
+`AudioSession` decodes through one GenAI `ASRPostProcessor` per generator. The
+packaged `model.timestamp_level` selects `off` (also the default when absent),
+`word`, `segment`, or `all`. Enabled timestamps are supported only by Nemotron.
+This integration requires the GenAI integer-millisecond timestamp ABI; the
+native build checks the interval return type rather than silently accepting seconds.
 
-Populated today:
+With timestamps off, decoded text fragments retain kind `NONE` and unset timing.
+Timed mode emits cumulative `PARTIAL` text for the current word or segment as
+decoded text arrives, without timing or word metadata. A `FINAL` item is emitted
+when a word or segment completes, carrying its text and millisecond bounds.
+Completed text is removed from subsequent partials; any already-decoded text for
+the next record becomes its initial partial. Empty partials are not emitted.
+Word mode places each completed word in
+its own segment; segment mode supplies the segment's own text and millisecond
+bounds without word details; all mode attaches buffered words to completed segments.
+Equal timestamps do not identify records: repeated words are retained in emission order.
 
-- `SpeechSegmentItem`: `kind` (always `NONE`), `text` (one token)
-- `SpeechResultItem`: `text` (concatenated transcript), `segments`
+Callbacks receive owned copies of partials and completed records. Partial snapshots
+are not retained in the final `SpeechResultItem`, which contains the full raw
+transcript and all completed segments. Audio is flushed before
+ASR finalization, which publishes trailing records. Nemotron WAV files use this same
+mapping through typed file requests and the OpenAI JSON adapter. Timed JSON adds a
+`segments` array with `text`, `start_time_ms`, `end_time_ms`, and `words`; untimed
+responses retain the existing `id`/`text` shape.
 
-Defined in the contract but intentionally unset by the current producer:
-
-- segment: `start_time_ms`, `end_time_ms`, `utterance_start`, `words`,
-  `language`
-- result: `language`, `duration_ms` — GenAI reports neither a detected source
-  language nor audio duration; the request-side language is only a hint
-- `PARTIAL` / `FINAL` segment kinds
-- `SpeechWord` fields (`text` timings, `confidence`, `speaker_id`)
+`utterance_start`, detected language, confidence, and speaker identity
+remain unset unless a producer actually reports them. Timestamp grouping does not
+invent hypothesis revisions or speaker information.
 
 ## Growth headroom (not built)
 
