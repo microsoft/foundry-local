@@ -39,6 +39,9 @@ struct ModelCapabilities {
 
 namespace model_capabilities_internal {
 
+// Admission to strict Harmony qualification, not proof of token/template safety.
+bool IsHarmonyTemplateCandidate(std::string_view model_type, std::string_view rendered_probe) noexcept;
+
 ModelCapabilities ResolveRenderedProbes(std::string_view model_type,
                                         std::string_view tool_call_projection,
                                         std::string_view tool_result_projection,

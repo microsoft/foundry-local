@@ -118,6 +118,26 @@ TEST(HarmonyDecoderTest, UsesControlIdsWithEmptyDecodedTextAndAcceptsSplitJsonHe
   EXPECT_FALSE(call.id.empty());
 }
 
+TEST(HarmonyDecoderTest, ChannelFirstToolHeaderAcceptsSampledHandoffMetadata) {
+  auto prompt = MakePrompt();
+  HarmonyDecoder decoder(kProtocol, ToolCallPlan::Create(kTools), prompt);
+  EXPECT_FALSE(decoder.Push(kProtocol.channel, {}).malformed);
+  EXPECT_FALSE(decoder.Push(100, "commentary to=func").malformed);
+  EXPECT_FALSE(decoder.Push(101, "tions.lookup").malformed);
+  EXPECT_FALSE(decoder.Push(kProtocol.format, {}).malformed);
+  EXPECT_FALSE(decoder.Push(102, "json").malformed);
+  EXPECT_FALSE(decoder.Push(kProtocol.message, {}).malformed);
+  constexpr std::string_view arguments = R"({"city":"Paris"})";
+  const auto pending = decoder.Push(103, std::string(arguments));
+  EXPECT_FALSE(pending.malformed);
+  EXPECT_TRUE(pending.events.empty());
+  EXPECT_TRUE(decoder.HasRecoveryCheckpoint());
+  const auto output = decoder.Finish(kProtocol.handoff, true);
+  const auto& call = OnlyCall(output);
+  EXPECT_EQ(call.name, "lookup");
+  EXPECT_EQ(call.arguments, arguments);
+}
+
 TEST(HarmonyDecoderTest, LiteralControlSpellingsCannotManufactureHeaderMetadata) {
   auto prompt = MakePrompt();
   HarmonyDecoder decoder(kProtocol, ToolCallPlan::Create(kTools), prompt);
@@ -208,8 +228,8 @@ TEST(HarmonyDecoderTest, NativeRawBodyUsesInputEnvelopeWithoutLosingSourceBytes)
 }
 
 TEST(HarmonyDecoderTest, PromptProjectionPreservesNativeJsonRawAndResultProvenance) {
-  ToolCallContext context;
-  context.harmony = kProtocol;
+  ToolCallContext context{};
+  context.harmony.emplace(kProtocol);
   context.tools_json = kTools;
   context.tool_kinds = {{"lookup", ToolKind::kFunction}, {"patch", ToolKind::kCustom}};
   context.custom_lark_grammars = {{"patch", "start: /[\\s\\S]+/"}};
@@ -249,6 +269,21 @@ TEST(HarmonyDecoderTest, PromptProjectionPreservesNativeJsonRawAndResultProvenan
   EXPECT_TRUE(projected_tools[1]["function"]["native_freeform"].get<bool>());
 }
 
+TEST(HarmonyDecoderTest, PromptProjectionRejectsParallelHistoryBeforeTemplateRendering) {
+  ToolCallContext context{};
+  context.harmony.emplace(kProtocol);
+  TranscriptMessage assistant(FOUNDRY_LOCAL_ROLE_ASSISTANT, "");
+  for (const auto* id : {"call_first", "call_second"}) {
+    assistant.AppendToolCall(
+        MakeGeneratedToolCall(id, "lookup", R"({"path":"file.txt"})",
+                              ToolKind::kFunction, GeneratedCallEncoding::kNativeJson)
+            .call);
+  }
+
+  EXPECT_THROW(BuildHarmonyPromptProjection({assistant}, context, [](std::string value) { return value; }),
+               Exception);
+}
+
 TEST(HarmonyDecoderTest, StoredInputAndOutputReplayRetainHistoricalCustomBodyEncoding) {
   const std::string body = R"({"input":"literal <|call|> and a\\b"})";
   for (const auto encoding : {GeneratedCallEncoding::kStructured, GeneratedCallEncoding::kNativeJson,
@@ -286,8 +321,8 @@ TEST(HarmonyDecoderTest, StoredInputAndOutputReplayRetainHistoricalCustomBodyEnc
         }
         EXPECT_EQ(call_count, 1u);
 
-        ToolCallContext context;
-        context.harmony = kProtocol;
+        ToolCallContext context{};
+        context.harmony.emplace(kProtocol);
         context.tools_json = kTools;
         context.tool_kinds = {{"patch", ToolKind::kCustom}};
         if (current_raw) {
@@ -318,8 +353,8 @@ TEST(HarmonyDecoderTest, StoredInputAndOutputReplayRetainHistoricalCustomBodyEnc
 
 TEST(HarmonyDecoderTest, UnannotatedCallerHistoryStillUsesTheCurrentCustomBodyDeclaration) {
   for (const bool current_raw : {false, true}) {
-    ToolCallContext context;
-    context.harmony = kProtocol;
+    ToolCallContext context{};
+    context.harmony.emplace(kProtocol);
     context.tools_json = kTools;
     context.tool_kinds = {{"patch", ToolKind::kCustom}};
     if (current_raw) {
@@ -660,8 +695,8 @@ TEST(HarmonyGrammarTest, ChoicesKeepAuthoritativeHeadersBoundariesAndAllowedReci
     for (const std::string choice : {"auto", "required", "forced", "none"}) {
       SCOPED_TRACE(reasoning);
       SCOPED_TRACE(choice);
-      ToolCallContext context;
-      context.harmony = kProtocol;
+      ToolCallContext context{};
+      context.harmony.emplace(kProtocol);
       context.supports_reasoning = reasoning;
       context.text_output = choice == "auto" || choice == "none";
       context.tool_output = choice != "none";
@@ -694,8 +729,8 @@ TEST(HarmonyGrammarTest, ChoicesKeepAuthoritativeHeadersBoundariesAndAllowedReci
 }
 
 TEST(HarmonyGrammarTest, NativePatchBodiesUseTheirGrammarAndUnsupportedFormatsFailExplicitly) {
-  ToolCallContext context;
-  context.harmony = kProtocol;
+  ToolCallContext context{};
+  context.harmony.emplace(kProtocol);
   context.tool_output = true;
   context.text_output = false;
   EXPECT_THROW(BuildLarkGrammar(context), fl::Exception);
@@ -712,8 +747,8 @@ TEST(HarmonyGrammarTest, NativePatchBodiesUseTheirGrammarAndUnsupportedFormatsFa
 
 TEST(HarmonyDecoderTest, PromptProjectionRejectsNonLeadingInstructionRoles) {
   for (const auto* tools : {"", kTools}) {
-    ToolCallContext context;
-    context.harmony = kProtocol;
+    ToolCallContext context{};
+    context.harmony.emplace(kProtocol);
     context.tools_json = tools;
     for (const auto role : {FOUNDRY_LOCAL_ROLE_SYSTEM, FOUNDRY_LOCAL_ROLE_DEVELOPER}) {
       const auto protect = [](std::string value) { return value; };
@@ -735,8 +770,8 @@ TEST(HarmonyDecoderTest, PromptProjectionRejectsHeaderSeparatorsInToolAndHistory
   for (const char separator : std::string(" \t\r\n\v\f\x01\x02")) {
     const std::string name = "lookup" + std::string(1, separator) + "city";
     for (const bool history : {false, true}) {
-      ToolCallContext context;
-      context.harmony = kProtocol;
+      ToolCallContext context{};
+      context.harmony.emplace(kProtocol);
       context.tools_json = history ? kTools : nlohmann::json::array({{{"type", "function"}, {"function", {{"name", name}, {"parameters", {{"type", "object"}}}}}}}).dump();
       std::vector<TranscriptMessage> messages{{FOUNDRY_LOCAL_ROLE_USER, "Hello"}};
       if (history) {

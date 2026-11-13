@@ -123,11 +123,24 @@ std::vector<DelimitedRegion> FindDelimitedRegions(std::string_view text,
 }
 
 std::optional<HarmonyProtocol> QualifyHarmonyProtocol(std::string_view model_type, Preprocessor& preprocessor) {
-  if (model_type != "gptoss") return std::nullopt;
+  if (model_type != "gptoss") {
+    std::string rendered;
+    try {
+      rendered = preprocessor.ApplyChatTemplate(
+          R"([{"role":"user","content":"harmony-capability-probe"}])", nullptr, true);
+    } catch (...) {
+      // Other protocols may reject this probe; preserve their existing capability resolution.
+      return std::nullopt;
+    }
+
+    if (!model_capabilities_internal::IsHarmonyTemplateCandidate(model_type, rendered)) return std::nullopt;
+  }
+
+  // A rendered Harmony continuation opts in to every existing check, including failure on an unprotected template.
 #if !FOUNDRY_LOCAL_OGA_HAS_TERMINAL_TOKEN
   (void)preprocessor;
   FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
-           "GPT-OSS Harmony requires an ORT GenAI runtime exposing sampled terminal-token identity");
+           "Native Harmony requires an ORT GenAI runtime exposing sampled terminal-token identity");
 #else
   const auto resolve = [&](const char* spelling) {
     const auto encoded = preprocessor.Encode(spelling);
@@ -172,7 +185,7 @@ std::optional<HarmonyProtocol> QualifyHarmonyProtocol(std::string_view model_typ
                                   "<|message|>__probe_result__<|end|>"}) ||
       !rendered.ends_with(HarmonyProtocol::kAssistantPrefix)) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
-             "GPT-OSS requires the qualified protected Harmony transcript template");
+             "Native Harmony requires the qualified protected Harmony transcript template");
   }
   constexpr const char* custom_probe = R"([
     {"role":"user","content":"probe"},
@@ -194,7 +207,7 @@ std::optional<HarmonyProtocol> QualifyHarmonyProtocol(std::string_view model_typ
                                          "<|message|>__probe_custom_result__<|end|>"}) ||
       !custom_rendered.ends_with(HarmonyProtocol::kAssistantPrefix)) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
-             "GPT-OSS requires protected native custom-tool declarations and history");
+             "Native Harmony requires protected native custom-tool declarations and history");
   }
   const auto prefix = preprocessor.Encode(HarmonyProtocol::kAssistantPrefix);
   protocol.assistant_prefix_tokens.assign(prefix->SequenceData(0), prefix->SequenceData(0) + prefix->SequenceCount(0));
@@ -310,6 +323,15 @@ ModelCapabilities model_capabilities_internal::ResolveRenderedProbes(
   return {supports_tool_calling, native_qwen_xml_tool_calls, positional_tool_results,
           supports_reasoning_history, supports_preserve_thinking,
           !reasoning_projection.empty() || !no_preserve_reasoning_projection.empty()};
+}
+
+bool model_capabilities_internal::IsHarmonyTemplateCandidate(
+    std::string_view model_type, std::string_view rendered_probe) noexcept {
+  // GPT-OSS must still fail closed even when its package cannot render a valid continuation.
+  return model_type == "gptoss" ||
+         (rendered_probe.find("<|start|>user<|message|>harmony-capability-probe<|end|>") !=
+              std::string_view::npos &&
+          rendered_probe.ends_with(HarmonyProtocol::kAssistantPrefix));
 }
 
 // ---------------------------------------------------------------------------

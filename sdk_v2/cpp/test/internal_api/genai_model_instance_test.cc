@@ -96,6 +96,33 @@ TEST(ModelCapabilitiesTest, ExactQwen35TextTypeAndTemplateEnableBothCapabilities
   EXPECT_TRUE(capabilities.positional_tool_results);
 }
 
+TEST(ModelCapabilitiesTest, GenericDecoderHarmonyTemplateRequiresStrictQualification) {
+  constexpr std::string_view rendered =
+      "<|start|>system<|message|>instructions<|end|>"
+      "<|start|>user<|message|>harmony-capability-probe<|end|>"
+      "<|start|>assistant";
+  EXPECT_TRUE(fl::model_capabilities_internal::IsHarmonyTemplateCandidate("decoder", rendered));
+  EXPECT_TRUE(fl::model_capabilities_internal::IsHarmonyTemplateCandidate("unknown", rendered));
+}
+
+TEST(ModelCapabilitiesTest, GptossCannotBypassHarmonyQualificationWithAnInvalidTemplate) {
+  EXPECT_TRUE(fl::model_capabilities_internal::IsHarmonyTemplateCandidate("gptoss", ""));
+  EXPECT_TRUE(fl::model_capabilities_internal::IsHarmonyTemplateCandidate("gptoss", "not-harmony"));
+}
+
+TEST(ModelCapabilitiesTest, NonHarmonyTemplatesDoNotOptIntoHarmonyQualification) {
+  for (const auto rendered : {
+           std::string_view{},
+           std::string_view{kQwenToolCallProjection},
+           std::string_view{"harmony-capability-probe<|start|>assistant"},
+           std::string_view{"<|start|>user<|message|>harmony-capability-probe<|end|>"},
+           std::string_view{"<|start|>user<|message|>harmony-capability-probe<|end|>"
+                            "<|start|>assistant<|channel|>analysis"},
+       }) {
+    EXPECT_FALSE(fl::model_capabilities_internal::IsHarmonyTemplateCandidate("decoder", rendered)) << rendered;
+  }
+}
+
 TEST(ModelCapabilitiesTest, ExactQwen35TextTypeWithNonmatchingTemplateDisablesBothCapabilities) {
   const auto capabilities =
       fl::model_capabilities_internal::ResolveRenderedProbes(

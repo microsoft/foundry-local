@@ -357,8 +357,14 @@ HarmonyPromptProjection BuildHarmonyPromptProjection(
     Json entry{{"role", Utils::RoleToString(message.role)}, {"content", protect_literal(message.VisibleText())}};
     if (message.role == FOUNDRY_LOCAL_ROLE_ASSISTANT) {
       entry["thinking"] = protect_literal(message.ReasoningText());
+      const auto history_calls = message.ToolCalls();
+      if (history_calls.size() > 1) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                 "Native Harmony supports only sequential tool-call history");
+      }
+
       auto calls = Json::array();
-      for (const auto* call : message.ToolCalls()) {
+      for (const auto* call : history_calls) {
         validate_tool_name(call->name);
         if (!call_names.emplace(call->call_id, call->name).second) {
           FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Duplicate Harmony history call ID");
