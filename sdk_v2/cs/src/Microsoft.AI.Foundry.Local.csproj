@@ -13,15 +13,16 @@
       <RepositoryUrl>https://github.com/microsoft/Foundry-Local</RepositoryUrl>
       <RepositoryType>git</RepositoryType>
 
-      <TargetFrameworks>net10.0</TargetFrameworks>
+      <TargetFrameworks>net8.0;net9.0;netstandard2.0</TargetFrameworks>
       <RuntimeIdentifiers>win-x64;win-arm64;linux-x64;linux-arm64;osx-arm64</RuntimeIdentifiers> 
 
       <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
       <GeneratePackageOnBuild>False</GeneratePackageOnBuild>
       <ImplicitUsings>enable</ImplicitUsings>
       <LangVersion>latest</LangVersion>
-      <IsAotCompatible>True</IsAotCompatible>
-      <IsTrimmable>True</IsTrimmable>
+      <!-- AOT/trim attributes are only meaningful on the modern TFMs. -->
+      <IsAotCompatible Condition="'$(TargetFramework)' != 'netstandard2.0'">True</IsAotCompatible>
+      <IsTrimmable Condition="'$(TargetFramework)' != 'netstandard2.0'">True</IsTrimmable>
       <Nullable>enable</Nullable>
       <WarningsAsErrors />
 
@@ -100,6 +101,15 @@
       <PackageReference Include="Microsoft.Extensions.Logging" Version="9.0.9" />
       <!-- specify PrivateAssets to exclude from nuget dependencies -->
       <PackageReference Include="IDisposableAnalyzers" Version="4.0.8" PrivateAssets="all"/>
+    </ItemGroup>
+
+    <!-- netstandard2.0 polyfills: language features (init/required/IsExternalInit), Span/Memory,
+         IAsyncEnumerable, and Channels are not in the BCL on .NET Framework. -->
+    <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+      <PackageReference Include="PolySharp" Version="1.15.0" PrivateAssets="all" />
+      <PackageReference Include="System.Memory" Version="4.6.0" />
+      <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="9.0.9" />
+      <PackageReference Include="System.Threading.Channels" Version="9.0.9" />
     </ItemGroup>
 
     <!-- Native runtime package — provides foundry_local binary and pulls in ORT/GenAI NuGet deps.

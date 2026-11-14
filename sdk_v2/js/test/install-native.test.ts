@@ -25,7 +25,6 @@ const {
   redactUrlsInText,
   downloadWithRetryAndRedirects,
   runHttpMode,
-  runDotnetMode,
   generateRestoreProjectXml,
   buildDotnetRestoreArgs,
   findRestoredPackageDir,
@@ -133,7 +132,7 @@ describe("readConfig", () => {
   });
 
   it("rejects FOUNDRY_LOCAL_DOTNET_COMMAND in http mode", () => {
-    process.env.FOUNDRY_LOCAL_DOTNET_COMMAND = "dotnet10";
+    process.env.FOUNDRY_LOCAL_DOTNET_COMMAND = "dotnet8";
     expect(() => readConfig(process.env)).toThrow(/FOUNDRY_LOCAL_DOTNET_COMMAND is only valid/);
   });
 
@@ -150,17 +149,17 @@ describe("readConfig", () => {
 
   it("rejects FOUNDRY_LOCAL_DOTNET_COMMAND in nuget mode", () => {
     process.env.FOUNDRY_LOCAL_NUGET_MODE = "nuget";
-    process.env.FOUNDRY_LOCAL_DOTNET_COMMAND = "dotnet10";
+    process.env.FOUNDRY_LOCAL_DOTNET_COMMAND = "dotnet8";
     expect(() => readConfig(process.env)).toThrow(/FOUNDRY_LOCAL_DOTNET_COMMAND is only valid/);
   });
 
   it("accepts FOUNDRY_LOCAL_NUGET_CONFIG and a custom dotnet command in dotnet mode", () => {
     process.env.FOUNDRY_LOCAL_NUGET_MODE = "dotnet";
     process.env.FOUNDRY_LOCAL_NUGET_CONFIG = "C:\\NuGet.config";
-    process.env.FOUNDRY_LOCAL_DOTNET_COMMAND = "dotnet10";
+    process.env.FOUNDRY_LOCAL_DOTNET_COMMAND = "dotnet8";
     const config = readConfig(process.env);
     expect(config.configFile).toBe("C:\\NuGet.config");
-    expect(config.dotnetCommand).toBe("dotnet10");
+    expect(config.dotnetCommand).toBe("dotnet8");
   });
 
   it("accepts FOUNDRY_LOCAL_NUGET_CONFIG and a custom nuget command in nuget mode", () => {
@@ -319,36 +318,9 @@ describe("generateRestoreProjectXml", () => {
     expect(xml).toContain('<PackageReference Include="Microsoft.ML.OnnxRuntimeGenAI.Foundry" Version="[0.17.1]" />');
   });
 
-  it("targets net10.0", () => {
+  it("targets net8.0", () => {
     const xml = generateRestoreProjectXml([{ name: "A", version: "1.0.0", expected: "a.dll" }]);
-    expect(xml).toContain("<TargetFramework>net10.0</TargetFramework>");
-  });
-
-  it("omits the implicit framework reference", () => {
-    const xml = generateRestoreProjectXml([{ name: "A", version: "1.0.0", expected: "a.dll" }]);
-    expect(xml).toContain("<DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>");
-  });
-});
-
-describe("runDotnetMode", () => {
-  it("explains the SDK requirement when the dotnet command is missing", () => {
-    const buildDir = join(here, "..", "build");
-    mkdirSync(buildDir, { recursive: true });
-    const binDir = mkdtempSync(join(buildDir, "missing-dotnet-"));
-    vi.spyOn(console, "log").mockImplementation(() => {});
-
-    try {
-      expect(() =>
-        runDotnetMode(
-          { dotnetCommand: join(binDir, "missing-dotnet"), feeds: [] },
-          [{ name: "A", version: "1.0.0", expected: "a.dll" }],
-          binDir,
-          { rid: "win-x64", ext: ".dll" },
-        ),
-      ).toThrow(/Install the \.NET SDK 10\.0 or later/);
-    } finally {
-      rmSync(binDir, { recursive: true, force: true });
-    }
+    expect(xml).toContain("<TargetFramework>net8.0</TargetFramework>");
   });
 });
 

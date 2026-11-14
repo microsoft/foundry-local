@@ -1,7 +1,17 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFrameworks>net10.0</TargetFrameworks>
+    <IsWindows Condition="$([MSBuild]::IsOSPlatform('Windows'))">true</IsWindows>
+
+    <!-- Always test on the .NET (Core) LTS pair. The Windows default SKU also targets
+         net462 to exercise the netstandard2.0 surface of the SDK end-to-end: the
+         netstandard-only DllLoader path, the Utf8 unsafe-pointer fallback, the
+         System.Memory / Bcl.AsyncInterfaces / System.Threading.Channels polyfills,
+         and the vtable async/await pipeline all run on .NET Framework. CI and local
+         scripts pass an explicit framework filter so the .NET (Core) test suite
+         only runs once. -->
+    <TargetFrameworks>net8.0</TargetFrameworks>
+    <TargetFrameworks Condition="'$(IsWindows)' == 'true'">net462;net8.0</TargetFrameworks>
 
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
@@ -29,6 +39,27 @@
                             And $([MSBuild]::GetTargetFrameworkIdentifier('$(TargetFramework)')) != '.NETFramework'">
     <RuntimeIdentifier>$(NETCoreSdkRuntimeIdentifier)</RuntimeIdentifier>
   </PropertyGroup>
+
+  <!--
+    .NET Framework test executables default to Prefer32Bit=true, causing the build to
+    look for a RID-specific target that restore doesn't generate. Set RuntimeIdentifier
+    explicitly so restore and build agree.
+  -->
+  <PropertyGroup Condition="'$(TargetFramework)' != ''
+                            And $([MSBuild]::GetTargetFrameworkIdentifier('$(TargetFramework)')) == '.NETFramework'">
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+  </PropertyGroup>
+
+  <!-- netstandard2.0 polyfills required when targeting .NET Framework. The SDK exposes
+       Span<T>, IAsyncEnumerable<T>, Channel<T>, and uses init/required modifiers — none
+       of which exist in mscorlib on net462. PolySharp synthesizes the language-feature
+       attributes; the others provide the actual runtime types. -->
+  <ItemGroup Condition="$([MSBuild]::GetTargetFrameworkIdentifier('$(TargetFramework)')) == '.NETFramework'">
+    <PackageReference Include="PolySharp" Version="1.15.0" PrivateAssets="all" />
+    <PackageReference Include="System.Memory" Version="4.6.0" />
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="9.0.9" />
+    <PackageReference Include="System.Threading.Channels" Version="9.0.9" />
+  </ItemGroup>
 
   <ItemGroup>
     <None Include="../../../testdata/Recording.mp3" Link="testdata/Recording.mp3">

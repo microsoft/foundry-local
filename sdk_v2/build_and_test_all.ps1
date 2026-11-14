@@ -139,7 +139,10 @@ try {
                 dotnet @buildArgs
                 if ($LASTEXITCODE -ne 0) { throw "dotnet build exit $LASTEXITCODE" }
 
-                $frameworks = @('net10.0')
+                # Test on net9.0 (back-compat covers net8.0 consumers); on Windows
+                # also run net462 to exercise the netstandard2.0 polyfills.
+                $frameworks = @('net9.0')
+                if ($IsWindows) { $frameworks += 'net462' }
 
                 foreach ($tfm in $frameworks) {
                     Write-Host "=== dotnet test --framework $tfm ==="

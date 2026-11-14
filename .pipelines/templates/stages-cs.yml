@@ -155,7 +155,7 @@ stages:
           $proj = "$(Build.SourcesDirectory)/sdk_v2/cs/test/FoundryLocal.Tests/Microsoft.AI.Foundry.Local.Tests.csproj"
           dotnet test $proj `
             --no-build --configuration Release `
-            --framework net10.0 `
+            --framework net8.0 `
             -- `
             --treenode-filter "/*/*/NonGenerativeIntegrationTests/*"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -255,6 +255,11 @@ stages:
       inputs:
         packageType: sdk
         version: '10.0.x'
+    - task: UseDotNet@2
+      displayName: 'Install .NET 9 runtime'
+      inputs:
+        packageType: runtime
+        version: '9.0.x'
     - task: NuGetAuthenticate@1
       displayName: 'Authenticate NuGet feeds'
     - task: PowerShell@2

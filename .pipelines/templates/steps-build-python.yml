@@ -325,7 +325,6 @@ steps:
             --exclude "libonnxruntime-genai.so*"
         '
     displayName: 'Build and repair architecture-specific manylinux wheel'
-    retryCountOnTaskFailure: 5
 
   - task: PowerShell@2
     displayName: 'Audit Linux ABI compatibility'

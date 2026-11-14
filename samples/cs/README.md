@@ -1,6 +1,6 @@
 # Foundry Local C# samples
 
-These seven samples use Foundry Local SDK **2.2.1** and .NET 10:
+These seven samples use Foundry Local SDK **2.2.1** and .NET 9:
 
 | Sample | What it demonstrates |
 | --- | --- |
@@ -21,7 +21,7 @@ These seven samples use Foundry Local SDK **2.2.1** and .NET 10:
 
 ## Prerequisites
 
-- .NET 10 SDK
+- .NET 9 SDK
 - A supported Foundry Local platform
 - Internet access for the catalog, execution-provider, and model downloads
 - A microphone on Windows for `realtime-transcription`
