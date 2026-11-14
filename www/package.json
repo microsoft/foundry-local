@@ -29,7 +29,7 @@
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-vercel": "^6.3.3",
-		"@sveltejs/kit": "^3.1.1",
+		"@sveltejs/kit": "^2.70.2",
 		"@sveltejs/vite-plugin-svelte": "^7.1.2",
 		"@tailwindcss/postcss": "^4.2.2",
 		"@tailwindcss/typography": "^0.5.19",
@@ -55,9 +55,6 @@
 	},
 	"dependencies": {
 		"@vercel/analytics": "^2.0.1"
-	},
-	"overrides": {
-		"cookie": "^0.7.0"
 	},
 	"keywords": [
 		"microsoft",
