@@ -95,9 +95,10 @@ class HostedState {
     });
     if (catalog == CatalogType::kPublic) {
       const auto context = Connect(false);
+      // CPU-only discovery keeps lazy catalog access working without assuming the client's GPU matches the host.
       auto snapshot = context ? DecodeRuntimeDeviceSnapshot(
                                     context->Call(Operation::RuntimeDevices, {{"include_execution_targets", true}}))
-                              : RuntimeDeviceSnapshot{};
+                              : RuntimeDeviceSnapshot{{{"CPU", {"CPUExecutionProvider"}}}, {}};
       metadata->SetCatalogRuntimeDevices(std::move(snapshot.devices), std::move(snapshot.execution_targets));
     }
   }
