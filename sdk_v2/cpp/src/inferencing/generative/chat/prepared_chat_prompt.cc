@@ -8,11 +8,14 @@
 #include "inferencing/generative/genai_model_instance.h"
 #include "inferencing/generative/toolcalling/tool_call_context.h"
 #include "inferencing/generative/toolcalling/tool_call_utils.h"
+#include "inferencing/session/tool_registry.h"
 #include "items/audio_item.h"
 #include "items/image_item.h"
 
 #include <ort_genai.h>
 
+#include <algorithm>
+#include <functional>
 #include <unordered_map>
 
 namespace fl {
@@ -39,23 +42,125 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
              tool_ctx.template_kwargs_json.find(prefix) != std::string::npos);
 
     std::unordered_map<std::string, std::string> literals;
-    const auto projected = BuildCanonicalToolMessagesJson(
-        messages.Messages(), tool_ctx, [&](std::string text) {
-          if (text.empty()) {
-            return text;
+    // Keep protected dictionary keys equal to their required-name entries during template evaluation.
+    std::unordered_map<std::string, std::string> native_literal_markers;
+    const bool native_literals = tool_ctx.native_qwen_xml_tool_calls || tool_ctx.native_tagged_json_tool_calls;
+    const std::string serialization_witness = "\\\"\n@";
+    const auto json_string_contents = [](const std::string& value) {
+      auto encoded = nlohmann::json(value).dump();
+      return encoded.substr(1, encoded.size() - 2);
+    };
+    const auto escaped_witness = json_string_contents(serialization_witness);
+    const auto protect_literal = [&](std::string text) {
+      if (text.empty()) {
+        return text;
+      }
+      if (native_literals) {
+        const auto found = native_literal_markers.find(text);
+        if (found != native_literal_markers.end()) {
+          return found->second + serialization_witness;
+        }
+      }
+      auto marker = prefix + std::to_string(literals.size()) + "__";
+      if (native_literals) {
+        native_literal_markers.emplace(text, marker);
+      }
+      literals.emplace(marker, std::move(text));
+      // The template, not the output dialect, determines whether a fragment is JSON-escaped.
+      return native_literals ? marker + serialization_witness : marker;
+    };
+    std::string projected;
+    std::string projected_tools;
+    if (tool_ctx.native_qwen_xml_tool_calls || tool_ctx.native_tagged_json_tool_calls) {
+      auto projected_json =
+          nlohmann::ordered_json::parse(BuildChatMessagesJson(messages.Messages(),
+                                                              tool_ctx.supports_reasoning_history));
+      std::string state =
+          "Use a tool only when the user's request requires it. For serial work, emit only calls whose "
+          "prerequisites are already available; do not wait or deliberate about later calls. "
+          "Treat argument strings as literal data: preserve punctuation, newlines, Unicode and quoted markers. "
+          "Do not repair or reinterpret a string's contents as JSON.";
+      if (tool_ctx.forced_tool) {
+        state += "\nYou must call the tool named \"" + tool_ctx.forced_tool->name +
+                 "\" in this turn. Do not answer with ordinary text.";
+      } else if (!tool_ctx.text_output) {
+        state += "\nYou must call one applicable supplied tool in this turn. Do not answer with ordinary text.";
+      }
+      if (!tool_ctx.automatic_retry_instruction.empty()) {
+        state += "\n" + tool_ctx.automatic_retry_instruction;
+      }
+      if (!projected_json.empty() && projected_json.front().value("role", "") == "system") {
+        auto content = projected_json.front().value("content", "");
+        projected_json.front()["content"] = content.empty() ? state : content + "\n\n" + state;
+      } else {
+        projected_json.insert(projected_json.begin(),
+                              nlohmann::ordered_json{{"role", "system"}, {"content", state}});
+      }
+      std::function<void(nlohmann::ordered_json&, bool, bool)> protect_json_strings =
+          [&](nlohmann::ordered_json& value, bool argument_data, bool dictionary_keys) {
+            if (value.is_string()) {
+              value = protect_literal(value.get<std::string>());
+            } else if (value.is_array()) {
+              for (auto& item : value) {
+                protect_json_strings(item, argument_data, false);
+              }
+            } else if (value.is_object()) {
+              auto protected_object = nlohmann::ordered_json::object();
+              for (auto& [key, item] : value.items()) {
+                if (argument_data || dictionary_keys || key != "type" || (!item.is_string() && !item.is_array())) {
+                  const bool schema_dictionary =
+                      !dictionary_keys &&
+                      (key == "properties" || key == "$defs" || key == "definitions" ||
+                       key == "patternProperties" || key == "dependentRequired" ||
+                       key == "dependentSchemas" || key == "dependencies");
+                  const bool schema_data =
+                      !dictionary_keys &&
+                      (key == "const" || key == "enum" || key == "default" || key == "examples");
+                  protect_json_strings(item, argument_data || schema_data, schema_dictionary);
+                }
+                protected_object[argument_data || dictionary_keys ? protect_literal(key) : key] = std::move(item);
+              }
+              value = std::move(protected_object);
+            }
+          };
+      for (auto& message : projected_json) {
+        for (const auto* field : {"content", "reasoning_content"}) {
+          if (message.contains(field)) {
+            protect_json_strings(message[field], false, false);
           }
-          auto marker = prefix + std::to_string(literals.size()) + "__";
-          literals.emplace(marker, std::move(text));
-          return marker;
-        });
+        }
+        if (message.contains("tool_calls")) {
+          for (auto& call : message["tool_calls"]) {
+            if (!call.contains("function")) {
+              continue;
+            }
+            auto& function = call["function"];
+            if (function.contains("name")) {
+              protect_json_strings(function["name"], false, false);
+            }
+            if (function.contains("arguments")) {
+              protect_json_strings(function["arguments"], true, false);
+            }
+          }
+        }
+      }
+      auto tools = nlohmann::ordered_json::parse(tool_ctx.tools_json);
+      protect_json_strings(tools, false, false);
+      projected = projected_json.dump();
+      projected_tools = tools.dump();
+    } else {
+      projected = BuildCanonicalToolMessagesJson(messages.Messages(), tool_ctx, protect_literal);
+    }
     auto& preprocessor = model.GetPreprocessor();
     const auto* kwargs = tool_ctx.template_kwargs_json.empty() ? nullptr : tool_ctx.template_kwargs_json.c_str();
+    const auto* tools = projected_tools.empty() ? nullptr : projected_tools.c_str();
     const auto rendered =
-        preprocessor.ApplyChatTemplateWithOptions(projected.c_str(), nullptr, kwargs, true);
+        preprocessor.ApplyChatTemplateWithOptions(projected.c_str(), tools, kwargs, true);
     const auto append = [&](const std::string& text, bool literal) {
       if (text.empty()) {
         return;
       }
+      ValidateToolCallText(text, "rendered chat prompt fragment");
       auto sequences = literal ? preprocessor.EncodeLiteral(text.c_str()) : preprocessor.Encode(text.c_str());
       const auto* data = sequences->SequenceData(0);
       prepared.token_ids.insert(prepared.token_ids.end(), data, data + sequences->SequenceCount(0));
@@ -79,8 +184,21 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
       }
 
       append(rendered.substr(cursor, next - cursor), false);
-      append(found->second, true);
       cursor = end + 2;
+      if (native_literals) {
+        if (rendered.compare(cursor, escaped_witness.size(), escaped_witness) == 0) {
+          append(json_string_contents(found->second), true);
+          cursor += escaped_witness.size();
+        } else if (rendered.compare(cursor, serialization_witness.size(), serialization_witness) == 0) {
+          append(found->second, true);
+          cursor += serialization_witness.size();
+        } else {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                   "chat template changed a protected fragment's serialization");
+        }
+      } else {
+        append(found->second, true);
+      }
     }
 
     prepared.prompt_token_count = static_cast<int64_t>(prepared.token_ids.size());

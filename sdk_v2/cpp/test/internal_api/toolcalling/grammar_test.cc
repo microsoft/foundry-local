@@ -48,6 +48,24 @@ TEST(BuildLarkGrammarTest, RequiredOutputCannotFallBackToText) {
   EXPECT_EQ(grammar.find("plain_token:"), std::string::npos);
 }
 
+TEST(BuildLarkGrammarTest, RequiredQwen2GuidanceUsesTextualFencesRatherThanSpecialToolTokenIds) {
+  for (const bool forced : {false, true}) {
+    auto context = MakeContext();
+    context.text_output = false;
+    context.fenced_tool_call_output = true;
+    if (forced) {
+      context.forced_tool = ForcedToolChoice{"lookup", ToolKind::kFunction};
+      context.tool_plan = ToolCallPlan::Create(context.tools_json, true, context.forced_tool);
+    }
+    const auto grammar = BuildLarkGrammar(context);
+    EXPECT_TRUE(grammar.starts_with("start: output\noutput: toolcall\n"));
+    EXPECT_NE(grammar.find("toolcall: \"```json\" functioncall \"```\""), std::string::npos);
+    EXPECT_EQ(grammar.find("<[101]>"), std::string::npos);
+    EXPECT_EQ(grammar.find("<[102]>"), std::string::npos);
+    EXPECT_EQ(grammar.find("output: text"), std::string::npos);
+  }
+}
+
 TEST(BuildLarkGrammarTest, ReasoningHasTokenBoundariesAndDoesNotForbidLiteralAngleBrackets) {
   auto context = MakeContext();
   context.supports_reasoning = true;

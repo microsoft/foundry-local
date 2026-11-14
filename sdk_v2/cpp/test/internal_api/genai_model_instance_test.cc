@@ -29,6 +29,7 @@ class CpuCudaEpDetector : public fl::IEpDetector {
 };
 
 constexpr std::string_view kQwenToolCallProjection =
+    "Capability probe\n"
     "<|im_start|>user\ncapability-probe<|im_end|>\n"
     "<|im_start|>assistant\n"
     "<think>\n\n</think>\n\n"
@@ -58,12 +59,12 @@ constexpr std::string_view kQwenToolResultProjection =
     "<tool_response>\n"
     "probe-result-second\n"
     "</tool_response><|im_end|>\n";
-  constexpr std::string_view kQwenReasoningProjection =
+constexpr std::string_view kQwenReasoningProjection =
     "<|im_start|>assistant\n<think>\nreasoning-probe-private-a\n</think>\n\n"
     "reasoning-probe-visible-a<|im_end|>\n"
     "<|im_start|>assistant\n<think>\nreasoning-probe-private-b\n</think>\n\n"
     "reasoning-probe-visible-b<|im_end|>\n";
-  constexpr std::string_view kQwenNoPreserveReasoningProjection =
+constexpr std::string_view kQwenNoPreserveReasoningProjection =
     "<|im_start|>assistant\nreasoning-probe-visible-a<|im_end|>\n"
     "<|im_start|>assistant\nreasoning-probe-visible-b<|im_end|>\n";
 
@@ -93,6 +94,7 @@ TEST(ModelCapabilitiesTest, ExactQwen35TextTypeAndTemplateEnableBothCapabilities
 
   EXPECT_TRUE(capabilities.supports_tool_calling);
   EXPECT_TRUE(capabilities.native_qwen_xml_tool_calls);
+  EXPECT_FALSE(capabilities.native_tagged_json_tool_calls);
   EXPECT_TRUE(capabilities.positional_tool_results);
 }
 
@@ -106,21 +108,34 @@ TEST(ModelCapabilitiesTest, ExactQwen35TextTypeWithNonmatchingTemplateDisablesBo
   EXPECT_FALSE(capabilities.positional_tool_results);
 }
 
-class UnsupportedModelCapabilitiesTest : public ::testing::TestWithParam<std::string_view> {};
+TEST(ModelCapabilitiesTest, InlineQwenXmlFramingDoesNotEnableNativeDecoder) {
+  constexpr std::string_view projection =
+      "Capability probe <tool_call>"
+      "<function=probe_function><parameter=probe_parameter>"
+      "probe_value</parameter></function></tool_call>";
+  const auto capabilities = fl::model_capabilities_internal::ResolveRenderedProbes(
+      "qwen3_5_text", projection, {},
+      "<tool_call>", "</tool_call>");
 
-TEST_P(UnsupportedModelCapabilitiesTest, ExactQwenTemplateOnboardsCompatibleModelTypes) {
+  EXPECT_TRUE(capabilities.supports_tool_calling);
+  EXPECT_FALSE(capabilities.native_qwen_xml_tool_calls);
+}
+
+class TemplateCompatibleModelCapabilitiesTest : public ::testing::TestWithParam<std::string_view> {};
+
+TEST_P(TemplateCompatibleModelCapabilitiesTest, ExactQwenTemplateOnboardsCompatibleModelTypes) {
   const auto capabilities = fl::model_capabilities_internal::ResolveRenderedProbes(
       GetParam(), kQwenToolCallProjection, kQwenToolResultProjection,
       "<tool_call>", "</tool_call>");
 
   EXPECT_TRUE(capabilities.supports_tool_calling);
-  EXPECT_FALSE(capabilities.native_qwen_xml_tool_calls);
+  EXPECT_TRUE(capabilities.native_qwen_xml_tool_calls);
   EXPECT_TRUE(capabilities.positional_tool_results);
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    UnsupportedModelTypes,
-    UnsupportedModelCapabilitiesTest,
+    CompatibleModelTypes,
+    TemplateCompatibleModelCapabilitiesTest,
     ::testing::Values("qwen3_5", "qwen3", "qwen3_moe", "qwen3_5_moe", "qwen3_vl", "qwen3_5_vl", "unknown", ""));
 
 TEST(ModelCapabilitiesTest, ResultProjectionMismatchDisablesOnlyPositionalToolResults) {
@@ -145,6 +160,7 @@ TEST(ModelCapabilitiesTest, MissingResultProjectionPreservesToolCallSupport) {
 
 TEST(ModelCapabilitiesTest, GenericTaggedJsonProtocolIsOnboarded) {
   constexpr std::string_view kToolCallProjection =
+      "Capability probe\n"
       "<|tool_start|>{\"name\":\"probe_function\",\"arguments\":"
       "{\"probe_parameter\":\"probe_value\"}}<|tool_end|>";
   constexpr std::string_view kToolResultProjection =
@@ -155,10 +171,92 @@ TEST(ModelCapabilitiesTest, GenericTaggedJsonProtocolIsOnboarded) {
   const auto capabilities = fl::model_capabilities_internal::ResolveRenderedProbes(
       "custom", kToolCallProjection, kToolResultProjection,
       "<|tool_start|>", "<|tool_end|>");
+  EXPECT_TRUE(capabilities.supports_tool_calling);
+  EXPECT_FALSE(capabilities.native_qwen_xml_tool_calls);
+  EXPECT_FALSE(capabilities.native_qwen_xml_tool_calls);
+  EXPECT_TRUE(capabilities.native_tagged_json_tool_calls);
+  EXPECT_TRUE(capabilities.positional_tool_results);
+}
+
+TEST(ModelCapabilitiesTest, TaggedJsonQualificationUsesDecoderSemantics) {
+  constexpr std::string_view kReorderedProjection =
+      "probe_first probe_second\n"
+      "<|tool_start|>{\"arguments\":{\"probe_parameter\":\"probe_value\"},"
+      "\"name\":\"probe_function\"}<|tool_end|>";
+  constexpr std::string_view kNestedProjection =
+      "probe_first probe_second\n"
+      "<|tool_start|>{\"function\":{\"name\":\"probe_function\","
+      "\"arguments\":{\"probe_parameter\":\"probe_value\"}}}<|tool_end|>";
+
+  const auto reordered = fl::model_capabilities_internal::ResolveRenderedProbes(
+      "custom", kReorderedProjection, {}, "<|tool_start|>", "<|tool_end|>");
+  const auto nested = fl::model_capabilities_internal::ResolveRenderedProbes(
+      "custom", kNestedProjection, {}, "<|tool_start|>", "<|tool_end|>");
+
+  EXPECT_TRUE(reordered.native_tagged_json_tool_calls);
+  EXPECT_FALSE(nested.native_tagged_json_tool_calls);
+}
+
+TEST(ModelCapabilitiesTest, NativeProtocolDoesNotRequireRenderedDescriptions) {
+  constexpr std::string_view kProjection =
+      "available: probe_first probe_second\n"
+      "<tool_call>\n"
+      "<function=probe_function>\n"
+      "<parameter=probe_parameter>\n"
+      "probe_value\n"
+      "</parameter>\n"
+      "</function>\n"
+      "</tool_call>";
+
+  const auto capabilities = fl::model_capabilities_internal::ResolveRenderedProbes(
+      "custom", kProjection, {}, "<tool_call>", "</tool_call>");
+
+  EXPECT_TRUE(capabilities.native_qwen_xml_tool_calls);
+}
+
+TEST(ModelCapabilitiesTest, NonStringProbeArgumentsDoNotThrowOrQualify) {
+  for (const auto* value : {R"(["probe_value"])", R"({"value":"probe_value"})",
+                            "null", "true", "42"}) {
+    const auto projection =
+        "probe_first probe_second probe_value\n<tool_call>{\"name\":\"probe_function\","
+        "\"arguments\":{\"probe_parameter\":" +
+        std::string(value) + "}}</tool_call>";
+    const auto capabilities = fl::model_capabilities_internal::ResolveRenderedProbes(
+        "custom", projection, {}, "<tool_call>", "</tool_call>");
+    EXPECT_FALSE(capabilities.native_tagged_json_tool_calls) << value;
+    EXPECT_FALSE(capabilities.native_qwen_xml_tool_calls) << value;
+  }
+}
+
+TEST(ModelCapabilitiesTest, NativeXmlProtocolUsesPublishedCustomBoundaries) {
+  constexpr std::string_view kToolCallProjection =
+      "Capability probe\n"
+      "<|tool_start|>\n"
+      "<function=probe_function>\n"
+      "<parameter=probe_parameter>\n"
+      "probe_value\n"
+      "</parameter>\n"
+      "</function>\n"
+      "<|tool_end|>";
+
+  const auto capabilities = fl::model_capabilities_internal::ResolveRenderedProbes(
+      "custom", kToolCallProjection, {}, "<|tool_start|>", "<|tool_end|>");
+
+  EXPECT_TRUE(capabilities.supports_tool_calling);
+  EXPECT_TRUE(capabilities.native_qwen_xml_tool_calls);
+  EXPECT_FALSE(capabilities.native_tagged_json_tool_calls);
+}
+
+TEST(ModelCapabilitiesTest, CallSerializationWithoutRenderedDefinitionsDoesNotEnableNativeProtocol) {
+  constexpr std::string_view kCallOnlyProjection =
+      "<tool_call>{\"name\":\"probe_function\",\"arguments\":"
+      "{\"probe_parameter\":\"probe_value\"}}</tool_call>";
+  const auto capabilities = fl::model_capabilities_internal::ResolveRenderedProbes(
+      "custom", kCallOnlyProjection, {}, "<tool_call>", "</tool_call>");
 
   EXPECT_TRUE(capabilities.supports_tool_calling);
   EXPECT_FALSE(capabilities.native_qwen_xml_tool_calls);
-  EXPECT_TRUE(capabilities.positional_tool_results);
+  EXPECT_FALSE(capabilities.native_tagged_json_tool_calls);
 }
 
 TEST(ModelCapabilitiesTest, MissingOrAmbiguousBoundariesFailClosed) {
@@ -245,7 +343,7 @@ TEST(ModelCapabilitiesTest, ReasoningPreservationProbeFailsClosed) {
   EXPECT_TRUE(non_qwen_reasoning_template.supports_reasoning_history);
   EXPECT_TRUE(non_qwen_reasoning_template.supports_preserve_thinking);
   EXPECT_TRUE(non_qwen_reasoning_template.supports_tool_calling);
-  EXPECT_FALSE(non_qwen_reasoning_template.native_qwen_xml_tool_calls);
+  EXPECT_TRUE(non_qwen_reasoning_template.native_qwen_xml_tool_calls);
   EXPECT_TRUE(non_qwen_reasoning_template.positional_tool_results);
 }
 

@@ -127,6 +127,7 @@ std::vector<ToolDefinition> BuildJsonRequestToolDefinitions(
 void PopulateToolDefinitions(const std::vector<ToolDefinition>& definitions, ToolCallContext& context);
 void ResolveBuiltInRawEnvelope(ToolCallContext& context);
 void ApplyRawEnvelopeGuidance(ToolCallContext& context, ILogger& logger);
+void SelectSupportedToolProtocol(ToolCallContext& context);
 bool ShouldStartInsideReasoning(const ToolCallContext& context, bool prompt_opens_reasoning);
 ToolCallPayloadParser CreateToolCallPayloadParser(const ToolCallContext& context);
 void NormalizeToolOutputBatch(ToolCallStreamAccumulator::Output& output,

@@ -19,6 +19,7 @@
 #include "inferencing/generative/toolcalling/assistant_text_framer.h"
 #include "inferencing/generative/toolcalling/grammar.h"
 #include "inferencing/generative/toolcalling/json_tool_call_payload_parser.h"
+#include "inferencing/generative/toolcalling/qwen_xml_tool_call_decoder.h"
 #include "inferencing/generative/toolcalling/tool_call_recovery_checkpoint.h"
 #include "inferencing/generative/toolcalling/raw_envelope_detector.h"
 #include "inferencing/generative/toolcalling/tool_call_stream_accumulator.h"
@@ -451,6 +452,18 @@ bool ShouldStartInsideReasoning(const ToolCallContext& context, bool prompt_open
 
 ToolCallPayloadParser CreateToolCallPayloadParser(const ToolCallContext& context) {
   if (context.tool_plan && context.tool_output && context.HasToolCallTokens()) {
+    if (context.native_qwen_xml_tool_calls) {
+      return CreateQwenXmlToolCallPayloadParser(context.tools_json, context.tool_kinds,
+                                                /*recovery_aware=*/true,
+                                                context.tool_call_start, context.tool_call_end,
+                                                context.tool_plan);
+    }
+    if (context.native_tagged_json_tool_calls) {
+      return CreateQwenTaggedJsonToolCallPayloadParser(
+          context.tools_json, context.tool_kinds,
+          context.tool_call_start, context.tool_call_end, /*repair_extra_closes=*/true,
+          context.tool_plan);
+    }
     return CreateJsonToolCallPayloadParser(context.tool_plan, context.GeneratedToolCallStart(),
                                            context.GeneratedToolCallEnd(),
                                            context.parallel_tool_calls);
@@ -459,28 +472,58 @@ ToolCallPayloadParser CreateToolCallPayloadParser(const ToolCallContext& context
   return {};
 }
 
+void SelectSupportedToolProtocol(ToolCallContext& context) {
+  if (context.native_qwen_xml_tool_calls &&
+      !CanDecodeQwenXmlToolSchemas(context.tools_json, context.tool_kinds)) {
+    context.native_qwen_xml_tool_calls = false;
+    if (!context.native_tagged_json_tool_calls && context.backend_supports_guidance != true) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+               "The native XML protocol cannot represent these tool schemas and the loaded backend "
+               "does not report support for guided fallback. Use a qualified lossless tool protocol "
+               "or a guidance-capable runtime; generation has not started.");
+    }
+    context.guidance_disabled = context.native_tagged_json_tool_calls;
+  }
+  if (context.native_qwen_xml_tool_calls || context.native_tagged_json_tool_calls) {
+    context.guidance_disabled = true;
+  }
+  if (context.backend_supports_guidance == false &&
+      (context.HasAnyExplicitGuidance() ||
+       (context.tool_output && !context.guidance_disabled))) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "The loaded execution backend does not support the guidance required by this request; "
+             "generation has not started.");
+  }
+}
+
 void NormalizeToolOutputBatch(ToolCallStreamAccumulator::Output& output,
                               const ToolCallContext& tool_ctx) {
-  if (tool_ctx.tool_plan) {
-    for (const auto& event : output.events) {
-      if (const auto* call = std::get_if<ParsedToolCall>(&event); call != nullptr && !call->raw_envelope) {
-        tool_ctx.tool_plan->ValidateCall(*call);
+  try {
+    if (tool_ctx.tool_plan) {
+      for (const auto& event : output.events) {
+        if (const auto* call = std::get_if<ParsedToolCall>(&event); call != nullptr && !call->raw_envelope) {
+          tool_ctx.tool_plan->ValidateCall(*call);
+        }
       }
     }
-  }
 
-  for (auto& event : output.events) {
-    auto* call = std::get_if<ParsedToolCall>(&event);
-    if (call == nullptr) {
-      continue;
+    for (auto& event : output.events) {
+      auto* call = std::get_if<ParsedToolCall>(&event);
+      if (call == nullptr) {
+        continue;
+      }
+
+      if (tool_ctx.IsCustomTool(call->name) && !call->raw_envelope) {
+        call->arguments = ExtractCustomToolInput(call->argument_source);
+      }
+
+      ValidateToolCallText(call->name, "tool call name");
+      ValidateToolCallText(call->arguments, "tool call arguments");
     }
-
-    if (tool_ctx.IsCustomTool(call->name) && !call->raw_envelope) {
-      call->arguments = ExtractCustomToolInput(call->argument_source);
-    }
-
-    ValidateToolCallText(call->name, "tool call name");
-    ValidateToolCallText(call->arguments, "tool call arguments");
+  } catch (const Exception& error) {
+    output.events.clear();
+    output.malformed = true;
+    output.error = error.what();
   }
 }
 
@@ -645,7 +688,8 @@ ToolCallStreamAccumulator::Output PushToolOutputSegment(
       (raw_detector == nullptr || !raw_detector->InsideEnvelope() || structured_accumulator.InsideToolCall())) {
     auto ownership = structured_accumulator.ObserveTokenBoundaries(
         segment.text, segment.token_id == context.tool_call_start_token_id,
-        segment.token_id == context.tool_call_end_token_id);
+        segment.token_id == context.tool_call_end_token_id,
+        /*json_string_payload=*/!context.native_qwen_xml_tool_calls);
     if (ownership.malformed) {
       return ownership;
     }
@@ -856,7 +900,13 @@ GuidedToolRetryResult RunGuidedToolRetry(const chat_internal::PreparedChatMessag
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "Guided tool recovery requires a schema plan and no stop sequences");
   }
 
+  const bool native_retry = tool_ctx.native_qwen_xml_tool_calls || tool_ctx.native_tagged_json_tool_calls;
   tool_ctx.ConfigureForGuidedToolRetry();
+  if (!native_retry) {
+    tool_ctx.native_qwen_xml_tool_calls = false;
+    tool_ctx.native_tagged_json_tool_calls = false;
+  }
+  tool_ctx.guidance_disabled = native_retry;
   if (tool_ctx.fenced_tool_call_output) {
     tool_ctx.fenced_tool_call_output = false;
     tool_ctx.guidance_disabled = false;
@@ -875,14 +925,49 @@ GuidedToolRetryResult RunGuidedToolRetry(const chat_internal::PreparedChatMessag
     diagnostic.resize(4096);
     diagnostic += " [diagnostic truncated]";
   }
-  const auto correction =
+  auto correction =
       " The previous unexecuted tool call was rejected: " + diagnostic +
       ". Emit a corrected tool call satisfying the original tool schema and the user's requested values. "
-      "Do not repeat earlier reasoning or text. ";
+      "Emit only the corrected call without repeating earlier reasoning or text. ";
+  if (native_retry) {
+    correction +=
+        R"(Complete the supplied native JSON tool call using {"name":"tool_name","arguments":{...}}, )"
+        R"(using the actual tool name and original argument values. Close the tool call and end the turn. )"
+        R"(Do not emit function or parameter tags, Markdown fences, explanations, or another opening token. )"
+        R"(Emit strictly valid JSON. Inside strings encode line feeds as '\n', carriage returns as '\r', )"
+        R"(backslashes as '\\', and literal '<' as '\u003c'. Never emit an unescaped line break inside a string. )"
+        R"(Preserve the exact requested string. Preserve a terminal newline only if the requested value has one; )"
+        R"(never add or remove whitespace or line endings. )";
+  }
   const auto sequences = model.GetPreprocessor().EncodeLiteral(correction.c_str());
   const auto* data = sequences->SequenceData(0);
   retry_prompt->token_ids.insert(retry_prompt->token_ids.end(), data, data + sequences->SequenceCount(0));
   retry_prompt->prompt += correction;
+  constexpr auto native_json_prefix = R"({"name":)";
+  std::string native_prefix;
+  if (native_retry) {
+    const auto markers = ResolveReasoningMarkers(tool_ctx, model);
+    if (fl::PromptOpensReasoning(retry_prompt->token_ids, markers, retry_prompt->prompt)) {
+      if (!tool_ctx.reasoning_end_token_id) {
+        ThrowInvalidGuidedToolRetry("Native correction requires an authoritative reasoning close");
+      }
+      retry_prompt->token_ids.push_back(*tool_ctx.reasoning_end_token_id);
+      retry_prompt->prompt += tool_ctx.reasoning_end;
+    }
+    if (!tool_ctx.tool_call_start_token_id) {
+      ThrowInvalidGuidedToolRetry("Native correction requires an authoritative tool-call opening");
+    }
+    tool_ctx.supports_reasoning = false;
+    tool_ctx.native_qwen_xml_tool_calls = false;
+    tool_ctx.native_tagged_json_tool_calls = true;
+    retry_prompt->token_ids.push_back(*tool_ctx.tool_call_start_token_id);
+    const auto prefix_sequences = model.GetPreprocessor().EncodeLiteral(native_json_prefix);
+    const auto* prefix_data = prefix_sequences->SequenceData(0);
+    retry_prompt->token_ids.insert(retry_prompt->token_ids.end(), prefix_data,
+                                  prefix_data + prefix_sequences->SequenceCount(0));
+    native_prefix = tool_ctx.tool_call_start + native_json_prefix;
+    retry_prompt->prompt += native_prefix;
+  }
   retry_prompt->prompt_token_count = static_cast<int64_t>(retry_prompt->token_ids.size());
 
   auto generator = CreatePreparedTextChatGenerator(messages, std::move(*retry_prompt), options, model, tool_ctx,
@@ -890,9 +975,13 @@ GuidedToolRetryResult RunGuidedToolRetry(const chat_internal::PreparedChatMessag
   auto splitter = CreateReasoningSplitter(tool_ctx, model, generator->PromptOpensReasoning());
 
   GuidedToolRetryResult result;
-  std::string structured_output;
+  std::string structured_output = native_prefix;
   std::string token_boundary_error;
   ToolCallStreamAccumulator boundary_validator(tool_ctx.tool_call_start, tool_ctx.tool_call_end);
+  if (native_retry) {
+    boundary_validator.ObserveTokenBoundaries(tool_ctx.tool_call_start, true, false);
+    boundary_validator.ObserveTokenBoundaries(native_json_prefix, false, false);
+  }
   auto process_segments = [&](const std::vector<TextSegment>& segments) {
     for (const auto& segment : segments) {
       if (segment.type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT) {
@@ -900,7 +989,8 @@ GuidedToolRetryResult RunGuidedToolRetry(const chat_internal::PreparedChatMessag
             tool_ctx.tool_call_start_token_id && tool_ctx.tool_call_end_token_id) {
           const auto ownership = boundary_validator.ObserveTokenBoundaries(
               segment.text, segment.token_id == tool_ctx.tool_call_start_token_id,
-              segment.token_id == tool_ctx.tool_call_end_token_id);
+              segment.token_id == tool_ctx.tool_call_end_token_id,
+              /*json_string_payload=*/!tool_ctx.native_qwen_xml_tool_calls);
           if (ownership.malformed) {
             token_boundary_error = ownership.error;
             return;
@@ -913,7 +1003,7 @@ GuidedToolRetryResult RunGuidedToolRetry(const chat_internal::PreparedChatMessag
     }
   };
 
-  bool tool_payload_started = false;
+  bool tool_payload_started = native_retry;
   int output_tokens = 0;
   while (!generator->IsDone() && !request.IsCancellationRequested() && token_boundary_error.empty() &&
          (!options.max_output_tokens || output_tokens < *options.max_output_tokens)) {
@@ -977,13 +1067,31 @@ GuidedToolRetryResult RunGuidedToolRetry(const chat_internal::PreparedChatMessag
       result.termination_cause);
   result.reasoning_tokens = splitter.ReasoningTokenCount();
 
-  if (!tool_ctx.fenced_tool_call_output &&
-      tool_ctx.tool_call_start_token_id && tool_ctx.tool_call_end_token_id &&
-      !boundary_validator.HasCompleteTokenOwnedEnvelope()) {
-    ThrowInvalidGuidedToolRetry("Missing token-owned tool-call boundaries");
+  std::vector<ParsedToolCall> calls;
+  if (native_retry) {
+    if (natural_end && !boundary_validator.HasCompleteTokenOwnedEnvelope()) {
+      // Only this privately token-prefilled mandatory scope may end at confirmed backend EOS.
+      structured_output += tool_ctx.tool_call_end;
+    }
+    const auto parser = CreateQwenTaggedJsonToolCallPayloadParser(
+        tool_ctx.tools_json, tool_ctx.tool_kinds, tool_ctx.tool_call_start, tool_ctx.tool_call_end,
+        /*repair_extra_closes=*/false, tool_ctx.tool_plan);
+    auto parsed = parser(structured_output, /*end_of_stream=*/true);
+    if (parsed.disposition != ToolCallPayloadDisposition::kParsed ||
+        structured_output.find_first_not_of(" \t\r\n", parsed.consumed_size) != std::string::npos) {
+      ThrowInvalidGuidedToolRetry(parsed.error.empty() ? "Incomplete native JSON tool-call batch" : parsed.error);
+    }
+    tool_ctx.tool_plan->ValidateBatch(parsed.calls);
+    calls = std::move(parsed.calls);
+  } else {
+    if (!tool_ctx.fenced_tool_call_output &&
+        tool_ctx.tool_call_start_token_id && tool_ctx.tool_call_end_token_id &&
+        !boundary_validator.HasCompleteTokenOwnedEnvelope()) {
+      ThrowInvalidGuidedToolRetry("Missing token-owned tool-call boundaries");
+    }
+    calls = ParseStrictGuidedToolCalls(structured_output, tool_ctx);
   }
 
-  auto calls = ParseStrictGuidedToolCalls(structured_output, tool_ctx);
   if (!natural_end || calls.empty()) {
     ThrowInvalidGuidedToolRetry("Incomplete, interrupted, or over-budget tool-call output");
   }
@@ -992,6 +1100,9 @@ GuidedToolRetryResult RunGuidedToolRetry(const chat_internal::PreparedChatMessag
     ToolCallStreamAccumulator::Output output;
     output.events.emplace_back(std::move(call));
     chat_session_internal::NormalizeToolOutputBatch(output, tool_ctx);
+    if (output.malformed || output.events.empty()) {
+      ThrowInvalidGuidedToolRetry("Corrected tool call failed normalization");
+    }
     result.events.emplace_back(std::move(std::get<ParsedToolCall>(output.events.front())));
   }
 
@@ -1015,8 +1126,8 @@ bool IsGuidedToolRetryEligible(
     int attempted_tokens,
     std::optional<int> output_budget) {
   return tool_ctx.tool_plan && natural_tool_output_end &&
-           (!semantic_output_seen || safe_prefix_available || !tool_ctx.text_output) &&
-           !tool_call_published &&
+         (!semantic_output_seen || safe_prefix_available) &&
+         !tool_call_published &&
          (!output_budget || attempted_tokens < *output_budget) &&
          options.stop_sequences.empty() &&
          tool_ctx.tool_output &&
@@ -1087,6 +1198,8 @@ ToolCallContext BuildToolCallContextForRequest(const Request& request,
                                                GenAIModelInstance& model,
                                                ILogger& logger) {
   ToolCallContext tool_ctx;
+  tool_ctx.backend_supports_guidance =
+      model.GetChatEngine() ? model.GetChatEngine()->SupportsGuidance() : std::optional<bool>{true};
 
   tool_ctx.tool_call_start = GetOptionOrEmpty(effective_options, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR);
   tool_ctx.tool_call_end = GetOptionOrEmpty(effective_options, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR);
@@ -1234,20 +1347,34 @@ ToolCallContext BuildToolCallContextForRequest(const Request& request,
       }
       tool_ctx.tool_plan = ToolCallPlan::Create(tool_ctx.tools_json, tool_ctx.parallel_tool_calls,
                                                 tool_ctx.forced_tool);
+      const bool qwen2_fenced_tool_output =
+          !tool_ctx.text_output &&
+          (model.ModelType().starts_with("qwen2") || model.ModelId().starts_with("qwen2")) &&
+          !tool_ctx.ActiveRawEnvelope() && !tool_ctx.HasAnyExplicitGuidance();
+      const bool qualified_markers =
+          tool_ctx.tool_call_start == tag_info.bot_str && tool_ctx.tool_call_end == tag_info.eot_str;
+      const bool native_tool_choice = !tool_ctx.HasAnyExplicitGuidance() && qualified_markers;
+      tool_ctx.qualified_native_tool_calls =
+          qualified_markers && (model.HasNativeQwenXmlToolCalls() || model.HasNativeTaggedJsonToolCalls());
+      tool_ctx.native_qwen_xml_tool_calls =
+          !qwen2_fenced_tool_output && native_tool_choice &&
+          model.HasNativeQwenXmlToolCalls() && !tool_ctx.ActiveRawEnvelope();
+      tool_ctx.native_tagged_json_tool_calls =
+          !qwen2_fenced_tool_output && native_tool_choice &&
+          model.HasNativeTaggedJsonToolCalls() &&
+          !tool_ctx.ActiveRawEnvelope();
       tool_ctx.eos_token_ids = model.GetPreprocessor().GetEosTokenIds();
       if (!request.raw_envelope_descriptor && !tool_ctx.forced_tool) {
         tool_ctx.raw_envelope.reset();
       }
-      if (!tool_ctx.text_output &&
-          (model.ModelType().starts_with("qwen2") || model.ModelId().starts_with("qwen2")) &&
-          !tool_ctx.ActiveRawEnvelope() && !tool_ctx.HasAnyExplicitGuidance()) {
+      if (qwen2_fenced_tool_output) {
         tool_ctx.fenced_tool_call_output = true;
-        tool_ctx.guidance_disabled = true;
       }
     }
   }
 
   chat_session_internal::ApplyRawEnvelopeGuidance(tool_ctx, logger);
+  chat_session_internal::SelectSupportedToolProtocol(tool_ctx);
 
   return tool_ctx;
 }
@@ -1969,12 +2096,16 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   bool recovered_tool_output = false;
   ToolCallContext completed_tool_ctx;
   if (malformed_tool_output_seen) {
-    const bool preserve_prefix = recovery_checkpoint.HasBoundary();
+    const bool preserve_prefix = recovery_checkpoint.HasBoundary() ||
+                                 (recovery_checkpoint.HasExactPrefix() && !cached_tool_ctx_.text_output &&
+                                  (cached_tool_ctx_.native_qwen_xml_tool_calls ||
+                                   cached_tool_ctx_.native_tagged_json_tool_calls));
     const bool tool_call_published = HasGeneratedToolCalls(generated_events);
     const int attempted_tokens = std::max(output_tokens, total_tokens - prompt_tokens);
     const bool recovery_eligible = IsGuidedToolRetryEligible(
         natural_tool_output_end, semantic_output_seen,
-        effective_options, cached_tool_ctx_, preserve_prefix, tool_call_published, attempted_tokens,
+        effective_options, cached_tool_ctx_,
+        preserve_prefix, tool_call_published, attempted_tokens,
         turn_output_budget);
     if (!recovery_eligible) {
       if (streaming_callback) {
@@ -2365,7 +2496,9 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
 
   text_framer.ValidateBoundary();
   if (malformed_tool_output_seen) {
-    const bool preserve_prefix = recovery_checkpoint.HasBoundary();
+    const bool preserve_prefix = recovery_checkpoint.HasBoundary() ||
+                                 (recovery_checkpoint.HasExactPrefix() && !tool_ctx.text_output &&
+                                  (tool_ctx.native_qwen_xml_tool_calls || tool_ctx.native_tagged_json_tool_calls));
     const bool tool_call_published = HasGeneratedToolCalls(generated_events);
     const auto attempted_tokens = total_tokens - prompt_tokens;
     const auto turn_output_budget = prepared.host_max_output_tokens
@@ -2373,7 +2506,8 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
                                         : options.max_output_tokens;
     const bool recovery_eligible = IsGuidedToolRetryEligible(
         natural_tool_output_end,
-        semantic_output_seen, options, tool_ctx, preserve_prefix, tool_call_published, attempted_tokens,
+        semantic_output_seen, options, tool_ctx,
+        preserve_prefix, tool_call_published, attempted_tokens,
         turn_output_budget);
     if (!recovery_eligible) {
       if (streaming_callback) {
@@ -2409,8 +2543,12 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
         if (auto* segment = std::get_if<TextSegment>(&event)) {
           AppendGeneratedSegment(generated_events, segment->text, segment->type);
           if (is_streaming && !segment->text.empty()) {
-            auto chunk_json = chat_completions::FormatReasoningStreamingChunk(
-                segment->text, completion_id, created, model_name);
+            auto chunk_json =
+                segment->type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING
+                    ? chat_completions::FormatReasoningStreamingChunk(
+                          segment->text, completion_id, created, model_name)
+                    : chat_completions::FormatStreamingChunk(
+                          segment->text, completion_id, created, model_name);
             streaming_callback->PushItem(std::make_unique<TextItem>(
                 std::move(chunk_json), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
           }

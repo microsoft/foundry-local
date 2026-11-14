@@ -3,7 +3,11 @@
 #include "inferencing/generative/toolcalling/qwen_xml_tool_call_decoder.h"
 #include "inferencing/generative/toolcalling/grammar.h"
 #include "inferencing/generative/toolcalling/tool_call_context.h"
+#include "inferencing/generative/toolcalling/tool_call_plan.h"
+#include "exception.h"
+#include "inferencing/generative/toolcalling/tool_call_utils.h"
 #include "inferencing/session/tool_registry.h"
+#include "util/json_helpers.h"
 
 #include <nlohmann/json.hpp>
 
@@ -24,23 +28,45 @@ namespace {
 
 using Json = nlohmann::json;
 
-constexpr std::string_view kCallStart = "<tool_call>\n";
 constexpr std::string_view kFunctionPrefix = "<function=";
 constexpr std::string_view kParameterPrefix = "<parameter=";
 constexpr std::string_view kFunctionClose = "</function>\n";
-constexpr std::string_view kFunctionEnd = "</function>\n</tool_call>";
 constexpr std::string_view kParameterEnd = "\n</parameter>\n";
 constexpr size_t kMaxSchemaNesting = 16;
 constexpr size_t kMaxSchemaNormalizationBytes = 8 * 1024 * 1024;
 constexpr size_t kMaxQwenXmlGrammarBytes = 1024 * 1024;
-constexpr std::array<std::string_view, 6> kReservedMarkup = {
-    kQwenXmlToolCallStartMarker,
-    kQwenXmlToolCallEndMarker,
+constexpr std::array<std::string_view, 4> kReservedMarkup = {
     kFunctionPrefix,
     "</function>",
     kParameterPrefix,
     "</parameter>",
 };
+
+struct ToolCallMarkers {
+  std::string start;
+  std::string end;
+  std::string call_start;
+  std::string function_end;
+
+  ToolCallMarkers(std::string opening, std::string closing)
+      : start(std::move(opening)),
+        end(std::move(closing)),
+        call_start(start + "\n"),
+        function_end(std::string(kFunctionClose) + end) {}
+
+  bool Valid() const {
+    return !start.empty() && !end.empty() && start != end;
+  }
+};
+
+void AppendRegexLiteral(std::ostringstream& output, std::string_view value) {
+  for (const char ch : value) {
+    if (std::string_view(R"(\.^$|()[]{}*+?/)").find(ch) != std::string_view::npos) {
+      output << '\\';
+    }
+    output << ch;
+  }
+}
 
 enum class ParseState {
   kComplete,
@@ -146,7 +172,7 @@ bool IsSupportedAnnotation(std::string_view keyword) {
       "writeOnly",
       "x-mcp-header",
   };
-  return kSupportedAnnotations.contains(keyword);
+  return kSupportedAnnotations.contains(keyword) || keyword.starts_with("x-");
 }
 
 bool JsonScalarEquals(const Json& lhs, const Json& rhs) {
@@ -354,10 +380,16 @@ bool IsSupportedParameterSchema(const Json& schema, size_t depth = 0) {
 
   if (std::ranges::any_of(schema.items(), [&](const auto& item) {
         return item.key() != "type" && !IsSupportedAnnotation(item.key()) &&
+               item.key() != "minLength" && item.key() != "maxLength" && item.key() != "pattern" &&
+               item.key() != "format" && item.key() != "minimum" && item.key() != "maximum" &&
+               item.key() != "exclusiveMinimum" && item.key() != "exclusiveMaximum" &&
+               item.key() != "multipleOf" && item.key() != "minItems" && item.key() != "maxItems" &&
+               item.key() != "uniqueItems" && item.key() != "minProperties" &&
+               item.key() != "maxProperties" &&
                item.key() != "enum" && item.key() != "const" &&
                !(*type == "array" && item.key() == "items") &&
                !(*type == "object" && (item.key() == "properties" || item.key() == "required" ||
-                                        item.key() == "additionalProperties"));
+                                       item.key() == "additionalProperties"));
       })) {
     return false;
   }
@@ -418,7 +450,8 @@ bool IsSupportedParametersObject(const Json& schema) {
     if (item.key() == "$defs") {
       return item.value().is_object();
     }
-    if (item.key() == "type" || item.key() == "properties" || item.key() == "required") {
+    if (item.key() == "type" || item.key() == "properties" || item.key() == "required" ||
+        item.key() == "minProperties" || item.key() == "maxProperties") {
       return true;
     }
     return item.key() == "additionalProperties" && item.value() == false;
@@ -549,7 +582,14 @@ FunctionSchemas ParseFunctionSchemas(
       continue;
     }
 
-    const auto& parameters = (*function)["parameters"];
+    auto parameters = (*function)["parameters"];
+    if (parameters.is_object() && parameters.contains("properties") &&
+        parameters.contains("type") && parameters["type"] == "object") {
+      // Root composition constrains values, not the explicitly declared XML parameter layout.
+      for (const auto* keyword : {"anyOf", "oneOf", "allOf", "not", "if", "then", "else"}) {
+        parameters.erase(keyword);
+      }
+    }
     if (kind->second == ToolKind::kCustom && parameters != custom_tool_schema) {
       insert_schema(name, std::move(schema));
       continue;
@@ -649,13 +689,7 @@ FunctionSchemas ParseFunctionSchemas(
   return schemas;
 }
 
-bool IsCompatibleParameterValue(const Json& value, const Json& schema, size_t depth = 0);
-
-bool IsCompatibleJsonValue(const Json& value, const Json& schema, size_t depth = 0) {
-  if (depth >= kMaxSchemaNesting) {
-    return false;
-  }
-
+bool IsCompatibleJsonValue(const Json& value, const Json& schema) {
   const auto type = GetSupportedType(schema);
   if (!type.has_value()) {
     return false;
@@ -667,35 +701,12 @@ bool IsCompatibleJsonValue(const Json& value, const Json& schema, size_t depth =
     compatible = IsCompatibleScalarType(value, *type);
   }
   if (*type == "array") {
-    compatible = value.is_array() &&
-                 (!schema.contains("items") ||
-                  std::ranges::all_of(value, [&](const auto& item) {
-                    return IsCompatibleParameterValue(item, schema["items"], depth + 1);
-                  }));
+    compatible = value.is_array();
   }
   if (*type == "object") {
     compatible = value.is_object();
-    if (compatible) {
-      const auto& properties = schema.value("properties", Json::object());
-      compatible = (!schema.contains("required") ||
-                    std::ranges::all_of(schema["required"], [&](const auto& required) {
-                      return value.contains(required.template get_ref<const std::string&>());
-                    })) &&
-                   std::ranges::all_of(value.items(), [&](const auto& item) {
-                     if (properties.contains(item.key())) {
-                       return IsCompatibleParameterValue(item.value(), properties[item.key()], depth + 1);
-                     }
-
-                     if (!schema.contains("additionalProperties")) {
-                       return true;
-                     }
-
-                     const auto& additional = schema["additionalProperties"];
-                     return additional.is_boolean() ? additional.get<bool>() :
-                            IsCompatibleParameterValue(item.value(), additional, depth + 1);
-                   });
-    }
   }
+  // Nested JSON already carries explicit types. Only the original plan may decide semantic composition.
   return compatible &&
          (!schema.contains("enum") ||
           std::ranges::any_of(schema["enum"], [&](const auto& expected) {
@@ -704,33 +715,11 @@ bool IsCompatibleJsonValue(const Json& value, const Json& schema, size_t depth =
          (!schema.contains("const") || JsonScalarEquals(value, schema["const"]));
 }
 
-bool IsCompatibleParameterValue(const Json& value, const Json& schema, size_t depth) {
-  if (depth >= kMaxSchemaNesting) {
-    return false;
+std::optional<Json> ParseJsonWithoutDuplicateObjectKeys(
+    std::string_view source, size_t max_depth = ToolCallPlan::kMaxDepth) {
+  if (!IsJsonWithinDepthLimit(source, max_depth)) {
+    return std::nullopt;
   }
-
-  if (schema.contains("oneOf")) {
-    size_t matches = 0;
-    for (const auto& branch : schema["oneOf"]) {
-      matches += IsCompatibleParameterValue(value, branch, depth + 1) ? 1u : 0u;
-      if (matches > 1) {
-        return false;
-      }
-    }
-
-    return matches == 1;
-  }
-
-  if (!schema.contains("anyOf")) {
-    return IsCompatibleJsonValue(value, schema, depth);
-  }
-
-  return std::ranges::any_of(schema["anyOf"], [&](const auto& branch) {
-    return IsCompatibleParameterValue(value, branch, depth + 1);
-  });
-}
-
-std::optional<Json> ParseJsonWithoutDuplicateObjectKeys(std::string_view source) {
   std::vector<std::unordered_set<std::string>> object_keys;
   bool duplicate_key = false;
   const auto detect_duplicate_keys = [&](int, Json::parse_event_t event, Json& parsed) {
@@ -772,7 +761,7 @@ std::optional<Json> DecodeSimpleParameterValue(std::string_view body, const Json
     return IsCompatibleJsonValue(value, schema) ? std::optional<Json>(std::move(value)) : std::nullopt;
   }
 
-  const auto value = ParseJsonWithoutDuplicateObjectKeys(body);
+  const auto value = ParseJsonWithoutDuplicateObjectKeys(body, ToolCallPlan::kMaxDepth - 1);
   if (!value || !IsCompatibleJsonValue(*value, schema)) {
     return std::nullopt;
   }
@@ -818,7 +807,7 @@ std::optional<Json> DecodeParameterValue(std::string_view body, const Json& sche
   }
 
   if (decoded.has_value()) {
-    return decoded;
+    return decoded_string.has_value() ? std::nullopt : decoded;
   }
   // A leading array/object delimiter claims the structured branch. Reinterpreting malformed structured output as
   // a string would turn a model type error into an executable call; ambiguous union values therefore fail closed.
@@ -829,10 +818,16 @@ std::optional<Json> DecodeParameterValue(std::string_view body, const Json& sche
   return std::nullopt;
 }
 
-bool ContainsReservedFramingMarkup(std::string_view body) {
-  return std::ranges::any_of(kReservedMarkup, [&](const auto marker) {
-    return body.find(marker) != std::string_view::npos;
-  });
+bool ContainsReservedFramingMarkup(std::string_view body, const ToolCallMarkers& markers) {
+  return body.find(markers.start) != std::string_view::npos ||
+         body.find(markers.end) != std::string_view::npos ||
+         std::ranges::any_of(kReservedMarkup, [&](const auto marker) {
+           return body.find(marker) != std::string_view::npos;
+         });
+}
+
+bool IsXmlTagName(std::string_view name) {
+  return !name.empty() && name.find_first_of("<>=\r\n\t ") == std::string_view::npos;
 }
 
 std::optional<std::string_view> ReadTagName(std::string_view source, size_t& position,
@@ -848,7 +843,7 @@ std::optional<std::string_view> ReadTagName(std::string_view source, size_t& pos
   }
 
   const auto name = source.substr(position, end - position);
-  if (name.empty() || name.find_first_of("<>=\r\n\t ") != std::string_view::npos) {
+  if (!IsXmlTagName(name)) {
     return std::nullopt;
   }
 
@@ -856,16 +851,17 @@ std::optional<std::string_view> ReadTagName(std::string_view source, size_t& pos
   return name;
 }
 
-BlockParseResult ParseBlock(std::string_view source, size_t start, const FunctionSchemas& schemas) {
+BlockParseResult ParseBlock(std::string_view source, size_t start, const FunctionSchemas& schemas,
+                            const ToolCallMarkers& markers) {
   size_t position = start;
-  auto state = ConsumeLiteral(source, position, kCallStart);
+  auto state = ConsumeLiteral(source, position, markers.call_start);
   if (state != ParseState::kComplete) {
     return BlockResult(state);
   }
 
   const auto function_name = ReadTagName(source, position, kFunctionPrefix);
   if (!function_name.has_value()) {
-    return BlockResult(source.find(kQwenXmlToolCallEndMarker, position) == std::string_view::npos
+    return BlockResult(source.find(markers.end, position) == std::string_view::npos
                            ? ParseState::kIncomplete
                            : ParseState::kInvalid);
   }
@@ -881,18 +877,18 @@ BlockParseResult ParseBlock(std::string_view source, size_t start, const Functio
   Json arguments = Json::object();
   std::unordered_set<std::string> seen_parameters;
   while (true) {
-    if (source.substr(position).starts_with(kFunctionEnd)) {
-      position += kFunctionEnd.size();
+    if (source.substr(position).starts_with(markers.function_end)) {
+      position += markers.function_end.size();
       break;
     }
 
-    if (kFunctionEnd.starts_with(source.substr(position))) {
+    if (std::string_view(markers.function_end).starts_with(source.substr(position))) {
       return BlockResult(ParseState::kQualifiedIncomplete);
     }
 
     const auto parameter_name = ReadTagName(source, position, kParameterPrefix);
     if (!parameter_name.has_value()) {
-      return BlockResult(source.find(kQwenXmlToolCallEndMarker, position) == std::string_view::npos
+      return BlockResult(source.find(markers.end, position) == std::string_view::npos
                              ? ParseState::kQualifiedIncomplete
                              : ParseState::kStructuralFailure);
     }
@@ -904,13 +900,13 @@ BlockParseResult ParseBlock(std::string_view source, size_t start, const Functio
 
     const auto body_end = source.find(kParameterEnd, position);
     if (body_end == std::string_view::npos) {
-      return BlockResult(source.find(kQwenXmlToolCallEndMarker, position) == std::string_view::npos
+      return BlockResult(source.find(markers.end, position) == std::string_view::npos
                              ? ParseState::kQualifiedIncomplete
                              : ParseState::kSchemaViolation);
     }
 
     const auto body = source.substr(position, body_end - position);
-    if (ContainsReservedFramingMarkup(body)) {
+    if (ContainsReservedFramingMarkup(body, markers)) {
       return BlockResult(ParseState::kSchemaViolation);
     }
 
@@ -942,8 +938,9 @@ struct RejectedBatch {
   bool schema_violation = false;
 };
 
-bool HasSiblingFramingBefore(std::string_view source, size_t sibling, size_t body_end) {
-  size_t name_position = sibling + kCallStart.size();
+bool HasSiblingFramingBefore(std::string_view source, size_t sibling, size_t body_end,
+                             const ToolCallMarkers& markers) {
+  size_t name_position = sibling + markers.call_start.size();
   if (!ReadTagName(source, name_position, kFunctionPrefix)) {
     return false;
   }
@@ -957,15 +954,16 @@ bool HasSiblingFramingBefore(std::string_view source, size_t sibling, size_t bod
           (body_end == std::string_view::npos || function_end < body_end));
 }
 
-RejectedBatch RejectedBlockEnd(std::string_view source, size_t start, bool end_of_stream) {
-  size_t position = start + kCallStart.size();
+RejectedBatch RejectedBlockEnd(std::string_view source, size_t start, bool end_of_stream,
+                               const ToolCallMarkers& markers) {
+  size_t position = start + markers.call_start.size();
   if (auto function_name = ReadTagName(source, position, kFunctionPrefix)) {
     while (position < source.size()) {
-      if (source.substr(position).starts_with(kFunctionEnd)) {
-        return {position + kFunctionEnd.size(), false};
+      if (source.substr(position).starts_with(markers.function_end)) {
+        return {position + markers.function_end.size(), false};
       }
 
-      if (kFunctionEnd.starts_with(source.substr(position)) && !end_of_stream) {
+      if (std::string_view(markers.function_end).starts_with(source.substr(position)) && !end_of_stream) {
         return {};
       }
 
@@ -975,25 +973,24 @@ RejectedBatch RejectedBlockEnd(std::string_view source, size_t start, bool end_o
 
       const auto body_end = source.find(kParameterEnd, position);
       const auto outer_end = source.find(kFunctionClose, position);
-      for (auto call_end = source.find(kQwenXmlToolCallEndMarker, position);
+      for (auto call_end = source.find(markers.end, position);
            call_end != std::string_view::npos &&
            (body_end == std::string_view::npos || call_end < body_end);
-           call_end = source.find(kQwenXmlToolCallEndMarker,
-                                  call_end + kQwenXmlToolCallEndMarker.size())) {
-        const auto next = source.find_first_not_of(" \t\r\n", call_end + kQwenXmlToolCallEndMarker.size());
-        if (next != std::string_view::npos && source.substr(next).starts_with(kCallStart)) {
-          if (HasSiblingFramingBefore(source, next, body_end)) {
+           call_end = source.find(markers.end, call_end + markers.end.size())) {
+        const auto next = source.find_first_not_of(" \t\r\n", call_end + markers.end.size());
+        if (next != std::string_view::npos && source.substr(next).starts_with(markers.call_start)) {
+          if (HasSiblingFramingBefore(source, next, body_end, markers)) {
             return {source.size(), true};
           }
         }
       }
       if (outer_end != std::string_view::npos &&
           (body_end == std::string_view::npos || outer_end < body_end)) {
-        for (auto sibling = source.find(kCallStart, outer_end + kFunctionClose.size());
+        for (auto sibling = source.find(markers.call_start, outer_end + kFunctionClose.size());
              sibling != std::string_view::npos &&
              (body_end == std::string_view::npos || sibling < body_end);
-             sibling = source.find(kCallStart, sibling + kCallStart.size())) {
-          if (HasSiblingFramingBefore(source, sibling, body_end)) {
+             sibling = source.find(markers.call_start, sibling + markers.call_start.size())) {
+          if (HasSiblingFramingBefore(source, sibling, body_end, markers)) {
             return {source.size(), true};
           }
         }
@@ -1006,34 +1003,36 @@ RejectedBatch RejectedBlockEnd(std::string_view source, size_t start, bool end_o
     }
   }
 
-  const auto function_end = source.find(kFunctionEnd, position);
-  const auto end = source.find(kQwenXmlToolCallEndMarker, position);
+  const auto function_end = source.find(markers.function_end, position);
+  const auto end = source.find(markers.end, position);
   const auto boundary = function_end != std::string_view::npos &&
                                 (end == std::string_view::npos || function_end < end)
-                            ? function_end + kFunctionEnd.size()
-                            : end == std::string_view::npos ? source.size() : end;
-  for (auto sibling = source.find(kCallStart, position);
+                            ? function_end + markers.function_end.size()
+                        : end == std::string_view::npos ? source.size()
+                                                        : end;
+  for (auto sibling = source.find(markers.call_start, position);
        sibling != std::string_view::npos && sibling < boundary;
-       sibling = source.find(kCallStart, sibling + kCallStart.size())) {
-    if (HasSiblingFramingBefore(source, sibling, boundary)) {
+       sibling = source.find(markers.call_start, sibling + markers.call_start.size())) {
+    if (HasSiblingFramingBefore(source, sibling, boundary, markers)) {
       return {source.size(), true};
     }
   }
 
   if (function_end != std::string_view::npos &&
       (end == std::string_view::npos || function_end < end)) {
-    return {function_end + kFunctionEnd.size(), false};
+    return {function_end + markers.function_end.size(), false};
   }
 
   return {end == std::string_view::npos ? (end_of_stream ? source.size() : 0)
-                                       : end + kQwenXmlToolCallEndMarker.size(), false};
+                                        : end + markers.end.size(),
+          false};
 }
 
 RejectedBatch RejectedBatchEnd(std::string_view source, size_t invalid_position, bool end_of_stream,
-                              const FunctionSchemas& schemas) {
+                               const FunctionSchemas& schemas, const ToolCallMarkers& markers) {
   size_t position = invalid_position;
   while (true) {
-    const auto block = ParseBlock(source, position, schemas);
+    const auto block = ParseBlock(source, position, schemas, markers);
     if (block.state == ParseState::kSchemaViolation) {
       return {source.size(), true};
     }
@@ -1043,7 +1042,7 @@ RejectedBatch RejectedBatchEnd(std::string_view source, size_t invalid_position,
 
     const auto rejected_block = block.state == ParseState::kComplete
                                     ? RejectedBatch{block.end, false}
-                                    : RejectedBlockEnd(source, position, end_of_stream);
+                                    : RejectedBlockEnd(source, position, end_of_stream, markers);
     if (rejected_block.schema_violation) {
       return rejected_block;
     }
@@ -1057,10 +1056,10 @@ RejectedBatch RejectedBatchEnd(std::string_view source, size_t invalid_position,
     }
 
     const auto remaining = source.substr(position);
-    if (remaining.starts_with(kQwenXmlToolCallStartMarker)) {
+    if (remaining.starts_with(markers.start)) {
       continue;
     }
-    if (kQwenXmlToolCallStartMarker.starts_with(remaining) && !end_of_stream) {
+    if (std::string_view(markers.start).starts_with(remaining) && !end_of_stream) {
       return {};
     }
 
@@ -1069,13 +1068,14 @@ RejectedBatch RejectedBatchEnd(std::string_view source, size_t invalid_position,
 }
 
 ToolCallPayloadParseResult ParseBatch(std::string_view source, bool end_of_stream,
-                                      const FunctionSchemas& schemas, bool recovery_aware) {
+                                      const FunctionSchemas& schemas, bool recovery_aware,
+                                      const ToolCallMarkers& markers) {
   std::vector<ParsedToolCall> calls;
   size_t position = 0;
   size_t batch_end = 0;
 
   while (true) {
-    auto block = ParseBlock(source, position, schemas);
+    auto block = ParseBlock(source, position, schemas, markers);
     if (block.state == ParseState::kIncomplete || block.state == ParseState::kQualifiedIncomplete) {
       if (!end_of_stream) {
         return {};
@@ -1093,7 +1093,15 @@ ToolCallPayloadParseResult ParseBatch(std::string_view source, bool end_of_strea
     }
     if (block.state == ParseState::kInvalid || block.state == ParseState::kStructuralFailure ||
         block.state == ParseState::kSchemaViolation) {
-      const auto rejected = RejectedBatchEnd(source, position, end_of_stream, schemas);
+      if (block.state == ParseState::kSchemaViolation) {
+        return {
+            .disposition = ToolCallPayloadDisposition::kMalformed,
+            .consumed_size = source.size(),
+            .calls = {},
+            .error = "Native function arguments could not be decoded without changing their values",
+        };
+      }
+      const auto rejected = RejectedBatchEnd(source, position, end_of_stream, schemas, markers);
       if (rejected.end == 0) {
         return {};
       }
@@ -1122,10 +1130,10 @@ ToolCallPayloadParseResult ParseBatch(std::string_view source, bool end_of_strea
     }
 
     const auto remaining = source.substr(position);
-    if (remaining.starts_with(kQwenXmlToolCallStartMarker)) {
+    if (remaining.starts_with(markers.start)) {
       continue;
     }
-    if (kQwenXmlToolCallStartMarker.starts_with(remaining) && !end_of_stream) {
+    if (std::string_view(markers.start).starts_with(remaining) && !end_of_stream) {
       return {};
     }
 
@@ -1145,10 +1153,143 @@ ToolCallPayloadParseResult ParseBatch(std::string_view source, bool end_of_strea
   };
 }
 
+ToolCallPayloadParseResult ParseTaggedJsonBatch(std::string_view source, bool end_of_stream,
+                                                const ToolCallMarkers& markers, bool repair_extra_closes = true) {
+  const auto trim = [](std::string_view value) {
+    const auto first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string_view::npos) {
+      return std::string_view{};
+    }
+    const auto last = value.find_last_not_of(" \t\r\n");
+    return value.substr(first, last - first + 1);
+  };
+
+  std::vector<ParsedToolCall> calls;
+  size_t position = 0;
+  size_t batch_end = 0;
+
+  while (true) {
+    const auto remaining = source.substr(position);
+    if (!remaining.starts_with(markers.start)) {
+      if (!end_of_stream && std::string_view(markers.start).starts_with(remaining)) {
+        return {};
+      }
+      return {
+          .disposition = ToolCallPayloadDisposition::kRejected,
+          .consumed_size = source.size(),
+          .calls = {},
+          .error = {},
+      };
+    }
+
+    const auto body_start = position + markers.start.size();
+    const auto body_end = FindMarkerOutsideJsonString(source, markers.end, body_start);
+    if (body_end == std::string_view::npos) {
+      if (!end_of_stream) {
+        return {};
+      }
+      return {
+          .disposition = ToolCallPayloadDisposition::kMalformed,
+          .consumed_size = source.size(),
+          .calls = {},
+          .error = "Qwen tagged-JSON tool call is missing its closing marker",
+      };
+    }
+
+    auto body = trim(source.substr(body_start, body_end - body_start));
+    auto call_json = ParseJsonWithoutDuplicateObjectKeys(body, ToolCallPlan::kMaxDepth + 1);
+    for (size_t repaired_closes = 0;
+         repair_extra_closes && !call_json.has_value() && repaired_closes < 4 && body.ends_with('}');
+         ++repaired_closes) {
+      body.remove_suffix(1);
+      body = trim(body);
+      call_json = ParseJsonWithoutDuplicateObjectKeys(body, ToolCallPlan::kMaxDepth + 1);
+    }
+
+    if (!call_json.has_value() || !call_json->is_object() || call_json->size() != 2 ||
+        !call_json->contains("name") || !(*call_json)["name"].is_string() ||
+        !call_json->contains("arguments") || !(*call_json)["arguments"].is_object()) {
+      return {
+          .disposition = ToolCallPayloadDisposition::kMalformed,
+          .consumed_size = body_end + markers.end.size(),
+          .calls = {},
+          .error = !call_json.has_value()
+                       ? "Qwen tagged-JSON tool call is not valid strict JSON"
+                       : "Qwen tagged-JSON tool call has an invalid name/arguments envelope",
+      };
+    }
+
+    auto call = ParsedToolCall{
+        GenerateToolCallId(),
+        (*call_json)["name"].get<std::string>(),
+        (*call_json)["arguments"].dump(),
+    };
+    call.argument_source = call.arguments;
+    calls.push_back(std::move(call));
+
+    batch_end = body_end + markers.end.size();
+    position = source.find_first_not_of(" \t\r\n", batch_end);
+    if (position == std::string_view::npos) {
+      if (!end_of_stream) {
+        return {};
+      }
+      break;
+    }
+
+    const auto trailing = source.substr(position);
+    if (trailing.starts_with(markers.start)) {
+      continue;
+    }
+    if (!end_of_stream && std::string_view(markers.start).starts_with(trailing)) {
+      return {};
+    }
+    break;
+  }
+
+  return {
+      .disposition = ToolCallPayloadDisposition::kParsed,
+      .consumed_size = batch_end,
+      .calls = std::move(calls),
+      .error = {},
+  };
+}
+
+std::shared_ptr<const ToolCallPlan> CreateNativeToolPlan(const std::string& tools_json) {
+  auto tools = Json::parse(tools_json);
+  for (auto& tool : tools) {
+    if (!tool.contains("function") && !tool.contains("type")) {
+      tool["type"] = "function";
+    }
+  }
+  return ToolCallPlan::Create(tools.dump());
+}
+
+ToolCallPayloadParseResult AdmitNativeBatch(
+    ToolCallPayloadParseResult result, const std::shared_ptr<const ToolCallPlan>& plan) {
+  if (result.disposition == ToolCallPayloadDisposition::kParsed) {
+    try {
+      if (!plan) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Native XML cannot represent the supplied tool schemas");
+      }
+      plan->ValidateBatch(result.calls);
+    } catch (const Exception& error) {
+      result.disposition = ToolCallPayloadDisposition::kMalformed;
+      result.calls.clear();
+      result.error = error.what();
+    }
+  }
+  return result;
+}
+
 }  // namespace
 
 std::optional<std::string> BuildQwenXmlToolBodyGrammar(
-    const std::string& tools_json, const std::unordered_map<std::string, ToolKind>& tool_kinds) {
+    const std::string& tools_json, const std::unordered_map<std::string, ToolKind>& tool_kinds,
+    std::string_view tool_call_start, std::string_view tool_call_end) {
+  if (tool_call_start.empty() || tool_call_end.empty() || tool_call_start == tool_call_end) {
+    return std::nullopt;
+  }
+
   size_t declaration_count = 0;
   const auto schemas = ParseFunctionSchemas(tools_json, tool_kinds, declaration_count);
   if (!HasCompleteDeclaredSet(schemas, declaration_count, tool_kinds)) {
@@ -1159,12 +1300,12 @@ std::optional<std::string> BuildQwenXmlToolBodyGrammar(
   names.reserve(schemas.size());
   for (const auto& [name, schema] : schemas) {
     if (!schema.valid || tool_kinds.at(name) != ToolKind::kFunction ||
-        name.find_first_of("<>=\r\n\t ") != std::string::npos || schema.properties.size() > 64) {
+        !IsXmlTagName(name) || schema.properties.size() > 64) {
       return std::nullopt;
     }
 
     for (const auto& [property, definition] : schema.properties.items()) {
-      if (property.empty() || property.find_first_of("<>=\r\n\t ") != std::string::npos) {
+      if (!IsXmlTagName(property)) {
         return std::nullopt;
       }
     }
@@ -1185,16 +1326,15 @@ std::optional<std::string> BuildQwenXmlToolBodyGrammar(
   // Keep code values and '<' intact while excluding the framing markup rejected by the strict decoder.
   grammar << "body[suffix=\"\\n</parameter>\\n\"]: BODY\n"
              "BODY: /(?s:.*)/ & ~/(?s:.*)(";
-  for (size_t index = 0; index < kReservedMarkup.size(); ++index) {
+  std::array<std::string_view, kReservedMarkup.size() + 2> reserved_markup{};
+  std::ranges::copy(kReservedMarkup, reserved_markup.begin());
+  reserved_markup[kReservedMarkup.size()] = tool_call_start;
+  reserved_markup[kReservedMarkup.size() + 1] = tool_call_end;
+  for (size_t index = 0; index < reserved_markup.size(); ++index) {
     if (index != 0) {
       grammar << "|";
     }
-    for (const char ch : kReservedMarkup[index]) {
-      if (ch == '/') {
-        grammar << "\\";
-      }
-      grammar << ch;
-    }
+    AppendRegexLiteral(grammar, reserved_markup[index]);
   }
   grammar << ")(?s:.*)/\n"
              "ws: /[ \\t\\r\\n]*/\n"
@@ -1258,20 +1398,25 @@ std::optional<std::string> PlanQwenXmlToolBodyGuidance(
   if (!native_qwen_xml || backend_kind != ChatBackendKind::kEngine ||
       !context.tool_output || !context.text_output || context.forced_tool ||
       context.ActiveRawEnvelope() || context.guidance_disabled || context.HasAnyExplicitGuidance() ||
-      context.tool_call_start != kQwenXmlToolCallStartMarker ||
-      context.tool_call_end != kQwenXmlToolCallEndMarker ||
       !context.tool_call_start_token_id || !context.tool_call_end_token_id ||
       *context.tool_call_start_token_id < 0 || *context.tool_call_end_token_id < 0 ||
       context.tool_call_start_token_id == context.tool_call_end_token_id) {
     return std::nullopt;
   }
 
-  return BuildQwenXmlToolBodyGrammar(context.tools_json, context.tool_kinds);
+  return BuildQwenXmlToolBodyGrammar(
+      context.tools_json, context.tool_kinds, context.tool_call_start, context.tool_call_end);
 }
 
 ToolCallPayloadParser CreateQwenXmlToolCallPayloadParser(
     std::string tools_json, std::unordered_map<std::string, ToolKind> tool_kinds,
-    bool recovery_aware) {
+    bool recovery_aware, std::string tool_call_start, std::string tool_call_end,
+    std::shared_ptr<const ToolCallPlan> original_plan) {
+  ToolCallMarkers markers(std::move(tool_call_start), std::move(tool_call_end));
+  if (!markers.Valid()) {
+    return {};
+  }
+
   size_t declaration_count = 0;
   auto schemas = ParseFunctionSchemas(tools_json, tool_kinds, declaration_count);
   if (!HasCompleteDeclaredSet(schemas, declaration_count, tool_kinds)) {
@@ -1287,14 +1432,72 @@ ToolCallPayloadParser CreateQwenXmlToolCallPayloadParser(
   const bool unsupported_only = std::ranges::none_of(schemas, [](const auto& schema) {
     return schema.second.recognizable;
   });
+  auto plan = std::move(original_plan);
+  if (!plan && (recovery_aware ||
+                std::ranges::all_of(schemas, [](const auto& schema) { return schema.second.valid; }))) {
+    plan = CreateNativeToolPlan(tools_json);
+  }
 
-  return [schemas = std::move(schemas), recovery_aware, unsupported_only](
+  return [schemas = std::move(schemas), plan = std::move(plan), recovery_aware, unsupported_only,
+          markers = std::move(markers)](
              std::string_view source, bool end_of_stream) {
     if (unsupported_only) {
       return RejectUndecodableToolCall(source, end_of_stream);
     }
 
-    return ParseBatch(source, end_of_stream, schemas, recovery_aware);
+    const auto body_start = source.find_first_not_of(" \t\r\n", markers.start.size());
+    if (recovery_aware && body_start != std::string_view::npos && source[body_start] == '{') {
+      return AdmitNativeBatch(ParseTaggedJsonBatch(source, end_of_stream, markers), plan);
+    }
+    return AdmitNativeBatch(ParseBatch(source, end_of_stream, schemas, recovery_aware, markers), plan);
+  };
+}
+
+bool CanDecodeQwenXmlToolSchemas(
+    const std::string& tools_json,
+    const std::unordered_map<std::string, ToolKind>& tool_kinds) {
+  size_t declaration_count = 0;
+  const auto schemas = ParseFunctionSchemas(tools_json, tool_kinds, declaration_count);
+  return HasCompleteDeclaredSet(schemas, declaration_count, tool_kinds) &&
+         std::ranges::all_of(schemas, [](const auto& schema) {
+           return schema.second.valid && IsXmlTagName(schema.first) &&
+                  std::ranges::all_of(schema.second.properties.items(), [](const auto& property) {
+                    if (!IsXmlTagName(property.key())) {
+                      return false;
+                    }
+                    const auto& definition = property.value();
+                    if (!definition.contains("anyOf")) {
+                      return true;
+                    }
+                    const bool has_string = std::ranges::any_of(definition["anyOf"], [](const auto& branch) {
+                      return GetSupportedType(branch) == "string";
+                    });
+                    return !has_string ||
+                           std::ranges::all_of(definition["anyOf"], [](const auto& branch) {
+                             const auto type = GetSupportedType(branch);
+                             return type == "string" || type == "array" || type == "object";
+                           });
+                  });
+         });
+}
+
+ToolCallPayloadParser CreateQwenTaggedJsonToolCallPayloadParser(
+    std::string tools_json, std::unordered_map<std::string, ToolKind> tool_kinds,
+    std::string tool_call_start, std::string tool_call_end, bool repair_extra_closes,
+    std::shared_ptr<const ToolCallPlan> original_plan) {
+  if (tools_json.empty() && tool_kinds.empty()) {
+    return {};
+  }
+
+  ToolCallMarkers markers(std::move(tool_call_start), std::move(tool_call_end));
+  if (!markers.Valid()) {
+    return {};
+  }
+
+  auto plan = original_plan ? std::move(original_plan) : CreateNativeToolPlan(tools_json);
+  return [markers = std::move(markers), plan = std::move(plan), repair_extra_closes](
+             std::string_view source, bool end_of_stream) {
+    return AdmitNativeBatch(ParseTaggedJsonBatch(source, end_of_stream, markers, repair_extra_closes), plan);
   };
 }
 
@@ -1343,15 +1546,13 @@ std::vector<ParsedToolCall> ParseQwenGuidedToolCalls(
       }
 
       arguments = call_json["parameters"];
-      if (std::ranges::any_of(arguments.items(), [&](const auto& argument) {
-            const auto property = schema->second.properties.find(argument.key());
-            return property == schema->second.properties.end() ||
-                   !IsCompatibleParameterValue(argument.value(), *property);
-          }) ||
-          !std::ranges::all_of(schema->second.required, [&](const auto& required) {
-            return arguments.contains(required);
-          })) {
-        return {};
+      for (const auto& argument : arguments.items()) {
+        const auto property = schema->second.properties.find(argument.key());
+        if (property != schema->second.properties.end() &&
+            GetSupportedType(*property).has_value() &&
+            !IsCompatibleJsonValue(argument.value(), *property)) {
+          return {};
+        }
       }
     }
 
@@ -1360,7 +1561,10 @@ std::vector<ParsedToolCall> ParseQwenGuidedToolCalls(
     calls.push_back(std::move(call));
   }
 
-  return calls;
+  ToolCallPayloadParseResult parsed;
+  parsed.disposition = ToolCallPayloadDisposition::kParsed;
+  parsed.calls = std::move(calls);
+  return AdmitNativeBatch(std::move(parsed), CreateNativeToolPlan(tools_json)).calls;
 }
 
 }  // namespace fl

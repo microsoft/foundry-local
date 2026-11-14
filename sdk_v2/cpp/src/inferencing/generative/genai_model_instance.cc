@@ -4,19 +4,20 @@
 #include "exception.h"
 #include "inferencing/execution_provider.h"
 #include "inferencing/generative/chat/onnx_chat_engine.h"
+#include "inferencing/generative/toolcalling/qwen_xml_tool_call_decoder.h"
 #include "util/key_value_pairs.h"
 #include "utils.h"
 
 #include <ort_genai.h>
 
 #include <fmt/format.h>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 
 namespace fl {
 namespace {
 
-constexpr std::string_view kQwen35TextModelType = "qwen3_5_text";
 constexpr const char* kToolCallProbeMessages = R"([
   {"role":"user","content":"capability-probe"},
   {"role":"assistant","content":"","tool_calls":[
@@ -63,15 +64,6 @@ constexpr const char* kReasoningProbeMessages = R"([
   {"role":"user","content":"reasoning-probe-user-c"}
 ])";
 constexpr const char* kDisableReasoningPreservation = R"({"preserve_thinking":false})";
-
-constexpr std::string_view kExpectedToolCallBlock =
-    "<tool_call>\n"
-    "<function=probe_function>\n"
-    "<parameter=probe_parameter>\n"
-    "probe_value\n"
-    "</parameter>\n"
-    "</function>\n"
-    "</tool_call>";
 
 bool ContainsInOrder(std::string_view text, std::initializer_list<std::string_view> values) {
   size_t offset = 0;
@@ -156,14 +148,14 @@ ModelCapabilities ResolveModelCapabilities(std::string_view model_type, Preproce
 
   try {
     const auto reasoning_projection = preprocessor.ApplyChatTemplateWithOptions(
-      kReasoningProbeMessages, /*tools_json=*/nullptr, /*template_kwargs_json=*/nullptr,
-      /*add_generation_prompt=*/false);
+        kReasoningProbeMessages, /*tools_json=*/nullptr, /*template_kwargs_json=*/nullptr,
+        /*add_generation_prompt=*/false);
     const auto no_preserve_reasoning_projection = preprocessor.ApplyChatTemplateWithOptions(
-      kReasoningProbeMessages, /*tools_json=*/nullptr, kDisableReasoningPreservation,
-      /*add_generation_prompt=*/false);
+        kReasoningProbeMessages, /*tools_json=*/nullptr, kDisableReasoningPreservation,
+        /*add_generation_prompt=*/false);
     const auto reasoning_capabilities = model_capabilities_internal::ResolveRenderedProbes(
-      model_type, {}, {}, {}, {}, reasoning_projection, no_preserve_reasoning_projection,
-      reasoning_start, reasoning_end);
+        model_type, {}, {}, {}, {}, reasoning_projection, no_preserve_reasoning_projection,
+        reasoning_start, reasoning_end);
     capabilities.supports_reasoning_history = reasoning_capabilities.supports_reasoning_history;
     capabilities.supports_preserve_thinking = reasoning_capabilities.supports_preserve_thinking;
     capabilities.supports_reasoning_controls = true;
@@ -179,7 +171,7 @@ ModelCapabilities ResolveModelCapabilities(std::string_view model_type, Preproce
 }  // namespace
 
 ModelCapabilities model_capabilities_internal::ResolveRenderedProbes(
-    std::string_view model_type,
+    std::string_view /*model_type*/,
     std::string_view tool_call_projection,
     std::string_view tool_result_projection,
     std::string_view tool_call_start,
@@ -190,15 +182,50 @@ ModelCapabilities model_capabilities_internal::ResolveRenderedProbes(
     std::string_view reasoning_end) noexcept {
   const auto tool_call_regions = FindDelimitedRegions(
       tool_call_projection, tool_call_start, tool_call_end);
+  const bool rendered_tool_definitions =
+      tool_call_projection.find("Capability probe") != std::string_view::npos ||
+      (tool_call_projection.find("probe_first") != std::string_view::npos &&
+       tool_call_projection.find("probe_second") != std::string_view::npos);
   const bool supports_tool_calling = !tool_call_start.empty() && !tool_call_end.empty() &&
                                      tool_call_start != tool_call_end &&
                                      std::ranges::any_of(tool_call_regions, [](const auto& region) {
-                                       return ContainsInOrder(
-                                           region.body, {"probe_function", "probe_parameter", "probe_value"});
+                                       return region.body.find("probe_function") != std::string_view::npos &&
+                                              region.body.find("probe_parameter") != std::string_view::npos &&
+                                              region.body.find("probe_value") != std::string_view::npos;
                                      });
-  const bool is_qwen35_text = model_type == kQwen35TextModelType;
-  const bool native_qwen_xml_tool_calls = supports_tool_calling && is_qwen35_text &&
-                                          tool_call_projection.find(kExpectedToolCallBlock) != std::string_view::npos;
+  const std::unordered_map<std::string, ToolKind> probe_tool_kinds{
+      {"probe_function", ToolKind::kFunction},
+      {"probe_first", ToolKind::kFunction},
+      {"probe_second", ToolKind::kFunction}};
+  const auto parser_accepts_probe = [&](bool xml) {
+    auto parser =
+        xml ? CreateQwenXmlToolCallPayloadParser(
+                  kToolProbeDefinitions, probe_tool_kinds, /*recovery_aware=*/false,
+                  std::string(tool_call_start), std::string(tool_call_end))
+            : CreateQwenTaggedJsonToolCallPayloadParser(
+                  kToolProbeDefinitions, probe_tool_kinds,
+                  std::string(tool_call_start), std::string(tool_call_end));
+    if (!parser) {
+      return false;
+    }
+    return std::ranges::any_of(tool_call_regions, [&](const auto& region) {
+      const auto framed =
+          std::string(tool_call_start) + std::string(region.body) + std::string(tool_call_end);
+      const auto result = parser(framed, /*end_of_stream=*/true);
+      if (result.disposition != ToolCallPayloadDisposition::kParsed || result.calls.size() != 1 ||
+          result.calls.front().name != "probe_function") {
+        return false;
+      }
+      const auto arguments = nlohmann::json::parse(result.calls.front().arguments, nullptr, false);
+      return arguments.is_object() && arguments.size() == 1 &&
+             arguments.contains("probe_parameter") && arguments.at("probe_parameter") == "probe_value";
+    });
+  };
+  const bool native_qwen_xml_tool_calls =
+      supports_tool_calling && rendered_tool_definitions && parser_accepts_probe(/*xml=*/true);
+  const bool native_tagged_json_tool_calls =
+      supports_tool_calling && rendered_tool_definitions &&
+      !native_qwen_xml_tool_calls && parser_accepts_probe(/*xml=*/false);
   const auto tool_result_regions = FindDelimitedRegions(
       tool_result_projection, tool_call_start, tool_call_end);
   const auto first_call = std::ranges::find_if(tool_result_regions, [](const auto& region) {
@@ -217,17 +244,18 @@ ModelCapabilities model_capabilities_internal::ResolveRenderedProbes(
                                        tool_result_projection.find("probe-call-b") == std::string_view::npos;
 
   const bool supports_reasoning_history = !reasoning_start.empty() && !reasoning_end.empty() &&
-      ContainsInOrder(reasoning_projection,
-                      {reasoning_start, "reasoning-probe-private-a", reasoning_end,
-                       "reasoning-probe-visible-a", reasoning_start, "reasoning-probe-private-b",
-                       reasoning_end, "reasoning-probe-visible-b"});
+                                          ContainsInOrder(reasoning_projection,
+                                                          {reasoning_start, "reasoning-probe-private-a", reasoning_end,
+                                                           "reasoning-probe-visible-a", reasoning_start, "reasoning-probe-private-b",
+                                                           reasoning_end, "reasoning-probe-visible-b"});
   const bool supports_preserve_thinking = supports_reasoning_history &&
-      no_preserve_reasoning_projection.find("reasoning-probe-private-a") == std::string_view::npos &&
-      no_preserve_reasoning_projection.find("reasoning-probe-private-b") == std::string_view::npos &&
-      ContainsInOrder(no_preserve_reasoning_projection,
-                      {"reasoning-probe-visible-a", "reasoning-probe-visible-b"});
+                                          no_preserve_reasoning_projection.find("reasoning-probe-private-a") == std::string_view::npos &&
+                                          no_preserve_reasoning_projection.find("reasoning-probe-private-b") == std::string_view::npos &&
+                                          ContainsInOrder(no_preserve_reasoning_projection,
+                                                          {"reasoning-probe-visible-a", "reasoning-probe-visible-b"});
 
-  return {supports_tool_calling, native_qwen_xml_tool_calls, positional_tool_results,
+  return {supports_tool_calling, native_qwen_xml_tool_calls, native_tagged_json_tool_calls,
+          positional_tool_results,
           supports_reasoning_history, supports_preserve_thinking,
           !reasoning_projection.empty() || !no_preserve_reasoning_projection.empty()};
 }

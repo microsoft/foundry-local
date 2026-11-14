@@ -104,6 +104,12 @@ response_format = {"type": "lark_grammar"}
 tool_choice = {"type": "function", "function": {"name": "function_name"}}
 ```
 
+For Qwen2-family models, mandatory tool calls use the existing JSON code-fence compatibility format.
+When no explicit response guidance is supplied, generated grammar constrains both the literal fences and the tool schema;
+the format does not depend on the model emitting dedicated tool-marker tokens.
+This applies to inherited session choices as well as request choices.
+A request-level `none` override leaves the session default unchanged.
+
 For scenarios where you have a specific JSON schema you want the model to follow:
 
 ```py

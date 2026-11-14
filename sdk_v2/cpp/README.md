@@ -332,14 +332,54 @@ of a dependency performance regression.
 
 Structured tool turns on both Engine and Generator use one immutable `ToolCallPlan` for declaration
 admission, call-name selection, original-schema validation, and batch acceptance.
-The model emits a nonempty canonical JSON array inside its published tool
+When the tokenizer's rendered probes qualify a native XML or tagged-JSON tool
+protocol, automatic, required, and named choices retain that protocol on either
+backend without implicit whole-turn guidance. Template-supported reasoning history
+is preserved alongside assistant calls and correlated tool results so serial
+continuations retain their context. Original-schema validation still applies
+before calls are published. Function argument history uses the same 64-level JSON
+nesting limit as generated calls, checked before DOM parsing and prompt projection.
+Native activation also requires the effective opening and closing markers to match
+the qualified tokenizer markers; overriding either boundary retains canonical
+projection. Native history arguments are literal-tokenized, including object keys,
+and their escaping follows the template's actual raw or JSON serialization.
+Raw rendered NUL bytes are rejected before tokenizer entry; JSON-escaped NUL values
+remain lossless.
+User-defined schema dictionary keys are protected as well, while structural fields,
+required-name membership, and rendered schema references retain their meaning.
+Native XML requires representable function and parameter names. Semantic constraints
+such as `minLength` do not change string transport eligibility. The original schema
+validates every decoded batch before publication. Ambiguous string/non-string XML
+values are rejected rather than guessed. Supported schemas or argument values that
+cannot be represented losslessly in XML may use bounded native tagged-JSON recovery.
+Native decoders reuse the request's original plan, including forced names and
+serial-call limits, rather than compiling a separate schema authority.
+Protocol selection uses the loaded Engine's cached guidance capability. If native
+XML cannot represent a schema, a qualified tagged-JSON protocol is preferred;
+otherwise canonical guidance requires reported support before generation starts.
+Unsupported combinations fail before invoking the generator. Older GenAI packages
+without the capability getter cannot enable this native-schema guided fallback;
+ordinary native calls and their bounded native correction remain unguided.
+String-or-container offers such as Copilot's `paths` do not disable otherwise
+representable native calls. An unambiguous XML string remains a string; a body
+valid as both string and container is rejected, not assigned a guessed type.
+Tagged JSON carries either type explicitly for the same original schema.
+
+This is protocol infrastructure, not production coding-agent qualification for every
+model/backend/runtime combination. XML-only backends without guidance reject
+ambiguous string/null offers before generation unless a separately qualified
+tagged-JSON protocol is available. Nullable schema rendering alone does not remove
+that admission limit. Full coding/error/repair qualification and rollout remain
+separate work; deterministic protocol tests do not establish production readiness.
+
+Otherwise, the model emits a nonempty canonical JSON array inside its published tool
 markers, for example:
 
 ```json
 [{"name":"edit","parameters":{"path":"main.py","new_str":"print(\"hello\")\n"}}]
 ```
 
-This replaces the model's native XML argument protocol; callers continue using
+This canonical path replaces the model's native argument protocol; callers continue using
 the ordinary Chat Completions, Responses, or SDK tool APIs. Arguments are never
 coerced, repaired, default-filled, or guessed from XML text.
 
@@ -379,7 +419,7 @@ boundary exemplars use their actual token identities. This separation preserves
 multiline code, backslashes, Unicode, bracket-prefixed strings, and literal
 tool/reasoning marker text.
 
-Automatic structured tool turns use whole-turn guidance rather than region guidance, so a
+Non-native automatic structured tool turns use whole-turn guidance rather than region guidance, so a
 marker mentioned in scratchpad text cannot prematurely activate argument decoding.
 Whole-turn guidance disables speculative drafts; qualify its performance as well
 as correctness with the intended model. Region-only masks cannot enforce the
@@ -391,13 +431,24 @@ background coding-agent compaction. The capacity watchdog bounds stalled capacit
 not total queue time; queued requests remain cancelable and do not expire merely
 because another healthy local generation lasts more than 30 seconds.
 
-An invalid uncommitted call gets at most one guided retry with a bounded schema
+An invalid uncommitted call gets at most one retry with a bounded schema
 diagnostic and the remaining output-token budget. Already streamed text/reasoning
 retains its exact token prefix and is not published twice. No retry is allowed
 after a tool call was published, cancellation, truncation, stop-sequence
 interruption, or incompatible explicit/raw guidance. Rejected and interrupted
 argument payloads never become assistant text. Exhaustion is an explicit error,
 not an empty successful response.
+
+Native recovery does not enable guidance. A private retry
+opens a mandatory native tagged-JSON scope using the published tool-opening token.
+Only that trusted scope may finish at a backend-confirmed natural end without a
+generated tool-closing marker; the complete JSON batch must satisfy the original
+schemas, selected tool names, and call count. Ordinary output still requires
+token-owned tool boundaries. Required native turns that omit a tool call can
+retain their entire exact output prefix before this single corrective attempt.
+Private native correction uses Qwen's existing `name`/`arguments` envelope;
+envelopes containing extra members remain invalid. Neither malformed JSON nor
+argument values are repaired or coerced.
 
 Recovery also shares implicit classic Generator output limits; it cannot acquire a
 fresh default allowance or use the retained conversation's full context as an output

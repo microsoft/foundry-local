@@ -41,31 +41,8 @@ std::string PointerToken(std::string_view text) {
 }
 
 void CheckJsonDepth(std::string_view text, flErrorCode code, const std::string& context) {
-  int depth = 0;
-  bool quoted = false;
-  bool escaped = false;
-  for (const char c : text) {
-    if (quoted) {
-      if (escaped) {
-        escaped = false;
-      } else if (c == '\\') {
-        escaped = true;
-      } else if (c == '"') {
-        quoted = false;
-      }
-
-      continue;
-    }
-
-    if (c == '"') {
-      quoted = true;
-    } else if (c == '{' || c == '[') {
-      if (++depth > ToolCallPlan::kMaxDepth) {
-        Fail(code, context, "JSON nesting limit exceeded (" + std::to_string(ToolCallPlan::kMaxDepth) + ")");
-      }
-    } else if ((c == '}' || c == ']') && depth > 0) {
-      --depth;
-    }
+  if (!IsJsonWithinDepthLimit(text, ToolCallPlan::kMaxDepth)) {
+    Fail(code, context, "JSON nesting limit exceeded (" + std::to_string(ToolCallPlan::kMaxDepth) + ")");
   }
 }
 
