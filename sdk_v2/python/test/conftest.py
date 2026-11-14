@@ -300,8 +300,8 @@ def ranking_model(manager):
     if model is None:
         model = _register_staged_model(
             catalog,
-            "clm-v0.1-8b-mixed-generic-cpu-1",
-            "clm-v0.1-8b-mixed-generic-cpu:1",
+            "clm-v0.1-8b-mixed-generic-cpu-2",
+            "clm-v0.1-8b-mixed-generic-cpu:2",
             "text-ranking",
         )
     if model is None:
@@ -322,8 +322,8 @@ def decision_model(manager):
     if model is None:
         model = _register_staged_model(
             catalog,
-            "kev-0.8b-mixed-generic-cpu-1",
-            "kev-0.8b-mixed-generic-cpu:1",
+            "kev-0.8b-mixed-generic-cpu-2",
+            "kev-0.8b-mixed-generic-cpu:2",
             "typed-decision",
         )
     if model is None:

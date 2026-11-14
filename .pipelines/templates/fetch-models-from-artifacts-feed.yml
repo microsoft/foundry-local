@@ -103,8 +103,8 @@ steps:
       feedsToUse: internal
       vstsFeed: 'AIFoundryLocal/AIFoundryLocal_PublicPackages'
       vstsFeedPackage: 'foundry-local-clm-v0-1-8b-mixed-generic-cpu'
-      vstsPackageVersion: '1.0.0'
-      downloadDirectory: '${{ parameters.destinationPath }}/Microsoft/clm-v0.1-8b-mixed-generic-cpu-1'
+      vstsPackageVersion: '2.0.0'
+      downloadDirectory: '${{ parameters.destinationPath }}/Microsoft/clm-v0.1-8b-mixed-generic-cpu-2'
 
   - task: UniversalPackages@0
     displayName: 'Fetch KEV 0.8B mixed CPU integration model'
@@ -115,5 +115,5 @@ steps:
       feedsToUse: internal
       vstsFeed: 'AIFoundryLocal/AIFoundryLocal_PublicPackages'
       vstsFeedPackage: 'foundry-local-kev-0-8b-mixed-generic-cpu'
-      vstsPackageVersion: '1.0.0'
-      downloadDirectory: '${{ parameters.destinationPath }}/Microsoft/kev-0.8b-mixed-generic-cpu-1'
+      vstsPackageVersion: '2.0.0'
+      downloadDirectory: '${{ parameters.destinationPath }}/Microsoft/kev-0.8b-mixed-generic-cpu-2'

@@ -48,12 +48,12 @@ async fn cached_model(task: &str, environment: &str) -> Option<Arc<Model>> {
 async fn register_staged_model(task: &str) -> Option<Arc<Model>> {
     let (directory, model_id) = match task {
         "text-ranking" => (
-            "clm-v0.1-8b-mixed-generic-cpu-1",
-            "clm-v0.1-8b-mixed-generic-cpu:1",
+            "clm-v0.1-8b-mixed-generic-cpu-2",
+            "clm-v0.1-8b-mixed-generic-cpu:2",
         ),
         "typed-decision" => (
-            "kev-0.8b-mixed-generic-cpu-1",
-            "kev-0.8b-mixed-generic-cpu:1",
+            "kev-0.8b-mixed-generic-cpu-2",
+            "kev-0.8b-mixed-generic-cpu:2",
         ),
         _ => return None,
     };

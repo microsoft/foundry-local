@@ -60,8 +60,8 @@ describe("real-model manager fixture", () => {
   });
 
   it.each([
-    ["text-ranking", "clm", "clm-v0.1-8b-mixed-generic-cpu:1"],
-    ["typed-decision", "kev", "kev-0.8b-mixed-generic-cpu:1"],
+    ["text-ranking", "clm", "clm-v0.1-8b-mixed-generic-cpu:2"],
+    ["typed-decision", "kev", "kev-0.8b-mixed-generic-cpu:2"],
   ])("uses the staged %s package instead of an uncached public model", async (task, namePreference, modelId) => {
     const { setupRealModelManager } = await import("./_fixtures/realModelManager.js");
     const fixture = await setupRealModelManager({ task, namePreference, loadModel: false });
