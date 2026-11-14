@@ -27,7 +27,7 @@ bundled automatically on Windows.
 | CMake            | 3.20            | Driven by `sdk_v2/cpp/build.py`; do not invoke `cmake --build` directly.              |
 | vcpkg            | recent          | Set `VCPKG_ROOT`, or use the copy bundled with Visual Studio (auto-detected).         |
 | Python           | 3.11–3.14, **64-bit** | Required by `build.py` and for the Python SDK. 32-bit Python will not work.   |
-| .NET SDK         | 9.0             | The SDK targets `net8.0;net9.0;netstandard2.0`; the test project additionally targets `net462` on Windows (via the .NET Framework Targeting Pack from VS); samples target `net9.0`. The single package bundles WinML 2.x on Windows — its OS-version floor is enforced by the native runtime (`LoadLibraryW` + `RtlGetVersion` in `winml_ep_bootstrapper.cc`), not by a .NET TFM. |
+| .NET SDK         | 10.0            | The C# SDK, tests, and samples target `net10.0`. The single package bundles WinML 2.x on Windows — its OS-version floor is enforced by the native runtime (`LoadLibraryW` + `RtlGetVersion` in `winml_ep_bootstrapper.cc`), not by a .NET TFM. |
 | Node.js          | 20 LTS or newer | Brings `npm`. The JS SDK declares `"engines": { "node": ">=20" }`.                    |
 | JDK              | 17 or newer     | Required for the Java SDK. Use a 64-bit JVM matching the native runtime architecture. |
 | Maven            | 3.9 or newer    | Builds and tests the Java SDK.                                                        |
@@ -39,7 +39,6 @@ bundled automatically on Windows.
 | --------------------------- | ------------------------ | --------------------------------------------------------------------- |
 | Visual Studio 2026 (v18)    | Enterprise / Professional / Community | Install the **Desktop development with C++** and **.NET desktop development** workloads. Provides MSVC, Windows SDK, and vcpkg. |
 | Windows SDK                 | 10.0 (VS workload)       | Required by the C++ build for any `windows.h` consumer. The exact patch number is not pinned — whatever the VS C++ workload installs (currently 10.0.26100) works. |
-| .NET Framework 4.6.2 Targeting Pack | (VS workload)    | One C# test target framework is `net462`.                             |
 
 Launch your dev shell with **x64** explicitly — `Enter-VsDevShell` defaults
 to x86 and silently breaks the Python cffi extension build:

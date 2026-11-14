@@ -738,7 +738,7 @@ When `FOUNDRY_LOCAL_RUNTIME_VERSION` is set, the NuGet acquisition path supports
 - **`http` (default)** — talks to the NuGet v3 HTTP protocol directly. No external tools are
   required, but feeds must support anonymous HTTPS access.
 - **`dotnet`** — runs `dotnet restore` against a temporary project. Use this with a
-  `NuGet.Config` or a credential provider supported by the .NET SDK.
+  `NuGet.Config` or a credential provider supported by the .NET SDK. Requires .NET SDK 10.0 or later.
 - **`nuget`** — runs `nuget install` once per package. Use this when authentication depends on a
   NuGet or Visual Studio credential provider that the standalone NuGet CLI can host.
 

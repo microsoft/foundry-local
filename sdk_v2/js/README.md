@@ -300,7 +300,8 @@ them into `prebuilds/<platform>-<arch>/`. Three modes are supported:
 - **`dotnet`** — shells out to `dotnet restore` against a throwaway project. Use this for a
   private feed whose auth is wired through the .NET credential-provider ecosystem (e.g. the
   Azure Artifacts Credential Provider) or a `NuGet.config`. Cross-platform, needs only the
-  .NET SDK.
+  [.NET SDK 10.0 or later](https://dotnet.microsoft.com/download/dotnet/10.0). Check the selected SDK
+  with `dotnet --version` (or your configured command) and update any `global.json` pin selecting an older SDK.
 - **`nuget`** — shells out to `nuget.exe install` (or a `nuget` on PATH) once per artifact.
   Useful when your feed's auth is supplied by a NuGet/Visual Studio credential provider
   (`CredentialProvider.Microsoft`, etc.) that `dotnet restore` can't host — for example a

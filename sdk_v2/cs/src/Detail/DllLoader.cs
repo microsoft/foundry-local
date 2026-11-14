@@ -210,7 +210,11 @@ internal static partial class DllLoader
     /// </summary>
     private static void LogResolution(string strategy, string path)
     {
-        _logger.LogDebug("[FoundryLocal.DllLoader] resolved foundry_local via {Strategy}: {Path}", strategy, path);
+        var logger = _logger;
+        if (logger.IsEnabled(LogLevel.Debug))
+        {
+            logger.LogDebug("[FoundryLocal.DllLoader] resolved foundry_local via {Strategy}: {Path}", strategy, path);
+        }
     }
 
     /// <summary>
@@ -242,7 +246,11 @@ internal static partial class DllLoader
 
         if (TryLoadNativeLibrary(path, out var handle))
         {
-            _logger.LogDebug("[FoundryLocal.DllLoader] preloaded {LibraryName}: {Path}", libraryName, path);
+            var logger = _logger;
+            if (logger.IsEnabled(LogLevel.Debug))
+            {
+                logger.LogDebug("[FoundryLocal.DllLoader] preloaded {LibraryName}: {Path}", libraryName, path);
+            }
             return handle;
         }
 
