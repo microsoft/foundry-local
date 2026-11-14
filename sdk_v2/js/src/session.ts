@@ -139,7 +139,7 @@ function modelToNativeAudioSession(model: IModel): NativeAudioSession {
 function modelToNativeGenericSession(
   model: IModel,
   sessionName: string,
-  expectedTask: "text-ranking" | "typed-decision",
+  expectedTask: "ranking" | "decision",
 ): NativeGenericSession {
   if (!(model instanceof Model)) {
     throw new TypeError(`${sessionName}: expected a Model as the first argument`);
@@ -846,7 +846,7 @@ export class AudioSession extends Session {
 }
 
 /**
- * One-shot inference session for `text-ranking` models.
+ * One-shot inference session for `ranking` models.
  *
  * {@link rank} uses the same JSON request and result contracts as `POST /v1/rank`.
  * The lower-level inherited {@link Session.processRequest} API accepts exactly
@@ -854,7 +854,7 @@ export class AudioSession extends Session {
  */
 export class RankingSession extends OneShotSession {
   constructor(model: IModel) {
-    super(modelToNativeGenericSession(model, "RankingSession", "text-ranking"));
+    super(modelToNativeGenericSession(model, "RankingSession", "ranking"));
   }
 
   async rank(request: RankingRequest, options?: StreamOptions): Promise<RankingResult> {
@@ -869,14 +869,14 @@ export class RankingSession extends OneShotSession {
 }
 
 /**
- * One-shot inference session for `typed-decision` models.
+ * One-shot inference session for `decision` models.
  *
  * {@link decide} uses the same JSON request and result contracts as
  * `POST /v1/systemone`.
  */
 export class DecisionSession extends OneShotSession {
   constructor(model: IModel) {
-    super(modelToNativeGenericSession(model, "DecisionSession", "typed-decision"));
+    super(modelToNativeGenericSession(model, "DecisionSession", "decision"));
   }
 
   async decide(request: DecisionRequest, options?: StreamOptions): Promise<DecisionResult> {

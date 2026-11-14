@@ -17,7 +17,7 @@ For a user-facing introduction to the inference API and cross-language examples,
 
 - **Model catalog** — browse public models and inspect cached or loaded state
 - **Bring your own model (BYOM)** — register existing local model assets without copying or taking ownership of them
-- **Native inference** — run chat, embeddings, audio, ranking, and typed-decision sessions directly through the C++ engine
+- **Native inference** — run chat, embeddings, audio, ranking, and decision sessions directly through the C++ engine
 - **Streaming and tool calling** — consume streamed items and run multi-turn tool-enabled chat
 - **Embedded web service** — optionally expose OpenAI-compatible HTTP endpoints
 

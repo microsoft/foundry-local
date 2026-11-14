@@ -13,7 +13,7 @@ metadata such as:
 {
   "Name": "clm-v0.1-8b-generic-cpu:1",
   "Alias": "clm",
-  "Task": "text-ranking",
+  "Task": "ranking",
   "ComponentManifest": "component_manifest.json",
   "License": "Apache-2.0",
   "Provenance": {

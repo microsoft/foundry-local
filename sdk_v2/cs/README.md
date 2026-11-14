@@ -12,7 +12,7 @@ For the v2 inference concepts and typed, stateful session examples, see
 - **Lifecycle management** — download, load, unload, and remove models programmatically
 - **Chat completions** — synchronous and `IAsyncEnumerable` streaming via OpenAI-compatible types
 - **Audio transcription** — transcribe audio files with streaming support
-- **Ranking and typed decisions** — strongly typed sessions for `text-ranking` and `typed-decision` models
+- **Ranking and typed decisions** — strongly typed sessions for `ranking` and `decision` models
 - **Download progress** — wire up an `Action<float>` callback for real-time download percentage
 - **Model variants** — select specific hardware/quantization variants per model alias
 - **Optional web service** — start an OpenAI-compatible REST endpoint (`/v1/chat_completions`, `/v1/models`)
@@ -308,8 +308,8 @@ finally
 }
 ```
 
-`RankingSession` requires a loaded model with task `text-ranking`; `DecisionSession` requires a
-loaded model with task `typed-decision`. The caller owns the model: call `LoadAsync` before creating
+`RankingSession` requires a loaded model with task `ranking`; `DecisionSession` requires a
+loaded model with task `decision`. The caller owns the model: call `LoadAsync` before creating
 a session, dispose every session before `UnloadAsync`, and unload in a `finally` block. Requests
 omit `Model` and `Temperature` by default so the bound model and session options apply; set either
 property only for an explicit compatible override.
