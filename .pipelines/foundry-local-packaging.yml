@@ -47,7 +47,7 @@ variables:
 # C++ SDK (sdk_v2/cpp) native dependency versions. Must match the stable pins
 # in sdk_v2/deps_versions.json.
 - name: cppOrtVersion
-  value: '1.31.0'
+  value: '1.32.0'
 - name: cppGenaiVersion
   value: '0.19.0'
 - name: cppWinmlVersion
