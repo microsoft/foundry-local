@@ -212,7 +212,6 @@ std::vector<ExecutionTarget> EpDetector::GetExecutionTargets() const {
         break;
     }
 
-#if defined(FOUNDRY_LOCAL_HAS_EP_DEVICE_MEMORY_CAPACITY)
     uint64_t total = 0;
     if (auto* status = ort_api_.EpDevice_GetMemoryCapacity(device, OrtDeviceMemoryType_DEFAULT, &total, nullptr)) {
       logger_.Log(LogLevel::Debug, std::string("Total memory capacity unavailable for ") + provider);
@@ -220,7 +219,6 @@ std::vector<ExecutionTarget> EpDetector::GetExecutionTargets() const {
     } else if (type == OrtHardwareDeviceType_GPU) {
       target.capacity.total_vram_bytes = total;
     }
-#endif
     targets.push_back(std::move(target));
   }
 

@@ -10,6 +10,7 @@
 #include "model.h"
 #include "model_info.h"
 #include "util/scope_guard.h"
+#include "utils.h"
 #include "utils/temp_path.h"
 
 #include <foundry_local/foundry_local_c.h>
@@ -19,7 +20,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -283,11 +283,8 @@ class AzureModelCatalogTest : public ::testing::Test {
 };
 
 TEST(AzureModelCatalogCapacityEndToEndTest, RealCudaCapacityFiltersParsedCatalogAndOfflineSnapshot) {
-#if !defined(FOUNDRY_LOCAL_HAS_EP_DEVICE_MEMORY_CAPACITY)
-  GTEST_SKIP() << "Requires ORT with EpDevice_GetMemoryCapacity (PR #33447)";
-#else
-  const char* provider_library = std::getenv("FOUNDRY_LOCAL_TEST_CUDA_EP_LIBRARY");
-  if (!provider_library || !*provider_library) {
+  const auto provider_library = Utils::GetEnv("FOUNDRY_LOCAL_TEST_CUDA_EP_LIBRARY");
+  if (!provider_library || provider_library->empty()) {
     GTEST_SKIP() << "Set FOUNDRY_LOCAL_TEST_CUDA_EP_LIBRARY to the matching CUDA provider library";
   }
   const auto* api = OrtGetApiBase()->GetApi(ORT_API_VERSION);
@@ -303,7 +300,7 @@ TEST(AzureModelCatalogCapacityEndToEndTest, RealCudaCapacityFiltersParsedCatalog
   OrtEnv* env = nullptr;
   ASSERT_TRUE(check_status(api->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "catalog-capacity-e2e", &env)));
   ScopeGuard release_env([&]() noexcept { api->ReleaseEnv(env); });
-  const auto library_path = fs::path(provider_library);
+  const auto library_path = fs::path(*provider_library);
   ASSERT_TRUE(check_status(api->RegisterExecutionProviderLibrary(env, "catalog-capacity-cuda", library_path.c_str())));
   ScopeGuard unregister_provider([&]() noexcept {
     if (auto* status = api->UnregisterExecutionProviderLibrary(env, "catalog-capacity-cuda")) {
@@ -416,7 +413,6 @@ TEST(AzureModelCatalogCapacityEndToEndTest, RealCudaCapacityFiltersParsedCatalog
                                 services.telemetry, client_factory);
   ASSERT_NO_FATAL_FAILURE(verify(offline));
   EXPECT_EQ(requests, live_requests) << "Offline filtering must not fetch catalog metadata";
-#endif
 }
 
 TEST(AzureModelCatalogRuntimeTest, HostedDeviceChangesInvalidateMetadataWithoutChangingLocalProviderAvailability) {

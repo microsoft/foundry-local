@@ -143,35 +143,12 @@ Capacity queries use ORT's device-memory total only, never current available VRA
 that loading will succeed. CPU RAM and unified-memory checks are deliberately not implemented and require
 separate metadata and measurement contracts.
 
-The query requires the actual `EpDevice_GetMemoryCapacity` API and matching CUDA provider built with
-[ORT PR #33447](https://github.com/microsoft/onnxruntime/pull/33447). An API 32 version alone is insufficient:
-pre-merge 1.32 nightlies lack the member. CMake checks the member and warns if capacity filtering is inactive.
-The API is required by default: configuration fails when the selected headers lack the member.
-The pinned 1.31 runtime and CUDA bundles predate the API, so they cannot satisfy the shipping requirement.
-The dependency rollout remains a merge requirement: wait for the ORT 1.32.0 release, then update the runtime
-and matching provider packages together, including verified provider versions and hashes. Do not substitute
-an API version number or a pre-release nightly for a verified release rollout.
-Shipping native build templates explicitly require the API, overriding cached or supplied compatibility settings.
-Until the release packages and matching providers are available, use a source-built ORT with matching headers
-in `<ort-install>/include` and runtime libraries in `<ort-install>/lib`:
+The query uses `EpDevice_GetMemoryCapacity`, available in the pinned ORT 1.32.0 release. The API is used
+unconditionally; older ORT headers are not supported. Providers that do not implement capacity queries retain
+unknown-capacity behavior. Runtime upgrades alone do not establish CUDA provider compatibility or capacity-query
+support; validate the enabled query path with a compatible provider before relying on packaged GPU filtering.
 
-```bash
-python sdk_v2/cpp/build.py --configure --build --ort_home <ort-install>
-```
-
-For source compatibility only, explicitly opt out when building against an older ORT:
-
-```bash
-python sdk_v2/cpp/build.py --configure --build \
-  --cmake_extra_defines FOUNDRY_LOCAL_REQUIRE_DEVICE_MEMORY_CAPACITY=OFF
-```
-
-This opt-out warns and treats capacity as unknown if the API is absent; it does not disable the query when
-the selected headers support it. It is not a shipping configuration. Before completing the rollout, exercise
-the enabled query path with the released runtime and matching provider; a compiled-out or skipped test does
-not validate packaged filtering.
-
-Register the matching CUDA provider before refreshing the catalog. Do not mix provider and runtime builds.
+Register a compatible CUDA provider before refreshing the catalog.
 Hosted catalogs use the execution host's provider/device/capacity snapshot, never the client's local GPU.
 Older hosts that report only provider names retain unknown-capacity behavior.
 

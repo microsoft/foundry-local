@@ -189,10 +189,10 @@ BaseModelCatalog::VariantEligibility RemoteModelCatalog::MakeVariantVisibility()
 BaseModelCatalog::VariantEligibility RemoteModelCatalog::MakeCompatibilityPredicate(bool capacity_only,
                                                                                    bool check_capacity) const {
   auto targets = devices_->GetExecutionTargets();
-  std::map<std::string, std::vector<std::string>> devices;
+  auto devices = !capacity_only && GetType() == CatalogType::kAzureRegistry
+      ? devices_->GetAvailableDevicesToEPs() : std::map<std::string, std::vector<std::string>>{};
   std::unordered_set<std::string> providers;
   for (const auto& target : targets) {
-    devices[target.device_type].push_back(target.provider);
     providers.insert(ToLower(EPUtils::NormalizeRegistrationName(target.provider)));
   }
 

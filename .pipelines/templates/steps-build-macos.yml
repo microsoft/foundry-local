@@ -66,7 +66,7 @@ steps:
     set -euo pipefail
     python3 build.py --configure --build \
       --config ${{ parameters.buildConfig }} \
-      --cmake_extra_defines $(cmakeFetchDefines) FOUNDRY_LOCAL_REQUIRE_DEVICE_MEMORY_CAPACITY=ON
+      --cmake_extra_defines $(cmakeFetchDefines)
   displayName: 'Configure and build'
   workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
   env:

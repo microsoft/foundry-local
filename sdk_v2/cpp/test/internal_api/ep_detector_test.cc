@@ -193,7 +193,6 @@ TEST_F(EpDetectorTest, ExecutionTargetsEnumerateAllDevicesWithHardwareIdentityAn
     *values = reinterpret_cast<const FakeDevice*>(options)->id == 7 ? first_values : second_values;
     *count = 1;
   };
-#if defined(FOUNDRY_LOCAL_HAS_EP_DEVICE_MEMORY_CAPACITY)
   static size_t capacity_queries;
   capacity_queries = 0;
   api.EpDevice_GetMemoryCapacity = [](const OrtEpDevice* device, OrtDeviceMemoryType memory_type,
@@ -209,7 +208,6 @@ TEST_F(EpDetectorTest, ExecutionTargetsEnumerateAllDevicesWithHardwareIdentityAn
     *total = 16;
     return nullptr;
   };
-#endif
   EpDetector detector(api, *ort_env_, {}, logger_, fl::test::TestTelemetrySink());
   const auto targets = detector.GetExecutionTargets();
   ASSERT_EQ(targets.size(), 4u);
@@ -230,12 +228,8 @@ TEST_F(EpDetectorTest, ExecutionTargetsEnumerateAllDevicesWithHardwareIdentityAn
   EXPECT_FALSE(targets[1].capacity.total_vram_bytes.has_value());
   EXPECT_FALSE(targets[2].capacity.total_vram_bytes.has_value());
   EXPECT_FALSE(targets[3].capacity.total_vram_bytes.has_value());
-#if defined(FOUNDRY_LOCAL_HAS_EP_DEVICE_MEMORY_CAPACITY)
   EXPECT_EQ(capacity_queries, 4u);
   EXPECT_EQ(targets[0].capacity.total_vram_bytes, 16u);
-#else
-  EXPECT_FALSE(targets[0].capacity.total_vram_bytes.has_value());
-#endif
 
   const auto capacities = detector.GetDeviceCapacities();
   ASSERT_EQ(capacities.size(), 1u);
