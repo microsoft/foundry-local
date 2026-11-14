@@ -463,7 +463,14 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
 
   if (!cm.inference_tasks.empty()) {
     info.task = cm.inference_tasks.front();
-    info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_TASK_STR] = cm.inference_tasks.front();
+    // Asset Gallery uses shorter task names than the executable non-generative package contract.
+    if (info.task == "decision") {
+      info.task = "typed-decision";
+    } else if (info.task == "ranking") {
+      info.task = "text-ranking";
+    }
+
+    info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_TASK_STR] = info.task;
   }
 
   if (cm.license && !cm.license->empty()) {

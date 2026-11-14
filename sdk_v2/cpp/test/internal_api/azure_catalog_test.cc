@@ -390,6 +390,49 @@ TEST(AzureCatalogClientTest, PreservesCodingAsFirstInferenceTask) {
   EXPECT_EQ(models.front().string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR), "coding");
 }
 
+TEST(AzureCatalogClientTest, NormalizesPredictiveCatalogTasksForRuntimeAndSdkMetadata) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  for (const auto& [catalog_task, runtime_task] :
+       std::vector<std::pair<std::string, std::string>>{
+           {"decision", "typed-decision"},
+           {"ranking", "text-ranking"},
+           {"typed-decision", "typed-decision"},
+           {"text-ranking", "text-ranking"},
+       }) {
+    for (const bool full_service : {false, true}) {
+      SCOPED_TRACE(catalog_task + (full_service ? " full service" : " flat"));
+      auto response = nlohmann::json::parse(MakeSummaryResponse({{"predictive-model", 1}}));
+      auto& record = response["summaries"][0];
+      record["inferenceTasks"] = {catalog_task, "chat-completion"};
+      if (full_service) {
+        record = {
+            {"assetId", record["assetId"]},
+            {"annotations",
+             {{"tags", {{"foundryLocal", ""}}},
+              {"systemCatalogData", {{"inferenceTasks", record["inferenceTasks"]}}}}},
+            {"properties",
+             {{"name", record["name"]}, {"version", record["version"]}, {"variantInfo", record["variantInformation"]}}},
+        };
+      }
+
+      AzureCatalogClient client("https://test.com", "", ep, logger,
+                                [&](const std::string&, const std::string&) {
+                                  return MakeOkResponse(response.dump());
+                                });
+      const auto raw_models = client.FetchAllModels();
+      ASSERT_EQ(raw_models.size(), 1u);
+      EXPECT_EQ(raw_models.front().inference_tasks.front(), catalog_task);
+
+      const auto models = client.FetchAllModelInfos();
+      ASSERT_EQ(models.size(), 1u);
+      EXPECT_EQ(models.front().task, runtime_task);
+      EXPECT_EQ(models.front().string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR), runtime_task);
+      EXPECT_EQ(ModelInfoToJson(models.front()).at("task"), runtime_task);
+    }
+  }
+}
+
 TEST(AzureCatalogClientTest, ParsesFullServiceMetadataWithoutPromptOrDelimiterFields) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
