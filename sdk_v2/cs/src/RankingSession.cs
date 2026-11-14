@@ -8,11 +8,11 @@ namespace Microsoft.AI.Foundry.Local;
 
 using Microsoft.AI.Foundry.Local.Detail;
 
-/// <summary>Typed session for models whose task is <c>text-ranking</c>.</summary>
+/// <summary>Typed session for models whose task is <c>ranking</c>.</summary>
 public sealed class RankingSession : NonGenerativeSession
 {
     /// <summary>
-    /// Creates a ranking session for a loaded text-ranking model. Dispose the session before unloading the model.
+    /// Creates a ranking session for a loaded ranking model. Dispose the session before unloading the model.
     /// </summary>
     public RankingSession(IModel model) : base(ValidateTask(model))
     {
@@ -40,10 +40,10 @@ public sealed class RankingSession : NonGenerativeSession
     private static IModel ValidateTask(IModel model)
     {
         Detail.Throw.IfNull(model);
-        if (model.Info.Task != "text-ranking")
+        if (model.Info.Task != "ranking")
         {
             throw new ArgumentException(
-                $"RankingSession requires a model with task 'text-ranking', but got '{model.Info.Task}'.",
+                $"RankingSession requires a model with task 'ranking', but got '{model.Info.Task}'.",
                 nameof(model));
         }
 

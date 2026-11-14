@@ -10,11 +10,11 @@ using System.Text.Json;
 
 using Microsoft.AI.Foundry.Local.Detail;
 
-/// <summary>Typed session for models whose task is <c>typed-decision</c>.</summary>
+/// <summary>Typed session for models whose task is <c>decision</c>.</summary>
 public sealed class DecisionSession : NonGenerativeSession
 {
     /// <summary>
-    /// Creates a decision session for a loaded typed-decision model. Dispose the session before unloading the model.
+    /// Creates a decision session for a loaded decision model. Dispose the session before unloading the model.
     /// </summary>
     public DecisionSession(IModel model) : base(ValidateTask(model))
     {
@@ -42,10 +42,10 @@ public sealed class DecisionSession : NonGenerativeSession
     private static IModel ValidateTask(IModel model)
     {
         Detail.Throw.IfNull(model);
-        if (model.Info.Task != "typed-decision")
+        if (model.Info.Task != "decision")
         {
             throw new ArgumentException(
-                $"DecisionSession requires a model with task 'typed-decision', but got '{model.Info.Task}'.",
+                $"DecisionSession requires a model with task 'decision', but got '{model.Info.Task}'.",
                 nameof(model));
         }
 

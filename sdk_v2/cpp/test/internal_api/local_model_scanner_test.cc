@@ -68,7 +68,7 @@ class LocalModelScannerTest : public ::testing::Test {
 
   void CreateBundleDir(const std::string& relative_path,
                        const std::string& model_name,
-                       const std::string& task = "text-ranking") {
+                       const std::string& task = "ranking") {
     const auto root = fs::path(test_dir_) / relative_path;
     CreateFile(relative_path + "/genai_config.json");
     CreateFile(relative_path + "/tokenizer.json");
@@ -79,7 +79,7 @@ class LocalModelScannerTest : public ::testing::Test {
       CreateFile(relative_path + "/" + relative, "synthetic");
       components[name] = {{"role", role}, {"filename", relative}};
     };
-    if (task == "text-ranking") {
+    if (task == "ranking") {
       add_component("encoder", "backbone");
       add_component("state_head", "head");
       add_component("action_head", "head");

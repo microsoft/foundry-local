@@ -93,7 +93,7 @@ bool DeclaresNonGenerativePackage(const fs::path& package_root) {
     const auto inference = nlohmann::json::parse(stream);
     const auto task = inference.value("Task", std::string{});
     return inference.contains("ComponentManifest") ||
-           task == "text-ranking" || task == "typed-decision";
+           task == "ranking" || task == "decision";
   } catch (const nlohmann::json::exception&) {
     return false;
   }

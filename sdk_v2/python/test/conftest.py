@@ -245,7 +245,7 @@ def _register_staged_model(catalog, directory: str, model_id: str, task: str):
     if not FOUNDRY_TEST_DATA_DIR:
         return None
 
-    package = Path(FOUNDRY_TEST_DATA_DIR) / "Microsoft" / directory
+    package = Path(FOUNDRY_TEST_DATA_DIR) / "Microsoft" / directory / "v2"
     if not package.is_dir():
         return None
 
@@ -295,14 +295,14 @@ def ranking_model(manager):
 
     catalog = manager.get_catalog(CatalogType.LOCAL)
     model = _find_smallest_cached_model_for_task(
-        manager, "text-ranking", catalog=catalog, require_size=False
+        manager, "ranking", catalog=catalog, require_size=False
     )
     if model is None:
         model = _register_staged_model(
             catalog,
-            "clm-v0.1-8b-mixed-generic-cpu-1",
-            "clm-v0.1-8b-mixed-generic-cpu:1",
-            "text-ranking",
+            "clm-v0.1-8b-mixed-generic-cpu-2",
+            "clm-v0.1-8b-mixed-generic-cpu:2",
+            "ranking",
         )
     if model is None:
         pytest.skip("No cached local ranking model is registered.")
@@ -312,19 +312,19 @@ def ranking_model(manager):
 
 @pytest.fixture(scope="session")
 def decision_model(manager):
-    """Smallest cached and explicitly loaded typed-decision model."""
+    """Smallest cached and explicitly loaded decision model."""
     from foundry_local_sdk import CatalogType
 
     catalog = manager.get_catalog(CatalogType.LOCAL)
     model = _find_smallest_cached_model_for_task(
-        manager, "typed-decision", catalog=catalog, require_size=False
+        manager, "decision", catalog=catalog, require_size=False
     )
     if model is None:
         model = _register_staged_model(
             catalog,
-            "kev-0.8b-mixed-generic-cpu-1",
-            "kev-0.8b-mixed-generic-cpu:1",
-            "typed-decision",
+            "kev-0.8b-mixed-generic-cpu-2",
+            "kev-0.8b-mixed-generic-cpu:2",
+            "decision",
         )
     if model is None:
         pytest.skip("No cached local decision model is registered.")

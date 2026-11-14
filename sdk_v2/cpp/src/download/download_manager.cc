@@ -498,7 +498,7 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
         FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "test model package contains no files: " + info.model_id);
       }
       const auto config_path = std::filesystem::path(model_path) / kGenAIConfigFileName;
-      if (info.task == "text-ranking" || info.task == "typed-decision") {
+      if (info.task == "ranking" || info.task == "decision") {
         const auto package = ReadNonGenerativePackage(model_path, /*allow_in_progress=*/true);
         if (!package || (!package->task.empty() && package->task != info.task)) {
           FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model package does not match task: ", info.task);

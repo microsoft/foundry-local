@@ -1,4 +1,4 @@
-//! Opt-in native integration coverage for ranking and typed-decision sessions.
+//! Opt-in native integration coverage for ranking and decision sessions.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -47,18 +47,21 @@ async fn cached_model(task: &str, environment: &str) -> Option<Arc<Model>> {
 
 async fn register_staged_model(task: &str) -> Option<Arc<Model>> {
     let (directory, model_id) = match task {
-        "text-ranking" => (
-            "clm-v0.1-8b-mixed-generic-cpu-1",
-            "clm-v0.1-8b-mixed-generic-cpu:1",
+        "ranking" => (
+            "clm-v0.1-8b-mixed-generic-cpu-2",
+            "clm-v0.1-8b-mixed-generic-cpu:2",
         ),
-        "typed-decision" => (
-            "kev-0.8b-mixed-generic-cpu-1",
-            "kev-0.8b-mixed-generic-cpu:1",
+        "decision" => (
+            "kev-0.8b-mixed-generic-cpu-2",
+            "kev-0.8b-mixed-generic-cpu:2",
         ),
         _ => return None,
     };
     let root = std::env::var("FOUNDRY_TEST_DATA_DIR").ok()?;
-    let package = Path::new(&root).join("Microsoft").join(directory);
+    let package = Path::new(&root)
+        .join("Microsoft")
+        .join(directory)
+        .join("v2");
     if !package.is_dir() {
         return None;
     }
@@ -115,8 +118,8 @@ async fn unload_after_drain(model: &Model) {
 
 #[tokio::test]
 async fn ranking_session_round_trips_native_openai_json() {
-    let Some(model) = cached_model("text-ranking", "FOUNDRY_TEST_CLM_MODEL").await else {
-        missing_model("text-ranking");
+    let Some(model) = cached_model("ranking", "FOUNDRY_TEST_CLM_MODEL").await else {
+        missing_model("ranking");
         return;
     };
     model.load().await.expect("ranking model.load() failed");
@@ -172,8 +175,8 @@ async fn ranking_session_round_trips_native_openai_json() {
 
 #[tokio::test]
 async fn decision_session_round_trips_native_openai_json() {
-    let Some(model) = cached_model("typed-decision", "FOUNDRY_TEST_KEV_MODEL").await else {
-        missing_model("typed-decision");
+    let Some(model) = cached_model("decision", "FOUNDRY_TEST_KEV_MODEL").await else {
+        missing_model("decision");
         return;
     };
     model.load().await.expect("decision model.load() failed");

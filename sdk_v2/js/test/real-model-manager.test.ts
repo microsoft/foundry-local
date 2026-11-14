@@ -60,8 +60,8 @@ describe("real-model manager fixture", () => {
   });
 
   it.each([
-    ["text-ranking", "clm", "clm-v0.1-8b-mixed-generic-cpu:1"],
-    ["typed-decision", "kev", "kev-0.8b-mixed-generic-cpu:1"],
+    ["ranking", "clm", "clm-v0.1-8b-mixed-generic-cpu:2"],
+    ["decision", "kev", "kev-0.8b-mixed-generic-cpu:2"],
   ])("uses the staged %s package instead of an uncached public model", async (task, namePreference, modelId) => {
     const { setupRealModelManager } = await import("./_fixtures/realModelManager.js");
     const fixture = await setupRealModelManager({ task, namePreference, loadModel: false });
@@ -69,7 +69,7 @@ describe("real-model manager fixture", () => {
     expect(fixture.model).toBe(stagedModel);
     expect(fixture.catalog).toBe(localCatalog);
     expect(localCatalog.registerModel).toHaveBeenCalledWith(
-      expect.stringContaining(modelId.replace(":", "-")),
+      expect.stringContaining(`${modelId.replace(":", "-")}/v2`),
       modelId,
       mocks.metadata,
     );
@@ -83,7 +83,7 @@ describe("real-model manager fixture", () => {
   it("reuses a registered staged package without registering it again", async () => {
     localCatalog.getModelVariant.mockResolvedValue(stagedModel);
     const { setupRealModelManager } = await import("./_fixtures/realModelManager.js");
-    const fixture = await setupRealModelManager({ task: "text-ranking", namePreference: "clm", loadModel: false });
+    const fixture = await setupRealModelManager({ task: "ranking", namePreference: "clm", loadModel: false });
 
     expect(fixture.model).toBe(stagedModel);
     expect(localCatalog.registerModel).not.toHaveBeenCalled();
@@ -94,7 +94,7 @@ describe("real-model manager fixture", () => {
     mocks.existsSync.mockImplementation((path: string) => path === "/model-cache");
     publicModel.isCached = true;
     const { setupRealModelManager } = await import("./_fixtures/realModelManager.js");
-    const fixture = await setupRealModelManager({ task: "text-ranking", namePreference: "clm", loadModel: false });
+    const fixture = await setupRealModelManager({ task: "ranking", namePreference: "clm", loadModel: false });
 
     expect(fixture.model).toBe(publicModel);
     expect(fixture.catalog).toBe(publicCatalog);

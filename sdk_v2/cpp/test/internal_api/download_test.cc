@@ -1324,7 +1324,7 @@ TEST_F(ModelCacheRemovalTest, RetainedHandleRetriesAfterAnotherHandleRemovesAndD
 
 TEST(DownloadManagerTest, RegistryPackagesRequireConfigurationForEverySupportedTask) {
   for (const auto* task : {"chat-completion", "coding", "vision-language-chat",
-                           "automatic-speech-recognition", "embeddings", "text-ranking", "typed-decision"}) {
+                           "automatic-speech-recognition", "embeddings", "ranking", "decision"}) {
     SCOPED_TRACE(task);
     auto cache = TempPath::CreateTempDir();
     auto blobs = std::make_unique<MockBlobDownloader>();
@@ -2140,7 +2140,7 @@ TEST(DownloadManagerTest, RegistryPackageWithoutFilesIsNotMarkedComplete) {
   ModelInfo info;
   info.model_id = "empty-model:1";
   info.name = "empty-model";
-  info.task = "text-ranking";
+  info.task = "ranking";
   info.uri = "azureml://registries/test/models/empty-model/versions/1";
 
   EXPECT_THROW(manager.DownloadModel(info), fl::Exception);

@@ -50,7 +50,7 @@ TEST(NonGenerativeSdkTest, ExportedPackagesRunWhenConfigured) {
 
     foundry_local::ModelInfo clm_metadata;
     clm_metadata.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR,
-                                   "text-ranking");
+                                   "ranking");
     auto clm_model = catalog.RegisterModel(
         clm.string(), "clm-v0.1-8b-generic-cpu:1", clm_metadata);
     clm_model->Load();
@@ -101,7 +101,7 @@ TEST(NonGenerativeSdkTest, ExportedPackagesRunWhenConfigured) {
 
     foundry_local::ModelInfo kev_metadata;
     kev_metadata.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR,
-                                   "typed-decision");
+                                   "decision");
     auto kev_model = catalog.RegisterModel(
         kev.string(), "kev-4b-generic-cpu:1", kev_metadata);
     kev_model->Load();
@@ -149,7 +149,7 @@ TEST(NonGenerativeSdkTest, RequiredKevPackageRunsFromSharedCache) {
       << "FOUNDRY_TEST_DATA_DIR is required for this real-model test";
   const auto package =
       std::filesystem::path(test_data) / "Microsoft" /
-      "kev-0.8b-mixed-generic-cpu-1";
+      "kev-0.8b-mixed-generic-cpu-2" / "v2";
   if (!std::filesystem::is_directory(package)) {
     FAIL() << "required KEV package is missing: " << package;
   }
@@ -167,9 +167,9 @@ TEST(NonGenerativeSdkTest, RequiredKevPackageRunsFromSharedCache) {
     auto& catalog = manager.GetCatalog(FOUNDRY_LOCAL_CATALOG_LOCAL);
     foundry_local::ModelInfo metadata;
     metadata.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR,
-                               "typed-decision");
+                               "decision");
     auto model = catalog.RegisterModel(
-        package.string(), "kev-0.8b-mixed-generic-cpu:1", metadata);
+        package.string(), "kev-0.8b-mixed-generic-cpu:2", metadata);
     model->Load();
     EXPECT_TRUE(model->IsLoaded());
     {
@@ -202,7 +202,7 @@ TEST(NonGenerativeSdkTest, RequiredClmPackageRunsFromSharedCache) {
       << "FOUNDRY_TEST_DATA_DIR is required for this real-model test";
   const auto package =
       std::filesystem::path(test_data) / "Microsoft" /
-      "clm-v0.1-8b-mixed-generic-cpu-1";
+      "clm-v0.1-8b-mixed-generic-cpu-2" / "v2";
   if (!std::filesystem::is_directory(package))
     FAIL() << "required CLM package is missing: " << package;
 
@@ -219,9 +219,9 @@ TEST(NonGenerativeSdkTest, RequiredClmPackageRunsFromSharedCache) {
     auto& catalog = manager.GetCatalog(FOUNDRY_LOCAL_CATALOG_LOCAL);
     foundry_local::ModelInfo metadata;
     metadata.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR,
-                               "text-ranking");
+                               "ranking");
     auto model = catalog.RegisterModel(
-        package.string(), "clm-v0.1-8b-mixed-generic-cpu:1", metadata);
+        package.string(), "clm-v0.1-8b-mixed-generic-cpu:2", metadata);
     model->Load();
     EXPECT_TRUE(model->IsLoaded());
     {

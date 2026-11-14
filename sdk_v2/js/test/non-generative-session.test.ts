@@ -50,8 +50,8 @@ describe.skipIf(!haveNativePrereqs)("non-generative session task validation", ()
   it("rejects models with the wrong task before native construction", async () => {
     if (fixture === undefined) throw new Error("fixture missing");
     const chatModel = await fixture.manager.catalog.getModel("phi-4-mini-instruct");
-    expect(() => new RankingSession(chatModel)).toThrow(/text-ranking.*chat-completion/);
-    expect(() => new DecisionSession(chatModel)).toThrow(/typed-decision.*chat-completion/);
+    expect(() => new RankingSession(chatModel)).toThrow(/ranking.*chat-completion/);
+    expect(() => new DecisionSession(chatModel)).toThrow(/decision.*chat-completion/);
   });
 });
 
@@ -63,7 +63,7 @@ describe.skipIf(!haveTestModelCache)("RankingSession (real model)", () => {
   beforeAll(async () => {
     try {
       fixture = await setupRealModelManager({
-        task: "text-ranking",
+        task: "ranking",
         namePreference: "clm",
         loadModel: false,
       });
@@ -195,7 +195,7 @@ describe.skipIf(!haveTestModelCache)("DecisionSession (real model)", () => {
   beforeAll(async () => {
     try {
       fixture = await setupRealModelManager({
-        task: "typed-decision",
+        task: "decision",
         namePreference: "kev",
         loadModel: false,
       });

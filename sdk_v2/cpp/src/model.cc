@@ -812,7 +812,7 @@ void Model::Load(ExecutionProvider ep, std::optional<std::string_view> expected_
   // in the load manager's map, so no need for a local short-circuit.
   const auto path = LocalPathSnapshot();
   RequireSelectedArtifact(path, expected_path);
-  if (info.task == "text-ranking" || info.task == "typed-decision") {
+  if (info.task == "ranking" || info.task == "decision") {
     model_load_manager_->AcquireNonGenerativeRuntime(
         *this, [&] { lifecycle_lock.unlock(); });
     return;
@@ -833,7 +833,7 @@ void Model::Unload() {
   }
 
   std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
-  if (Info().task == "text-ranking" || Info().task == "typed-decision") {
+  if (Info().task == "ranking" || Info().task == "decision") {
     model_load_manager_->UnloadNonGenerativeRuntime(*this);
     return;
   }
@@ -1097,7 +1097,7 @@ Model::IOInfo Model::GetInputOutputInfo() const {
     return IOInfoFromCache(AutomaticSpeechRecognitionIO());
   }
 
-  if (task == "text-ranking" || task == "typed-decision") {
+  if (task == "ranking" || task == "decision") {
     return IOInfoFromCache(NonGenerativeIO());
   }
 

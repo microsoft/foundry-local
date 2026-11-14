@@ -97,7 +97,7 @@ std::unique_ptr<Session> Session::Create(const fl::Model& model) {
 
     const auto& info = model.Info();
     const bool non_generative =
-        info.task == "text-ranking" || info.task == "typed-decision";
+        info.task == "ranking" || info.task == "decision";
     if (!model.IsLoaded()) {
       FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model must be loaded before creating a session");
     }

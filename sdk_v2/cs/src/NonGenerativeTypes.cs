@@ -108,7 +108,7 @@ public sealed record DecisionRequest
     public float? Temperature { get; init; }
 }
 
-/// <summary>A single typed-decision answer.</summary>
+/// <summary>A single decision answer.</summary>
 public sealed record DecisionAnswer
 {
     [JsonPropertyName("type")]
@@ -133,7 +133,7 @@ public sealed record DecisionAnswer
     public IReadOnlyDictionary<string, string>? Legend { get; init; }
 }
 
-/// <summary>Usage information returned by a typed-decision model.</summary>
+/// <summary>Usage information returned by a decision model.</summary>
 public sealed record DecisionUsage
 {
     [JsonPropertyName("billing_units")]

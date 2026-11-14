@@ -442,8 +442,8 @@ model.unload()
 
 ### Ranking and typed decisions
 
-`RankingSession` requires a loaded `text-ranking` model and `DecisionSession`
-requires a loaded `typed-decision` model. Their task payloads match
+`RankingSession` requires a loaded `ranking` model and `DecisionSession`
+requires a loaded `decision` model. Their task payloads match
 `POST /catalogs/local/v1/rank` and
 `POST /catalogs/local/v1/systemone`. Both models must be registered in the
 local catalog, cached, and explicitly loaded before session creation. Reuse
