@@ -149,7 +149,7 @@ TEST(NonGenerativeSdkTest, RequiredKevPackageRunsFromSharedCache) {
       << "FOUNDRY_TEST_DATA_DIR is required for this real-model test";
   const auto package =
       std::filesystem::path(test_data) / "Microsoft" /
-      "kev-0.8b-mixed-generic-cpu-2";
+      "kev-0.8b-mixed-generic-cpu-2" / "v2";
   if (!std::filesystem::is_directory(package)) {
     FAIL() << "required KEV package is missing: " << package;
   }
@@ -202,7 +202,7 @@ TEST(NonGenerativeSdkTest, RequiredClmPackageRunsFromSharedCache) {
       << "FOUNDRY_TEST_DATA_DIR is required for this real-model test";
   const auto package =
       std::filesystem::path(test_data) / "Microsoft" /
-      "clm-v0.1-8b-mixed-generic-cpu-2";
+      "clm-v0.1-8b-mixed-generic-cpu-2" / "v2";
   if (!std::filesystem::is_directory(package))
     FAIL() << "required CLM package is missing: " << package;
 

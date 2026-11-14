@@ -245,7 +245,7 @@ def _register_staged_model(catalog, directory: str, model_id: str, task: str):
     if not FOUNDRY_TEST_DATA_DIR:
         return None
 
-    package = Path(FOUNDRY_TEST_DATA_DIR) / "Microsoft" / directory
+    package = Path(FOUNDRY_TEST_DATA_DIR) / "Microsoft" / directory / "v2"
     if not package.is_dir():
         return None
 

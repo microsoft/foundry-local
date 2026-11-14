@@ -122,7 +122,7 @@ internal sealed class NonGenerativeIntegrationTests
         var testDataRoot = Environment.GetEnvironmentVariable("FOUNDRY_TEST_DATA_DIR");
         if (directory != null && task != null && !string.IsNullOrEmpty(testDataRoot))
         {
-            var packagePath = Path.Combine(testDataRoot, "Microsoft", directory);
+            var packagePath = Path.Combine(testDataRoot, "Microsoft", directory, "v2");
             if (Directory.Exists(packagePath))
             {
                 var metadata = new ModelInfoBuilder()

@@ -58,7 +58,10 @@ async fn register_staged_model(task: &str) -> Option<Arc<Model>> {
         _ => return None,
     };
     let root = std::env::var("FOUNDRY_TEST_DATA_DIR").ok()?;
-    let package = Path::new(&root).join("Microsoft").join(directory);
+    let package = Path::new(&root)
+        .join("Microsoft")
+        .join(directory)
+        .join("v2");
     if !package.is_dir() {
         return None;
     }

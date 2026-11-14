@@ -69,7 +69,7 @@ describe("real-model manager fixture", () => {
     expect(fixture.model).toBe(stagedModel);
     expect(fixture.catalog).toBe(localCatalog);
     expect(localCatalog.registerModel).toHaveBeenCalledWith(
-      expect.stringContaining(modelId.replace(":", "-")),
+      expect.stringContaining(`${modelId.replace(":", "-")}/v2`),
       modelId,
       mocks.metadata,
     );

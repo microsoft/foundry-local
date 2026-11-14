@@ -175,7 +175,7 @@ async function registerStagedNonGenerativeModel(
         : undefined;
   if (packageInfo === undefined) return undefined;
 
-  const packagePath = join(envCache, "Microsoft", packageInfo.directory);
+  const packagePath = join(envCache, "Microsoft", packageInfo.directory, "v2");
   if (!existsSync(packagePath) || !statSync(packagePath).isDirectory()) return undefined;
 
   const localCatalog = manager.getCatalog(CatalogType.Local);
