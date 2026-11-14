@@ -766,6 +766,63 @@ TEST_F(AzureModelCatalogTest, GenericGpuCapacityChecksEachEligibleProvider) {
   EXPECT_NE(catalog->GetModel("model"), nullptr);
 }
 
+TEST_F(AzureModelCatalogTest, MultimodalGenericGpuCapacityUsesDefaultWebGpuRoute) {
+  const std::string url = "https://catalog.test";
+  auto gpu = MakeModelInfo("model-generic-gpu:1", "model-generic-gpu", 1, "model", "Azure");
+  gpu.device_type = DeviceType::kGPU;
+  gpu.execution_provider = "WebGpuExecutionProvider";
+  gpu.int_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_VRAM_BYTES_INT] = 16;
+  gpu.string_properties[FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR] = " text, IMAGE ";
+  auto cpu = MakeModelInfo("model-cpu:1", "model-cpu", 1, "model", "Azure");
+  cpu.device_type = DeviceType::kCPU;
+  cpu.execution_provider = "CPUExecutionProvider";
+  AddBehavior(url)->all_models = {gpu, cpu};
+  CountingCatalogEpDetector detector;
+  detector.devices["GPU"] = {"CUDAExecutionProvider", "WebGpuExecutionProvider"};
+  detector.capacities["CUDAExecutionProvider"] = {{24}};
+  detector.capacities["WebGpuExecutionProvider"] = {{8}};
+  auto catalog = CreateCatalog({{url, std::nullopt}}, false, &detector);
+  auto* alias = catalog->GetModel("model");
+  ASSERT_NE(alias, nullptr);
+  EXPECT_EQ(alias->Id(), cpu.model_id);
+  EXPECT_EQ(alias->Variants().size(), 1u);
+
+  detector.capacities["WebGpuExecutionProvider"] = {{16}};
+  catalog->InvalidateCache();
+  EXPECT_EQ(catalog->GetModel("model"), alias);
+  EXPECT_EQ(alias->Id(), gpu.model_id);
+  EXPECT_EQ(alias->Variants().size(), 2u);
+
+  detector.devices["GPU"] = {"CUDAExecutionProvider"};
+  detector.capacities.erase("WebGpuExecutionProvider");
+  catalog->InvalidateCache();
+  EXPECT_EQ(catalog->GetModel("model"), alias);
+  EXPECT_EQ(alias->Id(), cpu.model_id);
+}
+
+TEST_F(AzureModelCatalogTest, CachedGenericGpuUsesMultimodalConfigWithoutCatalogModalities) {
+  const std::string url = "https://catalog.test";
+  auto gpu = MakeModelInfo("model-generic-gpu:1", "model-generic-gpu", 1, "model", "Azure");
+  gpu.device_type = DeviceType::kGPU;
+  gpu.execution_provider = "WebGpuExecutionProvider";
+  gpu.int_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_VRAM_BYTES_INT] = 16;
+  const auto path = AddLocalModel(gpu.model_id, "model-generic-gpu-1");
+  std::ofstream(path / "genai_config.json") << R"({
+    "model": {
+      "type": "phi3v",
+      "decoder": {"session_options": {"provider_options": [{"webgpu": {}}]}}
+    }
+  })";
+  AddBehavior(url)->all_models = {gpu};
+  CountingCatalogEpDetector detector;
+  detector.devices["GPU"] = {"CUDAExecutionProvider", "WebGpuExecutionProvider"};
+  detector.capacities["CUDAExecutionProvider"] = {{24}};
+  detector.capacities["WebGpuExecutionProvider"] = {{8}};
+  auto catalog = CreateCatalog({{url, std::nullopt}}, false, &detector);
+  EXPECT_EQ(catalog->GetModel("model"), nullptr);
+  EXPECT_NE(catalog->GetModelVariant(gpu.model_id), nullptr);
+}
+
 TEST_F(AzureModelCatalogTest, HostedCapacityUsesOnlyHostTargetsAndNamesOnlyHostRemainsUnknown) {
   const std::string url = "https://catalog.test";
   auto gpu = MakeModelInfo("model-cuda-gpu:1", "model-cuda-gpu", 1, "model", "Azure");

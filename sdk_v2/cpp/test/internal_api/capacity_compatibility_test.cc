@@ -52,3 +52,15 @@ TEST(CapacityCompatibilityTest, GenericGpuEvaluatesProvidersTogetherAndPrefersKn
   EXPECT_EQ(result.eligible_targets.front().provider, "WebGpuExecutionProvider");
   EXPECT_EQ(EvaluateProviderCapacity(true, {16}, targets, "cuda").state, CompatibilityState::kDoesNotFit);
 }
+
+TEST(CapacityCompatibilityTest, MultimodalGenericGpuDoesNotUseCudaCapacityForDefaultWebGpuRoute) {
+  const std::array<ExecutionTarget, 2> targets{{
+      {"CUDAExecutionProvider", 0, "GPU", {24}},
+      {"WebGpuExecutionProvider", 1, "GPU", {8}},
+  }};
+  EXPECT_EQ(EvaluateProviderCapacity(true, {16}, targets, "webgpu", true, true).state,
+            CompatibilityState::kDoesNotFit);
+  EXPECT_EQ(EvaluateProviderCapacity(true, {16}, targets, "cuda").state, CompatibilityState::kFits);
+  const auto fallback = EvaluateProviderCapacity(true, {16}, std::span(targets).first(1), "cuda", true, true);
+  EXPECT_EQ(fallback.state, CompatibilityState::kFits);
+}

@@ -584,8 +584,8 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
     if (requirements.minimum_vram_bytes) {
       const auto targets = ep_detector_.GetExecutionTargets();
       const bool generic_gpu = ep_override == ExecutionProvider::kDefault &&
-                               id_str.find("generic-gpu") != std::string::npos && !is_multimodal;
-      const auto result = EvaluateProviderCapacity(true, requirements, targets, required_ep, generic_gpu);
+                               id_str.find("generic-gpu") != std::string::npos;
+      const auto result = EvaluateProviderCapacity(true, requirements, targets, required_ep, generic_gpu, is_multimodal);
       if (result.state == CompatibilityState::kDoesNotFit) {
         FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
                  "no execution target has sufficient total GPU memory for model: ", id_str);

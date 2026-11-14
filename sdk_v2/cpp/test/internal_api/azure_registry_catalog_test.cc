@@ -1307,6 +1307,43 @@ TEST_F(AzureRegistryCatalogTest, ListingCapacityChangesHideGpuWithoutReplacingRe
   EXPECT_EQ(VariantIds({group}), (std::set<std::string>{kCpuName + ":2", gpu_info.model_id}));
 }
 
+TEST_F(AzureRegistryCatalogTest, MultimodalGenericGpuCapacityDoesNotSelectFittingCudaInsteadOfWebGpu) {
+  auto gpu_info = CachedInfo(2);
+  gpu_info.name = "tiny-generic-gpu";
+  gpu_info.model_id = "tiny-generic-gpu:2";
+  gpu_info.device_type = DeviceType::kGPU;
+  gpu_info.execution_provider = "WebGpuExecutionProvider";
+  gpu_info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_VRAM_BYTES_INT] = 16;
+  gpu_info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR] = "text,image";
+  Snapshot({CachedInfo(2), gpu_info});
+  Package(2);
+  const auto gpu_path = CachePath() / "tiny-generic-gpu-2";
+  std::filesystem::create_directories(gpu_path);
+  std::ofstream(gpu_path / "genai_config.json") << R"({
+    "model": {
+      "type": "phi3v",
+      "decoder": {"session_options": {"provider_options": [{"webgpu": {}}]}}
+    }
+  })";
+  std::ofstream(gpu_path / "inference_model.json") << "{}";
+  config_.additional_options["AzureRegistryModelCacheOnly"] = "true";
+  auto catalog = Catalog(false);
+  const auto set_capacity = [&](uint64_t webgpu_bytes) {
+    catalog->SetRuntimeDevices(
+        {{"CPU", {"CPUExecutionProvider"}}, {"GPU", {"CUDAExecutionProvider", "WebGpuExecutionProvider"}}},
+        {{"CUDAExecutionProvider", 0, "GPU", {24}}, {"WebGpuExecutionProvider", 0, "GPU", {webgpu_bytes}}});
+  };
+  set_capacity(8);
+  auto* alias = catalog->GetModel("tiny");
+  ASSERT_NE(alias, nullptr);
+  EXPECT_EQ(alias->Id(), kCpuName + ":2");
+  EXPECT_EQ(alias->Variants().size(), 1u);
+  set_capacity(16);
+  EXPECT_EQ(catalog->GetModel("tiny"), alias);
+  EXPECT_EQ(alias->Id(), gpu_info.model_id);
+  EXPECT_EQ(alias->Variants().size(), 2u);
+}
+
 TEST_F(AzureRegistryCatalogTest, LiveInventorySavesRetainCompletedLocalPackagesForDeletedRemoteVersions) {
   std::filesystem::create_directories(CachePath());
   const auto package_path = CachePath() / (kCpuName + "-2");

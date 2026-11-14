@@ -2,11 +2,13 @@
 
 #include "ep_detection/execution_target.h"
 #include "inferencing/execution_provider.h"
+#include "model_info.h"
 #include "utils.h"
 
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <sstream>
 #include <vector>
 
 namespace fl {
@@ -23,6 +25,23 @@ struct CompatibilityResult {
   CompatibilityReason reason;
   std::vector<ExecutionTarget> eligible_targets;
 };
+
+inline bool HasNonTextModalities(const ModelInfo& info) {
+  for (const auto* key : {FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR}) {
+    if (const auto* value = info.GetPropertyStr(key)) {
+      std::istringstream modalities(*value);
+      std::string modality;
+      while (std::getline(modalities, modality, ',')) {
+        modality = ToLower(Trim(modality));
+        if (!modality.empty() && modality != "text") {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
 
 inline CompatibilityResult EvaluateCapacity(bool is_gpu, const ModelCapacityRequirements& requirements,
                                             std::span<const ExecutionTarget> targets) {
@@ -58,8 +77,9 @@ inline CompatibilityResult EvaluateCapacity(bool is_gpu, const ModelCapacityRequ
 }
 
 inline CompatibilityResult EvaluateProviderCapacity(bool is_gpu, const ModelCapacityRequirements& requirements,
-                                                     std::span<const ExecutionTarget> targets,
-                                                     std::string_view required_provider, bool generic_gpu = false) {
+                                                    std::span<const ExecutionTarget> targets,
+                                                    std::string_view required_provider, bool generic_gpu = false,
+                                                    bool is_multimodal = false) {
   const auto normalize = [](std::string_view provider) {
     return ToLower(EPUtils::NormalizeRegistrationName(std::string(provider)));
   };
@@ -72,7 +92,9 @@ inline CompatibilityResult EvaluateProviderCapacity(bool is_gpu, const ModelCapa
     }
   };
   if (generic_gpu) {
-    append_provider("CUDAExecutionProvider");
+    if (!is_multimodal) {
+      append_provider("CUDAExecutionProvider");
+    }
     append_provider("WebGpuExecutionProvider");
   }
   if (candidates.empty()) {
