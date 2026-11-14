@@ -17,7 +17,7 @@ internal sealed class NonGenerativeIntegrationTests
     [Test]
     public async Task RankingModel_ExplicitLifecycleRoundTrips()
     {
-        var model = await GetRequiredModelAsync("clm-v0.1-8b-mixed-generic-cpu:1");
+        var model = await GetRequiredModelAsync("clm-v0.1-8b-mixed-generic-cpu:2");
         await model.LoadAsync();
         await Assert.That(await model.IsLoadedAsync()).IsTrue();
         try
@@ -50,7 +50,7 @@ internal sealed class NonGenerativeIntegrationTests
     [Test]
     public async Task DecisionModel_ExplicitLifecycleRoundTrips()
     {
-        var model = await GetRequiredModelAsync("kev-0.8b-mixed-generic-cpu:1");
+        var model = await GetRequiredModelAsync("kev-0.8b-mixed-generic-cpu:2");
         await model.LoadAsync();
         await Assert.That(await model.IsLoadedAsync()).IsTrue();
         try
@@ -113,10 +113,10 @@ internal sealed class NonGenerativeIntegrationTests
 
         var (directory, task) = modelId switch
         {
-            "clm-v0.1-8b-mixed-generic-cpu:1" =>
-                ("clm-v0.1-8b-mixed-generic-cpu-1", "ranking"),
-            "kev-0.8b-mixed-generic-cpu:1" =>
-                ("kev-0.8b-mixed-generic-cpu-1", "decision"),
+            "clm-v0.1-8b-mixed-generic-cpu:2" =>
+                ("clm-v0.1-8b-mixed-generic-cpu-2", "ranking"),
+            "kev-0.8b-mixed-generic-cpu:2" =>
+                ("kev-0.8b-mixed-generic-cpu-2", "decision"),
             _ => (null, null),
         };
         var testDataRoot = Environment.GetEnvironmentVariable("FOUNDRY_TEST_DATA_DIR");

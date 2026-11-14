@@ -149,7 +149,7 @@ TEST(NonGenerativeSdkTest, RequiredKevPackageRunsFromSharedCache) {
       << "FOUNDRY_TEST_DATA_DIR is required for this real-model test";
   const auto package =
       std::filesystem::path(test_data) / "Microsoft" /
-      "kev-0.8b-mixed-generic-cpu-1";
+      "kev-0.8b-mixed-generic-cpu-2";
   if (!std::filesystem::is_directory(package)) {
     FAIL() << "required KEV package is missing: " << package;
   }
@@ -169,7 +169,7 @@ TEST(NonGenerativeSdkTest, RequiredKevPackageRunsFromSharedCache) {
     metadata.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR,
                                "decision");
     auto model = catalog.RegisterModel(
-        package.string(), "kev-0.8b-mixed-generic-cpu:1", metadata);
+        package.string(), "kev-0.8b-mixed-generic-cpu:2", metadata);
     model->Load();
     EXPECT_TRUE(model->IsLoaded());
     {
@@ -202,7 +202,7 @@ TEST(NonGenerativeSdkTest, RequiredClmPackageRunsFromSharedCache) {
       << "FOUNDRY_TEST_DATA_DIR is required for this real-model test";
   const auto package =
       std::filesystem::path(test_data) / "Microsoft" /
-      "clm-v0.1-8b-mixed-generic-cpu-1";
+      "clm-v0.1-8b-mixed-generic-cpu-2";
   if (!std::filesystem::is_directory(package))
     FAIL() << "required CLM package is missing: " << package;
 
@@ -221,7 +221,7 @@ TEST(NonGenerativeSdkTest, RequiredClmPackageRunsFromSharedCache) {
     metadata.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR,
                                "ranking");
     auto model = catalog.RegisterModel(
-        package.string(), "clm-v0.1-8b-mixed-generic-cpu:1", metadata);
+        package.string(), "clm-v0.1-8b-mixed-generic-cpu:2", metadata);
     model->Load();
     EXPECT_TRUE(model->IsLoaded());
     {

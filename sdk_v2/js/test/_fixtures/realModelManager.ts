@@ -164,13 +164,13 @@ async function registerStagedNonGenerativeModel(
   const packageInfo =
     task === "ranking"
       ? {
-          directory: "clm-v0.1-8b-mixed-generic-cpu-1",
-          modelId: "clm-v0.1-8b-mixed-generic-cpu:1",
+          directory: "clm-v0.1-8b-mixed-generic-cpu-2",
+          modelId: "clm-v0.1-8b-mixed-generic-cpu:2",
         }
       : task === "decision"
         ? {
-            directory: "kev-0.8b-mixed-generic-cpu-1",
-            modelId: "kev-0.8b-mixed-generic-cpu:1",
+            directory: "kev-0.8b-mixed-generic-cpu-2",
+            modelId: "kev-0.8b-mixed-generic-cpu:2",
           }
         : undefined;
   if (packageInfo === undefined) return undefined;
