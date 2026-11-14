@@ -318,8 +318,7 @@ pub fn generate_restore_project(packages: &[(&str, &str)]) -> String {
     format!(
         "<Project Sdk=\"Microsoft.NET.Sdk\">\n\
          \x20 <PropertyGroup>\n\
-         \x20   <TargetFramework>net10.0</TargetFramework>\n\
-         \x20   <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>\n\
+         \x20   <TargetFramework>net8.0</TargetFramework>\n\
          \x20   <EnableDefaultCompileItems>false</EnableDefaultCompileItems>\n\
          \x20   <IsPackable>false</IsPackable>\n\
          \x20 </PropertyGroup>\n\

@@ -336,9 +336,7 @@ fn generated_restore_project_pins_exact_versions_and_escapes_xml() {
     ]);
     assert!(project.contains(r#"Include="Package.One" Version="[1.2.3]""#));
     assert!(project.contains(r#"Include="Package&lt;&amp;Two" Version="[4.5.6]""#));
-    assert!(project.contains("<TargetFramework>net10.0</TargetFramework>"));
-    assert!(project
-        .contains("<DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>"));
+    assert!(project.contains("<TargetFramework>net8.0</TargetFramework>"));
 }
 
 #[test]

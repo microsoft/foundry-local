@@ -22,8 +22,6 @@ For the v2 inference concepts and typed, stateful session examples, see
 
 ## Installation
 
-The C# SDK requires .NET 10.0 or later; .NET 8, .NET 9, and .NET Framework are no longer supported.
-
 ```bash
 dotnet add package Microsoft.AI.Foundry.Local
 ```

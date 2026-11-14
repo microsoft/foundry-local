@@ -347,9 +347,7 @@ function generateRestoreProjectXml(artifacts) {
     .join("\n");
   return `<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
-    <!-- Only package files are needed, so omit the implicit framework reference. -->
-    <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
+    <TargetFramework>net8.0</TargetFramework>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
@@ -420,7 +418,7 @@ function runDotnetMode(config, artifacts, binDir, platform) {
       if (result.error.code === "ENOENT") {
         const cmd = config.dotnetCommand;
         throw new Error(
-          `dotnet command not found: '${cmd}'. Install the .NET SDK 10.0 or later or set FOUNDRY_LOCAL_DOTNET_COMMAND.`,
+          `dotnet command not found: '${cmd}'. Install the .NET SDK or set FOUNDRY_LOCAL_DOTNET_COMMAND.`,
         );
       }
       throw result.error;
@@ -630,7 +628,6 @@ module.exports = {
   nativeEntriesForRid,
   runHttpMode,
   // dotnet mode
-  runDotnetMode,
   generateRestoreProjectXml,
   buildDotnetRestoreArgs,
   findRestoredPackageDir,
