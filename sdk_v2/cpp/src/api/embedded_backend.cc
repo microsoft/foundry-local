@@ -268,8 +268,12 @@ class EmbeddedManager final : public ManagerBackend {
     return owner_.manager.GetEpDetector().GetAvailableDevicesToEPs();
   }
 
-  void SetCatalogRuntimeDevices(DeviceProviders devices) override {
-    owner_.manager.SetCatalogRuntimeDevices(std::move(devices));
+  RuntimeDeviceSnapshot GetRuntimeDeviceSnapshot() const override {
+    return {GetRuntimeDevices(), owner_.manager.GetEpDetector().GetExecutionTargets()};
+  }
+
+  void SetCatalogRuntimeDevices(DeviceProviders devices, std::vector<ExecutionTarget> execution_targets) override {
+    owner_.manager.SetCatalogRuntimeDevices(std::move(devices), std::move(execution_targets));
   }
 
   EpDownloadResult DownloadAndRegisterEps(const std::vector<std::string>* names,

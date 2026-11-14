@@ -617,19 +617,21 @@ ICatalog& Manager::GetCatalog(CatalogType type, const KeyValuePairs& options) {
         *logger_, *telemetry_, nullptr, settings.Find("credential"),
         IsAdditionalOptionEnabled(config_, "AzureRegistryModelCacheOnly"));
     if (catalog_runtime_devices_) {
-      static_cast<RemoteModelCatalog&>(*catalog).SetRuntimeDevices(*catalog_runtime_devices_);
+      static_cast<RemoteModelCatalog&>(*catalog).SetRuntimeDevices(*catalog_runtime_devices_, catalog_execution_targets_);
     }
   }
   return *catalog;
 }
 
-void Manager::SetCatalogRuntimeDevices(std::map<std::string, std::vector<std::string>> devices) {
+void Manager::SetCatalogRuntimeDevices(std::map<std::string, std::vector<std::string>> devices,
+                                      std::vector<ExecutionTarget> execution_targets) {
   std::lock_guard lock(azure_registry_catalogs_mutex_);
-  static_cast<RemoteModelCatalog&>(*public_catalog_).SetRuntimeDevices(devices);
+  static_cast<RemoteModelCatalog&>(*public_catalog_).SetRuntimeDevices(devices, execution_targets);
   for (auto& [registry, catalog] : azure_registry_catalogs_) {
-    static_cast<RemoteModelCatalog&>(*catalog).SetRuntimeDevices(devices);
+    static_cast<RemoteModelCatalog&>(*catalog).SetRuntimeDevices(devices, execution_targets);
   }
   catalog_runtime_devices_ = std::move(devices);
+  catalog_execution_targets_ = std::move(execution_targets);
 }
 
 void Manager::StartWebService() {

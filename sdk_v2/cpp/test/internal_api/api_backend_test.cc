@@ -159,7 +159,7 @@ class RecordingManager final : public fl::api::ManagerBackend {
   void StopWebService() override {}
   std::span<const flEpInfo> GetDiscoverableEps() const override { return {}; }
   fl::api::DeviceProviders GetRuntimeDevices() const override { return {}; }
-  void SetCatalogRuntimeDevices(fl::api::DeviceProviders) override {}
+  void SetCatalogRuntimeDevices(fl::api::DeviceProviders, std::vector<fl::ExecutionTarget>) override {}
   fl::EpDownloadResult DownloadAndRegisterEps(const std::vector<std::string>*,
                                               const fl::api::EpProgressCallback&) override {
     return {};

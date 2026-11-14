@@ -171,6 +171,7 @@ Model::Model(Model&& other) noexcept
       model_load_manager_(other.model_load_manager_),
       variants_(std::move(other.variants_)),
       retired_variants_(std::move(other.retired_variants_)),
+      catalog_visible_(other.catalog_visible_.load()),
       selected_variant_(other.selected_variant_.load(std::memory_order_relaxed)),
       selection_is_explicit_(other.selection_is_explicit_),
       has_eligible_default_variant_(other.has_eligible_default_variant_),
@@ -195,6 +196,7 @@ Model& Model::operator=(Model&& other) noexcept {
     model_load_manager_ = other.model_load_manager_;
     variants_ = std::move(other.variants_);
     retired_variants_ = std::move(other.retired_variants_);
+    catalog_visible_.store(other.catalog_visible_.load());
     selected_variant_.store(other.selected_variant_.load(std::memory_order_relaxed), std::memory_order_relaxed);
     selection_is_explicit_ = other.selection_is_explicit_;
     has_eligible_default_variant_ = other.has_eligible_default_variant_;
@@ -517,13 +519,23 @@ const ModelInfo& Model::Info() const {
   return *info_;
 }
 
-std::vector<Model*> Model::Variants() const {
+void Model::UpdateVariantVisibility(const std::function<bool(const Model&)>& is_visible) {
+  std::lock_guard lock(state_mutex_);
+  for (auto& variant : variants_) {
+    variant->catalog_visible_.store(!is_visible || is_visible(*variant));
+  }
+}
+
+std::vector<Model*> Model::Variants(bool include_hidden) const {
   std::lock_guard<std::mutex> lock(state_mutex_);
 
   std::vector<Model*> result;
   if (IsContainer()) {
     result.reserve(variants_.size());
     for (auto& v : variants_) {
+      if (!include_hidden && !v->catalog_visible_.load()) {
+        continue;
+      }
       // const_cast: the *set* of variants is fixed (this method is const), but each
       // variant is independently mutable. See header.
       result.push_back(const_cast<Model*>(v.get()));
@@ -817,7 +829,7 @@ void Model::Load(ExecutionProvider ep, std::optional<std::string_view> expected_
         *this, [&] { lifecycle_lock.unlock(); });
     return;
   }
-  auto result = model_load_manager_->LoadModel(path, Info().model_id, ep);
+  auto result = model_load_manager_->LoadModel(path, info.model_id, ep, &info);
 
   if (result.status == ModelLoadManager::LoadStatus::kModelNotFound) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model not found at path: " + path);

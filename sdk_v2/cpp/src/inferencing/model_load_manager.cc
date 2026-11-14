@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "inferencing/model_load_manager.h"
+#include "catalog/capacity_compatibility.h"
 #include "inferencing/predictive/non_generative_runtime.h"
 #include "model.h"
 
@@ -504,7 +505,8 @@ bool ModelLoadManager::UnloadModelArtifact(
 
 ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_path,
                                                          std::string_view model_id,
-                                                         ExecutionProvider ep_override) {
+                                                         ExecutionProvider ep_override,
+                                                         const ModelInfo* model_info) {
   if (shutdown_.load()) {
     FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
                      "cannot load model during shutdown");
@@ -538,6 +540,7 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
   }
 
   auto genai_config = GenAIConfig::LoadFromFile(config_path);
+  const bool is_multimodal = genai_config.model && genai_config.model->IsMultiModal();
 
   // Determine execution provider
   auto resolved_ep = ep_override;
@@ -550,7 +553,6 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
     // OGA overrides only the decoder provider, so avoid promoting multimodal models to CUDA while component sessions
     // remain configured for another device. Text-only models retain the CUDA preference.
     if (id_str.find("generic-gpu") != std::string::npos) {
-      const bool is_multimodal = genai_config.model && genai_config.model->IsMultiModal();
       if (!is_multimodal && HasEP("CUDAExecutionProvider")) {
         resolved_ep = ExecutionProvider::kCUDA;
         logger_.Log(LogLevel::Information, fmt::format("using CUDA EP for model: {}", id_str));
@@ -572,6 +574,35 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
                                           : EPUtils::RequiredEpForConfigProvider(config_provider);
   }
 
+  std::optional<ExecutionTarget> selected_target;
+  if (model_info && model_info->device_type == DeviceType::kGPU && resolved_ep != ExecutionProvider::kCPU) {
+    ModelCapacityRequirements requirements;
+    if (const auto* bytes = model_info->GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_MIN_VRAM_BYTES_INT);
+        bytes && *bytes >= 0) {
+      requirements.minimum_vram_bytes = static_cast<uint64_t>(*bytes);
+    }
+    if (requirements.minimum_vram_bytes) {
+      const auto targets = ep_detector_.GetExecutionTargets();
+      const bool generic_gpu = ep_override == ExecutionProvider::kDefault &&
+                               id_str.find("generic-gpu") != std::string::npos;
+      const auto result = EvaluateProviderCapacity(true, requirements, targets, required_ep, generic_gpu, is_multimodal);
+      if (result.state == CompatibilityState::kDoesNotFit) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                 "no execution target has sufficient total GPU memory for model: ", id_str);
+      }
+      if (!result.eligible_targets.empty()) {
+        selected_target = result.eligible_targets.front();
+        required_ep = EPUtils::NormalizeRegistrationName(selected_target->provider);
+        if (generic_gpu) {
+          resolved_ep = EPUtils::StringtoEP(required_ep);
+        }
+        logger_.Log(LogLevel::Information,
+                    fmt::format("model {} selected target {} hardware_id={} options={}", id_str, required_ep,
+                                selected_target->device_id, nlohmann::json(selected_target->options).dump()));
+      }
+    }
+  }
+
   // OGA can crash or hang if a model is loaded with an unregistered EP.
   PrepareProviderForModelLoad(required_ep, id_str);
 
@@ -580,7 +611,8 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
                                                                            path_str,
                                                                            std::move(genai_config),
                                                                            resolved_ep,
-                                                                           logger_));
+                                                                           logger_,
+                                                                           selected_target));
 
   auto* raw_ptr = loaded.get();
   loaded_runtimes_[runtime_key] =

@@ -281,6 +281,7 @@ typedef enum flTensorDataType {
 #define FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT "supports_tool_calling"          ///< optional bool (not set or -1=unknown, 0=false, 1=true)
 #define FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT "supports_reasoning"                ///< optional bool (not set or -1=unknown, 0=false, 1=true)
 #define FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT "filesize_mb"                              ///< optional int32_t
+#define FOUNDRY_LOCAL_MODEL_PROP_MIN_VRAM_BYTES_INT "min_vram_bytes"                        ///< optional int64_t
 #define FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT "max_output_tokens"                  ///< optional int32_t
 #define FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT "created_at_unix"                      ///< Unix timestamp. default=0
 #define FOUNDRY_LOCAL_MODEL_PROP_IS_TEST_MODEL_INT "is_test_model"                          ///< bool (0=false, 1=true)

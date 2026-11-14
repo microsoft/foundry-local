@@ -83,7 +83,7 @@ describe.skipIf(!haveTestModelCache)("ChatClient (real model, V1 OpenAI-JSON pas
             (error: unknown) => {
               expect(error).toMatchObject({ name: "AbortError" });
             },
-          );
+              );
       } finally {
         if (timer !== undefined) clearTimeout(timer);
       }

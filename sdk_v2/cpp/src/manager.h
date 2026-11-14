@@ -63,7 +63,8 @@ class Manager {
   ICatalog& GetCatalog();
   ICatalog& GetCatalog(CatalogType type);
   ICatalog& GetCatalog(CatalogType type, const KeyValuePairs& options);
-  void SetCatalogRuntimeDevices(std::map<std::string, std::vector<std::string>> devices);
+  void SetCatalogRuntimeDevices(std::map<std::string, std::vector<std::string>> devices,
+                                std::vector<ExecutionTarget> execution_targets = {});
 
   /// Get the configuration used to create this manager.
   const Configuration& GetConfiguration() const;
@@ -160,6 +161,7 @@ class Manager {
   std::map<std::map<std::string, std::string>, std::unique_ptr<ICatalog>> azure_registry_catalogs_;
   std::mutex azure_registry_catalogs_mutex_;
   std::optional<std::map<std::string, std::vector<std::string>>> catalog_runtime_devices_;
+  std::vector<ExecutionTarget> catalog_execution_targets_;
   std::unique_ptr<DownloadManager> download_manager_;
   std::unique_ptr<ModelLoadManager> model_load_manager_;
   std::unique_ptr<SessionManager> session_manager_;

@@ -17,7 +17,8 @@ class RemoteModelCatalog : public BaseModelCatalog {
   using ModelFactory = std::function<Model(ModelInfo, std::string)>;
 
   ~RemoteModelCatalog() override;
-  void SetRuntimeDevices(std::map<std::string, std::vector<std::string>> devices);
+  void SetRuntimeDevices(std::map<std::string, std::vector<std::string>> devices,
+                         std::vector<ExecutionTarget> execution_targets = {});
 
  protected:
   enum class Query { Listing, Lookup, Exact, History };
@@ -31,6 +32,7 @@ class RemoteModelCatalog : public BaseModelCatalog {
   std::vector<Model> FetchModelVersions(const std::string& alias, const std::string& name,
                                        int max_versions) const final;
   VariantEligibility MakeVariantEligibility() const final;
+  VariantEligibility MakeVariantVisibility() const final;
 
   virtual std::vector<ModelInfo> FetchModelInfos() const = 0;
   virtual std::optional<std::vector<ModelInfo>> FetchLookupModelInfos() const { return std::nullopt; }
@@ -45,6 +47,7 @@ class RemoteModelCatalog : public BaseModelCatalog {
   const IEpDetector& CatalogDevices() const;
 
  private:
+  VariantEligibility MakeCompatibilityPredicate(bool capacity_only, bool check_capacity = true) const;
   class Devices;
   std::unique_ptr<Devices> devices_;
   ModelFactory factory_;

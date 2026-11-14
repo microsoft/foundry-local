@@ -82,6 +82,56 @@ void RequireArray(const Json& value) {
 
 }  // namespace
 
+Json EncodeRuntimeDeviceSnapshot(const api::RuntimeDeviceSnapshot& snapshot) {
+  Json targets = Json::array();
+  for (const auto& target : snapshot.execution_targets) {
+    targets.push_back({{"provider", target.provider},
+                       {"device_id", target.device_id},
+                       {"device_type", target.device_type},
+                       {"options", target.options},
+                       {"capacity", {{"total_vram_bytes", target.capacity.total_vram_bytes
+                                                            ? Json(*target.capacity.total_vram_bytes)
+                                                            : Json(nullptr)}}}});
+  }
+
+  return {{"devices", snapshot.devices}, {"execution_targets", std::move(targets)}};
+}
+
+api::RuntimeDeviceSnapshot DecodeRuntimeDeviceSnapshot(const Json& value) {
+  return DecodeChecked([&]() {
+    api::RuntimeDeviceSnapshot snapshot;
+    if (!value.contains("devices")) {
+      snapshot.devices = value.get<api::DeviceProviders>();
+      return snapshot;
+    }
+
+    snapshot.devices = value.at("devices").get<api::DeviceProviders>();
+    if (const auto targets = value.find("execution_targets"); targets != value.end()) {
+      RequireArray(*targets);
+      for (const auto& entry : *targets) {
+        ExecutionTarget target;
+        target.provider = entry.at("provider").get<std::string>();
+        target.device_id = Integer<uint32_t>(entry.at("device_id"));
+        target.device_type = entry.at("device_type").get<std::string>();
+        if (const auto options = entry.find("options"); options != entry.end()) {
+          target.options = options->get<std::map<std::string, std::string>>();
+        }
+        const auto capacity = entry.find("capacity");
+        if (capacity != entry.end()) {
+          const auto total = capacity->find("total_vram_bytes");
+          if (total != capacity->end() && !total->is_null()) {
+            target.capacity.total_vram_bytes = Integer<uint64_t>(*total);
+          }
+        }
+
+        snapshot.execution_targets.push_back(std::move(target));
+      }
+    }
+
+    return snapshot;
+  });
+}
+
 Json EncodeModelInfo(const ModelInfo& info) {
   return {{"id", info.model_id},
           {"name", info.name},

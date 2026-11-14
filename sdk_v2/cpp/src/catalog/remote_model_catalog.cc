@@ -3,6 +3,7 @@
 #include "catalog/remote_model_catalog.h"
 
 #include "catalog/azure_catalog_client.h"
+#include "catalog/capacity_compatibility.h"
 #include "inferencing/execution_provider.h"
 #include "inferencing/generative/genai_config.h"
 #include "version.h"
@@ -49,10 +50,43 @@ class RemoteModelCatalog::Devices final : public IEpDetector {
     return hosted_ ? *hosted_ : local_.GetAvailableDevicesToEPs();
   }
 
-  bool Set(std::map<std::string, std::vector<std::string>> devices) {
+  std::map<std::string, std::vector<DeviceCapacity>> GetDeviceCapacities() const override {
     std::lock_guard lock(mutex_);
-    if (hosted_ && *hosted_ == devices) return false;
+    if (!hosted_) return local_.GetDeviceCapacities();
+
+    std::map<std::string, std::vector<DeviceCapacity>> capacities;
+    for (const auto& target : execution_targets_) {
+      capacities[target.provider].push_back(target.capacity);
+    }
+
+    return capacities;
+  }
+
+  std::vector<ExecutionTarget> GetExecutionTargets() const override {
+    std::lock_guard lock(mutex_);
+    if (!hosted_) return local_.GetExecutionTargets();
+
+    auto targets = execution_targets_;
+    for (const auto& [type, providers] : *hosted_) {
+      for (const auto& provider : providers) {
+        if (std::none_of(targets.begin(), targets.end(), [&](const auto& target) {
+              return ToLower(EPUtils::NormalizeRegistrationName(target.provider)) ==
+                     ToLower(EPUtils::NormalizeRegistrationName(provider));
+            })) {
+          targets.push_back({provider, 0, type, {}});
+        }
+      }
+    }
+
+    return targets;
+  }
+
+  bool Set(std::map<std::string, std::vector<std::string>> devices,
+           std::vector<ExecutionTarget> execution_targets) {
+    std::lock_guard lock(mutex_);
+    if (hosted_ && *hosted_ == devices && execution_targets_ == execution_targets) return false;
     hosted_ = std::move(devices);
+    execution_targets_ = std::move(execution_targets);
     return true;
   }
 
@@ -60,6 +94,7 @@ class RemoteModelCatalog::Devices final : public IEpDetector {
   const IEpDetector& local_;
   mutable std::mutex mutex_;
   std::optional<std::map<std::string, std::vector<std::string>>> hosted_;
+  std::vector<ExecutionTarget> execution_targets_;
 };
 
 RemoteModelCatalog::RemoteModelCatalog(std::string name, CatalogType type, ModelFactory factory,
@@ -69,8 +104,9 @@ RemoteModelCatalog::RemoteModelCatalog(std::string name, CatalogType type, Model
 
 RemoteModelCatalog::~RemoteModelCatalog() = default;
 
-void RemoteModelCatalog::SetRuntimeDevices(std::map<std::string, std::vector<std::string>> devices) {
-  if (devices_->Set(std::move(devices))) InvalidateCache();
+void RemoteModelCatalog::SetRuntimeDevices(std::map<std::string, std::vector<std::string>> devices,
+                                          std::vector<ExecutionTarget> execution_targets) {
+  if (devices_->Set(std::move(devices), std::move(execution_targets))) InvalidateCache();
 }
 
 const IEpDetector& RemoteModelCatalog::CatalogDevices() const { return *devices_; }
@@ -87,7 +123,9 @@ std::vector<Model> RemoteModelCatalog::CreateModels(const std::vector<ModelInfo>
   std::vector<Model> models;
   models.reserve(infos.size());
   const auto eligible = GetType() == CatalogType::kAzureRegistry &&
-      (query == Query::Listing || query == Query::History) ? MakeVariantEligibility() : VariantEligibility{};
+      (query == Query::Listing || query == Query::History)
+      ? MakeCompatibilityPredicate(false, query != Query::Listing) : VariantEligibility{};
+  const auto visible = query == Query::History ? MakeVariantVisibility() : VariantEligibility{};
   for (const auto& info : infos) {
     if (!IsModelCompatible(info)) continue;
 
@@ -95,6 +133,7 @@ std::vector<Model> RemoteModelCatalog::CreateModels(const std::vector<ModelInfo>
     if (RequiresCompletedCache() && path.empty()) continue;
     auto model = factory_(info, std::move(path));
     if (eligible && !eligible(model)) continue;
+    if (visible && !visible(model)) continue;
     models.push_back(std::move(model));
   }
   return models;
@@ -133,52 +172,92 @@ std::vector<Model> RemoteModelCatalog::FetchModelVersions(const std::string& ali
 }
 
 BaseModelCatalog::VariantEligibility RemoteModelCatalog::MakeVariantEligibility() const {
-  auto devices = devices_->GetAvailableDevicesToEPs();
-  std::unordered_set<std::string> providers;
-  for (const auto& [device, eps] : devices) {
-    for (const auto& ep : eps) providers.insert(ToLower(EPUtils::NormalizeRegistrationName(ep)));
-  }
+  return MakeCompatibilityPredicate(false);
+}
 
-  return [this, devices = std::move(devices), providers = std::move(providers),
-          configured_providers = std::unordered_map<std::string, std::optional<std::string>>{}](
-             const Model& variant) mutable {
-    const auto& info = variant.Info();
-    if (!IsModelCompatible(info)) return false;
-    const bool generic_gpu = info.model_id.find("generic-gpu") != std::string::npos;
-    if (GetType() == CatalogType::kAzureRegistry) {
-      const auto device = devices.find(DeviceTypeToString(info.device_type));
-      if (device == devices.end()) return false;
-      const auto provider = ToLower(EPUtils::NormalizeRegistrationName(info.execution_provider));
-      return std::any_of(device->second.begin(), device->second.end(), [&](const std::string& ep) {
-        const auto available = ToLower(EPUtils::NormalizeRegistrationName(ep));
-        return available == provider ||
-            (generic_gpu && (available == "cudaexecutionprovider" || available == "webgpuexecutionprovider"));
-      });
-    }
-    if (generic_gpu && (providers.contains("cudaexecutionprovider") || providers.contains("webgpuexecutionprovider"))) {
+BaseModelCatalog::VariantEligibility RemoteModelCatalog::MakeVariantVisibility() const {
+  return [this, compatible = VariantEligibility{}](const Model& variant) mutable {
+    if (variant.Info().device_type != DeviceType::kGPU ||
+        !variant.Info().GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_MIN_VRAM_BYTES_INT)) {
       return true;
     }
+    if (!compatible) compatible = MakeCompatibilityPredicate(true);
+    return compatible(variant);
+  };
+}
+
+BaseModelCatalog::VariantEligibility RemoteModelCatalog::MakeCompatibilityPredicate(bool capacity_only,
+                                                                                   bool check_capacity) const {
+  auto targets = devices_->GetExecutionTargets();
+  auto devices = !capacity_only && GetType() == CatalogType::kAzureRegistry
+      ? devices_->GetAvailableDevicesToEPs() : std::map<std::string, std::vector<std::string>>{};
+  std::unordered_set<std::string> providers;
+  for (const auto& target : targets) {
+    providers.insert(ToLower(EPUtils::NormalizeRegistrationName(target.provider)));
+  }
+
+  return [this, capacity_only, check_capacity, devices = std::move(devices), targets = std::move(targets),
+          providers = std::move(providers),
+          configured_models = std::unordered_map<std::string, std::optional<GenAIConfig>>{}](
+             const Model& variant) mutable {
+    const auto& info = variant.Info();
+    if (!capacity_only && !IsModelCompatible(info)) return false;
+    ModelCapacityRequirements requirements;
+    if (const auto* bytes = info.GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_MIN_VRAM_BYTES_INT); bytes && *bytes >= 0) {
+      requirements.minimum_vram_bytes = static_cast<uint64_t>(*bytes);
+    }
+    if (capacity_only && (info.device_type != DeviceType::kGPU || !requirements.minimum_vram_bytes)) return true;
+
+    const bool generic_gpu = info.model_id.find("generic-gpu") != std::string::npos;
+    bool is_multimodal = HasNonTextModalities(info);
     auto provider = info.execution_provider;
-    if (provider.empty()) {
+    if (generic_gpu || provider.empty()) {
       const auto path = variant.LocalPathSnapshot();
       if (!path.empty()) {
-        auto [entry, inserted] = configured_providers.try_emplace(path);
+        auto [entry, inserted] = configured_models.try_emplace(path);
         if (inserted) {
           try {
-            entry->second = GenAIConfig::LoadFromFile((std::filesystem::path(path) / "genai_config.json").string())
-                                .DefaultProvider();
+            entry->second = GenAIConfig::LoadFromFile((std::filesystem::path(path) / "genai_config.json").string());
           } catch (const std::exception& ex) {
             logger_.Log(LogLevel::Warning, fmt::format("Cannot determine execution provider for model '{}': {}",
                                                       info.model_id, ex.what()));
           }
         }
-        if (!entry->second) return false;
-        provider = *entry->second;
+        if (entry->second) {
+          is_multimodal = entry->second->model && entry->second->model->IsMultiModal();
+          if (provider.empty() || (generic_gpu && is_multimodal)) {
+            provider = entry->second->DefaultProvider();
+          }
+        } else if (provider.empty() && !generic_gpu) {
+          return capacity_only;
+        }
       }
     }
     if (provider.empty()) provider = EPUtils::RequiredEpForModelId(info.model_id);
     provider = ToLower(EPUtils::NormalizeRegistrationName(provider));
-    return provider.empty() || provider == "cpuexecutionprovider" || providers.contains(provider);
+
+    const auto meets_capacity = [&](const std::string& provider, bool generic_gpu = false) {
+      return !check_capacity || EvaluateProviderCapacity(info.device_type == DeviceType::kGPU, requirements, targets,
+                                                         provider, generic_gpu, is_multimodal)
+                                        .state != CompatibilityState::kDoesNotFit;
+    };
+    if (!capacity_only && GetType() == CatalogType::kAzureRegistry) {
+      const auto device = devices.find(DeviceTypeToString(info.device_type));
+      if (device == devices.end()) return false;
+      return std::any_of(device->second.begin(), device->second.end(), [&](const std::string& ep) {
+               const auto available = ToLower(EPUtils::NormalizeRegistrationName(ep));
+               return available == provider ||
+                      (generic_gpu && (available == "webgpuexecutionprovider" ||
+                                       (!is_multimodal && available == "cudaexecutionprovider")));
+             }) &&
+             meets_capacity(provider, generic_gpu);
+    }
+    if (generic_gpu && (providers.contains("webgpuexecutionprovider") ||
+                        (!is_multimodal && providers.contains("cudaexecutionprovider")))) {
+      return meets_capacity(provider, true);
+    }
+    return (capacity_only || provider.empty() || provider == "cpuexecutionprovider" || providers.contains(provider)) &&
+           meets_capacity(provider);
   };
 }
 

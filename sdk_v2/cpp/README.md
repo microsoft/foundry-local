@@ -123,6 +123,56 @@ required runtime directories when using it. It is not needed solely for the x64 
 Foundry Local leaves runtime dependency loading to ORT and GenAI. On Linux, use the
 system loader configuration or `LD_LIBRARY_PATH`.
 
+## Catalog GPU Memory Compatibility
+
+Native catalog filtering interprets an explicit `variantMetadata.vRamFootprintBytes` as the variant's minimum
+total GPU memory requirement, in bytes. It is retained as the optional integer property `min_vram_bytes`.
+Only variants explicitly marked as GPU are checked. CPU and NPU compatibility rules are unchanged.
+Model file size is not used as a memory requirement. Missing, null, malformed, negative, or out-of-range
+requirements are unknown, not zero.
+
+A variant is excluded only when every candidate device for its execution provider has known total VRAM below
+the requirement. Multiple devices are not summed. A fitting device, an unknown capacity, an unsupported query,
+or a query failure leaves capacity compatibility undecided and does not exclude the variant. An alias remains
+visible when a compatible variant remains. Full metadata snapshots are saved before capacity filtering so
+offline catalogs can be reevaluated on different hardware. Previously returned handles remain stable across
+refreshes; memory-incompatible retained variants are hidden from discovery and cannot become automatic defaults.
+They remain accessible by ID and in cached/loaded inventory, and become visible again if capacity permits.
+
+Capacity queries use ORT's device-memory total only, never current available VRAM. This is not a guarantee
+that loading will succeed. CPU RAM and unified-memory checks are deliberately not implemented and require
+separate metadata and measurement contracts.
+
+The query uses `EpDevice_GetMemoryCapacity`, available in the pinned ORT 1.32.0 release. The API is used
+unconditionally; older ORT headers are not supported. Providers that do not implement capacity queries retain
+unknown-capacity behavior. Runtime upgrades alone do not establish CUDA provider compatibility or capacity-query
+support; validate the enabled query path with a compatible provider before relying on packaged GPU filtering.
+
+Register a compatible CUDA provider before refreshing the catalog.
+Hosted catalogs use the execution host's provider/device/capacity snapshot, never the client's local GPU.
+Older hosts that report only provider names retain unknown-capacity behavior.
+
+### Real-GPU catalog end-to-end test
+
+`AzureModelCatalogCapacityEndToEndTest.RealCudaCapacityFiltersParsedCatalogAndOfflineSnapshot` uses the real
+ORT environment, registered CUDA provider, EP detector, Azure catalog parser, selection logic, and disk snapshot.
+Only the catalog HTTP response is replaced with controlled metadata; no model downloads or inference are required.
+Requirements are derived from the detected devices, covering exact total-capacity fit, oversized GPU rejection,
+CPU fallback, aliases with no fitting variants, missing requirements, explicit zero, and offline snapshot reuse.
+
+Build with the capacity-enabled ORT described above and run from the repository root on Linux:
+
+```bash
+FOUNDRY_LOCAL_TEST_CUDA_EP_LIBRARY=/absolute/path/to/libonnxruntime_providers_cuda.so \
+  sdk_v2/cpp/build/Linux/Release/bin/foundry_local_tests \
+  --gtest_filter='AzureModelCatalogCapacityEndToEndTest.*'
+```
+
+The provider must match the ORT runtime used to build the tests. Configure CUDA and cuDNN library search paths
+as for normal CUDA usage. The test skips when built without the capacity API or when the provider path is unset.
+Once the provider path is set, registration failures, missing visible GPUs, and failed capacity queries fail
+the test. Set `CUDA_VISIBLE_DEVICES=7,2` (or another valid subset) to verify reordered device visibility.
+
 ## Clearing a Model Cache
 
 Use `Model::RemoveFromCache()` to clear a completed, interrupted, or corrupted download.

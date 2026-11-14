@@ -95,9 +95,11 @@ class HostedState {
     });
     if (catalog == CatalogType::kPublic) {
       const auto context = Connect(false);
-      metadata->SetCatalogRuntimeDevices(
-          context ? context->Call(Operation::RuntimeDevices, Json::object()).get<DeviceProviders>()
-                  : metadata->GetRuntimeDevices());
+      // CPU-only discovery keeps lazy catalog access working without assuming the client's GPU matches the host.
+      auto snapshot = context ? DecodeRuntimeDeviceSnapshot(
+                                    context->Call(Operation::RuntimeDevices, {{"include_execution_targets", true}}))
+                              : RuntimeDeviceSnapshot{{{"CPU", {"CPUExecutionProvider"}}}, {}};
+      metadata->SetCatalogRuntimeDevices(std::move(snapshot.devices), std::move(snapshot.execution_targets));
     }
   }
 
@@ -611,14 +613,19 @@ class HostedManager final : public ManagerBackend {
   }
 
   DeviceProviders GetRuntimeDevices() const override {
-    const auto context = state_->Connect(false);
-    return context ? context->Call(Operation::RuntimeDevices, Json::object()).get<DeviceProviders>()
-                   : state_->metadata->GetRuntimeDevices();
+    return GetRuntimeDeviceSnapshot().devices;
   }
 
-  void SetCatalogRuntimeDevices(DeviceProviders devices) override {
+  RuntimeDeviceSnapshot GetRuntimeDeviceSnapshot() const override {
+    const auto context = state_->Connect(false);
+    return context ? DecodeRuntimeDeviceSnapshot(
+                         context->Call(Operation::RuntimeDevices, {{"include_execution_targets", true}}))
+                   : RuntimeDeviceSnapshot{};
+  }
+
+  void SetCatalogRuntimeDevices(DeviceProviders devices, std::vector<ExecutionTarget> execution_targets) override {
     state_->RequireOpen();
-    state_->metadata->SetCatalogRuntimeDevices(std::move(devices));
+    state_->metadata->SetCatalogRuntimeDevices(std::move(devices), std::move(execution_targets));
   }
 
   EpDownloadResult DownloadAndRegisterEps(const std::vector<std::string>* names,

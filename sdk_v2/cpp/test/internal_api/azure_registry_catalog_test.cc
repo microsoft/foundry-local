@@ -1206,6 +1206,144 @@ TEST_F(AzureRegistryCatalogTest, RetainedUnloadedAliasRefreshesSelectionWhenDevi
   EXPECT_EQ(alias->Id(), "tiny-generic-gpu:2");
 }
 
+TEST_F(AzureRegistryCatalogTest, CachedAliasCapacityChangesHideGpuWithoutInvalidatingLeafHandle) {
+  auto gpu_info = CachedInfo(2);
+  gpu_info.name = "tiny-generic-gpu";
+  gpu_info.model_id = "tiny-generic-gpu:2";
+  gpu_info.device_type = DeviceType::kGPU;
+  gpu_info.execution_provider = "WebGpuExecutionProvider";
+  gpu_info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_VRAM_BYTES_INT] = 16;
+  Snapshot({CachedInfo(2), gpu_info});
+  Package(2);
+  const auto gpu_path = CachePath() / "tiny-generic-gpu-2";
+  std::filesystem::create_directories(gpu_path);
+  std::ofstream(gpu_path / "genai_config.json") << "{}";
+  std::ofstream(gpu_path / "inference_model.json") << "{}";
+
+  config_.additional_options["AzureRegistryModelCacheOnly"] = "true";
+  auto catalog = Catalog(false);
+  const auto set_capacity = [&](uint64_t bytes) {
+    catalog->SetRuntimeDevices({{"CPU", {"CPUExecutionProvider"}}, {"GPU", {"WebGpuExecutionProvider"}}},
+                               {{"WebGpuExecutionProvider", 0, "GPU", {bytes}}});
+  };
+
+  set_capacity(8);
+  auto* alias = catalog->GetModel("tiny");
+  ASSERT_NE(alias, nullptr);
+  EXPECT_EQ(alias->Id(), kCpuName + ":2");
+  EXPECT_EQ(VariantIds({alias}), (std::set<std::string>{kCpuName + ":2"}));
+  auto* cpu_leaf = alias->SelectedLeaf();
+  const auto retained = alias->Variants(/*include_hidden=*/true);
+  ASSERT_EQ(retained.size(), 2);
+  const auto gpu = std::find_if(retained.begin(), retained.end(), [&](const Model* variant) {
+    return variant->Id() == gpu_info.model_id;
+  });
+  ASSERT_NE(gpu, retained.end());
+  auto* gpu_leaf = *gpu;
+  EXPECT_TRUE(gpu_leaf->IsCached());
+  EXPECT_EQ(gpu_leaf->LocalPathSnapshot(), gpu_path.string());
+
+  set_capacity(16);
+  EXPECT_EQ(catalog->GetModel("tiny"), alias);
+  EXPECT_EQ(alias->SelectedLeaf(), gpu_leaf);
+  EXPECT_EQ(VariantIds({alias}), (std::set<std::string>{kCpuName + ":2", gpu_info.model_id}));
+  EXPECT_EQ(alias->Variants(/*include_hidden=*/true), retained);
+
+  set_capacity(8);
+  EXPECT_EQ(catalog->GetModel("tiny"), alias);
+  EXPECT_EQ(alias->SelectedLeaf(), cpu_leaf);
+  EXPECT_EQ(VariantIds({alias}), (std::set<std::string>{kCpuName + ":2"}));
+  EXPECT_EQ(alias->Variants(/*include_hidden=*/true), retained);
+  ASSERT_NO_THROW(gpu_leaf->RefreshCachedState());
+  EXPECT_TRUE(gpu_leaf->IsCached());
+  EXPECT_EQ(gpu_leaf->Id(), gpu_info.model_id);
+  EXPECT_EQ(gpu_leaf->LocalPathSnapshot(), gpu_path.string());
+
+  set_capacity(16);
+  EXPECT_EQ(catalog->GetModel("tiny"), alias);
+  EXPECT_EQ(alias->SelectedLeaf(), gpu_leaf);
+  EXPECT_EQ(VariantIds({alias}), (std::set<std::string>{kCpuName + ":2", gpu_info.model_id}));
+  EXPECT_EQ(alias->Variants(/*include_hidden=*/true), retained);
+}
+
+TEST_F(AzureRegistryCatalogTest, ListingCapacityChangesHideGpuWithoutReplacingRetainedLeafHandle) {
+  auto gpu_info = CachedInfo(2);
+  gpu_info.name = "tiny-generic-gpu";
+  gpu_info.model_id = "tiny-generic-gpu:2";
+  gpu_info.device_type = DeviceType::kGPU;
+  gpu_info.execution_provider = "WebGpuExecutionProvider";
+  gpu_info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_VRAM_BYTES_INT] = 16;
+  Snapshot({CachedInfo(2), gpu_info});
+  Package(2);
+  const auto gpu_path = CachePath() / "tiny-generic-gpu-2";
+  std::filesystem::create_directories(gpu_path);
+  std::ofstream(gpu_path / "genai_config.json") << "{}";
+  std::ofstream(gpu_path / "inference_model.json") << "{}";
+
+  config_.additional_options["AzureRegistryModelCacheOnly"] = "true";
+  auto catalog = Catalog(false);
+  const auto set_capacity = [&](uint64_t bytes) {
+    catalog->SetRuntimeDevices({{"CPU", {"CPUExecutionProvider"}}, {"GPU", {"WebGpuExecutionProvider"}}},
+                               {{"WebGpuExecutionProvider", 0, "GPU", {bytes}}});
+  };
+
+  set_capacity(16);
+  const auto listed = catalog->ListModels();
+  ASSERT_EQ(listed.size(), 1u);
+  auto* group = listed.front();
+  auto* retained_gpu = group->SelectedLeaf();
+  ASSERT_EQ(retained_gpu->Id(), gpu_info.model_id);
+
+  set_capacity(8);
+  ASSERT_EQ(catalog->ListModels(), (std::vector<Model*>{group}));
+  EXPECT_EQ(group->Id(), kCpuName + ":2");
+  EXPECT_EQ(VariantIds({group}), (std::set<std::string>{kCpuName + ":2"}));
+  EXPECT_EQ(group->Variants(/*include_hidden=*/true).size(), 2u);
+  ASSERT_NO_THROW(retained_gpu->Download());
+
+  set_capacity(16);
+  ASSERT_EQ(catalog->ListModels(), (std::vector<Model*>{group}));
+  EXPECT_EQ(group->SelectedLeaf(), retained_gpu);
+  EXPECT_EQ(VariantIds({group}), (std::set<std::string>{kCpuName + ":2", gpu_info.model_id}));
+}
+
+TEST_F(AzureRegistryCatalogTest, MultimodalGenericGpuCapacityDoesNotSelectFittingCudaInsteadOfWebGpu) {
+  auto gpu_info = CachedInfo(2);
+  gpu_info.name = "tiny-generic-gpu";
+  gpu_info.model_id = "tiny-generic-gpu:2";
+  gpu_info.device_type = DeviceType::kGPU;
+  gpu_info.execution_provider = "WebGpuExecutionProvider";
+  gpu_info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_VRAM_BYTES_INT] = 16;
+  gpu_info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR] = "text,image";
+  Snapshot({CachedInfo(2), gpu_info});
+  Package(2);
+  const auto gpu_path = CachePath() / "tiny-generic-gpu-2";
+  std::filesystem::create_directories(gpu_path);
+  std::ofstream(gpu_path / "genai_config.json") << R"({
+    "model": {
+      "type": "phi3v",
+      "decoder": {"session_options": {"provider_options": [{"webgpu": {}}]}}
+    }
+  })";
+  std::ofstream(gpu_path / "inference_model.json") << "{}";
+  config_.additional_options["AzureRegistryModelCacheOnly"] = "true";
+  auto catalog = Catalog(false);
+  const auto set_capacity = [&](uint64_t webgpu_bytes) {
+    catalog->SetRuntimeDevices(
+        {{"CPU", {"CPUExecutionProvider"}}, {"GPU", {"CUDAExecutionProvider", "WebGpuExecutionProvider"}}},
+        {{"CUDAExecutionProvider", 0, "GPU", {24}}, {"WebGpuExecutionProvider", 0, "GPU", {webgpu_bytes}}});
+  };
+  set_capacity(8);
+  auto* alias = catalog->GetModel("tiny");
+  ASSERT_NE(alias, nullptr);
+  EXPECT_EQ(alias->Id(), kCpuName + ":2");
+  EXPECT_EQ(alias->Variants().size(), 1u);
+  set_capacity(16);
+  EXPECT_EQ(catalog->GetModel("tiny"), alias);
+  EXPECT_EQ(alias->Id(), gpu_info.model_id);
+  EXPECT_EQ(alias->Variants().size(), 2u);
+}
+
 TEST_F(AzureRegistryCatalogTest, LiveInventorySavesRetainCompletedLocalPackagesForDeletedRemoteVersions) {
   std::filesystem::create_directories(CachePath());
   const auto package_path = CachePath() / (kCpuName + "-2");

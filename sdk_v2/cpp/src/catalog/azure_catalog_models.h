@@ -56,6 +56,7 @@ struct VariantMetadata {
   std::optional<std::string> device;
   std::optional<std::string> execution_provider;
   std::optional<int64_t> file_size_bytes;
+  std::optional<int64_t> vram_footprint_bytes;
 };
 
 struct VariantParent {

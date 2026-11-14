@@ -249,7 +249,9 @@ std::optional<ModelInfo> AzureRegistryCatalog::Adapt(const nlohmann::json& model
 std::vector<Model*> AzureRegistryCatalog::ListModels() const {
   auto models = RemoteModelCatalog::ListModels();
   for (auto* model : models) {
-    for (auto* variant : model->Variants()) RefreshRetainedVariantCache(*variant);
+    for (auto* variant : model->Variants(/*include_hidden=*/true)) {
+      RefreshRetainedVariantCache(*variant);
+    }
   }
   return models;
 }
@@ -267,13 +269,16 @@ std::vector<Model> AzureRegistryCatalog::CachedVariants(const std::string& alias
 
 void AzureRegistryCatalog::ReconcileCachedAlias(Model& model) const {
   std::unordered_set<std::string> known_ids;
-  for (auto* variant : model.Variants()) {
+  for (auto* variant : model.Variants(/*include_hidden=*/true)) {
     known_ids.insert(variant->Id());
     RefreshRetainedVariantCache(*variant);
   }
+
   for (auto& variant : CachedVariants(model.Alias())) {
     if (!known_ids.contains(variant.Id())) model.AddVariant(std::move(variant));
   }
+
+  model.UpdateVariantVisibility(MakeVariantVisibility());
   model.SelectDefaultVariant(MakeVariantEligibility(), /*preserve_explicit_selection=*/true);
 }
 
@@ -298,6 +303,7 @@ Model* AzureRegistryCatalog::GetModel(const std::string& alias) const {
       std::lock_guard lock(alias_models_mutex_);
       ReconcileCachedAlias(*c);
     });
+    container->UpdateVariantVisibility(MakeVariantVisibility());
     container->SelectDefaultVariant(MakeVariantEligibility());
     if (container->HasEligibleDefaultVariant()) {
       return alias_models_.emplace(alias, std::move(container)).first->second.get();
@@ -314,7 +320,9 @@ Model* AzureRegistryCatalog::GetModel(const std::string& alias) const {
   std::vector<ModelInfo> infos;
   for (const auto* group : RemoteModelCatalog::ListModels()) {
     if (group->Alias() == alias) {
-      for (const auto* variant : group->Variants()) infos.push_back(variant->Info());
+      for (const auto* variant : group->Variants(/*include_hidden=*/true)) {
+        infos.push_back(variant->Info());
+      }
     }
   }
   return make_alias(CreateModels(infos, Query::Listing));
@@ -411,7 +419,7 @@ std::vector<Model*> AzureRegistryCatalog::RetainedVariants() const {
   {
     std::lock_guard lock(alias_models_mutex_);
     for (const auto& [alias, container] : alias_models_) {
-      for (auto* variant : container->Variants()) {
+      for (auto* variant : container->Variants(/*include_hidden=*/true)) {
         models.push_back(variant);
       }
     }

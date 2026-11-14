@@ -89,6 +89,32 @@ class AllDevicesEpDetector final : public IEpDetector {
 
 }  // namespace
 
+TEST(AzureCatalogClientTest, VramRequirementPreservesOnlyExplicitNonnegativeIntegerBytes) {
+  for (const nlohmann::json& footprint : {nlohmann::json(nullptr), nlohmann::json(-1), nlohmann::json("16"),
+                                          nlohmann::json(1.5), nlohmann::json(UINT64_MAX), nlohmann::json(0),
+                                          nlohmann::json(16)}) {
+    SCOPED_TRACE(footprint.dump());
+    auto response = nlohmann::json::parse(MakeSummaryResponse({{"model", 1}}));
+    response["summaries"][0]["variantInformation"]["variantMetadata"]["vRamFootprintBytes"] = footprint;
+    CpuOnlyEpDetector detector;
+    StderrLogger logger;
+    AzureCatalogClient client("https://catalog.test", "", detector, logger,
+                              [&](const std::string&, const std::string&) { return MakeOkResponse(response.dump()); });
+    const auto infos = client.FetchAllModelInfos();
+    ASSERT_EQ(infos.size(), 1u);
+    const auto* bytes = infos.front().GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_MIN_VRAM_BYTES_INT);
+    if (footprint == nlohmann::json(0) || footprint == nlohmann::json(16)) {
+      ASSERT_NE(bytes, nullptr);
+      EXPECT_EQ(*bytes, footprint.get<int64_t>());
+      const auto restored = ModelInfoFromJson(ModelInfoToJson(infos.front()));
+      ASSERT_NE(restored.GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_MIN_VRAM_BYTES_INT), nullptr);
+      EXPECT_EQ(*restored.GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_MIN_VRAM_BYTES_INT), *bytes);
+    } else {
+      EXPECT_EQ(bytes, nullptr);
+    }
+  }
+}
+
 TEST(AzureCatalogClientTest, RequestUsesAssetGalleryContract) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;

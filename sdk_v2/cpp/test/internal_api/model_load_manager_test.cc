@@ -9,6 +9,7 @@
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
 #include "logger.h"
+#include "model_info.h"
 #include "util/path_safety.h"
 #include "utils/temp_path.h"
 
@@ -85,6 +86,27 @@ class AmdGpuEpDetector : public fl::IEpDetector {
 
   std::vector<std::string> providers{"AMDGPUExecutionProvider"};
   std::string prepared_ep;
+};
+
+class CapacityGpuEpDetector final : public fl::IEpDetector {
+ public:
+  std::map<std::string, std::vector<std::string>> GetAvailableDevicesToEPs() const override {
+    return {{"GPU", {"CUDAExecutionProvider", "WebGpuExecutionProvider"}}};
+  }
+
+  std::vector<fl::ExecutionTarget> GetExecutionTargets() const override {
+    return {{"CUDAExecutionProvider", 99, "GPU", {cuda_fits ? 24u : 8u}},
+            {"WebGpuExecutionProvider", 77, "GPU", {webgpu_fits ? 24u : 8u}}};
+  }
+
+  bool PrepareForModelLoad(std::string_view provider) override {
+    prepared = provider;
+    return false;
+  }
+
+  bool cuda_fits = true;
+  bool webgpu_fits = true;
+  std::string prepared;
 };
 
 /// Creates a minimal model directory with a dummy genai_config.json.
@@ -342,6 +364,92 @@ TEST(ModelLoadManagerTest, GenericGpuTextModelAutoSelectionPrefersCudaThenWebGpu
     EXPECT_THROW(mgr.LoadModel(dir.path(), "model-generic-gpu:1"), fl::Exception);
     EXPECT_EQ(ep.prepared_ep, cuda_available ? "CUDAExecutionProvider" : "WebGpuExecutionProvider");
   }
+}
+
+TEST(ModelLoadManagerTest, CapacityAwareGenericGpuLoadPreparesFittingProvider) {
+  CapacityGpuEpDetector detector;
+  fl::ModelInfo info;
+  info.model_id = "model-generic-gpu:1";
+  info.device_type = fl::DeviceType::kGPU;
+  info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_VRAM_BYTES_INT] = 16;
+  TempModelDir directory("capacity-generic", "dml");
+  fl::StderrLogger logger;
+  fl::ModelLoadManager manager(detector, logger);
+  for (const bool cuda_fits : {false, true}) {
+    SCOPED_TRACE(cuda_fits);
+    detector.cuda_fits = cuda_fits;
+    detector.prepared.clear();
+    EXPECT_THROW(manager.LoadModel(directory.path(), info.model_id, fl::ExecutionProvider::kDefault, &info),
+                 fl::Exception);
+    EXPECT_EQ(detector.prepared, cuda_fits ? "CUDAExecutionProvider" : "WebGpuExecutionProvider");
+    detector.prepared.clear();
+    EXPECT_THROW(manager.LoadModel(directory.path(), info.model_id, fl::ExecutionProvider::kCUDA, &info),
+                 fl::Exception);
+    EXPECT_EQ(detector.prepared, cuda_fits ? "CUDAExecutionProvider" : "");
+  }
+}
+
+TEST(ModelLoadManagerTest, CapacityAwareGenericGpuMultimodalLoadPreservesWebGpuRestrictionAndCudaOverride) {
+  CapacityGpuEpDetector detector;
+  fl::ModelInfo info;
+  info.model_id = "model-generic-gpu:1";
+  info.device_type = fl::DeviceType::kGPU;
+  info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_VRAM_BYTES_INT] = 16;
+  TempModelDir directory("capacity-generic-multimodal", "webgpu", "phi3v");
+  fl::StderrLogger logger;
+  fl::ModelLoadManager manager(detector, logger);
+  for (const bool webgpu_fits : {false, true}) {
+    SCOPED_TRACE(webgpu_fits);
+    detector.webgpu_fits = webgpu_fits;
+    for (const auto override_ep : {fl::ExecutionProvider::kDefault, fl::ExecutionProvider::kCUDA}) {
+      SCOPED_TRACE(static_cast<int>(override_ep));
+      detector.prepared.clear();
+      const bool insufficient_capacity = !webgpu_fits && override_ep == fl::ExecutionProvider::kDefault;
+      try {
+        manager.LoadModel(directory.path(), info.model_id, override_ep, &info);
+        FAIL() << "Expected capacity rejection or injected preparation failure";
+      } catch (const fl::Exception& error) {
+        EXPECT_EQ(error.code(),
+                  insufficient_capacity ? FOUNDRY_LOCAL_ERROR_INVALID_USAGE : FOUNDRY_LOCAL_ERROR_INTERNAL);
+        EXPECT_NE(std::string(error.what()).find(insufficient_capacity ? "sufficient total GPU memory"
+                                                                       : "failed to prepare"),
+                  std::string::npos);
+      }
+
+      const auto expected_provider = override_ep == fl::ExecutionProvider::kCUDA ? "CUDAExecutionProvider"
+                                                                                : "WebGpuExecutionProvider";
+      EXPECT_EQ(detector.prepared, insufficient_capacity ? "" : expected_provider);
+    }
+  }
+}
+
+TEST(ModelLoadManagerTest, CapacityAwareLoadSelectsSecondCudaOrdinalNotHardwareId) {
+  class TargetDetector final : public fl::IEpDetector {
+   public:
+    std::map<std::string, std::vector<std::string>> GetAvailableDevicesToEPs() const override {
+      return {{"GPU", {"CUDAExecutionProvider"}}};
+    }
+    std::vector<fl::ExecutionTarget> GetExecutionTargets() const override {
+      return {{"CUDAExecutionProvider", 99, "GPU", {8}, {{"device_id", "0"}}},
+              {"CUDAExecutionProvider", 99, "GPU", {24}, {{"device_id", "1"}}}};
+    }
+    bool PrepareForModelLoad(std::string_view) override { return false; }
+  } detector;
+  class RecordingLogger final : public fl::ILogger {
+   public:
+    void Log(fl::LogLevel, std::string_view message) override { messages.append(message).append("\n"); }
+    std::string messages;
+  } logger;
+  fl::ModelInfo info;
+  info.model_id = "model-cuda-gpu:1";
+  info.device_type = fl::DeviceType::kGPU;
+  info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_VRAM_BYTES_INT] = 16;
+  TempModelDir directory("capacity-second-gpu", "cuda");
+  fl::ModelLoadManager manager(detector, logger);
+  EXPECT_THROW(manager.LoadModel(directory.path(), info.model_id, fl::ExecutionProvider::kDefault, &info),
+               fl::Exception);
+  EXPECT_NE(logger.messages.find(R"(hardware_id=99 options={"device_id":"1"})"), std::string::npos);
+  EXPECT_EQ(logger.messages.find(R"(options={"device_id":"0"})"), std::string::npos);
 }
 
 TEST(ModelLoadManagerTest, GenericGpuMultimodalModelPrefersWebGpuEvenWithCudaAvailable) {

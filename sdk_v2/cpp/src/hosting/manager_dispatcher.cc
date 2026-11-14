@@ -4,6 +4,7 @@
 
 #include "ep_detection/ep_types.h"
 #include "exception.h"
+#include "hosting/sdk_values.h"
 
 namespace fl::hosting {
 namespace {
@@ -58,6 +59,10 @@ void ManagerDispatcher::Dispatch(const std::shared_ptr<SdkConnection::IncomingCa
 Json ManagerDispatcher::Execute(SdkConnection::IncomingCall& call, std::optional<HostLifetime::OwnerId> owner) {
   switch (call.Op()) {
     case Operation::RuntimeDevices:
+      if (call.Payload().value("include_execution_targets", false)) {
+        return EncodeRuntimeDeviceSnapshot(manager_->GetRuntimeDeviceSnapshot());
+      }
+
       return manager_->GetRuntimeDevices();
     case Operation::WebServiceStart: {
       if (!owner) {

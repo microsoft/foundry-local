@@ -62,9 +62,13 @@ void CollectLocal(flStreamingCallbackData data, std::string& text) {
 
 class ProviderBackend final : public api::ManagerBackend {
  public:
-  ProviderBackend() : ManagerBackend(api::BackendKind::Embedded) {}
+  explicit ProviderBackend(std::shared_ptr<api::ManagerBackend> metadata = {})
+      : ManagerBackend(api::BackendKind::Embedded), metadata_(std::move(metadata)) {}
 
-  api::CatalogBackend& GetCatalog(CatalogType) override {
+  api::CatalogBackend& GetCatalog(CatalogType type) override {
+    if (metadata_) {
+      return metadata_->GetCatalog(type);
+    }
     FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED, "provider fixture has no catalog");
   }
   std::unique_ptr<api::ModelBackend> CaptureModel(
@@ -81,7 +85,10 @@ class ProviderBackend final : public api::ManagerBackend {
   api::DeviceProviders GetRuntimeDevices() const override {
     return {{"CPU", {"CPUExecutionProvider"}}, {"GPU", {"wire-ep"}}};
   }
-  void SetCatalogRuntimeDevices(api::DeviceProviders) override {}
+  api::RuntimeDeviceSnapshot GetRuntimeDeviceSnapshot() const override {
+    return {GetRuntimeDevices(), {{"wire-ep", 7, "GPU", {total_vram_bytes}}}};
+  }
+  void SetCatalogRuntimeDevices(api::DeviceProviders, std::vector<ExecutionTarget>) override {}
   EpDownloadResult DownloadAndRegisterEps(const std::vector<std::string>* names,
                                           const api::EpProgressCallback& progress) override {
     if (!names || *names != std::vector<std::string>{"wire-ep"}) {
@@ -102,7 +109,10 @@ class ProviderBackend final : public api::ManagerBackend {
   bool IsShutdownRequested() const override { return false; }
 
   std::atomic<bool> reporting_download{false};
+  uint64_t total_vram_bytes = 8;
+
  private:
+  std::shared_ptr<api::ManagerBackend> metadata_;
   std::vector<std::string> urls_;
   std::vector<flEpInfo> eps_{{FOUNDRY_LOCAL_DATA_VERSION, "wire-ep", false}};
 };
@@ -906,6 +916,39 @@ TEST_F(SdkSessionTest, HostedRuntimeDeviceObservationDoesNotAcquireOrRegisterPro
   EXPECT_FALSE(hosted->IsEpDownloadInProgress());
   hosted->Shutdown();
   EXPECT_FALSE(hosted->IsEpDownloadInProgress());
+}
+
+TEST_F(SdkSessionTest, HostedRuntimeSnapshotUsesHostCapacityInsteadOfClientCapacity) {
+  auto provider = std::make_shared<ProviderBackend>();
+  manager_dispatcher_ = std::make_unique<ManagerDispatcher>(provider, *lifetime_);
+  auto metadata = std::make_shared<ProviderBackend>(manager_);
+  metadata->total_vram_bytes = 64;
+  auto context = ClientContext();
+  int acquired = 0;
+  auto hosted = api::CreateHostedBackend(metadata, [&](bool acquire) {
+    acquired += acquire;
+    return context;
+  });
+  const auto snapshot = hosted->GetRuntimeDeviceSnapshot();
+  EXPECT_EQ(snapshot.devices, provider->GetRuntimeDevices());
+  EXPECT_EQ(snapshot.execution_targets, provider->GetRuntimeDeviceSnapshot().execution_targets);
+  ASSERT_EQ(snapshot.execution_targets.size(), 1u);
+  EXPECT_EQ(snapshot.execution_targets.front().capacity.total_vram_bytes, 8u);
+  EXPECT_EQ(metadata->GetRuntimeDeviceSnapshot().execution_targets.front().capacity.total_vram_bytes, 64u);
+  EXPECT_EQ(acquired, 0);
+
+  const auto legacy = context->Call(Operation::RuntimeDevices, Json::object());
+  EXPECT_EQ(legacy.get<api::DeviceProviders>(), provider->GetRuntimeDevices());
+}
+
+TEST_F(SdkSessionTest, HostedRuntimeSnapshotWithoutHostNeverUsesClientHardware) {
+  auto metadata = std::make_shared<ProviderBackend>(manager_);
+  metadata->total_vram_bytes = 64;
+  auto hosted = api::CreateHostedBackend(metadata, [](bool) { return std::shared_ptr<api::HostedContext>{}; });
+  EXPECT_TRUE(hosted->GetRuntimeDevices().empty());
+  const auto snapshot = hosted->GetRuntimeDeviceSnapshot();
+  EXPECT_TRUE(snapshot.devices.empty());
+  EXPECT_TRUE(snapshot.execution_targets.empty());
 }
 
 TEST_F(SdkSessionTest, CatalogRuntimeDevicesInvalidateExistingTestRegistriesAndApplyToNewOnes) {
