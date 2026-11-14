@@ -206,6 +206,25 @@ TEST_F(GenAIConfigTest, LoadFullConfig) {
 
   ASSERT_TRUE(config.search.has_value());
   EXPECT_EQ(config.search->max_length, 2048);
+  EXPECT_FALSE(config.search->do_sample.has_value());
+}
+
+TEST_F(GenAIConfigTest, LoadExplicitSamplingDefaults) {
+  for (const bool do_sample : {false, true}) {
+    auto path = WriteFile("genai_config.json",
+                          std::string(R"({"search":{"do_sample":)") + (do_sample ? "true" : "false") + "}}");
+    const auto config = GenAIConfig::LoadFromFile(path);
+    ASSERT_TRUE(config.search.has_value());
+    ASSERT_TRUE(config.search->do_sample.has_value());
+    EXPECT_EQ(*config.search->do_sample, do_sample);
+  }
+}
+
+TEST_F(GenAIConfigTest, RejectsNonBooleanSamplingDefault) {
+  for (const auto* value : {"null", "0", R"("false")"}) {
+    auto path = WriteFile("genai_config.json", std::string(R"({"search":{"do_sample":)") + value + "}}");
+    ExpectConfigError(path, "search.do_sample must be a boolean");
+  }
 }
 
 TEST_F(GenAIConfigTest, LoadMinimalConfig) {

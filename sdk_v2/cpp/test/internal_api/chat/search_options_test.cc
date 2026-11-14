@@ -650,6 +650,71 @@ class SearchOptionsTest : public ::testing::Test {
 // Tests
 // ---------------------------------------------------------------------------
 
+class ModelSamplingOptionsTest : public SearchOptionsTest {
+ protected:
+  static void SetUpTestSuite() {
+    logger_ = std::make_unique<StderrLogger>();
+    ep_detector_ = std::make_unique<test::CpuOnlyEpDetector>();
+    load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
+    const auto model_path = fl::test::GetTestDataPath("tiny-paged-attention");
+    const auto result = load_manager_->LoadModel(model_path.string(), fl::test::kTestChatModelAlias);
+    ASSERT_EQ(result.status, ModelLoadManager::LoadStatus::kSuccess);
+    model_ = result.model;
+  }
+};
+
+TEST_F(ModelSamplingOptionsTest, PreservesExplicitModelDefaultWithoutCallerPolicy) {
+  auto config = GetConfig();
+  config.search.emplace();
+  for (const bool do_sample : {false, true}) {
+    config.search->do_sample = do_sample;
+    for (const auto temperature : {std::optional<float>{}, std::optional<float>{1.0f}}) {
+      SearchOptions options;
+      options.max_output_tokens = 8;
+      options.temperature = temperature;
+      auto params = MakeParams();
+      params->SetSearchOptionBool("do_sample", !do_sample);
+      ApplySearchOptions(options, 10, config, *params, ExecutionProvider::kCPU);
+      EXPECT_EQ(params->GetSearchBool("do_sample"), do_sample);
+    }
+  }
+}
+
+TEST_F(ModelSamplingOptionsTest, CallerPolicyOverridesModelDefault) {
+  auto config = GetConfig();
+  config.search.emplace();
+  for (const bool model_do_sample : {false, true}) {
+    config.search->do_sample = model_do_sample;
+    for (const float temperature : {0.0f, 0.7f}) {
+      SearchOptions options;
+      options.max_output_tokens = 8;
+      options.temperature = temperature;
+      auto params = MakeParams();
+      params->SetSearchOptionBool("do_sample", model_do_sample);
+      ApplySearchOptions(options, 10, config, *params, ExecutionProvider::kCPU);
+      EXPECT_EQ(params->GetSearchBool("do_sample"), temperature != 0.0f);
+      EXPECT_NEAR(params->GetSearchNumber("temperature"), temperature, 0.00001);
+    }
+  }
+}
+
+TEST_F(ModelSamplingOptionsTest, MissingModelPolicyRetainsLegacyDefault) {
+  auto config = GetConfig();
+  for (const bool has_search : {false, true}) {
+    config.search.reset();
+    if (has_search) {
+      config.search.emplace();
+    }
+
+    SearchOptions options;
+    options.max_output_tokens = 8;
+    auto params = MakeParams();
+    params->SetSearchOptionBool("do_sample", false);
+    ApplySearchOptions(options, 10, config, *params, ExecutionProvider::kCPU);
+    EXPECT_TRUE(params->GetSearchBool("do_sample"));
+  }
+}
+
 TEST_F(SearchOptionsTest, DefaultOptionsApplySuccessfully) {
   SearchOptions opts;
   auto params = MakeParams();

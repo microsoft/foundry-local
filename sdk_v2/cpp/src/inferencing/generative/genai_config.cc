@@ -180,6 +180,14 @@ GenAIConfig GenAIConfig::LoadFromFile(const std::string& path) {
       search.max_length = js["max_length"].get<int>();
     }
 
+    if (js.contains("do_sample")) {
+      if (!js["do_sample"].is_boolean()) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "genai_config.json search.do_sample must be a boolean");
+      }
+
+      search.do_sample = js["do_sample"].get<bool>();
+    }
+
     config.search = std::move(search);
   }
 
