@@ -184,12 +184,6 @@ The model leaf must contain `inference_model.json` with the versioned cache ID:
 }
 ```
 
-The predictive CLM and KEV integration fixtures are the exception: their tests
-register the staged package explicitly with a versioned model ID and task, so
-their Universal Packages intentionally omit `inference_model.json`. Keep the
-directory and model IDs in the C++, C#, Python, Rust, and JavaScript integration
-fixtures synchronized with the downloaded `v<model-version>` directory.
-
 Install the Azure DevOps CLI extension, authenticate with an identity that has
 Feed Publisher permission, and publish the alias directory:
 
